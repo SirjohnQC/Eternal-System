@@ -319,6 +319,64 @@ console.log('\n═══ Civilisations survive save/load ═══');
         `${beforeIds.filter(id => after[Number(id)]?.id === before[id]?.id).length}/${beforeIds.length} match`);
 }
 
+// Regression test for a second review finding: enterUniverse() in main.ts —
+// wired to the production "ENTER YOUR UNIVERSE" button, the path every
+// player takes — builds a brand-new engine to transition from the Big Bang
+// cinematic to the game screen, calls init() on it (which unconditionally
+// resets gameState.civilizations, same as every other init() call), and then
+// transfers only stars/nebulae/asteroids/fleets/tick/phase/exploredAreas/
+// settledSinceTick from the old engine. Anything that emerged in
+// gameState.civilizations during the Big Bang phase was lost at exactly the
+// moment the player entered the game, unless it is captured before init()
+// and restored after the handoff — mirroring what main.ts now does.
+console.log('\n═══ Civilisations survive the Big-Bang → game handoff ═══');
+{
+  const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
+  const { gameState } = await import('../src/simulation/GameState');
+
+  gameState.playerPlanetName = 'Handoffworld';
+  gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
+
+  const stats = { life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 };
+
+  const engineA = new BigBangEngine(makeCanvas());
+  engineA.onCivEvent = () => {}; engineA.onLifeEvent = () => {};
+  engineA.init(stats, 'handoff_seed');
+
+  (globalThis as any).eternalSpeed = 60;
+  for (let i = 0; i < 400_000 && (engineA as any).tick < 400_000; i++) engineA.update();
+
+  const beforeCount = Object.keys(gameState.civilizations).length;
+  check('at least one civilisation exists before the handoff (control)',
+        beforeCount > 0, String(beforeCount));
+  const before = JSON.parse(JSON.stringify(gameState.civilizations)) as
+    Record<string, { government: string; ideology: string; id: string }>;
+
+  // Mirror enterUniverse(): capture, build the new engine, init() it (same
+  // seed, so this reproduces exactly what the real handoff does to
+  // gameState.civilizations), transfer star-level state, then restore.
+  const civilizationsBeforeHandoff = gameState.civilizations;
+  const engineB = new BigBangEngine(makeCanvas());
+  engineB.init(stats, 'handoff_seed');
+  check('init() on the handoff engine disturbs civilisations (control)',
+        Object.keys(gameState.civilizations).length !== beforeCount,
+        String(Object.keys(gameState.civilizations).length));
+  (engineB as any).stars = (engineA as any).stars;
+  gameState.civilizations = civilizationsBeforeHandoff;
+
+  const after = gameState.civilizations;
+  const beforeIds = Object.keys(before);
+  check('every civilisation survives the handoff with government/ideology/id intact',
+        beforeIds.length === Object.keys(after).length &&
+        beforeIds.every(starId => {
+          const b = before[starId];
+          const a = after[Number(starId)];
+          return a && a.government === b.government && a.ideology === b.ideology && a.id === b.id;
+        }),
+        `${beforeIds.filter(id => after[Number(id)]?.id === before[id]?.id).length}/${beforeIds.length} match`);
+}
+
 console.log(`\n═══ RESULT: ${passed} passed, ${failures.length} failed ═══`);
 if (failures.length) { for (const f of failures) console.log('  ✗ ' + f); process.exit(1); }
 console.log('All checks passed.\n');

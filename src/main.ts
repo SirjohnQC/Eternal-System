@@ -821,7 +821,20 @@ function enterUniverse(): void {
   gameCanvas.width = window.innerWidth;
   gameCanvas.height = window.innerHeight;
 
+  // init() below unconditionally resets gameState.civilizations, so anything
+  // that emerged during the Big Bang phase (the old engine, still ticking
+  // right up to this point) has to be captured before that call and restored
+  // after the handoff, the same way stars/nebulae/etc. are transferred below.
+  const civilizationsBeforeHandoff = gameState.civilizations;
+
   const newEngine = new BigBangEngine(gameCanvas);
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), any such civilisation would
+  // be permanently locked to its procedural culture even with a valid API
+  // key. This is the production "Enter Universe" path every player takes, so
+  // without this the Gemini upgrade could never fire at all.
+  newEngine.geminiService = _geminiService;
   if (gameState.stats && gameState.masterSeed) {
     newEngine.init(gameState.stats, gameState.masterSeed);
   }
@@ -834,6 +847,7 @@ function enterUniverse(): void {
   newEngine['phase'] = engine['phase'];
   newEngine['exploredAreas'] = engine['exploredAreas'];
   newEngine['settledSinceTick'] = engine['settledSinceTick'];
+  gameState.civilizations = civilizationsBeforeHandoff;
 
   engine = newEngine;
   wireEngineEvents(engine);
