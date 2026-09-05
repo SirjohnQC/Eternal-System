@@ -258,6 +258,67 @@ console.log('\n═══ Civilisations in the engine ═══');
         records.map(c => c.government).join(', '));
 }
 
+// Regression test for a Critical review finding: applyLoadedSave() calls
+// engine.init() BEFORE engine.loadState(), and init() unconditionally resets
+// gameState.civilizations = {}. Unlike leaders/factionFlags/playerSpecies,
+// civilizations was never added to EngineSnapshot/serialize()/loadState(), so
+// every civilisation that emerged mid-game (as opposed to at tick 0 via
+// init()'s own pre-seeding, which is re-derivable from the seed) was silently
+// discarded on load — nothing re-creates it, since ensureCivilization only
+// fires on the intelligent-phase TRANSITION, which a restored star already
+// made in a past session.
+console.log('\n═══ Civilisations survive save/load ═══');
+{
+  const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
+  const { gameState } = await import('../src/simulation/GameState');
+
+  gameState.playerPlanetName = 'Saveworld';
+  gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
+
+  const stats = { life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 };
+
+  const engineA = new BigBangEngine(makeCanvas());
+  engineA.onCivEvent = () => {}; engineA.onLifeEvent = () => {};
+  engineA.init(stats, 'saveload_seed');
+
+  (globalThis as any).eternalSpeed = 60;
+  for (let i = 0; i < 400_000 && (engineA as any).tick < 400_000; i++) engineA.update();
+
+  const beforeCount = Object.keys(gameState.civilizations).length;
+  check('at least one civilisation exists before saving (control — a test that',
+        beforeCount > 0, String(beforeCount));
+  // Deep-copy BEFORE serialize/reload disturbs anything, so this is an
+  // independent record of what should survive the round trip.
+  const before = JSON.parse(JSON.stringify(gameState.civilizations)) as
+    Record<string, { government: string; ideology: string; id: string }>;
+
+  const snap = engineA.serialize();
+
+  // Mirror the real load path in main.ts's applyLoadedSave(): a brand new
+  // engine, init() (which wipes gameState.civilizations, same as production),
+  // then loadState(snap).
+  const engineB = new BigBangEngine(makeCanvas());
+  engineB.onCivEvent = () => {}; engineB.onLifeEvent = () => {};
+  engineB.init(stats, 'saveload_seed');
+  check('loading into a fresh engine wipes civilisations before loadState runs (control)',
+        Object.keys(gameState.civilizations).length === 0 ||
+        Object.keys(gameState.civilizations).length <= beforeCount,
+        String(Object.keys(gameState.civilizations).length));
+  engineB.loadState(snap);
+
+  const after = gameState.civilizations;
+  const beforeIds = Object.keys(before);
+  check('every saved civilisation survives loadState with government/ideology/id intact',
+        beforeIds.length === Object.keys(after).length &&
+        beforeIds.every(starId => {
+          const b = before[starId];
+          const a = after[Number(starId)];
+          return a && a.government === b.government && a.ideology === b.ideology && a.id === b.id;
+        }),
+        `${beforeIds.filter(id => after[Number(id)]?.id === before[id]?.id).length}/${beforeIds.length} match`);
+}
+
 console.log(`\n═══ RESULT: ${passed} passed, ${failures.length} failed ═══`);
 if (failures.length) { for (const f of failures) console.log('  ✗ ' + f); process.exit(1); }
 console.log('All checks passed.\n');

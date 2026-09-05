@@ -380,8 +380,12 @@ function launchBigBang(): void {
 
   runtimeState.playerPlanetGrid = null; // reset on new game
   engine = new BigBangEngine(canvas);
-  engine.init(stats, seed);
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), that civilisation would be
+  // permanently locked to its procedural culture even with a valid API key.
   engine.geminiService = _geminiService;
+  engine.init(stats, seed);
 
   wireEngineEvents(engine);
   void attachPixiRenderer(engine, canvas);
@@ -3422,12 +3426,19 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
 
   engine?.stop();
   engine = new BigBangEngine(gameCanvas);
-  engine.init(save.gameState.stats!, save.gameState.masterSeed);
-  engine.loadState(save.engine);
 
   fallbackNarrator = new FallbackNarrator(save.gameState.masterSeed);
   _geminiService = geminiKey ? new GeminiService(geminiKey, save.gameState.masterSeed) : null;
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), that civilisation would be
+  // permanently locked to its procedural culture even with a valid API key.
+  // (Any such pre-seed record is moot anyway once loadState() below restores
+  // the actual saved civilisations, but the ordering must be correct
+  // regardless of that.)
   engine.geminiService = _geminiService;
+  engine.init(save.gameState.stats!, save.gameState.masterSeed);
+  engine.loadState(save.engine);
   const godName = save.gameState.godName;
 
   chatHandler = async (msg: string) => {

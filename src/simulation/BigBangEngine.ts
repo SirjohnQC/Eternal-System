@@ -339,6 +339,7 @@ export interface EngineSnapshot {
   cosmicSignals?: CosmicSignal[];
   playerSpecies?:   SpeciesGenome[];
   playerBiosphere?: PlanetBiosphere;
+  civilizations?: Record<number, Civilization>;
 }
 
 export interface Camera {
@@ -1981,10 +1982,22 @@ export class BigBangEngine {
     // Upgrade in the background. A failure leaves the procedural record standing.
     const gemini = this.geminiService;
     if (!gemini || gemini.offlineMode) return;
+    // `Civilization.id` is `civ_${starId}` — a pure function of starId alone,
+    // with no per-game nonce — while `gameState.civilizations` is a module-level
+    // singleton, not scoped to this engine instance. Comparing `.id` alone
+    // would only catch "this star died/was replaced within the SAME game";
+    // it would not catch "the player abandoned this game and started a new one
+    // whose star at the same id also became intelligent" before this promise
+    // resolves — that would let a stale response built from the OLD universe's
+    // genome and civName silently overwrite the NEW game's live record.
+    // `gameState.masterSeed` changes on every new game (launchBigBang /
+    // applyLoadedSave both reassign it before this could ever fire), so
+    // capturing it now and re-checking it in `.then()` closes that gap too.
+    const seedAtCall = gameState.masterSeed;
     void generateCulture(base, genome, star.civName, TECH_LEVELS[star.civLevel] ?? 'Primitive', gemini)
       .then(result => {
-        // The star may have died or been replaced while the call was in flight.
-        if (gameState.civilizations[star.id]?.id === base.id) {
+        if (gameState.masterSeed === seedAtCall &&
+            gameState.civilizations[star.id]?.id === base.id) {
           gameState.civilizations[star.id] = result;
           this.onCultureGenerated?.(star.id, result);
         }
@@ -4113,6 +4126,7 @@ export class BigBangEngine {
         physicalTraits: { ...s.physicalTraits }, habitat: { ...s.habitat },
       })),
       playerBiosphere: { ...gameState.playerBiosphere },
+      civilizations: gameState.civilizations,
     };
   }
 
@@ -4145,6 +4159,12 @@ export class BigBangEngine {
     if (snap.cosmicSignals) this.cosmicSignals = snap.cosmicSignals;
     if (snap.playerSpecies)   gameState.playerSpecies   = snap.playerSpecies;
     if (snap.playerBiosphere) gameState.playerBiosphere = snap.playerBiosphere;
+    // Without this, every civilisation that reached 'intelligent' mid-game was
+    // silently discarded on load: init() (called just before this) always
+    // resets gameState.civilizations to {}, and ensureCivilization only fires
+    // on the intelligent-phase TRANSITION — which, for a restored star, already
+    // happened in a past session and will never fire again.
+    if (snap.civilizations)  gameState.civilizations   = snap.civilizations;
     this.supernovaFlashes = [];
     this.revelationFlashes = [];
     this.planetTextureCache.clear();
