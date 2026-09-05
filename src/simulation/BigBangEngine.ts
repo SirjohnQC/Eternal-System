@@ -28,7 +28,7 @@ import {
   type LifeArchetype, type PlanetKind,
 } from './LifeSystem';
 import {
-  proceduralCulture, summariseGenome,
+  cultureMultiplier, proceduralCulture, summariseGenome,
   type Civilization, type GenomeSummary,
 } from './Civilization';
 import { generateCulture } from '../ai/CultureGenerator';
@@ -1152,6 +1152,10 @@ export class BigBangEngine {
     }
     bigger.habitability = undefined;  // the system's planet roster just changed
     if (smaller.civLevel > bigger.civLevel) bigger.civLevel = smaller.civLevel;
+    // Inheriting an intelligent biosphere by absorption must not leave the
+    // survivor without a culture — `smaller.id`'s record does not transfer,
+    // and `smaller` is marked dead below, so nothing else will ever call this.
+    if (bigger.biologyPhase === 'intelligent') this.ensureCivilization(bigger);
 
     // Conserve momentum
     const totalMass = bigger.mass + smaller.mass;
@@ -1495,6 +1499,11 @@ export class BigBangEngine {
       }
       if (star.isPlayerStar && this.prophetBoostActive) advanceRate *= 0.5;
 
+      // A curious people advances faster. Bounded, so no culture stalls a
+      // civilisation outright or races it to the end of the tech tree.
+      const civCulture = this.cultureFor(star);
+      if (civCulture) advanceRate /= cultureMultiplier(civCulture.values.curiosity, 1);
+
       if (star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
           star.civLevel < TECH_LEVELS.length - 1) {
         star.civLevel++;
@@ -1539,9 +1548,13 @@ export class BigBangEngine {
         } else {
           if (this.rng.chance(0.3) && this.isStarKnownToPlayer(star))
             this.onCivEvent?.(`${star.civName}: ${TECH_LEVELS[star.civLevel]}`);
-          if (star.civLevel === 1 && !star.religionName && this.rng.chance(0.65)) {
+          const relC = this.cultureFor(star);
+          const relChance = Math.min(0.95, 0.65
+            * (relC ? cultureMultiplier(relC.values.piety, 0.8) : 1));
+          if (star.civLevel === 1 && !star.religionName && this.rng.chance(relChance)) {
             star.religionName = this.generateReligionName();
-            star.religionDevotion = 0.1 + this.rng.nextFloat(0, 0.2);
+            star.religionDevotion = (0.1 + this.rng.nextFloat(0, 0.2))
+              * (relC ? cultureMultiplier(relC.values.piety, 0.6) : 1);
             if (this.isStarKnownToPlayer(star))
               this.onReligionEvent?.(`The ${star.religionName} has emerged in the ${star.civName} system.`);
           }
@@ -1550,10 +1563,14 @@ export class BigBangEngine {
         }
       }
 
-      // Wars — only spacefaring+ civs
-      if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0 &&
-          this.rng.chance(this.stats.hostility / 40)) {
-        this.launchFleet(star);
+      // Wars — only spacefaring+ civs. Culture decides how readily THIS people
+      // reaches for war; the universe stat decides the era's general violence.
+      if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0) {
+        const c = this.cultureFor(star);
+        const warChance = Math.min(0.95, (this.stats.hostility / 40)
+          * (c ? cultureMultiplier(c.values.militarism, 1) : 1)
+          * (c ? cultureMultiplier(c.values.xenophobia, 0.5) : 1));
+        if (this.rng.chance(warChance)) this.launchFleet(star);
       }
 
       // Cosmic radio — Space Age+ NPC civs emit signals periodically
@@ -2096,7 +2113,9 @@ export class BigBangEngine {
     if (targets.length === 0) return;
 
     const target = this.rng.pick(targets);
-    const hostile = this.rng.chance(this.stats.hostility / 25);
+    const contactC = this.cultureFor(attacker);
+    const hostile = this.rng.chance(Math.min(0.95, (this.stats.hostility / 25)
+      * (contactC ? cultureMultiplier(contactC.values.xenophobia, 1) : 1)));
 
     this.fleets.push({
       id: this.fleetIdCounter++,
@@ -3560,9 +3579,14 @@ export class BigBangEngine {
         war.resolved = true;
         this.clearSiegeFleets(war.id);
 
+        // A collective people defends better than it attacks.
+        const defC = this.cultureFor(defender);
+        const defBonus = defC ? cultureMultiplier(defC.values.collectivism, 0.4) : 1;
         const attackerWon = war.attackerStrength > war.defenderStrength
-          ? this.rng.chance(0.65 + this.stats.hostility / 200)
-          : this.rng.chance(0.35 - this.stats.hostility / 200);
+          ? this.rng.chance(Math.min(0.95, Math.max(0.05,
+              (0.65 + this.stats.hostility / 200) / defBonus)))
+          : this.rng.chance(Math.min(0.95, Math.max(0.05,
+              (0.35 - this.stats.hostility / 200) / defBonus)));
 
         if (attackerWon) {
           if (defender.civLevel > 0) defender.civLevel = Math.max(0, defender.civLevel - 1);
