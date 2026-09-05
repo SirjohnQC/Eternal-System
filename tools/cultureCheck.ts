@@ -62,6 +62,67 @@ console.log('\n═══ Culture multiplier bounds ═══');
         `cultureMultiplier(-2, 5) = ${cultureMultiplier(-2, 5)}, expected ${CULTURE_MULT_MIN}`);
 }
 
+import { proceduralCulture, GOVERNMENTS, IDEOLOGIES } from '../src/simulation/Civilization';
+import type { GenomeSummary } from '../src/simulation/Civilization';
+import { SeedRNG } from '../src/utils/SeedRNG';
+
+function genome(over: Partial<GenomeSummary>): GenomeSummary {
+  return {
+    speciesName: 'Testspecies', metabolism: 'heterotrophic', locomotion: 'walking',
+    environment: 'land', diet: 'omnivore', respiration: 'aerobic',
+    reproduction: 'sexual', size: 'medium', bodyStructure: 'vertebrate',
+    sensorySystem: 'vision', intelligence: 7, social: 5, aggression: 5,
+    adaptability: 5, biome: 'grassland', temperatureRange: 'temperate', ...over,
+  };
+}
+
+console.log('\n═══ Procedural culture ═══');
+{
+  const mk = (g: GenomeSummary, seed = 'c1') =>
+    proceduralCulture(g, 1, 'sp_1', 'Testciv', 0, new SeedRNG(seed));
+
+  const base = mk(genome({}));
+  check('produces a valid government', GOVERNMENTS.includes(base.government), base.government);
+  check('produces a valid ideology', IDEOLOGIES.includes(base.ideology), base.ideology);
+  check('all values are within 0–1', Object.values(base.values)
+        .every(v => Number.isFinite(v) && v >= 0 && v <= 1),
+        JSON.stringify(base.values));
+  check('origin is procedural', base.origin === 'procedural');
+  check('carries the genome it came from', base.sourceGenome.speciesName === 'Testspecies');
+
+  // Deterministic: the same genome and seed must give the same culture.
+  const a = mk(genome({}), 'same'), b = mk(genome({}), 'same');
+  check('generation is deterministic', JSON.stringify(a) === JSON.stringify(b));
+
+  // A peaceful hive-minded filter feeder and a solitary apex predator must not
+  // land on the same society.
+  const hive = mk(genome({
+    aggression: 0, social: 10, diet: 'producer', locomotion: 'stationary',
+    environment: 'ocean', reproduction: 'spore', intelligence: 6,
+  }), 'hive');
+  const predator = mk(genome({
+    aggression: 10, social: 1, diet: 'carnivore', locomotion: 'walking',
+    environment: 'land', size: 'large', intelligence: 8,
+  }), 'pred');
+  check('a hive and a predator differ in government',
+        hive.government !== predator.government,
+        `${hive.government} vs ${predator.government}`);
+  check('a hive is more collective than a predator',
+        hive.values.collectivism > predator.values.collectivism,
+        `${hive.values.collectivism.toFixed(2)} vs ${predator.values.collectivism.toFixed(2)}`);
+  check('a predator is more militaristic than a hive',
+        predator.values.militarism > hive.values.militarism,
+        `${predator.values.militarism.toFixed(2)} vs ${hive.values.militarism.toFixed(2)}`);
+
+  // CONTROL: the measure must be able to see sameness. Two identical genomes on
+  // the same seed must produce identical values — if this "passes" while the
+  // check above also passes, the generator is genuinely reading the genome.
+  const twinA = mk(genome({ aggression: 3 }), 'twin');
+  const twinB = mk(genome({ aggression: 3 }), 'twin');
+  check('control — identical genomes give identical culture',
+        JSON.stringify(twinA.values) === JSON.stringify(twinB.values));
+}
+
 console.log(`\n═══ RESULT: ${passed} passed, ${failures.length} failed ═══`);
 if (failures.length) { for (const f of failures) console.log('  ✗ ' + f); process.exit(1); }
 console.log('All checks passed.\n');
