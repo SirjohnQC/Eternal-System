@@ -1814,6 +1814,10 @@ html,body{
   height:4px;margin-top:3px;overflow:hidden;
 }
 .pi-bar{height:100%;border-radius:2px;transition:width 0.4s;}
+.pi-culture-bar-row{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--dim);padding:2px 0;}
+.pi-culture-bar-row span{width:74px;flex-shrink:0;}
+.pi-culture-track{flex:1;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;overflow:hidden;}
+.pi-culture-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,#7b5ea7,#c8a96e);}
 .pi-dna-row{
   display:flex;gap:8px;margin-bottom:8px;
 }
@@ -2639,6 +2643,17 @@ input[type="range"], select, label[for],
           <div class="pi-row"><span class="pi-row-label">Faith</span><span class="pi-row-value" id="pi-religion-name">—</span></div>
           <div class="pi-row"><span class="pi-row-label">Devotion</span><span class="pi-row-value" id="pi-devotion-pct">—</span></div>
           <div class="pi-bar-wrap"><div class="pi-bar" id="pi-devotion-bar" style="width:0%;background:linear-gradient(90deg,#c8a020,#ffe566);"></div></div>
+        </div>
+
+        <div class="pi-section" id="pi-culture-section" style="display:none">
+          <div class="pi-section-title">Culture</div>
+          <div class="pi-row"><span class="pi-row-label">Government</span><span class="pi-row-value" id="pi-gov">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Ideology</span><span class="pi-row-value" id="pi-ideology">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Known as</span><span class="pi-row-value" id="pi-epithet">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Build</span><span class="pi-row-value" id="pi-arch">—</span></div>
+          <div id="pi-culture-values"></div>
+          <div class="pi-note" id="pi-culture-desc"></div>
+          <div class="pi-note" id="pi-culture-origin" style="opacity:0.6"></div>
         </div>
 
         <div class="pi-section">

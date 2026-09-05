@@ -28,6 +28,26 @@ export class GeminiService {
   }
 
   /**
+   * Background generation the simulation asks for on its own (culture, and
+   * anything else not typed by the player).
+   *
+   * Deliberately NOT `sendPlayerMessage`: that carries a 3s debounce meant to
+   * stop a human spamming the chat box. Routing system work through it meant
+   * several civilisations emerging in the same synchronous pass had all but the
+   * first rejected within a millisecond of each other, so most cultures never
+   * reached Gemini at all — and each one that did consumed the player's own
+   * debounce window, delaying their next message. The per-minute quota and the
+   * offline check still apply; only the human-pacing debounce does not.
+   */
+  async generateSystemContent(prompt: string): Promise<string> {
+    if (!this.isOnline || this.callsThisMinute >= MAX_CALLS_PER_MINUTE) {
+      return Promise.reject('Gemini unavailable — using the procedural record.');
+    }
+    this.callsThisMinute++;
+    return this.callGemini(prompt);
+  }
+
+  /**
    * Player free-form chat — debounced, falls back to FallbackNarrator when offline.
    */
   async sendPlayerMessage(message: string, godSystemPrompt: string): Promise<string> {

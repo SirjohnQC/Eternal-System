@@ -16,6 +16,7 @@ import { drawFactionFlag } from './simulation/FactionFlag';
 import { shiftLeaderAttitude, type Leader } from './simulation/Leader';
 import { GeminiService } from './ai/GeminiService';
 import type { EvolutionEvent } from './simulation/EvolutionEngine';
+import type { Civilization } from './simulation/Civilization';
 import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
@@ -315,6 +316,10 @@ function launchBigBang(): void {
   // caches must go with them. Leaking state across games in one session is the
   // most repeated bug in this codebase — see ROADMAP M20b.
   clearSpeciesPalette();
+  // Civilisation culture is keyed by starId, same leak risk as above — a
+  // second game in one session must not inherit the previous universe's
+  // civilisations. (BigBangEngine.init() clears this too; belt and suspenders.)
+  gameState.civilizations = {};
   gameState.dnaFocusBranch = null;
   _pmSelected = null;
   _pmLayer = 'biome';
@@ -376,6 +381,11 @@ function launchBigBang(): void {
 
   runtimeState.playerPlanetGrid = null; // reset on new game
   engine = new BigBangEngine(canvas);
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), that civilisation would be
+  // permanently locked to its procedural culture even with a valid API key.
+  engine.geminiService = _geminiService;
   engine.init(stats, seed);
 
   wireEngineEvents(engine);
@@ -386,7 +396,11 @@ function launchBigBang(): void {
   setTimeout(() => {
     addChatMessage(fallbackNarrator!.generateGodGreeting(godName), 'god');
     if (!geminiKey) {
-      addChatMessage('[ Offline mode — procedural AI active. Add VITE_GEMINI_API_KEY for full Gemini integration. ]', 'system');
+      // Point at the Settings menu, not at the env var. `.env` is gitignored and
+      // is NOT distributed with the public repo, so telling a fresh clone to set
+      // VITE_GEMINI_API_KEY sends them to a file they do not have. The settings
+      // dialog writes the key to localStorage and works without touching the repo.
+      addChatMessage('[ Offline mode — procedural AI active. Add a Gemini API key in Settings (⚙) for full AI integration. ]', 'system');
     }
   }, 1800);
 }
@@ -797,6 +811,18 @@ function wireEngineEvents(eng: BigBangEngine): void {
       if (res) addChatMessage(res, 'god');
     }).catch(() => { /* silent */ });
   };
+
+  eng.onCultureGenerated = (starId) => {
+    const ps = engine?.getPlayerStar();
+    if (ps && ps.id === starId) { renderCultureSection(ps); return; }
+    // The panel is just as likely to be open on someone ELSE'''s world. Without
+    // this it kept showing the procedural culture, and only a close-and-reopen
+    // revealed the Gemini one.
+    if (_panelStarId === starId) {
+      const s = engine?.getStarById(starId);
+      if (s) renderCultureSection(s);
+    }
+  };
 }
 
 function enterUniverse(): void {
@@ -808,7 +834,20 @@ function enterUniverse(): void {
   gameCanvas.width = window.innerWidth;
   gameCanvas.height = window.innerHeight;
 
+  // init() below unconditionally resets gameState.civilizations, so anything
+  // that emerged during the Big Bang phase (the old engine, still ticking
+  // right up to this point) has to be captured before that call and restored
+  // after the handoff, the same way stars/nebulae/etc. are transferred below.
+  const civilizationsBeforeHandoff = gameState.civilizations;
+
   const newEngine = new BigBangEngine(gameCanvas);
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), any such civilisation would
+  // be permanently locked to its procedural culture even with a valid API
+  // key. This is the production "Enter Universe" path every player takes, so
+  // without this the Gemini upgrade could never fire at all.
+  newEngine.geminiService = _geminiService;
   if (gameState.stats && gameState.masterSeed) {
     newEngine.init(gameState.stats, gameState.masterSeed);
   }
@@ -821,6 +860,7 @@ function enterUniverse(): void {
   newEngine['phase'] = engine['phase'];
   newEngine['exploredAreas'] = engine['exploredAreas'];
   newEngine['settledSinceTick'] = engine['settledSinceTick'];
+  gameState.civilizations = civilizationsBeforeHandoff;
 
   engine = newEngine;
   wireEngineEvents(engine);
@@ -1203,7 +1243,12 @@ function formatPop(n: number): string {
   return Math.round(n / 1e3) + ' thousand';
 }
 
+// Which star the planet panel is currently showing. `onCultureGenerated` needs
+// it to know whether a late Gemini result is worth re-rendering for.
+let _panelStarId: number | null = null;
+
 function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
+  _panelStarId = star.id;
   const planet = star.planets[planetIndex] ?? star.planets[0];
   const isPlayer = star.isPlayerStar;
   const dna = isPlayer ? gameState.playerPlanetDNA : null;
@@ -1325,6 +1370,9 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
       relSection.style.display = 'none';
     }
   }
+
+  // Culture
+  renderCultureSection(star);
 
   // Resources
   const resContainer = document.getElementById('pi-resources');
@@ -1466,6 +1514,44 @@ function setText(id: string, val: string): void {
 function setStyle(id: string, prop: string, val: string): void {
   const el = document.getElementById(id) as HTMLElement | null;
   if (el) el.style.setProperty(prop, val);
+}
+
+/** Show the civilisation's culture, or hide the section if it has none. */
+function renderCultureSection(star: StarBody | null): void {
+  const sec = document.getElementById('pi-culture-section');
+  if (!sec) return;
+  const civ = star ? engine?.cultureFor(star) ?? null : null;
+  if (!civ) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+
+  setText('pi-gov', civ.government);
+  setText('pi-ideology', civ.ideology);
+  setText('pi-epithet', civ.epithet);
+  setText('pi-arch', `${civ.architecture.settlementForm}, ${civ.architecture.material}`);
+  setText('pi-culture-desc', civ.selfDescription);
+  setText('pi-culture-origin', civ.origin === 'llm'
+    ? 'Culture written by the AI God.'
+    : 'Culture derived from biology.');
+
+  const wrap = document.getElementById('pi-culture-values');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const rows: Array<[string, number]> = [
+    ['Militarism', civ.values.militarism],
+    ['Piety', civ.values.piety],
+    ['Curiosity', civ.values.curiosity],
+    ['Collectivism', civ.values.collectivism],
+    ['Xenophobia', civ.values.xenophobia],
+  ];
+  for (const [label, v] of rows) {
+    const row = document.createElement('div');
+    row.className = 'pi-culture-bar-row';
+    row.innerHTML = `<span></span><div class="pi-culture-track"><div class="pi-culture-fill"></div></div>`;
+    row.querySelector('span')!.textContent = label;
+    (row.querySelector('.pi-culture-fill') as HTMLElement).style.width =
+      `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+    wrap.appendChild(row);
+  }
 }
 
 function buildTerrainLegend(type: string, dna: typeof gameState.playerPlanetDNA): void {
@@ -2249,6 +2335,19 @@ let _codexFilter = 'all';
 let _codexSearch = '';
 let _codexActiveId: string | null = null;
 
+/**
+ * Escape text before it is concatenated into an innerHTML template.
+ *
+ * Codex record titles/subtitles can now carry LLM-generated text (a
+ * civilisation's `epithet`), so the list markup below is no longer safe to
+ * build with a bare template literal the way it always has been.
+ */
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' }[ch] ?? ch
+  ));
+}
+
 function addCodexEntry(title: string, category: CodexEntry['category'], body = ''): CodexEntry {
   const entry: CodexEntry = { id: uuid(), tick: gameState.tick, title, body, category };
   gameState.codexEntries.push(entry);
@@ -2322,8 +2421,8 @@ function renderCodexList(): void {
     const badge = CODEX_CAT_LABELS[r.category] ?? r.category;
     const dead = r.species?.isExtinct ? ' extinct' : '';
     return `<div class="codex-entry-item${r.id === _codexActiveId ? ' active' : ''}${dead}" data-id="${r.id}">
-      <div class="codex-entry-name">${r.title}</div>
-      <div class="codex-entry-age">${r.subtitle}</div>
+      <div class="codex-entry-name">${escapeHtml(r.title)}</div>
+      <div class="codex-entry-age">${escapeHtml(r.subtitle)}</div>
       <span class="codex-entry-cat-badge ${r.category}">${badge}</span>
     </div>`;
   }).join('');
@@ -2336,6 +2435,7 @@ function renderCodexList(): void {
       const rec = all.find(r => r.id === _codexActiveId);
       if (!rec) return;
       if (rec.species) renderSpeciesDetail(rec.species);
+      else if (rec.civ) renderCivDetail(rec.civ);
       else if (rec.entry) renderCodexDetail(rec.entry);
     });
   });
@@ -2347,6 +2447,7 @@ function renderCodexList(): void {
   if (toShow) {
     _codexActiveId = toShow.id;
     if (toShow.species) renderSpeciesDetail(toShow.species);
+    else if (toShow.civ) renderCivDetail(toShow.civ);
     else if (toShow.entry) renderCodexDetail(toShow.entry);
     listEl.querySelector(`[data-id="${toShow.id}"]`)?.classList.add('active');
   }
@@ -2358,10 +2459,10 @@ function renderCodexDetail(entry: CodexEntry): void {
   const age = (entry.tick * 10).toLocaleString();
   const cat = CODEX_CAT_LABELS[entry.category] ?? entry.category;
   const bodyHtml = entry.body
-    ? `<div class="codex-detail-body">${entry.body}</div>`
+    ? `<div class="codex-detail-body">${escapeHtml(entry.body)}</div>`
     : `<div class="codex-detail-pending">The chronicles are still being written…<br>The AI God will speak on this matter soon.</div>`;
   detailEl.innerHTML = `
-    <div class="codex-detail-title">${entry.title}</div>
+    <div class="codex-detail-title">${escapeHtml(entry.title)}</div>
     <div class="codex-detail-meta">${cat} · Year ${age}</div>
     ${bodyHtml}
   `;
@@ -3413,11 +3514,19 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
 
   engine?.stop();
   engine = new BigBangEngine(gameCanvas);
-  engine.init(save.gameState.stats!, save.gameState.masterSeed);
-  engine.loadState(save.engine);
 
   fallbackNarrator = new FallbackNarrator(save.gameState.masterSeed);
   _geminiService = geminiKey ? new GeminiService(geminiKey, save.gameState.masterSeed) : null;
+  // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
+  // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
+  // if geminiService were assigned after init(), that civilisation would be
+  // permanently locked to its procedural culture even with a valid API key.
+  // (Any such pre-seed record is moot anyway once loadState() below restores
+  // the actual saved civilisations, but the ordering must be correct
+  // regardless of that.)
+  engine.geminiService = _geminiService;
+  engine.init(save.gameState.stats!, save.gameState.masterSeed);
+  engine.loadState(save.engine);
   const godName = save.gameState.godName;
 
   chatHandler = async (msg: string) => {
@@ -3862,6 +3971,7 @@ window.addEventListener('DOMContentLoaded', () => {
     // Recreate gemini service with new key
     if (_geminiService) _geminiService.destroy?.();
     _geminiService = key ? new GeminiService(key, gameState.masterSeed) : null;
+    if (engine) engine.geminiService = _geminiService;
     closeSettings();
     // Notify in-game if active
     if (gameState.screen === 'game' || gameState.screen === 'bigbang') {
@@ -4565,6 +4675,8 @@ interface CodexRecord {
   species?: SpeciesGenome;
   /** Set for stored milestone entries. */
   entry?: CodexEntry;
+  /** Set for generated civilisation records. */
+  civ?: Civilization;
 }
 
 /** Is this lineage vegetation rather than an animal? */
@@ -4607,6 +4719,21 @@ function codexRecords(): CodexRecord[] {
         sp.isExtinct ? 'extinct' : 'living',
       ].join(' ').toLowerCase(),
       species: sp,
+    });
+  }
+
+  for (const civ of Object.values(gameState.civilizations)) {
+    out.push({
+      id: `civ_${civ.starId}`,
+      tick: civ.generatedAtTick,
+      title: `${civ.name} ${civ.epithet}`,
+      subtitle: `${civ.government} · ${civ.ideology}`,
+      category: 'civilisation',
+      haystack: [civ.name, civ.epithet, civ.government, civ.ideology,
+                 civ.architecture.style, civ.architecture.material,
+                 civ.architecture.settlementForm, civ.selfDescription,
+                 civ.foundingMyth].join(' ').toLowerCase(),
+      civ,
     });
   }
 
@@ -4668,6 +4795,90 @@ function renderSpeciesDetail(sp: SpeciesGenome): void {
   // the actual creature rather than an illustration of one.
   const port = document.getElementById('cx-portrait');
   if (port) port.appendChild(bakeCreatureSprite(sp, 8));
+}
+
+/**
+ * Detail page for one civilisation's culture.
+ *
+ * `selfDescription`, `foundingMyth`, `epithet` and the architecture strings can
+ * all be LLM output (`civ.origin === 'llm'`). The skeleton below is built with
+ * innerHTML because every string in it is one we wrote; every value that could
+ * have come from a model is then assigned with textContent, never concatenated
+ * into markup — see the project's HTML-injection rule.
+ */
+function renderCivDetail(civ: Civilization): void {
+  const detailEl = document.getElementById('codex-entry-detail');
+  if (!detailEl) return;
+
+  const row = (label: string, valueId: string) =>
+    `<div class="cx-row"><span>${label}</span><b id="${valueId}"></b></div>`;
+
+  detailEl.innerHTML = `
+    <div class="codex-detail-title" id="cx-civ-title"></div>
+    <div class="codex-detail-meta" id="cx-civ-meta"></div>
+    <div class="cx-sec">Governance</div>
+    ${row('Government', 'cx-civ-gov')}
+    ${row('Ideology', 'cx-civ-ideology')}
+    <div class="cx-sec">Values</div>
+    <div id="cx-civ-values"></div>
+    <div class="cx-sec">Architecture</div>
+    ${row('Style', 'cx-civ-style')}
+    ${row('Material', 'cx-civ-material')}
+    ${row('Settlement', 'cx-civ-settlement')}
+    <div class="cx-sec">Self-Description</div>
+    <div class="codex-detail-body" id="cx-civ-desc"></div>
+    <div class="cx-sec">Founding Myth</div>
+    <div class="codex-detail-body" id="cx-civ-myth"></div>
+    <div class="cx-sec">Origins</div>
+    ${row('Evolved from', 'cx-civ-species')}
+    ${row('First recorded', 'cx-civ-tick')}
+    <div class="pi-note" id="cx-civ-origin" style="opacity:0.6"></div>
+  `;
+
+  const set = (id: string, v: string) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+
+  // `civ.name` is always assigned by us (see Civilization.ts / CultureGenerator's
+  // `{...base, ...}` merge), but `civ.epithet` is not — a Gemini result can
+  // replace it. Both go through textContent regardless.
+  set('cx-civ-title', `${civ.name} ${civ.epithet}`);
+  set('cx-civ-meta', `Civilisation · ${civ.origin === 'llm' ? 'AI-written culture' : 'Procedurally derived culture'}`);
+  set('cx-civ-gov', civ.government);
+  set('cx-civ-ideology', civ.ideology);
+  set('cx-civ-style', civ.architecture.style);
+  set('cx-civ-material', civ.architecture.material);
+  set('cx-civ-settlement', civ.architecture.settlementForm);
+  set('cx-civ-desc', civ.selfDescription);
+  set('cx-civ-myth', civ.foundingMyth);
+  set('cx-civ-species', civ.sourceGenome.speciesName);
+  set('cx-civ-tick', `Year ${(civ.generatedAtTick * 10).toLocaleString()}`);
+  // A player must be able to tell a Gemini-written culture from a procedurally
+  // derived one at a glance, honestly — not just infer it from prose quality.
+  set('cx-civ-origin', civ.origin === 'llm'
+    ? 'This culture was written by the AI God, grounded in the species’ evolved biology.'
+    : 'This culture was derived procedurally from the species’ evolved biology — no AI God narration was involved.');
+
+  const wrap = document.getElementById('cx-civ-values');
+  if (wrap) {
+    const rows: Array<[string, number]> = [
+      ['Militarism', civ.values.militarism],
+      ['Piety', civ.values.piety],
+      ['Curiosity', civ.values.curiosity],
+      ['Collectivism', civ.values.collectivism],
+      ['Xenophobia', civ.values.xenophobia],
+    ];
+    for (const [label, v] of rows) {
+      const barRow = document.createElement('div');
+      barRow.className = 'pi-culture-bar-row';
+      barRow.innerHTML = `<span></span><div class="pi-culture-track"><div class="pi-culture-fill"></div></div>`;
+      barRow.querySelector('span')!.textContent = label;
+      (barRow.querySelector('.pi-culture-fill') as HTMLElement).style.width =
+        `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
+      wrap.appendChild(barRow);
+    }
+  }
 }
 
 

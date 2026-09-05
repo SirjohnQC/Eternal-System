@@ -27,6 +27,12 @@ import {
   STALL_TIME_PENALTY, PLAYER_STALL_TIME_CAP,
   type LifeArchetype, type PlanetKind,
 } from './LifeSystem';
+import {
+  cultureMultiplier, proceduralCulture, summariseGenome,
+  type Civilization, type GenomeSummary,
+} from './Civilization';
+import { generateCulture } from '../ai/CultureGenerator';
+import type { GeminiService } from '../ai/GeminiService';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -333,6 +339,7 @@ export interface EngineSnapshot {
   cosmicSignals?: CosmicSignal[];
   playerSpecies?:   SpeciesGenome[];
   playerBiosphere?: PlanetBiosphere;
+  civilizations?: Record<number, Civilization>;
 }
 
 export interface Camera {
@@ -557,6 +564,16 @@ export class BigBangEngine {
   onMutationEvent:   ((event: EvolutionEvent) => void) | null = null;
   onSpeciationEvent: ((event: EvolutionEvent) => void) | null = null;
   onExtinctionEvent: ((event: EvolutionEvent) => void) | null = null;
+  /** Fired when a Gemini-generated culture replaces the procedural one. */
+  onCultureGenerated: ((starId: number, civ: Civilization) => void) | null = null;
+
+  /**
+   * Set by the host (main.ts) whenever it (re)creates its GeminiService — e.g.
+   * on new game, on load, or when the player saves a new API key in Settings.
+   * Left null offline; `ensureCivilization` only ever reads it, so the tick
+   * loop never has to know whether it is set.
+   */
+  geminiService: GeminiService | null = null;
 
   // Dragging
   private isDragging = false;
@@ -725,6 +742,9 @@ export class BigBangEngine {
     gameState.leaders = [];
     gameState.leaderMemories = [];
     gameState.factionFlags = {};
+    // Culture is per-universe and keyed by starId, so stale entries would attach
+    // to whichever star happened to reuse the id (ROADMAP M20b).
+    gameState.civilizations = {};
     // The biosphere and species list were likewise never cleared, so a second
     // game in one session inherited the previous world's oxygen, biodiversity
     // and entire species roster.
@@ -845,6 +865,7 @@ export class BigBangEngine {
         // civilisations that exist from tick 0 had neither — which is why no
         // flags ever appeared in a fresh universe.
         this.spawnLeaderForStar(s);
+        this.ensureCivilization(s);
       }
     }
 
@@ -1131,6 +1152,10 @@ export class BigBangEngine {
     }
     bigger.habitability = undefined;  // the system's planet roster just changed
     if (smaller.civLevel > bigger.civLevel) bigger.civLevel = smaller.civLevel;
+    // Inheriting an intelligent biosphere by absorption must not leave the
+    // survivor without a culture — `smaller.id`'s record does not transfer,
+    // and `smaller` is marked dead below, so nothing else will ever call this.
+    if (bigger.biologyPhase === 'intelligent') this.ensureCivilization(bigger);
 
     // Conserve momentum
     const totalMass = bigger.mass + smaller.mass;
@@ -1215,6 +1240,7 @@ export class BigBangEngine {
       star.hasLife = false;
       star.civLevel = 0;
       star.biologyPhase = 'microbial';
+      this.invalidateCulture(star, 'catastrophe');
       star.bioPhaseProgress = 0;
       star.bioStalls = 0;
       star.formationStage = 'magma';
@@ -1250,6 +1276,7 @@ export class BigBangEngine {
 
     star.isDead = true;
     star.hasLife = false;
+    this.invalidateCulture(star, 'annihilation');
     this.seedNursery(star.x, star.y, this.rng.nextInt(2, 4));
     this.onCosmicEvent?.('supernova', star.civName);
     if (this.isStarKnownToPlayer(star)) {
@@ -1309,6 +1336,15 @@ export class BigBangEngine {
           `${best.civName}, and they begin again there.`);
       }
     }
+
+    // Rebuild the refuge's culture LAST, once `best.isPlayerStar` is settled
+    // above. `ensureCivilization` branches on it to choose between the player's
+    // real evolved genome and a stand-in NPC one, so running this any earlier
+    // gave a player who had just fled their homeworld a culture derived from a
+    // random NPC species. `best` was set to 'intelligent' further up, bypassing
+    // the normal ladder climb, so it carries either a stale record or none —
+    // neither belongs to the people who actually arrived.
+    this.invalidateCulture(best, 'the exodus');
     return true;
   }
 
@@ -1474,6 +1510,11 @@ export class BigBangEngine {
       }
       if (star.isPlayerStar && this.prophetBoostActive) advanceRate *= 0.5;
 
+      // A curious people advances faster. Bounded, so no culture stalls a
+      // civilisation outright or races it to the end of the tech tree.
+      const civCulture = this.cultureFor(star);
+      if (civCulture) advanceRate /= cultureMultiplier(civCulture.values.curiosity, 1);
+
       if (star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
           star.civLevel < TECH_LEVELS.length - 1) {
         star.civLevel++;
@@ -1518,9 +1559,13 @@ export class BigBangEngine {
         } else {
           if (this.rng.chance(0.3) && this.isStarKnownToPlayer(star))
             this.onCivEvent?.(`${star.civName}: ${TECH_LEVELS[star.civLevel]}`);
-          if (star.civLevel === 1 && !star.religionName && this.rng.chance(0.65)) {
+          const relC = this.cultureFor(star);
+          const relChance = Math.min(0.95, 0.65
+            * (relC ? cultureMultiplier(relC.values.piety, 0.8) : 1));
+          if (star.civLevel === 1 && !star.religionName && this.rng.chance(relChance)) {
             star.religionName = this.generateReligionName();
-            star.religionDevotion = 0.1 + this.rng.nextFloat(0, 0.2);
+            star.religionDevotion = (0.1 + this.rng.nextFloat(0, 0.2))
+              * (relC ? cultureMultiplier(relC.values.piety, 0.6) : 1);
             if (this.isStarKnownToPlayer(star))
               this.onReligionEvent?.(`The ${star.religionName} has emerged in the ${star.civName} system.`);
           }
@@ -1529,10 +1574,14 @@ export class BigBangEngine {
         }
       }
 
-      // Wars — only spacefaring+ civs
-      if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0 &&
-          this.rng.chance(this.stats.hostility / 40)) {
-        this.launchFleet(star);
+      // Wars — only spacefaring+ civs. Culture decides how readily THIS people
+      // reaches for war; the universe stat decides the era's general violence.
+      if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0) {
+        const c = this.cultureFor(star);
+        const warChance = Math.min(0.95, (this.stats.hostility / 40)
+          * (c ? cultureMultiplier(c.values.militarism, 1) : 1)
+          * (c ? cultureMultiplier(c.values.xenophobia, 0.5) : 1));
+        if (this.rng.chance(warChance)) this.launchFleet(star);
       }
 
       // Cosmic radio — Space Age+ NPC civs emit signals periodically
@@ -1855,8 +1904,21 @@ export class BigBangEngine {
     }
 
     if (nextPhase === 'intelligent') {
-      // Species emerges — transition to civilisation
+      // Species emerges — transition to civilisation.
+      //
+      // This branch fires both on a star's FIRST-EVER arrival at intelligence
+      // and on a star RE-reaching it after a regression (a mass extinction
+      // knocked biologyPhase back down via `regressPhases`, and it re-climbed).
+      // `invalidateCulture` no-ops when there is nothing to clear, so on a
+      // first-ever arrival no record exists yet and this is free; it only does
+      // real work — dropping a stale record so `ensureCivilization` rebuilds
+      // from the species as it is NOW — when one is already sitting there from
+      // before the collapse. That is precisely "re-reaching intelligence after
+      // a regression" and nothing else, so it cannot double the Gemini call
+      // that `ensureCivilization` makes on an ordinary first emergence.
       star.civLevel = 0;
+      this.invalidateCulture(star, 're-emergence');
+      this.ensureCivilization(star);
       if (!star.isPlayerStar) {
         // Auto-generate NPC DNA
         star.dna = this.generateNPCDNA();
@@ -1922,6 +1984,140 @@ export class BigBangEngine {
     }
   }
 
+  /** The culture of a star's civilisation, or null if it has none yet. */
+  cultureFor(star: StarBody): Civilization | null {
+    return gameState.civilizations[star.id] ?? null;
+  }
+
+  /**
+   * Give a star a culture if it does not have one.
+   *
+   * The procedural record is written SYNCHRONOUSLY and immediately, so there is
+   * never a window where an intelligent civilisation has no culture and no
+   * caller has to handle a missing record. The Gemini call, if any, replaces it
+   * later and never blocks the tick.
+   */
+  private ensureCivilization(star: StarBody): void {
+    if (gameState.civilizations[star.id]) return;
+
+    const species = star.isPlayerStar
+      ? gameState.playerSpecies.filter(s => !s.isExtinct)
+          .sort((a, b) => b.population - a.population)[0]
+      : undefined;
+    const genome = species
+      ? summariseGenome(species)
+      : this.genomeSummaryForNpc(star);
+
+    const rng = this.rng.fork(`culture_${star.id}`);
+    // A COPY, not the summary itself: `proceduralCulture` stores it as
+    // `sourceGenome` BY REFERENCE. `gameState.playerSpecies` is REASSIGNED on
+    // every evolution step, so a caller that re-derives and reuses a
+    // `GenomeSummary` must never be able to reach into an already-built
+    // `Civilization` and change what it recorded (ROADMAP M20b pattern).
+    const base = proceduralCulture(
+      { ...genome }, star.id, species?.id ?? `npc_${star.id}`,
+      star.civName, this.tick, rng);
+    gameState.civilizations[star.id] = base;
+
+    // Upgrade in the background. A failure leaves the procedural record standing.
+    const gemini = this.geminiService;
+    if (!gemini || gemini.offlineMode) return;
+    // Two guards, because neither is sufficient alone.
+    //
+    // `gameState.masterSeed` catches a different GAME: the player abandoned this
+    // universe and started another whose star at the same id also reached
+    // intelligence before this promise resolved.
+    //
+    // Object IDENTITY catches the same-seed case, which the seed check cannot
+    // see. `Civilization.id` is `civ_${starId}` — a pure function of starId with
+    // no per-generation nonce — so comparing ids would treat a throwaway record
+    // and the real one as interchangeable. That matters because `enterUniverse`
+    // and `applyLoadedSave` both re-run the deterministic tick-0 pre-seed on the
+    // SAME seed and then restore the real data a line later: a late response
+    // from the discarded pre-seed pass would pass a seed check and an id check
+    // both, and silently overwrite the record just restored from the save.
+    // Comparing against `base` itself fails closed — any replacement, even an
+    // identical-looking one, is a different object.
+    const seedAtCall = gameState.masterSeed;
+    void generateCulture(base, genome, star.civName, TECH_LEVELS[star.civLevel] ?? 'Primitive', gemini)
+      .then(result => {
+        if (gameState.masterSeed === seedAtCall &&
+            gameState.civilizations[star.id] === base) {
+          gameState.civilizations[star.id] = result;
+          this.onCultureGenerated?.(star.id, result);
+        }
+      });
+  }
+
+  /**
+   * Drop a civilisation's culture so it is rebuilt from what the species is NOW.
+   *
+   * Called only on the four upheaval events named in the spec. The list is
+   * closed on purpose: every entry costs a Gemini call, and a rule like "on any
+   * civLevel change" would fire constantly.
+   */
+  private invalidateCulture(star: StarBody, reason: string): void {
+    // Clearing and rebuilding are INDEPENDENT. Gating the rebuild on there
+    // having been something to clear is what left the exodus refuge — a star
+    // that is newly intelligent and so has no prior record — permanently
+    // cultureless, the player's own world included.
+    if (gameState.civilizations[star.id]) {
+      delete gameState.civilizations[star.id];
+      if (this.isStarKnownToPlayer(star)) {
+        this.onCivEvent?.(`${star.civName} is remade in the wake of ${reason}.`);
+      }
+    }
+
+    // Rebuild straight away, from what the species is NOW.
+    //
+    // Dropping the record without rebuilding it would be a regression, not a
+    // feature: `ensureCivilization` is only reachable from `init`, a merger and
+    // the climb to intelligence, and a war-defeated civilisation stays
+    // `intelligent` — so it would never pass through any of them again and its
+    // culture would be gone for the rest of the game. That would blank the
+    // Culture panel and its Codex record, and silently drop the culture
+    // modifiers on war, contact, religion and tech. It would also break the
+    // invariant `ensureCivilization` documents: an intelligent civilisation
+    // always has a record, so no caller has to handle a missing one.
+    //
+    // A star that is no longer intelligent is the exception and gets nothing: a
+    // sterilised world reforming from magma, or one annihilated outright, has
+    // no people to have a culture. Those callers invalidate AFTER demoting the
+    // phase so this guard sees the new state.
+    if (!star.isDead && star.biologyPhase === 'intelligent') {
+      this.ensureCivilization(star);
+    }
+  }
+
+  /**
+   * A stand-in genome for an NPC world.
+   *
+   * Only the player's world runs the full evolution engine; NPC biospheres are
+   * summarised by their archetype and tech tier rather than a real species list.
+   */
+  private genomeSummaryForNpc(star: StarBody): GenomeSummary {
+    const rng = this.rng.fork(`npcgenome_${star.id}`);
+    const env = rng.pick(['land', 'ocean', 'coastal', 'deep_sea', 'aerial']);
+    return {
+      speciesName: star.civName,
+      metabolism: rng.pick(['heterotrophic', 'photosynthetic', 'chemosynthetic']),
+      locomotion: rng.pick(['walking', 'swimming', 'crawling', 'flying', 'stationary']),
+      environment: env,
+      diet: rng.pick(['omnivore', 'carnivore', 'herbivore', 'producer']),
+      respiration: rng.pick(['aerobic', 'anaerobic', 'mixed']),
+      reproduction: rng.pick(['sexual', 'asexual', 'spore']),
+      size: rng.pick(['small', 'medium', 'large']),
+      bodyStructure: rng.pick(['vertebrate', 'exoskeletal', 'colonial', 'segmented']),
+      sensorySystem: rng.pick(['vision', 'echolocation', 'chemoreception']),
+      intelligence: rng.nextInt(6, 10),
+      social: rng.nextInt(1, 10),
+      aggression: rng.nextInt(0, 10),
+      adaptability: rng.nextInt(2, 9),
+      biome: env === 'ocean' || env === 'deep_sea' ? 'open_ocean' : 'grassland',
+      temperatureRange: 'temperate',
+    };
+  }
+
   private fireLeaderMessage(star: StarBody, eventContext: string): void {
     const leader = gameState.leaders.find(l => l.starId === star.id);
     if (!leader) return;
@@ -1985,7 +2181,9 @@ export class BigBangEngine {
     if (targets.length === 0) return;
 
     const target = this.rng.pick(targets);
-    const hostile = this.rng.chance(this.stats.hostility / 25);
+    const contactC = this.cultureFor(attacker);
+    const hostile = this.rng.chance(Math.min(0.95, (this.stats.hostility / 25)
+      * (contactC ? cultureMultiplier(contactC.values.xenophobia, 1) : 1)));
 
     this.fleets.push({
       id: this.fleetIdCounter++,
@@ -3449,12 +3647,20 @@ export class BigBangEngine {
         war.resolved = true;
         this.clearSiegeFleets(war.id);
 
+        // A collective people defends better than it attacks.
+        const defC = this.cultureFor(defender);
+        const defBonus = defC ? cultureMultiplier(defC.values.collectivism, 0.4) : 1;
         const attackerWon = war.attackerStrength > war.defenderStrength
-          ? this.rng.chance(0.65 + this.stats.hostility / 200)
-          : this.rng.chance(0.35 - this.stats.hostility / 200);
+          ? this.rng.chance(Math.min(0.95, Math.max(0.05,
+              (0.65 + this.stats.hostility / 200) / defBonus)))
+          : this.rng.chance(Math.min(0.95, Math.max(0.05,
+              (0.35 - this.stats.hostility / 200) / defBonus)));
 
         if (attackerWon) {
-          if (defender.civLevel > 0) defender.civLevel = Math.max(0, defender.civLevel - 1);
+          if (defender.civLevel > 0) {
+            defender.civLevel = Math.max(0, defender.civLevel - 1);
+            this.invalidateCulture(defender, 'defeat');
+          }
           if (war.attackerStrength > 0.75)
             attacker.civLevel = Math.min(TECH_LEVELS.length - 1, attacker.civLevel + 1);
         } else {
@@ -4015,6 +4221,7 @@ export class BigBangEngine {
         physicalTraits: { ...s.physicalTraits }, habitat: { ...s.habitat },
       })),
       playerBiosphere: { ...gameState.playerBiosphere },
+      civilizations: gameState.civilizations,
     };
   }
 
@@ -4047,6 +4254,20 @@ export class BigBangEngine {
     if (snap.cosmicSignals) this.cosmicSignals = snap.cosmicSignals;
     if (snap.playerSpecies)   gameState.playerSpecies   = snap.playerSpecies;
     if (snap.playerBiosphere) gameState.playerBiosphere = snap.playerBiosphere;
+    // Without this, every civilisation that reached 'intelligent' mid-game was
+    // silently discarded on load: init() (called just before this) always
+    // resets gameState.civilizations to {}, and ensureCivilization only fires
+    // on the intelligent-phase TRANSITION — which, for a restored star, already
+    // happened in a past session and will never fire again.
+    if (snap.civilizations)  gameState.civilizations   = snap.civilizations;
+    // A save written before this field existed restores none, and the
+    // transition above will never fire again for those stars — so without this
+    // backfill every civilisation in an old save stays cultureless for good.
+    // `ensureCivilization` no-ops where a record is already present, so this is
+    // idempotent and costs nothing on a current save.
+    for (const s of this.stars) {
+      if (!s.isDead && s.biologyPhase === 'intelligent') this.ensureCivilization(s);
+    }
     this.supernovaFlashes = [];
     this.revelationFlashes = [];
     this.planetTextureCache.clear();
