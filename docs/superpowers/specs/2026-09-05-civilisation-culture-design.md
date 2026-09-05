@@ -4,8 +4,8 @@
 **Milestone:** M23 (first of six subsystems in `CIVILIZATION_SYSTEM.md`)
 **Status:** approved in chat, awaiting spec review
 
-> This project is not a git repository, so this spec is written to disk but not
-> committed. Nothing else in the workflow depends on the commit.
+> The project became a git repository on 2026-09-05
+> (`github.com/SirjohnQC/Eternal-System`, public, branch `main`).
 
 ---
 

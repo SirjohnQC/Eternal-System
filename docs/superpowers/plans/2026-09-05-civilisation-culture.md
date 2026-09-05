@@ -14,7 +14,11 @@
 
 - **No test framework.** This project has no jest/vitest. "Write the failing test" means adding an assertion to a `tools/*.ts` harness that uses the existing `check(name, ok, detail)` pattern and exits non-zero on failure. Build and run with:
   `node_modules/.bin/esbuild tools/<name>.ts --bundle --platform=node --format=esm --outfile=$TMP/<name>.mjs && node $TMP/<name>.mjs`
-- **No git repository.** `git rev-parse` fails in this project. Every task ends by running the verification suite instead of committing. Do not attempt `git add`/`git commit`.
+- **Git.** The project became a git repository on 2026-09-05
+  (`github.com/SirjohnQC/Eternal-System`, branch `main`). Each task ends with a
+  commit as well as a suite run. `.env` holds a real Gemini API key and is
+  gitignored — never stage it, and never paste a key into a tracked file. The
+  remote is **public**.
 - **Node-only scripts live in `tools/`, never `src/`.** `npm run build` runs `tsc` over `src`, so a Node script there breaks the production build.
 - **Determinism.** `smokeTest` asserts "same seed → identical universe". All procedural generation must draw from an injected `SeedRNG`, never `Math.random()`.
 - **Clear per-universe state on a new game.** State leaking between games in one session is the most repeated bug in this codebase (ROADMAP M20b).
@@ -213,12 +217,16 @@ node_modules/.bin/esbuild tools/cultureCheck.ts --bundle --platform=node \
 ```
 Expected: `RESULT: 4 passed, 0 failed`.
 
-- [ ] **Step 5: Typecheck and confirm nothing regressed**
+- [ ] **Step 5: Typecheck, confirm nothing regressed, and commit**
 
 ```bash
 npx tsc --noEmit && npm run build
+git add src/simulation/Civilization.ts tools/cultureCheck.ts
+git commit -m "feat(culture): Civilization types and the bounded culture multiplier
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
-Expected: clean, build succeeds.
+Expected: clean, build succeeds, commit created.
 
 ---
 
@@ -488,10 +496,14 @@ If "a hive and a predator differ in government" fails, the thresholds in
 `governmentFor` need adjusting — print both value sets and pick thresholds that
 separate them. Do not weaken the assertion.
 
-- [ ] **Step 5: Typecheck**
+- [ ] **Step 5: Typecheck and commit**
 
 ```bash
 npx tsc --noEmit && npm run build
+git add src/simulation/Civilization.ts tools/cultureCheck.ts
+git commit -m "feat(culture): derive culture from an evolved genome
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -749,10 +761,14 @@ export async function generateCulture(
 
 Expected: `RESULT: 20 passed, 0 failed`.
 
-- [ ] **Step 5: Typecheck**
+- [ ] **Step 5: Typecheck and commit**
 
 ```bash
 npx tsc --noEmit && npm run build
+git add src/ai/CultureGenerator.ts tools/cultureCheck.ts
+git commit -m "feat(culture): Gemini generation with all-or-nothing validation
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
 ---
