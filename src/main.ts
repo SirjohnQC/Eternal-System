@@ -2447,10 +2447,10 @@ function renderCodexDetail(entry: CodexEntry): void {
   const age = (entry.tick * 10).toLocaleString();
   const cat = CODEX_CAT_LABELS[entry.category] ?? entry.category;
   const bodyHtml = entry.body
-    ? `<div class="codex-detail-body">${entry.body}</div>`
+    ? `<div class="codex-detail-body">${escapeHtml(entry.body)}</div>`
     : `<div class="codex-detail-pending">The chronicles are still being written…<br>The AI God will speak on this matter soon.</div>`;
   detailEl.innerHTML = `
-    <div class="codex-detail-title">${entry.title}</div>
+    <div class="codex-detail-title">${escapeHtml(entry.title)}</div>
     <div class="codex-detail-meta">${cat} · Year ${age}</div>
     ${bodyHtml}
   `;
