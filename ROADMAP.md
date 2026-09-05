@@ -1492,6 +1492,74 @@ belonging to nothing in the simulation.
 
 ---
 
+## MILESTONE 23: Civilisation Culture from Evolved DNA ✅
+Built 2026-09-05, from `CIVILIZATION_SYSTEM.md`. A civilisation now has a
+**culture derived from the genome its species actually evolved**, and that
+culture feeds back into the simulation rather than sitting in a panel as
+flavour text.
+
+`src/simulation/Civilization.ts` turns a `GenomeSummary` into five culture
+values — militarism, piety, curiosity, collectivism, xenophobia — plus a
+government, an ideology and an architecture. `src/ai/CultureGenerator.ts` asks
+Gemini for a richer record on top of that; the procedural one is written
+synchronously first, so there is never a window where an intelligent
+civilisation has no culture, and the LLM result replaces it later without ever
+blocking a tick.
+
+- [x] `Civilization` record, `GenomeSummary`, government/ideology/architecture
+- [x] Procedural culture from the genome, always available offline
+- [x] Gemini generation with all-or-nothing schema validation
+- [x] Storage on `gameState.civilizations`, cleared on new game, in the save
+      snapshot
+- [x] Five simulation insertion points: war, contact, religion, tech, defence
+- [x] Culture in the planet panel and the Codex
+- [x] Regeneration on upheaval — defeat, catastrophe, exodus, re-emergence
+
+**The safety boundary.** Culture multiplies simulation probabilities, so an
+unbounded value could hand a civilisation a certainty. `cultureMultiplier`
+clamps to `[0.4, 2.2]` and every call site wraps its own ceiling. Swept
+exhaustively across the input range: no formula reaches 0 or 1.
+
+**Validation is all-or-nothing.** A partially valid Gemini response is
+discarded rather than merged, because a half-applied culture is harder to
+diagnose than none. `num01` rejects `null`, `true`, `[]` and `""` — an earlier
+`Number()` coercion let all four through as 0, which was caught by testing the
+malformed-input control rather than by reading the code.
+
+**Regeneration rebuilds, it does not just clear.** The first implementation
+deleted the record on upheaval and left it deleted. Because
+`ensureCivilization` is only reachable from `init()`, a merger and the climb to
+intelligence — and a war-defeated star stays `intelligent` — nothing would ever
+have rebuilt it, so any civilisation that lost a war would have lost its
+culture permanently, blanking its panel and dropping its simulation modifiers.
+`invalidateCulture` now rebuilds, guarded on the star still being intelligent
+and alive, so a world reforming from magma correctly keeps none. Verified by
+falsification: with the rebuild removed the three rebuild assertions fail and
+the control still passes.
+
+**Untrusted text.** Culture prose is LLM output rendered into the DOM. It goes
+in via `textContent` or `escapeHtml`, never raw interpolation. Fixing this
+surfaced a pre-existing hole on the same path: `renderCodexDetail` interpolated
+`entry.body` — raw `gemini-2.5-flash` narration — straight into `innerHTML`.
+Fixed alongside.
+
+**Verification:** `tools/cultureCheck.ts`, 41 assertions. Distinct genomes
+produce distinct cultures (with a control proving the comparison detects
+sameness), offline generation is deterministic for a seed, malformed responses
+are rejected, and the multiplier bounds are swept rather than spot-checked.
+
+### Open, and not fixed here
+`tools/playerProgressCheck.ts` **fails**: across 12 seeds, only 3 see a passive
+player's world advance past microbial. Measured at three commits to place it —
+2/12 before this milestone, 1/12 mid-milestone, 3/12 after — so it is a
+pre-existing balance problem, not an M23 regression, and this milestone leaves
+it marginally better than it found it. It is worse than the ~5/10 recorded at
+M22. Fixing it means retuning the biology ladder, which would rewrite M22's
+measured claims, so it belongs to its own milestone and is deliberately not
+touched here.
+
+---
+
 ## MILESTONE 24: Faith Cards for Universe Generation (Planned)
 Replace the D20 rolling ritual that generates a universe with a **faith card
 draw**. Raised 2026-09-05: the dice read as a tabletop mechanic bolted onto a
