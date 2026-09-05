@@ -47,15 +47,16 @@ Ordered by what unblocks the most:
    galaxies clustering stars together. Recoverable further by loosening galaxy
    radius, at the price of the clumping becoming illegible. See the table in
    M22b for the measured trade.
-3. **Reconcile the evolution phase count** (M21). `EVOLUTION_SYSTEM.md` specifies 7
+3. **Faith cards** (M24) — queued behind the pixel-art pass it depends on.
+4. **Reconcile the evolution phase count** (M21). `EVOLUTION_SYSTEM.md` specifies 7
    phases; `BIO_PHASE_SEQUENCE` has 5. This touches `LifeSystem.BASE_FILTER`,
    `BIO_PHASE_TICKS`, and every phase-indexed piece of UI. It is the prerequisite
    for the LLM-driven civilisation work, so do it before that.
-4. **LLM-driven culture** (M21, `CIVILIZATION_SYSTEM.md`) — generate government,
+5. **LLM-driven culture** (M21, `CIVILIZATION_SYSTEM.md`) — generate government,
    ideology and mythology from the species' actual evolved DNA. Now viable because
    species genuinely differ; it would have been meaningless before M20c.
-5. **M20 leftovers** — subterranean data layer; BiosphereRenderer compositing.
-6. **M8b performance** — spatial index for the O(n²) gravity loop, texture-cache
+6. **M20 leftovers** — subterranean data layer; BiosphereRenderer compositing.
+7. **M8b performance** — spatial index for the O(n²) gravity loop, texture-cache
    eviction, frame-budget enforcement. Not yet a real problem: the sim runs at
    ~0.14 ms/tick and the diorama at 0.37 ms/frame.
 
@@ -1488,6 +1489,32 @@ low-habitability moons were left alone.
 
 The diorama previously drew ONE hard-coded grey disc, identical on every world,
 belonging to nothing in the simulation.
+
+---
+
+## MILESTONE 24: Faith Cards for Universe Generation (Planned)
+Replace the D20 rolling ritual that generates a universe with a **faith card
+draw**. Raised 2026-09-05: the dice read as a tabletop mechanic bolted onto a
+game whose whole visual language is pixel art and divinity, and cards suit that
+far better.
+
+**Gated on pixel art.** The value here is almost entirely visual — a card needs
+to be an object worth looking at. There is no point rebuilding the mechanic
+first and illustrating it later, so this waits until the art pass. See
+`pixel-art-generation` in project memory for the approved tooling.
+
+- [ ] Card art for each universe-DNA option (one card per choice, not per stat)
+- [ ] Replace the `screen-rolling` D20 flow with a draw-and-choose interaction
+- [ ] Keep the underlying generation deterministic — the card drawn must map to
+      the same seeded outcome the dice produced, so `smokeTest`'s
+      "same seed → identical universe" assertion still holds
+- [ ] Preserve the `?dev=1` shortcut that skips the ritual entirely
+
+**Today:** `#screen-rolling` in `index.html` runs a D20 animation
+(`SeedRNG.d20()`), and `launchBigBang()` consumes the result. The stats it sets
+— life, evolution, hostility, entropy, divine — are what every later system
+reads, so the card layer replaces the *presentation* of that choice, not the
+data behind it.
 
 ---
 

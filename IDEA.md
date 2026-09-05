@@ -40,4 +40,6 @@ Keep adding new ideas at the bottom; move them into the roadmap once built.
 
 ## New ideas (not yet built)
 
--When the pixel art asset will be introduce, we might want to switch the rolling dice for universe generation to faith card system instead. I think it would fit better with the game style
+- [ ] When the pixel art assets are introduced, switch the rolling dice for
+      universe generation to a **faith card system** instead — it fits the game
+      style better. → tracked as **M24** in `ROADMAP.md`, gated on the art pass.
