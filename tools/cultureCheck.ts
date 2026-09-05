@@ -441,12 +441,31 @@ console.log('\n═══ Culture regenerates on upheaval ═══');
   if (star) {
     const before = gameState.civilizations[star.id];
     (engine as any).invalidateCulture(star, 'test');
-    check('invalidating clears the record', !gameState.civilizations[star.id]);
-    (engine as any).ensureCivilization(star);
     const after = gameState.civilizations[star.id];
-    check('a fresh record is generated', after != null && after.id === before.id);
-    check('the new record is valid',
+
+    // The defect this guards: invalidating without rebuilding left a
+    // war-defeated civilisation with NO culture for the rest of the game.
+    // `ensureCivilization` is only reachable from init, a merger and the climb
+    // to intelligence, and a defeated star stays intelligent — so nothing would
+    // ever have rebuilt it.
+    check('an intelligent civilisation is rebuilt, not left cultureless',
+          after != null);
+    check('the rebuilt record is valid',
           after != null && GOVERNMENTS.includes(after.government));
+    check('the rebuilt record still belongs to this star',
+          after != null && after.id === before.id);
+
+    // Control. Proves the assertion above is actually measuring the rebuild and
+    // not just observing a record that was never removed: on a world that is no
+    // longer intelligent the SAME call must leave nothing behind. If this fails
+    // while the checks above pass, the guard inside `invalidateCulture` is
+    // missing; if it passes while they fail, the guard is inverted.
+    const phase = star.biologyPhase;
+    star.biologyPhase = 'microbial';
+    (engine as any).invalidateCulture(star, 'control');
+    check('a world that is no longer intelligent is left with no culture',
+          !gameState.civilizations[star.id]);
+    star.biologyPhase = phase;
   }
 }
 

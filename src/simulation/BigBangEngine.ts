@@ -1239,8 +1239,8 @@ export class BigBangEngine {
     if (star.isPlayerStar && !escaped) {
       star.hasLife = false;
       star.civLevel = 0;
-      this.invalidateCulture(star, 'catastrophe');
       star.biologyPhase = 'microbial';
+      this.invalidateCulture(star, 'catastrophe');
       star.bioPhaseProgress = 0;
       star.bioStalls = 0;
       star.formationStage = 'magma';
@@ -1276,6 +1276,7 @@ export class BigBangEngine {
 
     star.isDead = true;
     star.hasLife = false;
+    this.invalidateCulture(star, 'annihilation');
     this.seedNursery(star.x, star.y, this.rng.nextInt(2, 4));
     this.onCosmicEvent?.('supernova', star.civName);
     if (this.isStarKnownToPlayer(star)) {
@@ -1324,10 +1325,9 @@ export class BigBangEngine {
     // `best` is set to biologyPhase 'intelligent' directly above, bypassing the
     // normal ladder climb, so it may still be carrying whatever culture record
     // it had before (someone else's, or none) — never the arriving people's.
-    // Clear it so `cultureFor(best)` reports "no culture yet" rather than a
-    // stale one. Same accepted gap as a war-defeated civilisation (site 1):
-    // nothing here re-triggers `ensureCivilization`, so the record stays empty
-    // until this star next passes through it (e.g. a future merger).
+    // Clear it so the refuge does not wear a stale culture, and let
+    // `invalidateCulture` rebuild one for the people who actually arrived —
+    // `best` was set to `intelligent` directly above, so it qualifies.
     this.invalidateCulture(best, 'the exodus');
 
     if (star.isPlayerStar) {
@@ -1915,8 +1915,8 @@ export class BigBangEngine {
       // before the collapse. That is precisely "re-reaching intelligence after
       // a regression" and nothing else, so it cannot double the Gemini call
       // that `ensureCivilization` makes on an ordinary first emergence.
-      this.invalidateCulture(star, 're-emergence');
       star.civLevel = 0;
+      this.invalidateCulture(star, 're-emergence');
       this.ensureCivilization(star);
       if (!star.isPlayerStar) {
         // Auto-generate NPC DNA
@@ -2055,6 +2055,26 @@ export class BigBangEngine {
     delete gameState.civilizations[star.id];
     if (this.isStarKnownToPlayer(star)) {
       this.onCivEvent?.(`${star.civName} is remade in the wake of ${reason}.`);
+    }
+
+    // Rebuild straight away, from what the species is NOW.
+    //
+    // Dropping the record without rebuilding it would be a regression, not a
+    // feature: `ensureCivilization` is only reachable from `init`, a merger and
+    // the climb to intelligence, and a war-defeated civilisation stays
+    // `intelligent` — so it would never pass through any of them again and its
+    // culture would be gone for the rest of the game. That would blank the
+    // Culture panel and its Codex record, and silently drop the culture
+    // modifiers on war, contact, religion and tech. It would also break the
+    // invariant `ensureCivilization` documents: an intelligent civilisation
+    // always has a record, so no caller has to handle a missing one.
+    //
+    // A star that is no longer intelligent is the exception and gets nothing: a
+    // sterilised world reforming from magma, or one annihilated outright, has
+    // no people to have a culture. Those callers invalidate AFTER demoting the
+    // phase so this guard sees the new state.
+    if (!star.isDead && star.biologyPhase === 'intelligent') {
+      this.ensureCivilization(star);
     }
   }
 
