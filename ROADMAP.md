@@ -1543,7 +1543,21 @@ surfaced a pre-existing hole on the same path: `renderCodexDetail` interpolated
 `entry.body` — raw `gemini-2.5-flash` narration — straight into `innerHTML`.
 Fixed alongside.
 
-**Verification:** `tools/cultureCheck.ts`, 41 assertions. Distinct genomes
+**The whole-branch review found five more, and they were worth finding.** The
+worst was silent: the guard that stops a late Gemini response landing in the
+wrong game compared `Civilization.id`, which is `civ_${starId}` with no
+per-generation nonce — and both `enterUniverse()` and `applyLoadedSave()`
+re-run the tick-0 pre-seed on the same seed before restoring real data, so a
+response from that discarded pass could overwrite a just-loaded save. It now
+compares object identity. The regeneration fix above also turned out to be
+gated on a record already existing, so it never fired for an exodus refuge —
+a newly intelligent star has none — leaving the arriving people, the player
+included, permanently cultureless. And culture generation was calling the
+player-chat entrypoint, inheriting a 3s anti-spam debounce: with a live key,
+civilisations emerging in the same pass had all but the first rejected, so
+most cultures never reached Gemini at all. Each has a test now.
+
+**Verification:** `tools/cultureCheck.ts`, 42 assertions. Distinct genomes
 produce distinct cultures (with a control proving the comparison detects
 sameness), offline generation is deterministic for a seed, malformed responses
 are rejected, and the multiplier bounds are swept rather than spot-checked.
