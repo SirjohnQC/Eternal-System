@@ -386,7 +386,11 @@ function launchBigBang(): void {
   setTimeout(() => {
     addChatMessage(fallbackNarrator!.generateGodGreeting(godName), 'god');
     if (!geminiKey) {
-      addChatMessage('[ Offline mode — procedural AI active. Add VITE_GEMINI_API_KEY for full Gemini integration. ]', 'system');
+      // Point at the Settings menu, not at the env var. `.env` is gitignored and
+      // is NOT distributed with the public repo, so telling a fresh clone to set
+      // VITE_GEMINI_API_KEY sends them to a file they do not have. The settings
+      // dialog writes the key to localStorage and works without touching the repo.
+      addChatMessage('[ Offline mode — procedural AI active. Add a Gemini API key in Settings (⚙) for full AI integration. ]', 'system');
     }
   }, 1800);
 }
