@@ -1239,6 +1239,7 @@ export class BigBangEngine {
     if (star.isPlayerStar && !escaped) {
       star.hasLife = false;
       star.civLevel = 0;
+      this.invalidateCulture(star, 'catastrophe');
       star.biologyPhase = 'microbial';
       star.bioPhaseProgress = 0;
       star.bioStalls = 0;
@@ -1319,6 +1320,15 @@ export class BigBangEngine {
     const landing = best.planets.find(p => p.type === 'ocean' || p.type === 'rocky')
                  ?? best.planets[0];
     if (landing) { landing.hasLife = true; landing.biosphere = 0.4; landing.discovery = 'landing'; }
+
+    // `best` is set to biologyPhase 'intelligent' directly above, bypassing the
+    // normal ladder climb, so it may still be carrying whatever culture record
+    // it had before (someone else's, or none) — never the arriving people's.
+    // Clear it so `cultureFor(best)` reports "no culture yet" rather than a
+    // stale one. Same accepted gap as a war-defeated civilisation (site 1):
+    // nothing here re-triggers `ensureCivilization`, so the record stays empty
+    // until this star next passes through it (e.g. a future merger).
+    this.invalidateCulture(best, 'the exodus');
 
     if (star.isPlayerStar) {
       // The player follows their people. Their world IS wherever they are.
@@ -1893,7 +1903,19 @@ export class BigBangEngine {
     }
 
     if (nextPhase === 'intelligent') {
-      // Species emerges — transition to civilisation
+      // Species emerges — transition to civilisation.
+      //
+      // This branch fires both on a star's FIRST-EVER arrival at intelligence
+      // and on a star RE-reaching it after a regression (a mass extinction
+      // knocked biologyPhase back down via `regressPhases`, and it re-climbed).
+      // `invalidateCulture` no-ops when there is nothing to clear, so on a
+      // first-ever arrival no record exists yet and this is free; it only does
+      // real work — dropping a stale record so `ensureCivilization` rebuilds
+      // from the species as it is NOW — when one is already sitting there from
+      // before the collapse. That is precisely "re-reaching intelligence after
+      // a regression" and nothing else, so it cannot double the Gemini call
+      // that `ensureCivilization` makes on an ordinary first emergence.
+      this.invalidateCulture(star, 're-emergence');
       star.civLevel = 0;
       this.ensureCivilization(star);
       if (!star.isPlayerStar) {
@@ -2019,6 +2041,21 @@ export class BigBangEngine {
           this.onCultureGenerated?.(star.id, result);
         }
       });
+  }
+
+  /**
+   * Drop a civilisation's culture so it is rebuilt from what the species is NOW.
+   *
+   * Called only on the four upheaval events named in the spec. The list is
+   * closed on purpose: every entry costs a Gemini call, and a rule like "on any
+   * civLevel change" would fire constantly.
+   */
+  private invalidateCulture(star: StarBody, reason: string): void {
+    if (!gameState.civilizations[star.id]) return;
+    delete gameState.civilizations[star.id];
+    if (this.isStarKnownToPlayer(star)) {
+      this.onCivEvent?.(`${star.civName} is remade in the wake of ${reason}.`);
+    }
   }
 
   /**
@@ -3589,7 +3626,10 @@ export class BigBangEngine {
               (0.35 - this.stats.hostility / 200) / defBonus)));
 
         if (attackerWon) {
-          if (defender.civLevel > 0) defender.civLevel = Math.max(0, defender.civLevel - 1);
+          if (defender.civLevel > 0) {
+            defender.civLevel = Math.max(0, defender.civLevel - 1);
+            this.invalidateCulture(defender, 'defeat');
+          }
           if (war.attackerStrength > 0.75)
             attacker.civLevel = Math.min(TECH_LEVELS.length - 1, attacker.civLevel + 1);
         } else {

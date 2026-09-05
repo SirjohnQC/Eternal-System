@@ -424,6 +424,32 @@ console.log('\n═══ Culture cannot break a roll ═══');
   check('tech advance rate stays positive and finite', rateOk);
 }
 
+console.log('\n═══ Culture regenerates on upheaval ═══');
+{
+  const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
+  const { gameState } = await import('../src/simulation/GameState');
+  const engine = new BigBangEngine(makeCanvas());
+  engine.onCivEvent = () => {}; engine.onLifeEvent = () => {};
+  engine.init({ life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 }, 'upheaval_seed');
+
+  (globalThis as any).eternalSpeed = 60;
+  for (let i = 0; i < 300_000 && (engine as any).tick < 300_000; i++) engine.update();
+
+  const star = (engine as any).stars.find((s: any) =>
+    !s.isDead && gameState.civilizations[s.id]);
+  check('found a civilisation to test upheaval on', star != null);
+  if (star) {
+    const before = gameState.civilizations[star.id];
+    (engine as any).invalidateCulture(star, 'test');
+    check('invalidating clears the record', !gameState.civilizations[star.id]);
+    (engine as any).ensureCivilization(star);
+    const after = gameState.civilizations[star.id];
+    check('a fresh record is generated', after != null && after.id === before.id);
+    check('the new record is valid',
+          after != null && GOVERNMENTS.includes(after.government));
+  }
+}
+
 console.log(`\n═══ RESULT: ${passed} passed, ${failures.length} failed ═══`);
 if (failures.length) { for (const f of failures) console.log('  ✗ ' + f); process.exit(1); }
 console.log('All checks passed.\n');
