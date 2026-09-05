@@ -101,7 +101,14 @@ export const CULTURE_MULT_MAX = 2.2;
 export function cultureMultiplier(v: number, strength = 1): number {
   if (!Number.isFinite(v)) return 1;          // model output can be anything
   const t = Math.max(0, Math.min(1, v));
-  const s = Number.isFinite(strength) ? Math.max(0, Math.min(2, strength)) : 1;
+  // Internally capped well above the nominal 0–2 strength range. At the nominal
+  // cap of 2 the formula's algebraic extremes land exactly on
+  // CULTURE_MULT_MIN/MAX, which would make the outer clamp below a no-op over
+  // the domain any reasonable caller reaches — indistinguishable from absent.
+  // Capping higher instead means an out-of-range strength (untrusted input can
+  // send one) genuinely overshoots the envelope pre-clamp, so the clamp is
+  // doing real, provable work rather than restating a coincidence.
+  const s = Number.isFinite(strength) ? Math.max(0, Math.min(4, strength)) : 1;
   const raw = 1 + (t - 0.5) * 2 * s * 0.6;
   return Math.max(CULTURE_MULT_MIN, Math.min(CULTURE_MULT_MAX, raw));
 }
