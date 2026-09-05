@@ -380,8 +380,22 @@ console.log('\n═══ Civilisations survive the Big-Bang → game handoff ═
 console.log('\n═══ Culture cannot break a roll ═══');
 {
   // Replicates every insertion-point formula from the plan, swept across the
-  // full value space. Guards the M20d failure mode directly: that bug was a
-  // product of multiplied factors reaching probability 1.
+  // full value space, using the SAME operator as the real call site — the war
+  // resolution site DIVIDES by the collectivism multiplier (a defender bonus
+  // shrinks the attacker's win chance), not multiplies; every other site
+  // multiplies. Guards the M20d failure mode directly: that bug was a product
+  // of multiplied factors reaching probability 1.
+  //
+  // Note on CULTURE_MULT_MAX: the two checks below (`no roll can reach
+  // certainty` / `...impossibility`) are deliberately constant-independent —
+  // every formula here, like every real call site, wraps its result in its
+  // own explicit Math.min(0.95, ...)/Math.max(0.05, ...), so raising or
+  // lowering CULTURE_MULT_MAX cannot move worstHigh/worstLow as long as
+  // cultureMultiplier stays finite. That is by design (belt-and-suspenders:
+  // the per-site clamp holds even if the shared envelope constant were ever
+  // misconfigured), not a gap — CULTURE_MULT_MAX is instead the thing the
+  // "safety envelope is pinned to the agreed values" and "ceiling clamp is
+  // load-bearing" checks above exist to pin down.
   const hostility = 20;          // the maximum universe hostility stat
   let worstLow = 1, worstHigh = 0;
   for (let v = 0; v <= 1.0001; v += 0.005) {
@@ -391,7 +405,7 @@ console.log('\n═══ Culture cannot break a roll ═══');
       const contact = Math.min(0.95, (hostility / 25) * cultureMultiplier(v, 1));
       const religion = Math.min(0.95, 0.65 * cultureMultiplier(v, 0.8));
       const resolve = Math.min(0.95, Math.max(0.05,
-        (0.65 + hostility / 200) * cultureMultiplier(v, 0.4)));
+        (0.65 + hostility / 200) / cultureMultiplier(v, 0.4)));
       for (const p of [warChance, contact, religion, resolve]) {
         worstLow = Math.min(worstLow, p);
         worstHigh = Math.max(worstHigh, p);
