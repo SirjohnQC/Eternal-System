@@ -315,6 +315,10 @@ function launchBigBang(): void {
   // caches must go with them. Leaking state across games in one session is the
   // most repeated bug in this codebase — see ROADMAP M20b.
   clearSpeciesPalette();
+  // Civilisation culture is keyed by starId, same leak risk as above — a
+  // second game in one session must not inherit the previous universe's
+  // civilisations. (BigBangEngine.init() clears this too; belt and suspenders.)
+  gameState.civilizations = {};
   gameState.dnaFocusBranch = null;
   _pmSelected = null;
   _pmLayer = 'biome';
@@ -377,6 +381,7 @@ function launchBigBang(): void {
   runtimeState.playerPlanetGrid = null; // reset on new game
   engine = new BigBangEngine(canvas);
   engine.init(stats, seed);
+  engine.geminiService = _geminiService;
 
   wireEngineEvents(engine);
   void attachPixiRenderer(engine, canvas);
@@ -3422,6 +3427,7 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
 
   fallbackNarrator = new FallbackNarrator(save.gameState.masterSeed);
   _geminiService = geminiKey ? new GeminiService(geminiKey, save.gameState.masterSeed) : null;
+  engine.geminiService = _geminiService;
   const godName = save.gameState.godName;
 
   chatHandler = async (msg: string) => {
@@ -3866,6 +3872,7 @@ window.addEventListener('DOMContentLoaded', () => {
     // Recreate gemini service with new key
     if (_geminiService) _geminiService.destroy?.();
     _geminiService = key ? new GeminiService(key, gameState.masterSeed) : null;
+    if (engine) engine.geminiService = _geminiService;
     closeSettings();
     // Notify in-game if active
     if (gameState.screen === 'game' || gameState.screen === 'bigbang') {

@@ -3,6 +3,7 @@ import type { FactionFlag } from './FactionFlag';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
 import type { PlanetGrid } from './PlanetGrid';
+import type { Civilization } from './Civilization';
 
 export interface PlanetDNA {
   climate: 'desert' | 'temperate' | 'frozen';
@@ -158,6 +159,8 @@ export interface GameStateData {
   // M17: Living Biosphere
   playerSpecies:   SpeciesGenome[];
   playerBiosphere: PlanetBiosphere;
+  /** Civilisation culture, keyed by starId. Generated at emergence (M23). */
+  civilizations: Record<number, Civilization>;
 }
 
 /** Runtime-only planet grid — NOT serialized. Regenerated on load from seed. */
@@ -197,6 +200,7 @@ export const gameState: GameStateData = {
   firstContactFired: false,
   playerSpecies:   [],
   playerBiosphere: { ...DEFAULT_BIOSPHERE },
+  civilizations: {},
 };
 
 // Tech level names

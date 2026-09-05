@@ -6,6 +6,31 @@
  *   node_modules/.bin/esbuild tools/cultureCheck.ts --bundle --platform=node \
  *     --format=esm --outfile=$TMP/culture.mjs && node $TMP/culture.mjs
  */
+
+// ── DOM stub (copied verbatim from tools/moonCheck.ts) ──────────────────────
+// The engine-driving section below loads BigBangEngine via `await import(...)`
+// at runtime, which needs a browser-like environment under Node. This must run
+// BEFORE that import executes, hence its placement above every import here.
+const noopCtx = new Proxy({}, { get(_t, p) {
+  if (p === 'canvas') return { width: 1200, height: 800 };
+  if (p === 'createLinearGradient' || p === 'createRadialGradient') return () => ({ addColorStop() {} });
+  if (p === 'getImageData') return (_x: number, _y: number, w: number, h: number) => ({ data: new Uint8ClampedArray(w*h*4), width: w, height: h });
+  if (p === 'createImageData') return (w: number, h: number) => ({ data: new Uint8ClampedArray(w*h*4), width: w, height: h });
+  if (p === 'measureText') return () => ({ width: 10 });
+  return () => undefined;
+}, set() { return true; } });
+function makeCanvas(): any {
+  return { width: 1200, height: 800, style: {}, getContext: () => noopCtx,
+    addEventListener() {}, removeEventListener() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 800 }), toDataURL: () => '' };
+}
+const g = globalThis as any;
+g.document = { createElement: () => makeCanvas(), getElementById: () => null,
+  querySelector: () => null, querySelectorAll: () => [], addEventListener() {} };
+g.window = g; g.requestAnimationFrame = () => 0; g.cancelAnimationFrame = () => {};
+g.addEventListener = () => {}; g.performance = g.performance ?? { now: () => Date.now() };
+g.Image = class { set src(_v: string) {} }; g.eternalSpeed = 1;
+
 import {
   cultureMultiplier, CULTURE_MULT_MIN, CULTURE_MULT_MAX,
 } from '../src/simulation/Civilization';
@@ -193,6 +218,44 @@ console.log('\n═══ Validation of model output ═══');
   const capped = validateCultureResponse(longText, base);
   check('over-long prose is capped', capped !== null && capped.selfDescription.length <= 400,
         capped ? String(capped.selfDescription.length) : 'rejected');
+}
+
+console.log('\n═══ Civilisations in the engine ═══');
+{
+  const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
+  const { gameState } = await import('../src/simulation/GameState');
+
+  gameState.playerPlanetName = 'Cultureworld';
+  gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
+
+  const engine = new BigBangEngine(makeCanvas());
+  engine.onCivEvent = () => {}; engine.onLifeEvent = () => {};
+  engine.init({ life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 }, 'culture_seed');
+
+  check('a new game starts with no civilisations',
+        Object.keys(gameState.civilizations).length === 0,
+        String(Object.keys(gameState.civilizations).length));
+
+  (globalThis as any).eternalSpeed = 60;
+  for (let i = 0; i < 400_000 && (engine as any).tick < 400_000; i++) engine.update();
+
+  const stars = (engine as any).stars as any[];
+  const intelligent = stars.filter(s => !s.isDead && s.biologyPhase === 'intelligent');
+  const withCulture = intelligent.filter(s => gameState.civilizations[s.id]);
+
+  check('every intelligent civilisation has a culture',
+        intelligent.length > 0 && withCulture.length === intelligent.length,
+        `${withCulture.length}/${intelligent.length}`);
+
+  const records = Object.values(gameState.civilizations);
+  check('all stored records are structurally valid',
+        records.every(c => GOVERNMENTS.includes(c.government) &&
+                           IDEOLOGIES.includes(c.ideology) &&
+                           Object.values(c.values).every(v => v >= 0 && v <= 1)));
+  check('cultures vary across the universe',
+        new Set(records.map(c => c.government + '/' + c.ideology)).size > 1,
+        records.map(c => c.government).join(', '));
 }
 
 console.log(`\n═══ RESULT: ${passed} passed, ${failures.length} failed ═══`);

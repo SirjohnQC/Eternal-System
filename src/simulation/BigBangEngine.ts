@@ -27,6 +27,12 @@ import {
   STALL_TIME_PENALTY, PLAYER_STALL_TIME_CAP,
   type LifeArchetype, type PlanetKind,
 } from './LifeSystem';
+import {
+  proceduralCulture, summariseGenome,
+  type Civilization, type GenomeSummary,
+} from './Civilization';
+import { generateCulture } from '../ai/CultureGenerator';
+import type { GeminiService } from '../ai/GeminiService';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
 
@@ -557,6 +563,16 @@ export class BigBangEngine {
   onMutationEvent:   ((event: EvolutionEvent) => void) | null = null;
   onSpeciationEvent: ((event: EvolutionEvent) => void) | null = null;
   onExtinctionEvent: ((event: EvolutionEvent) => void) | null = null;
+  /** Fired when a Gemini-generated culture replaces the procedural one. */
+  onCultureGenerated: ((starId: number, civ: Civilization) => void) | null = null;
+
+  /**
+   * Set by the host (main.ts) whenever it (re)creates its GeminiService — e.g.
+   * on new game, on load, or when the player saves a new API key in Settings.
+   * Left null offline; `ensureCivilization` only ever reads it, so the tick
+   * loop never has to know whether it is set.
+   */
+  geminiService: GeminiService | null = null;
 
   // Dragging
   private isDragging = false;
@@ -725,6 +741,9 @@ export class BigBangEngine {
     gameState.leaders = [];
     gameState.leaderMemories = [];
     gameState.factionFlags = {};
+    // Culture is per-universe and keyed by starId, so stale entries would attach
+    // to whichever star happened to reuse the id (ROADMAP M20b).
+    gameState.civilizations = {};
     // The biosphere and species list were likewise never cleared, so a second
     // game in one session inherited the previous world's oxygen, biodiversity
     // and entire species roster.
@@ -845,6 +864,7 @@ export class BigBangEngine {
         // civilisations that exist from tick 0 had neither — which is why no
         // flags ever appeared in a fresh universe.
         this.spawnLeaderForStar(s);
+        this.ensureCivilization(s);
       }
     }
 
@@ -1857,6 +1877,7 @@ export class BigBangEngine {
     if (nextPhase === 'intelligent') {
       // Species emerges — transition to civilisation
       star.civLevel = 0;
+      this.ensureCivilization(star);
       if (!star.isPlayerStar) {
         // Auto-generate NPC DNA
         star.dna = this.generateNPCDNA();
@@ -1920,6 +1941,83 @@ export class BigBangEngine {
     if (!gameState.factionFlags[star.id]) {
       gameState.factionFlags[star.id] = generateFactionFlag(this.rng.fork(`flag_${star.id}`));
     }
+  }
+
+  /** The culture of a star's civilisation, or null if it has none yet. */
+  cultureFor(star: StarBody): Civilization | null {
+    return gameState.civilizations[star.id] ?? null;
+  }
+
+  /**
+   * Give a star a culture if it does not have one.
+   *
+   * The procedural record is written SYNCHRONOUSLY and immediately, so there is
+   * never a window where an intelligent civilisation has no culture and no
+   * caller has to handle a missing record. The Gemini call, if any, replaces it
+   * later and never blocks the tick.
+   */
+  private ensureCivilization(star: StarBody): void {
+    if (gameState.civilizations[star.id]) return;
+
+    const species = star.isPlayerStar
+      ? gameState.playerSpecies.filter(s => !s.isExtinct)
+          .sort((a, b) => b.population - a.population)[0]
+      : undefined;
+    const genome = species
+      ? summariseGenome(species)
+      : this.genomeSummaryForNpc(star);
+
+    const rng = this.rng.fork(`culture_${star.id}`);
+    // A COPY, not the summary itself: `proceduralCulture` stores it as
+    // `sourceGenome` BY REFERENCE. `gameState.playerSpecies` is REASSIGNED on
+    // every evolution step, so a caller that re-derives and reuses a
+    // `GenomeSummary` must never be able to reach into an already-built
+    // `Civilization` and change what it recorded (ROADMAP M20b pattern).
+    const base = proceduralCulture(
+      { ...genome }, star.id, species?.id ?? `npc_${star.id}`,
+      star.civName, this.tick, rng);
+    gameState.civilizations[star.id] = base;
+
+    // Upgrade in the background. A failure leaves the procedural record standing.
+    const gemini = this.geminiService;
+    if (!gemini || gemini.offlineMode) return;
+    void generateCulture(base, genome, star.civName, TECH_LEVELS[star.civLevel] ?? 'Primitive', gemini)
+      .then(result => {
+        // The star may have died or been replaced while the call was in flight.
+        if (gameState.civilizations[star.id]?.id === base.id) {
+          gameState.civilizations[star.id] = result;
+          this.onCultureGenerated?.(star.id, result);
+        }
+      });
+  }
+
+  /**
+   * A stand-in genome for an NPC world.
+   *
+   * Only the player's world runs the full evolution engine; NPC biospheres are
+   * summarised by their archetype and tech tier rather than a real species list.
+   */
+  private genomeSummaryForNpc(star: StarBody): GenomeSummary {
+    const rng = this.rng.fork(`npcgenome_${star.id}`);
+    const env = rng.pick(['land', 'ocean', 'coastal', 'deep_sea', 'aerial']);
+    return {
+      speciesName: star.civName,
+      metabolism: rng.pick(['heterotrophic', 'photosynthetic', 'chemosynthetic']),
+      locomotion: rng.pick(['walking', 'swimming', 'crawling', 'flying', 'stationary']),
+      environment: env,
+      diet: rng.pick(['omnivore', 'carnivore', 'herbivore', 'producer']),
+      respiration: rng.pick(['aerobic', 'anaerobic', 'mixed']),
+      reproduction: rng.pick(['sexual', 'asexual', 'spore']),
+      size: rng.pick(['small', 'medium', 'large']),
+      bodyStructure: rng.pick(['vertebrate', 'exoskeletal', 'colonial', 'segmented']),
+      sensorySystem: rng.pick(['vision', 'echolocation', 'chemoreception']),
+      intelligence: rng.nextInt(6, 10),
+      social: rng.nextInt(1, 10),
+      aggression: rng.nextInt(0, 10),
+      adaptability: rng.nextInt(2, 9),
+      biome: env === 'ocean' || env === 'deep_sea' ? 'open_ocean' : 'grassland',
+      temperatureRange: 'temperate',
+    };
   }
 
   private fireLeaderMessage(star: StarBody, eventContext: string): void {
