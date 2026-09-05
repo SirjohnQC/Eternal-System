@@ -1,0 +1,3667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Eternal Systems</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@400;700&family=Cinzel:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+/* ═══════════════════════════════════════════════════════════════
+   BASE
+═══════════════════════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --gold:    #c8a96e;
+  --gold2:   #ffdd99;
+  --purple:  #7b5ea7;
+  --purple2: #aa88dd;
+  --dark:    rgba(4,2,14,0.92);
+  --panel:   rgba(6,3,18,0.88);
+  --border:  rgba(123,94,167,0.35);
+  --text:    #d4c5e8;
+  --dim:     #6a5d7a;
+  --teal:    #44ffcc;
+  --red:     #ff5533;
+  --orange:  #ff9944;
+}
+
+html,body{
+  width:100%;height:100%;overflow:hidden;
+  background:#000008;
+  font-family:'Cinzel',serif;
+  color:var(--text);
+  user-select:none;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREENS
+═══════════════════════════════════════════════════════════════ */
+.screen{
+  position:fixed;inset:0;
+  display:none;flex-direction:column;
+  align-items:center;justify-content:center;
+  z-index:10;
+}
+.screen.active{display:flex}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREEN 0: START MENU
+═══════════════════════════════════════════════════════════════ */
+#screen-menu{
+  background:radial-gradient(ellipse at 50% 40%, #0a0420 0%, #000008 70%);
+  overflow:hidden;
+}
+
+/* Animated starfield (pure CSS) */
+#screen-menu::before{
+  content:'';
+  position:absolute;inset:0;
+  background-image:
+    radial-gradient(1px 1px at 10% 15%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1px 1px at 25% 60%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 40% 25%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1px 1px at 55% 75%, rgba(255,255,255,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 70% 10%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(2px 2px at 80% 50%, rgba(200,169,110,0.7) 0%, transparent 100%),
+    radial-gradient(1px 1px at 90% 80%, rgba(255,255,255,0.6) 0%, transparent 100%),
+    radial-gradient(1px 1px at 15% 90%, rgba(255,255,255,0.5) 0%, transparent 100%),
+    radial-gradient(1px 1px at 60% 40%, rgba(150,130,255,0.5) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 33% 55%, rgba(255,255,255,0.7) 0%, transparent 100%);
+  background-size:600px 600px, 700px 700px, 500px 500px, 800px 800px, 600px 600px,
+                  900px 900px, 550px 550px, 750px 750px, 450px 450px, 650px 650px;
+  animation:driftStars 80s linear infinite;
+  pointer-events:none;
+}
+
+@keyframes driftStars{
+  from{background-position:0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0}
+  to{background-position:600px 200px,700px -300px,-500px 400px,800px 100px,-600px 500px,
+     900px -200px,-550px 300px,750px -400px,-450px 250px,650px 350px}
+}
+
+/* Nebula glow behind title */
+.menu-nebula{
+  position:absolute;
+  top:50%;left:50%;transform:translate(-50%,-60%);
+  width:700px;height:400px;
+  background:radial-gradient(ellipse,rgba(123,94,167,0.12) 0%,transparent 70%);
+  pointer-events:none;
+  animation:nebulaPulse 6s ease-in-out infinite;
+}
+@keyframes nebulaPulse{0%,100%{opacity:0.6;transform:translate(-50%,-60%) scale(1)}50%{opacity:1;transform:translate(-50%,-60%) scale(1.05)}}
+
+.menu-content{
+  position:relative;z-index:1;
+  text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:18px;
+}
+
+.menu-logo{
+  font-family:'Cinzel Decorative',serif;
+  font-size:clamp(36px,6vw,72px);
+  font-weight:700;
+  color:var(--gold);
+  letter-spacing:6px;
+  text-shadow:
+    0 0 40px rgba(200,169,110,0.6),
+    0 0 80px rgba(200,169,110,0.25),
+    0 0 120px rgba(123,94,167,0.3);
+  animation:logoGlow 4s ease-in-out infinite;
+  line-height:1.1;
+}
+@keyframes logoGlow{
+  0%,100%{text-shadow:0 0 30px rgba(200,169,110,0.5),0 0 70px rgba(200,169,110,0.2),0 0 100px rgba(123,94,167,0.25)}
+  50%{text-shadow:0 0 50px rgba(200,169,110,0.8),0 0 100px rgba(200,169,110,0.35),0 0 140px rgba(123,94,167,0.4)}
+}
+
+.menu-tagline{
+  font-size:12px;color:var(--dim);letter-spacing:3px;
+  text-transform:uppercase;
+  animation:fadeIn 2s ease 0.5s both;
+}
+
+.menu-divider{
+  width:280px;height:1px;
+  background:linear-gradient(90deg,transparent,var(--border),transparent);
+  margin:6px 0;
+}
+
+.menu-btn{
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--text);
+  font-family:'Cinzel',serif;
+  font-size:13px;
+  letter-spacing:3px;
+  padding:13px 44px;
+  cursor:pointer;
+  position:relative;
+  overflow:hidden;
+  transition:all 0.3s;
+  width:260px;
+  text-transform:uppercase;
+}
+.menu-btn::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(123,94,167,0.12),transparent);
+  transform:translateX(-100%);transition:transform 0.4s;
+}
+.menu-btn:hover::before{transform:translateX(100%)}
+.menu-btn:hover{
+  border-color:var(--purple);color:var(--gold);
+  box-shadow:0 0 20px rgba(123,94,167,0.3),inset 0 0 12px rgba(123,94,167,0.08);
+}
+.menu-btn.primary{
+  border-color:var(--gold);color:var(--gold);
+  box-shadow:0 0 15px rgba(200,169,110,0.2);
+}
+.menu-btn.primary:hover{
+  background:rgba(200,169,110,0.08);
+  box-shadow:0 0 30px rgba(200,169,110,0.4);
+}
+
+.menu-version{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  font-size:9px;color:var(--dim);letter-spacing:2px;
+}
+#no-save-msg{
+  display:none;font-size:10px;color:var(--red);letter-spacing:1px;
+  margin-top:8px;animation:fadeIn 0.3s;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREEN 1: D20 STAT ROLLING
+═══════════════════════════════════════════════════════════════ */
+#screen-rolling{
+  background:radial-gradient(ellipse at 50% 30%, #080320 0%, #000008 60%);
+  flex-direction:column;gap:28px;padding:24px;overflow-y:auto;
+}
+
+.rolling-title{
+  font-family:'Cinzel Decorative',serif;
+  font-size:clamp(14px,2.5vw,22px);
+  color:var(--gold);letter-spacing:4px;
+  text-align:center;
+  text-shadow:0 0 20px rgba(200,169,110,0.4);
+}
+.rolling-subtitle{
+  font-size:12px;color:var(--dim);letter-spacing:2px;
+  text-align:center;margin-top:-18px;
+}
+
+#stat-cards{
+  display:flex;
+  flex-wrap:wrap;
+  gap:14px;
+  justify-content:center;
+  max-width:900px;
+}
+
+.stat-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  padding:18px 22px;
+  width:160px;
+  text-align:center;
+  opacity:0.45;
+  transition:all 0.3s;
+  position:relative;
+}
+.stat-card.active{opacity:1;border-color:var(--purple);box-shadow:0 0 20px rgba(123,94,167,0.3)}
+.stat-card.locked{opacity:0.8;border-color:rgba(200,169,110,0.3)}
+
+.stat-name{font-size:11px;color:var(--gold);letter-spacing:2px;margin-bottom:4px}
+.stat-desc{font-size:10px;color:var(--dim);line-height:1.4;margin-bottom:10px;min-height:28px}
+
+.stat-number{
+  font-family:'Cinzel Decorative',serif;
+  font-size:42px;font-weight:700;color:var(--dim);
+  line-height:1;margin-bottom:10px;
+  transition:color 0.3s;
+}
+.stat-number.rolling{animation:numberFlash 0.055s linear infinite}
+@keyframes numberFlash{0%{opacity:1}50%{opacity:0.4}100%{opacity:1}}
+.stat-number.settled{animation:settledPop 0.4s cubic-bezier(0.36,0.07,0.19,0.97) both}
+@keyframes settledPop{0%{transform:scale(1.4)}60%{transform:scale(0.92)}100%{transform:scale(1)}}
+.stat-number.tier-legendary{color:#ffdd00;text-shadow:0 0 20px rgba(255,220,0,0.6)}
+.stat-number.tier-high{color:#44ccff;text-shadow:0 0 15px rgba(68,204,255,0.5)}
+.stat-number.tier-mid{color:#44aa44;text-shadow:0 0 12px rgba(68,170,68,0.4)}
+.stat-number.tier-low{color:#aa4422;text-shadow:0 0 10px rgba(170,68,34,0.4)}
+
+.stat-bar-wrap{
+  height:4px;background:rgba(255,255,255,0.06);
+  border-radius:2px;overflow:hidden;margin-bottom:8px;
+}
+.stat-bar-fill{height:100%;width:0;transition:width 0.5s cubic-bezier(0.4,0,0.2,1);border-radius:2px}
+
+.stat-lock-badge{
+  display:none;
+  font-size:9px;letter-spacing:2px;
+  color:var(--gold);
+  background:rgba(200,169,110,0.1);
+  border:1px solid rgba(200,169,110,0.3);
+  padding:3px 8px;
+  margin-top:4px;
+}
+
+.rolling-actions{display:flex;flex-direction:column;align-items:center;gap:10px}
+
+.action-btn{
+  background:transparent;
+  border:1px solid var(--purple);
+  color:var(--gold);
+  font-family:'Cinzel',serif;
+  font-size:11px;letter-spacing:3px;
+  padding:12px 40px;cursor:pointer;
+  transition:all 0.25s;text-transform:uppercase;
+  min-width:280px;
+}
+.action-btn:hover{background:rgba(123,94,167,0.15);box-shadow:0 0 20px rgba(123,94,167,0.3)}
+.action-btn.primary-action{
+  border-color:var(--gold);
+  box-shadow:0 0 20px rgba(200,169,110,0.2);
+  padding:14px 48px;font-size:12px;
+}
+.action-btn.primary-action:hover{background:rgba(200,169,110,0.08);box-shadow:0 0 35px rgba(200,169,110,0.4)}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREEN 2: BIG BANG
+═══════════════════════════════════════════════════════════════ */
+#screen-bigbang{padding:0;overflow:hidden}
+
+#bigbang-canvas{
+  position:fixed;inset:0;
+  display:block;width:100%;height:100%;
+}
+
+/* Shared game HUD (used in both bigbang and game screens) */
+.game-hud{position:fixed;inset:0;pointer-events:none;z-index:20}
+.game-hud>*{pointer-events:auto}
+
+/* ─── Top Bar ─── */
+.top-bar{
+  position:fixed;top:0;left:0;right:0;height:56px;
+  background:var(--dark);
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 16px;gap:14px;
+  z-index:50;backdrop-filter:blur(10px);
+}
+.top-logo{
+  font-family:'Cinzel Decorative',serif;
+  font-size:13px;color:var(--gold);letter-spacing:2px;flex-shrink:0;
+  text-shadow:0 0 15px rgba(200,169,110,0.3);
+}
+.top-sep{width:1px;height:28px;background:var(--border);flex-shrink:0}
+#tick-display{font-size:12px;color:var(--dim);letter-spacing:1px;flex-shrink:0}
+.speed-controls{display:flex;gap:5px}
+.speed-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;
+  font-size:12px;padding:5px 11px;cursor:pointer;
+  letter-spacing:1px;transition:all 0.2s;
+}
+.speed-btn:hover,.speed-btn.active{
+  border-color:var(--purple);color:var(--gold);
+  background:rgba(123,94,167,0.15);
+}
+.top-spacer{flex:1}
+#top-mystar-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;
+  font-size:11px;padding:5px 12px;cursor:pointer;letter-spacing:1px;
+  transition:all 0.2s;flex-shrink:0;white-space:nowrap;
+}
+#top-mystar-btn:hover{border-color:var(--teal);color:var(--teal);background:rgba(68,255,200,0.07)}
+#top-notif-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-size:16px;width:34px;height:34px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:all 0.2s;flex-shrink:0;position:relative;
+}
+#top-notif-btn:hover{border-color:var(--gold);color:var(--gold)}
+#notif-badge{
+  position:absolute;top:3px;right:3px;min-width:14px;height:14px;
+  background:var(--red,#ff4444);border-radius:7px;
+  font-size:8px;color:#fff;display:none;
+  align-items:center;justify-content:center;padding:0 3px;
+  font-family:'Cinzel',serif;
+}
+#notif-badge.visible{display:flex}
+#dp-display{font-size:12px;color:var(--gold);letter-spacing:1px;flex-shrink:0}
+
+/* ─── Left Panel ─── */
+.left-panel{
+  position:fixed;top:56px;left:0;bottom:0;width:290px;
+  background:var(--panel);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  z-index:40;backdrop-filter:blur(10px);
+  overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.lp-section{
+  border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.lp-section-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 14px 8px;
+}
+.lp-section-title{
+  font-family:'Cinzel',serif;font-size:11px;
+  color:var(--dim);letter-spacing:2px;text-transform:uppercase;
+}
+.lp-section-value{font-size:13px;color:var(--gold);letter-spacing:1px}
+
+/* ─── Right Panel ─── */
+.right-panel{
+  position:fixed;top:56px;right:0;bottom:0;width:340px;
+  background:var(--panel);
+  border-left:1px solid var(--border);
+  display:flex;flex-direction:column;
+  z-index:40;backdrop-filter:blur(10px);
+}
+.god-nameplate{
+  padding:12px 14px 10px;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;
+}
+#god-name-display{
+  font-family:'Cinzel Decorative',serif;
+  font-size:13px;color:var(--gold);letter-spacing:1px;
+}
+.god-mood-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--purple);
+  margin-left:auto;flex-shrink:0;
+  box-shadow:0 0 6px var(--purple);
+  animation:moodPulse 3s ease-in-out infinite;
+}
+@keyframes moodPulse{0%,100%{opacity:0.7;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+
+#chat-thread{
+  flex:1;overflow-y:auto;padding:10px;
+  display:flex;flex-direction:column;gap:8px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.msg{font-size:13px;line-height:1.65;padding:10px 12px;border-radius:1px}
+.msg-god{
+  border-left:2px solid var(--purple);
+  background:rgba(8,4,20,0.5);color:var(--gold);font-style:italic;
+}
+.msg-player{
+  border-left:2px solid var(--gold);
+  color:var(--text);align-self:flex-end;text-align:right;
+}
+.msg-system{
+  border-left:2px solid var(--dim);
+  color:var(--dim);font-size:10px;
+}
+
+#player-input-area{
+  padding:8px 10px;border-top:1px solid var(--border);
+  display:flex;gap:7px;
+}
+#player-input{
+  flex:1;background:rgba(255,255,255,0.04);
+  border:1px solid var(--border);color:var(--text);
+  font-family:'Cinzel',serif;font-size:12px;
+  padding:7px 10px;outline:none;
+}
+#player-input::placeholder{color:var(--dim)}
+#player-input:focus{border-color:var(--purple)}
+#send-btn{
+  background:transparent;border:1px solid var(--purple);
+  color:var(--gold);font-family:'Cinzel',serif;
+  font-size:9px;padding:6px 11px;cursor:pointer;letter-spacing:1px;
+}
+#send-btn:hover{background:rgba(123,94,167,0.2)}
+
+/* ─── Event Feed ─── */
+.event-feed-header{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:5px 8px 4px;border-top:1px solid var(--border);
+}
+.event-feed-label{font-size:11px;color:var(--dim);letter-spacing:2px;text-transform:uppercase}
+#event-log-expand-btn{
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:9px;padding:2px 6px;cursor:pointer;letter-spacing:1px;
+  font-family:'Cinzel',serif;border-radius:2px;
+}
+#event-log-expand-btn:hover{border-color:var(--teal);color:var(--teal)}
+#event-feed{
+  height:180px;border-top:1px solid var(--border);
+  overflow-y:auto;padding:6px 10px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+
+/* ─── Event Log Modal ─── */
+#event-log-modal{
+  display:none;position:fixed;inset:0;z-index:9000;
+  background:rgba(4,8,18,0.96);flex-direction:column;
+}
+#event-log-modal.open{display:flex}
+.event-log-titlebar{
+  display:flex;align-items:center;gap:12px;padding:14px 20px 10px;
+  border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.event-log-title{font-size:14px;color:var(--gold);letter-spacing:3px;font-family:'Cinzel',serif}
+.event-log-close{
+  margin-left:auto;background:none;border:1px solid var(--border);
+  color:var(--dim);font-size:11px;padding:3px 10px;cursor:pointer;
+  font-family:'Cinzel',serif;letter-spacing:1px;border-radius:2px;
+}
+.event-log-close:hover{border-color:#ff6666;color:#ff6666}
+.event-log-toolbar{
+  display:flex;align-items:center;gap:8px;padding:10px 20px;
+  flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.05);
+}
+#event-log-search{
+  flex:1;background:rgba(255,255,255,0.04);border:1px solid var(--border);
+  color:var(--text);font-size:11px;padding:5px 10px;font-family:'Cinzel',serif;
+  outline:none;border-radius:2px;
+}
+#event-log-search:focus{border-color:var(--teal)}
+.event-log-filters{display:flex;gap:6px}
+.elf-btn{
+  background:none;border:1px solid var(--border);color:var(--dim);
+  font-size:9px;padding:3px 9px;cursor:pointer;letter-spacing:1px;
+  font-family:'Cinzel',serif;border-radius:2px;transition:all 0.15s;
+}
+.elf-btn:hover{border-color:var(--text);color:var(--text)}
+.elf-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(212,175,55,0.07)}
+.elf-btn[data-filter="war"].active{border-color:#ff6666;color:#ff6666;background:rgba(255,80,80,0.07)}
+.elf-btn[data-filter="milestone"].active{border-color:var(--teal);color:var(--teal);background:rgba(68,255,200,0.07)}
+.elf-btn[data-filter="cosmic"].active{border-color:#ff9944;color:#ff9944;background:rgba(255,150,60,0.07)}
+.elf-btn[data-filter="discovery"].active{border-color:var(--teal);color:var(--teal);background:rgba(68,255,200,0.07)}
+#event-log-count{font-size:9px;color:var(--dim);margin-left:auto;letter-spacing:1px}
+.event-log-list{
+  flex:1;overflow-y:auto;padding:8px 20px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.event-log-row{
+  display:flex;align-items:baseline;gap:8px;
+  padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04);
+  font-size:11px;
+}
+.event-log-row:last-child{border-bottom:none}
+.elr-tick{color:var(--dim);font-size:9px;min-width:60px;flex-shrink:0}
+.elr-icon{min-width:14px;text-align:center;flex-shrink:0}
+.elr-text{color:var(--text);line-height:1.4}
+.event-log-empty{color:var(--dim);font-size:11px;text-align:center;padding:40px;letter-spacing:2px}
+.feed-entry{
+  font-size:12px;color:var(--dim);
+  padding:4px 0;border-bottom:1px solid rgba(123,94,167,0.08);
+  line-height:1.5;
+}
+.feed-tick{color:var(--purple);font-size:10px}
+.feed-icon{font-size:12px}
+.icon-milestone{color:#ffdd88}
+.icon-war{color:#ff6644}
+.icon-cosmic{color:#ff9944}
+.icon-discovery{color:var(--teal)}
+
+/* ─── Notification Toast ─── */
+#toast-container{
+  position:fixed;top:60px;left:50%;transform:translateX(-50%);
+  z-index:8000;display:flex;flex-direction:column;align-items:center;gap:8px;
+  pointer-events:none;
+}
+.toast{
+  min-width:320px;max-width:520px;
+  background:rgba(4,8,18,0.97);
+  border:1px solid var(--border);
+  padding:12px 16px;
+  display:flex;align-items:flex-start;gap:12px;
+  pointer-events:auto;
+  animation:toastIn 0.35s cubic-bezier(0.22,1,0.36,1) forwards;
+  position:relative;overflow:hidden;
+}
+.toast.toast-out{animation:toastOut 0.4s ease-in forwards}
+.toast::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:3px;
+  background:var(--toast-accent,var(--gold));
+}
+.toast-icon{font-size:22px;line-height:1;flex-shrink:0;margin-top:1px}
+.toast-body{flex:1;min-width:0}
+.toast-title{
+  font-size:12px;letter-spacing:2px;
+  font-family:'Cinzel',serif;margin-bottom:4px;
+  color:var(--toast-accent,var(--gold));
+}
+.toast-text{font-size:11px;color:var(--text);line-height:1.5}
+.toast-close{
+  background:none;border:none;color:var(--dim);font-size:13px;
+  cursor:pointer;padding:0 2px;flex-shrink:0;line-height:1;margin-top:1px;
+}
+.toast-close:hover{color:var(--text)}
+.toast-bar{
+  position:absolute;bottom:0;left:0;height:2px;
+  background:var(--toast-accent,var(--gold));opacity:0.5;
+  animation:toastBar var(--toast-dur,6s) linear forwards;
+}
+.toast-supernova{--toast-accent:#ff7733}
+.toast-asteroid_impact{--toast-accent:#ff4444}
+.toast-void_storm{--toast-accent:#9966ff}
+.toast-plague{--toast-accent:#44cc88}
+.toast-warning{--toast-accent:#ffcc44}
+.toast-smite{--toast-accent:#44ccff}
+.toast-war_start{--toast-accent:#ff5533}
+.toast-war_siege{--toast-accent:#ff3300}
+.toast-war_end{--toast-accent:#ffaa44}
+@keyframes toastIn{
+  from{opacity:0;transform:translateY(-16px) scale(0.96)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+@keyframes toastOut{
+  from{opacity:1;transform:translateY(0) scale(1)}
+  to{opacity:0;transform:translateY(-10px) scale(0.97)}
+}
+@keyframes toastBar{from{width:100%}to{width:0}}
+
+/* ─── Divine Actions Panel ─── */
+.divine-panel{
+  padding:6px 8px 10px;display:flex;flex-direction:column;gap:5px;
+}
+.divine-panel-title{font-size:11px;color:var(--dim);letter-spacing:2px;text-transform:uppercase}
+#divine-dp-counter{
+  font-size:11px;color:var(--gold);letter-spacing:1px;
+  transition:color 0.2s;
+}
+#divine-dp-counter.pop{animation:dpPop 0.4s ease}
+@keyframes dpPop{
+  0%{transform:scale(1)}
+  40%{transform:scale(1.2);color:#ffee88}
+  100%{transform:scale(1)}
+}
+.divine-action-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--text);padding:7px 10px;
+  cursor:pointer;text-align:left;
+  transition:all 0.2s;position:relative;
+  display:flex;flex-direction:column;gap:2px;
+  font-family:'Cinzel',serif;
+}
+.divine-action-btn:hover:not(:disabled){
+  border-color:var(--purple);background:rgba(123,94,167,0.1);
+}
+.divine-action-btn:disabled{opacity:0.3;cursor:not-allowed}
+.divine-action-name{font-size:12px;letter-spacing:1px;color:var(--gold)}
+.divine-action-desc{font-size:11px;color:var(--dim);line-height:1.3;padding-right:40px}
+.divine-action-cost{
+  position:absolute;top:8px;right:10px;
+  font-size:10px;color:var(--dim);letter-spacing:1px;
+  transition:color 0.2s;
+}
+.divine-action-btn.affordable .divine-action-cost{color:var(--purple2)}
+
+/* ─── Planet name header (top of rolling screen) ─── */
+#planet-name-header{
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  margin-bottom:8px;
+}
+.planet-name-label{font-size:9px;color:var(--gold);letter-spacing:3px;text-transform:uppercase}
+#planet-name-input{
+  background:var(--panel);border:1px solid var(--border);
+  color:var(--text);font-family:'Cinzel Decorative',serif;font-size:18px;
+  padding:10px 20px;outline:none;text-align:center;width:320px;
+  letter-spacing:2px;transition:border-color 0.2s;
+}
+#planet-name-input:focus{border-color:var(--gold);box-shadow:0 0 12px rgba(200,169,110,0.2)}
+.planet-name-hint{font-size:9px;color:var(--dim);letter-spacing:1px;font-style:italic}
+
+/* ─── In-game naming modal (species / religion) ─── */
+#ingame-naming-overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,0.75);z-index:300;
+  align-items:center;justify-content:center;
+}
+#ingame-naming-overlay.open{display:flex}
+#ingame-naming-modal{
+  background:var(--panel);border:1px solid var(--border);
+  padding:28px 36px;min-width:380px;
+  box-shadow:0 0 40px rgba(123,94,167,0.4);
+  display:flex;flex-direction:column;gap:16px;
+  text-align:center;
+}
+.ingame-naming-icon{font-size:32px;margin-bottom:4px}
+.ingame-naming-title{font-family:'Cinzel Decorative',serif;font-size:14px;color:var(--gold);letter-spacing:2px}
+.ingame-naming-desc{font-size:11px;color:var(--dim);line-height:1.6}
+#ingame-naming-input{
+  background:rgba(0,0,0,0.4);border:1px solid var(--border);
+  color:var(--text);font-family:'Cinzel',serif;font-size:14px;
+  padding:10px 16px;outline:none;text-align:center;
+  transition:border-color 0.2s;
+}
+#ingame-naming-input:focus{border-color:var(--purple)}
+.ingame-naming-actions{display:flex;gap:10px;justify-content:center}
+#ingame-naming-confirm{
+  background:transparent;border:1px solid var(--gold);color:var(--gold);
+  font-family:'Cinzel',serif;font-size:11px;letter-spacing:2px;
+  padding:10px 24px;cursor:pointer;transition:all 0.2s;flex:1;
+}
+#ingame-naming-confirm:hover{background:rgba(200,169,110,0.1)}
+#ingame-naming-randomize{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:10px;letter-spacing:1px;
+  padding:10px 14px;cursor:pointer;transition:all 0.2s;white-space:nowrap;
+}
+#ingame-naming-randomize:hover{border-color:var(--purple);color:var(--text)}
+
+/* ─── God's Roll card ─── */
+#god-roll-section{display:none;flex-direction:column;align-items:center;gap:8px;margin-top:4px}
+.god-roll-card{
+  background:rgba(123,94,167,0.08);border:1px solid var(--purple);
+  padding:20px 48px;text-align:center;
+  box-shadow:0 0 28px rgba(123,94,167,0.25);
+}
+.god-roll-header{font-size:9px;color:var(--purple2);letter-spacing:3px;margin-bottom:12px;text-transform:uppercase}
+.god-roll-num{
+  font-family:'Cinzel Decorative',serif;
+  font-size:52px;font-weight:700;color:var(--purple2);
+  line-height:1;margin-bottom:8px;
+}
+.god-roll-num.rolling{color:var(--dim);animation:godPulse 0.4s infinite alternate}
+.god-roll-num.settled{text-shadow:0 0 24px rgba(123,94,167,0.7)}
+@keyframes godPulse{from{opacity:0.4}to{opacity:1}}
+.god-roll-label{font-size:11px;color:var(--purple2);letter-spacing:1px;min-height:18px}
+
+/* ─── Planet Questions ─── */
+#planet-questions-section{
+  display:none;flex-direction:column;align-items:center;gap:20px;
+  margin-top:12px;max-width:820px;width:100%;
+  animation:fadeSlideIn 0.6s ease both;
+}
+@keyframes fadeSlideIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.pq-header{display:flex;flex-direction:column;align-items:center;gap:6px}
+.pq-god-title{
+  font-size:10px;color:var(--gold);letter-spacing:4px;text-transform:uppercase;
+  font-family:'Cinzel Decorative',serif;
+}
+.pq-god-subtitle{
+  font-size:10px;color:var(--dim);letter-spacing:1.5px;font-style:italic;text-align:center;
+}
+.pq-grid{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;width:100%}
+.pq-card{
+  background:linear-gradient(160deg,rgba(6,3,18,0.9),rgba(20,8,40,0.7));
+  border:1px solid var(--border);
+  padding:20px 18px 16px;flex:1;min-width:220px;max-width:250px;
+  display:flex;flex-direction:column;gap:10px;
+  position:relative;transition:border-color 0.3s;
+}
+.pq-card::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse at 50% 0%,rgba(123,94,167,0.07) 0%,transparent 70%);
+  pointer-events:none;
+}
+.pq-card.answered{border-color:var(--purple);box-shadow:0 0 16px rgba(123,94,167,0.15)}
+.pq-god-voice{
+  font-size:8px;color:var(--purple2);letter-spacing:3px;text-transform:uppercase;
+  text-align:center;opacity:0.7;
+}
+.pq-question{
+  font-size:12px;color:var(--text);letter-spacing:0.5px;line-height:1.55;
+  text-align:center;font-style:italic;
+  border-top:1px solid rgba(123,94,167,0.2);
+  border-bottom:1px solid rgba(123,94,167,0.2);
+  padding:10px 4px;
+}
+.pq-choices{display:flex;flex-direction:column;gap:6px}
+.pq-choice{
+  background:transparent;border:1px solid rgba(100,80,140,0.25);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:0.5px;
+  padding:8px 12px;cursor:pointer;text-align:left;transition:all 0.2s;
+  line-height:1.4;
+}
+.pq-choice:hover{
+  border-color:var(--gold);color:var(--gold);
+  background:rgba(200,169,110,0.05);
+  padding-left:16px;
+}
+.pq-choice.selected{
+  border-color:var(--purple);color:var(--purple2);
+  background:rgba(123,94,167,0.1);
+}
+.pq-reveal{
+  font-size:9px;color:var(--gold);letter-spacing:1.5px;text-align:center;
+  min-height:14px;transition:opacity 0.4s;opacity:0;font-style:italic;
+}
+.pq-reveal.visible{opacity:1}
+
+/* ─── Naming section ─── */
+#naming-section{display:none;flex-direction:column;align-items:center;gap:14px;margin-top:4px;max-width:700px;width:100%}
+.naming-title{font-size:10px;color:var(--gold);letter-spacing:3px;text-transform:uppercase}
+.naming-fields{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+.naming-field{display:flex;flex-direction:column;gap:6px}
+.naming-field label{font-size:9px;color:var(--dim);letter-spacing:2px;text-transform:uppercase}
+.naming-field input{
+  background:var(--panel);border:1px solid var(--border);
+  color:var(--text);font-family:'Cinzel',serif;font-size:12px;
+  padding:8px 12px;outline:none;width:190px;
+  transition:border-color 0.2s;
+}
+.naming-field input:focus{border-color:var(--purple);box-shadow:0 0 8px rgba(123,94,167,0.2)}
+.naming-hint{font-size:10px;color:var(--dim);letter-spacing:1px;text-align:center;font-style:italic}
+
+/* ─── Speciation Modal ─── */
+#speciation-overlay{
+  display:none;position:fixed;inset:0;z-index:3500;
+  background:rgba(0,0,0,0.78);backdrop-filter:blur(5px);
+  align-items:center;justify-content:center;
+}
+#speciation-overlay.open{display:flex}
+#speciation-modal{
+  background:var(--panel);border:1px solid rgba(80,180,100,0.4);
+  padding:28px 36px;min-width:400px;max-width:500px;
+  box-shadow:0 0 40px rgba(60,180,80,0.2);
+  display:flex;flex-direction:column;gap:14px;text-align:center;
+}
+.sp-icon{font-size:30px;margin-bottom:2px}
+.sp-title{font-family:'Cinzel Decorative',serif;font-size:13px;color:#7ec88e;letter-spacing:2px}
+.sp-desc{font-size:11px;color:var(--dim);line-height:1.6}
+.sp-parent{font-size:10px;color:var(--dim);margin-top:-4px}
+.sp-parent span{color:var(--text)}
+.sp-label{font-size:9px;color:#7ec88e;letter-spacing:2px;text-transform:uppercase;text-align:left;margin-bottom:-6px}
+#speciation-name-input{
+  background:rgba(0,0,0,0.4);border:1px solid rgba(80,180,100,0.4);
+  color:var(--text);font-family:'Cinzel',serif;font-size:14px;
+  padding:10px 16px;outline:none;text-align:center;transition:border-color 0.2s;
+}
+#speciation-name-input:focus{border-color:#7ec88e}
+.sp-trait-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sp-trait-btn{
+  background:rgba(0,0,0,0.3);border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;
+  padding:8px 10px;cursor:pointer;transition:all 0.18s;
+}
+.sp-trait-btn:hover{border-color:#7ec88e;color:var(--text)}
+.sp-trait-btn.selected{border-color:#7ec88e;color:#7ec88e;background:rgba(80,180,100,0.08)}
+.sp-actions{display:flex;gap:10px;margin-top:4px}
+#speciation-confirm{
+  background:transparent;border:1px solid #7ec88e;color:#7ec88e;
+  font-family:'Cinzel',serif;font-size:10px;letter-spacing:2px;
+  padding:10px 20px;cursor:pointer;transition:all 0.2s;flex:1;
+}
+#speciation-confirm:hover{background:rgba(80,180,100,0.1)}
+#speciation-randomize{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;
+  padding:10px 12px;cursor:pointer;transition:all 0.2s;white-space:nowrap;
+}
+#speciation-randomize:hover{border-color:#7ec88e;color:var(--text)}
+#speciation-dismiss{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:1px;
+  padding:10px 20px;cursor:pointer;transition:all 0.2s;
+}
+#speciation-dismiss:hover{border-color:var(--text);color:var(--text)}
+
+/* ─── War Dice Modal ─── */
+#war-dice-overlay{
+  display:none;position:fixed;inset:0;z-index:4000;
+  background:rgba(0,0,0,0.82);backdrop-filter:blur(6px);
+  align-items:center;justify-content:center;
+}
+#war-dice-overlay.open{display:flex}
+#war-dice-modal{
+  background:var(--dark);border:1px solid rgba(220,60,60,0.5);border-radius:4px;
+  width:min(680px,95vw);padding:0;overflow:hidden;
+  box-shadow:0 0 40px rgba(220,60,60,0.15);
+}
+.wd-header{
+  background:rgba(120,0,0,0.35);padding:16px 24px 12px;
+  border-bottom:1px solid rgba(220,60,60,0.3);
+}
+.wd-phase-label{
+  font-family:'Cinzel',serif;font-size:11px;letter-spacing:3px;
+  color:rgba(255,150,150,0.7);margin-bottom:6px;
+}
+.wd-vs{
+  display:flex;align-items:center;gap:14px;
+}
+.wd-faction{
+  font-family:'Cinzel',serif;font-size:16px;letter-spacing:2px;
+  flex:1;
+}
+.wd-faction-atk{color:#ff7070;text-align:left}
+.wd-faction-def{color:#70aaff;text-align:right}
+.wd-vs-sep{color:var(--dim);font-size:12px;letter-spacing:2px;flex-shrink:0}
+.wd-arena{
+  display:flex;align-items:stretch;gap:0;padding:24px;
+}
+.wd-side{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:14px;
+}
+.wd-side-label{
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:3px;color:var(--dim);
+}
+.wd-dice-row{
+  display:flex;gap:10px;justify-content:center;min-height:60px;align-items:center;
+}
+.wd-die{
+  width:52px;height:52px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:30px;border:2px solid;transition:all 0.3s;
+  user-select:none;
+}
+.wd-die.atk{background:rgba(180,30,30,0.25);border-color:rgba(220,80,80,0.5);color:#ff9090}
+.wd-die.def{background:rgba(30,60,180,0.25);border-color:rgba(80,120,220,0.5);color:#90b0ff}
+.wd-die.win{box-shadow:0 0 12px rgba(80,255,120,0.4);border-color:rgba(80,255,120,0.6)}
+.wd-die.lose{opacity:0.45}
+.wd-die.rolling{animation:diceRoll 0.4s ease-out}
+@keyframes diceRoll{
+  0%{transform:rotate(0deg) scale(0.7)}
+  50%{transform:rotate(180deg) scale(1.1)}
+  100%{transform:rotate(360deg) scale(1)}
+}
+.wd-divider{
+  width:48px;display:flex;align-items:center;justify-content:center;
+  font-size:20px;color:rgba(220,60,60,0.5);flex-shrink:0;
+}
+.wd-side-result{
+  font-family:'Cinzel',serif;font-size:11px;letter-spacing:1.5px;min-height:20px;
+  text-align:center;
+}
+.wd-outcome{
+  margin:0 24px 0;padding:14px 16px;border-radius:3px;
+  font-family:'Cinzel',serif;font-size:13px;letter-spacing:1px;text-align:center;
+  line-height:1.7;
+}
+.wd-outcome.victory{background:rgba(40,120,40,0.2);border:1px solid rgba(80,200,80,0.3);color:#80e080}
+.wd-outcome.defeat{background:rgba(120,20,20,0.2);border:1px solid rgba(200,60,60,0.3);color:#e08080}
+.wd-outcome.stalemate{background:rgba(80,60,0,0.2);border:1px solid rgba(200,160,0,0.3);color:#d4b040}
+.wd-actions{
+  display:flex;gap:10px;justify-content:center;padding:16px 24px 20px;
+}
+.wd-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;font-size:10px;letter-spacing:2px;
+  padding:9px 22px;cursor:pointer;transition:all 0.2s;
+}
+.wd-btn:hover{border-color:var(--purple);color:var(--text)}
+.wd-btn.primary{border-color:rgba(80,120,220,0.6);color:#90b0ff;font-size:11px;padding:10px 28px}
+.wd-btn.primary:hover{border-color:#90b0ff;background:rgba(80,120,220,0.1)}
+.wd-btn:disabled{opacity:0.3;cursor:not-allowed}
+
+/* ─── Codex button ─── */
+#top-codex-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;
+  font-size:10px;letter-spacing:1px;padding:0 10px;height:34px;
+  cursor:pointer;transition:all 0.2s;flex-shrink:0;white-space:nowrap;
+}
+#top-codex-btn:hover{border-color:var(--gold);color:var(--gold);background:rgba(212,175,55,0.07)}
+
+/* ─── Codex Modal ─── */
+#codex-overlay{
+  display:none;position:fixed;inset:0;z-index:3000;
+  background:rgba(0,0,0,0.78);backdrop-filter:blur(5px);
+  align-items:center;justify-content:center;
+}
+#codex-overlay.open{display:flex}
+#codex-modal{
+  background:var(--dark);border:1px solid var(--border);border-radius:4px;
+  width:min(920px,96vw);height:min(660px,92vh);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.codex-header{
+  display:flex;align-items:center;gap:14px;
+  padding:16px 20px 12px;border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.codex-title{font-family:'Cinzel',serif;font-size:17px;color:var(--gold);letter-spacing:3px}
+.codex-subtitle{font-size:10px;color:var(--dim);letter-spacing:1.5px;flex:1}
+#codex-close-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  width:28px;height:28px;cursor:pointer;border-radius:2px;font-size:13px;
+  display:flex;align-items:center;justify-content:center;transition:all 0.2s;
+}
+#codex-close-btn:hover{border-color:var(--gold);color:var(--gold)}
+.codex-tabs{
+  display:flex;gap:4px;padding:10px 16px;border-bottom:1px solid var(--border);
+  flex-shrink:0;overflow-x:auto;scrollbar-width:none;
+}
+.codex-tab{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;
+  padding:5px 12px;cursor:pointer;border-radius:2px;white-space:nowrap;transition:all 0.2s;
+}
+.codex-tab:hover{border-color:var(--purple);color:var(--text)}
+.codex-tab.active{border-color:var(--gold);color:var(--gold);background:rgba(212,175,55,0.08)}
+.codex-body{display:flex;flex:1;overflow:hidden}
+.codex-list{
+  width:268px;flex-shrink:0;border-right:1px solid var(--border);
+  overflow-y:auto;padding:6px 0;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;
+}
+.codex-entry-item{
+  padding:11px 16px;cursor:pointer;border-left:2px solid transparent;transition:all 0.15s;
+}
+.codex-entry-item:hover{background:rgba(255,255,255,0.03)}
+.codex-entry-item.active{border-left-color:var(--gold);background:rgba(212,175,55,0.06)}
+.codex-entry-name{font-size:12px;color:var(--text);letter-spacing:0.5px}
+.codex-entry-age{font-size:10px;color:var(--dim);margin-top:3px}
+.codex-entry-cat-badge{
+  display:inline-block;font-size:8px;letter-spacing:1.5px;
+  padding:1px 6px;border-radius:2px;margin-top:5px;font-family:'Cinzel',serif;
+}
+.codex-entry-cat-badge.biology    {background:rgba(68,200,100,0.12);color:#4dc87a;border:1px solid rgba(68,200,100,0.25)}
+.codex-entry-cat-badge.civilisation{background:rgba(212,175,55,0.12);color:var(--gold);border:1px solid rgba(212,175,55,0.25)}
+.codex-entry-cat-badge.war        {background:rgba(220,80,80,0.12);color:#e05050;border:1px solid rgba(220,80,80,0.25)}
+.codex-entry-cat-badge.extinction {background:rgba(150,80,200,0.12);color:#c080e0;border:1px solid rgba(150,80,200,0.25)}
+.codex-entry-cat-badge.divine     {background:rgba(123,94,167,0.12);color:var(--purple2);border:1px solid rgba(123,94,167,0.25)}
+.codex-empty-list{padding:30px 16px;color:var(--dim);font-size:11px;text-align:center;letter-spacing:1px;line-height:1.8}
+.codex-detail{flex:1;overflow-y:auto;padding:28px 32px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.codex-detail-empty{color:var(--dim);font-size:12px;text-align:center;padding-top:80px;letter-spacing:1px;line-height:2}
+.codex-detail-title{font-family:'Cinzel',serif;font-size:21px;color:var(--gold);letter-spacing:2px;margin-bottom:8px}
+.codex-detail-meta{font-size:10px;color:var(--dim);letter-spacing:1.5px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.codex-detail-body{font-size:13px;color:var(--text);line-height:1.9;white-space:pre-wrap}
+.codex-detail-pending{font-size:11px;color:var(--dim);font-style:italic;margin-top:20px;line-height:1.8}
+.codex-footer{
+  border-top:1px solid var(--border);padding:10px 20px;
+  font-size:10px;color:var(--dim);letter-spacing:1.5px;flex-shrink:0;
+}
+
+/* ─── Settings button + modal ─── */
+#settings-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-size:14px;width:30px;height:30px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.2s;flex-shrink:0;
+}
+#settings-btn:hover{border-color:var(--purple);color:var(--purple2)}
+
+#save-controls{
+  display:flex;align-items:center;gap:6px;
+}
+#export-save-btn,#import-save-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:0.05em;
+  padding:0 8px;height:24px;cursor:pointer;
+  transition:all 0.2s;white-space:nowrap;
+}
+#export-save-btn:hover{border-color:var(--gold);color:var(--gold)}
+#import-save-btn:hover{border-color:var(--teal);color:var(--teal)}
+#save-indicator{
+  font-size:9px;letter-spacing:0.1em;color:var(--teal);
+  opacity:0;transition:opacity 0.3s;pointer-events:none;
+}
+#save-indicator.visible{opacity:1}
+
+#settings-overlay{
+  display:none;position:fixed;inset:0;
+  background:rgba(0,0,0,0.7);z-index:200;
+  align-items:center;justify-content:center;
+}
+#settings-overlay.open{display:flex}
+#settings-modal{
+  background:var(--panel);border:1px solid var(--border);
+  padding:28px 32px;min-width:420px;max-width:520px;
+  box-shadow:0 0 40px rgba(123,94,167,0.3);
+  display:flex;flex-direction:column;gap:18px;
+}
+.settings-title{
+  font-family:'Cinzel Decorative',serif;
+  font-size:14px;color:var(--gold);letter-spacing:2px;
+  border-bottom:1px solid var(--border);padding-bottom:12px;
+}
+.settings-row{display:flex;flex-direction:column;gap:6px}
+.settings-label{font-size:10px;color:var(--dim);letter-spacing:2px;text-transform:uppercase}
+.settings-desc{font-size:10px;color:rgba(180,160,210,0.6);line-height:1.5}
+.settings-input-row{display:flex;gap:8px}
+.settings-input{
+  flex:1;background:rgba(0,0,0,0.4);border:1px solid var(--border);
+  color:var(--text);font-family:'Cinzel',serif;font-size:11px;
+  padding:8px 12px;outline:none;transition:border-color 0.2s;
+}
+.settings-input:focus{border-color:var(--purple)}
+.settings-action-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);
+  font-family:'Cinzel',serif;font-size:10px;letter-spacing:1px;
+  padding:8px 14px;cursor:pointer;white-space:nowrap;transition:all 0.2s;
+}
+.settings-action-btn:hover{border-color:var(--purple);color:var(--purple2)}
+.settings-action-btn.primary{border-color:var(--gold);color:var(--gold)}
+.settings-action-btn.primary:hover{background:rgba(200,169,110,0.1)}
+.settings-vol-row{display:flex;align-items:center;gap:10px}
+.settings-vol-row label{font-size:9px;color:var(--dim);letter-spacing:1px;width:80px;flex-shrink:0}
+.settings-vol-row input[type=range]{
+  flex:1;accent-color:var(--purple);height:3px;cursor:pointer;
+}
+.settings-vol-row span{font-size:9px;color:var(--dim);width:28px;text-align:right}
+#gemini-status{
+  font-size:10px;letter-spacing:1px;display:flex;align-items:center;gap:6px;
+}
+#gemini-status-dot{font-size:12px}
+.status-none{color:var(--dim)}
+.status-ok{color:#44ff88}
+.status-error{color:var(--red)}
+.status-testing{color:var(--purple2);animation:godPulse 0.8s infinite alternate}
+.settings-footer{display:flex;justify-content:flex-end;gap:8px;padding-top:4px;border-top:1px solid var(--border)}
+
+/* ─── Right panel misc btn ─── */
+.panel-action-btn{
+  background:transparent;
+  border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;
+  font-size:10px;letter-spacing:1px;
+  padding:5px 4px;cursor:pointer;text-align:center;
+  transition:all 0.2s;
+}
+.panel-action-btn:hover{
+  border-color:var(--purple);color:var(--gold);
+  background:rgba(123,94,167,0.12);
+}
+
+/* ─── Bottom Bar ─── */
+#view-homeworld-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--teal);font-family:'Cinzel',serif;
+  font-size:11px;letter-spacing:1px;padding:6px 14px;
+  cursor:pointer;transition:all 0.2s;white-space:nowrap;flex-shrink:0;
+}
+#view-homeworld-btn:hover{
+  border-color:var(--teal);background:rgba(68,255,200,0.08);
+  box-shadow:0 0 10px rgba(68,255,200,0.15);
+}
+.bb-sep{width:1px;height:28px;background:var(--border);flex-shrink:0}
+.bottom-bar{
+  position:fixed;bottom:0;left:290px;right:340px;height:54px;
+  background:var(--dark);border-top:1px solid var(--border);
+  border-left:1px solid var(--border);border-right:1px solid var(--border);
+  display:flex;align-items:center;padding:0 20px;gap:32px;
+  z-index:40;backdrop-filter:blur(10px);
+}
+.info-block{display:flex;flex-direction:column;gap:2px}
+.info-label{font-size:11px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase}
+.info-value{font-size:15px;color:var(--text)}
+
+/* ─── Star Info Popup ─── */
+#star-info-panel{
+  display:none;
+  position:fixed;top:60px;left:50%;transform:translateX(-50%);
+  background:var(--panel);border:1px solid var(--border);
+  padding:16px 22px 14px;z-index:60;
+  min-width:340px;max-width:520px;width:92vw;text-align:center;
+  backdrop-filter:blur(12px);
+  box-shadow:0 0 40px rgba(123,94,167,0.3),0 0 80px rgba(0,0,0,0.6);
+}
+#star-info-name{
+  font-family:'Cinzel Decorative',serif;
+  font-size:12px;color:var(--gold);letter-spacing:2px;margin-bottom:3px;
+}
+#star-info-tech{font-size:10px;color:var(--purple2);letter-spacing:1px;margin-bottom:6px}
+/* Mini orrery */
+#sys-orrery{
+  display:block;width:100%;height:72px;
+  background:rgba(0,0,8,0.55);
+  border:1px solid rgba(255,255,255,0.05);
+  margin-bottom:10px;
+}
+/* Planet list */
+#star-planet-list{
+  display:flex;flex-direction:column;gap:5px;margin-bottom:12px;text-align:left;
+  max-height:280px;overflow-y:auto;
+}
+.planet-row{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:6px 8px;border:1px solid var(--border);
+  background:rgba(0,0,0,0.25);font-family:'Cinzel',serif;
+  cursor:default;transition:border-color 0.2s,background 0.2s;
+}
+.planet-row-unknown{opacity:0.45}
+.planet-row-home{
+  border-color:rgba(200,169,110,0.45)!important;
+  background:rgba(200,169,110,0.06)!important;
+}
+.planet-row-icon{font-size:14px;width:20px;text-align:center;flex-shrink:0}
+.planet-row-info{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.planet-row-name{font-size:10px;color:var(--gold);letter-spacing:1px}
+.planet-row-detail{font-size:9px;color:var(--dim);letter-spacing:0.5px}
+.planet-row-badge{
+  font-size:8px;letter-spacing:1px;padding:2px 5px;
+  border:1px solid;flex-shrink:0;
+}
+.badge-none{color:#2a2a3a;border-color:#2a2a3a}
+.badge-eyesight{color:#556677;border-color:#445566}
+.badge-probe{color:#88aacc;border-color:#6688aa}
+.badge-landing{color:var(--teal);border-color:var(--teal)}
+.badge-home{color:var(--gold);border-color:rgba(200,169,110,0.6)}
+/* Planet surface view button inside row */
+.planet-view-btn{
+  width:100%;margin-top:5px;
+  background:transparent;border:1px solid rgba(68,204,136,0.35);
+  color:var(--teal);font-family:'Cinzel',serif;
+  font-size:9px;letter-spacing:1.5px;padding:5px 0;
+  transition:all 0.2s;
+}
+.planet-view-btn:hover{background:rgba(68,204,136,0.12);border-color:var(--teal);color:#fff}
+.planet-row-home .planet-view-btn{
+  border-color:rgba(200,169,110,0.5);color:var(--gold);
+}
+.planet-row-home .planet-view-btn:hover{background:rgba(200,169,110,0.12);color:#fff}
+.star-info-btns{display:flex;gap:8px;justify-content:center}
+.star-btn{
+  background:transparent;border:1px solid var(--border);
+  color:var(--dim);font-family:'Cinzel',serif;
+  font-size:9px;letter-spacing:1px;
+  padding:6px 14px;cursor:pointer;transition:all 0.2s;
+}
+.star-btn:hover{border-color:var(--purple);color:var(--gold);background:rgba(123,94,167,0.12)}
+#close-star-info{border-color:rgba(255,85,51,0.4);color:rgba(255,85,51,0.6)}
+
+/* ─── DNA Investment Panel — Evolution Lab ─── */
+#dna-panel{
+  display:none;
+  padding:0;
+  border-top:1px solid rgba(68,204,136,0.18);
+  background:linear-gradient(180deg,rgba(4,18,12,0.6) 0%,rgba(2,8,6,0.4) 100%);
+}
+#dna-panel.visible{display:flex;flex-direction:column;}
+
+/* Header strip */
+.el-header{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 14px 8px;
+  border-bottom:1px solid rgba(68,204,136,0.12);
+  background:rgba(68,204,136,0.04);
+}
+.el-helix-icon{
+  flex-shrink:0;opacity:0.85;
+}
+.el-title{
+  font-family:'Cinzel Decorative',serif;font-size:10px;
+  color:#44ffcc;letter-spacing:2.5px;text-transform:uppercase;
+  text-shadow:0 0 10px rgba(68,255,204,0.45);
+  flex:1;
+}
+.el-phase-badge{
+  font-size:8px;color:rgba(68,255,204,0.55);letter-spacing:1.5px;
+  text-transform:uppercase;border:1px solid rgba(68,255,204,0.2);
+  padding:2px 6px;border-radius:2px;flex-shrink:0;
+  white-space:nowrap;
+}
+
+/* Phase progress row */
+.el-phase-row{
+  padding:8px 14px 0;
+  display:flex;flex-direction:column;gap:4px;
+}
+.el-phase-labels{
+  display:flex;justify-content:space-between;align-items:baseline;
+}
+.el-phase-name{font-size:10px;color:rgba(212,197,232,0.75);letter-spacing:1px;}
+.el-phase-pct{font-size:9px;color:rgba(68,255,204,0.55);letter-spacing:1px;}
+.el-phase-track{
+  height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;
+}
+.el-phase-fill{
+  height:100%;width:0%;border-radius:2px;
+  background:linear-gradient(90deg,rgba(68,204,136,0.7),#44ffcc);
+  transition:width 0.6s ease;
+  box-shadow:0 0 6px rgba(68,255,204,0.4);
+}
+
+/* Accumulation bar */
+.el-accum-row{
+  padding:8px 14px 10px;
+  border-bottom:1px solid rgba(68,204,136,0.1);
+}
+.el-accum-labels{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:4px;
+}
+.el-accum-label{font-size:9px;color:rgba(212,197,232,0.5);letter-spacing:1.5px;text-transform:uppercase;}
+.el-accum-count{
+  font-size:11px;color:#44ffcc;letter-spacing:1px;
+  font-variant-numeric:tabular-nums;
+}
+.el-accum-track{
+  height:5px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;
+  border:1px solid rgba(68,204,136,0.1);
+}
+.el-accum-fill{
+  height:100%;width:0%;border-radius:3px;
+  background:linear-gradient(90deg,#22aa66,#44ffcc);
+  transition:width 0.5s ease, box-shadow 0.4s ease;
+}
+.el-accum-fill.full{
+  background:linear-gradient(90deg,var(--gold),#44ffcc);
+  box-shadow:0 0 10px rgba(68,255,204,0.6),0 0 20px rgba(200,169,110,0.3);
+  animation:accumPulse 1.8s ease-in-out infinite;
+}
+@keyframes accumPulse{
+  0%,100%{box-shadow:0 0 8px rgba(68,255,204,0.5),0 0 16px rgba(200,169,110,0.2)}
+  50%{box-shadow:0 0 16px rgba(68,255,204,0.9),0 0 28px rgba(200,169,110,0.5)}
+}
+
+/* Branch rows */
+.el-branches{
+  padding:10px 14px 0;
+  display:flex;flex-direction:column;gap:0;
+}
+.el-branch-row{
+  display:flex;align-items:center;gap:7px;
+  padding:5px 0;
+  border-bottom:1px solid rgba(255,255,255,0.03);
+}
+.el-branch-row:last-child{border-bottom:none;}
+
+.el-branch-icon{
+  width:18px;height:18px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  border-radius:3px;font-size:10px;line-height:1;
+  /* color set per-branch via style attr */
+}
+.el-branch-name{
+  font-size:9px;letter-spacing:1px;text-transform:uppercase;
+  width:72px;flex-shrink:0;
+  color:rgba(212,197,232,0.65);
+}
+.el-branch-track{
+  flex:1;height:5px;
+  background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;
+  border:1px solid rgba(255,255,255,0.04);
+}
+.el-branch-fill{
+  height:100%;width:0%;border-radius:3px;
+  transition:width 0.35s ease;
+  /* background set per-branch via style attr */
+}
+.el-branch-val{
+  font-size:10px;width:14px;text-align:right;flex-shrink:0;
+  font-variant-numeric:tabular-nums;
+  /* color set per-branch via style attr */
+}
+/* Cost of the NEXT point in this branch. Points are no longer flat-priced —
+   see dnaPointCost() — so the price has to be on screen or the player cannot
+   tell why their balance dropped by four. */
+.el-branch-cost{
+  font-size:9px;width:16px;text-align:right;flex-shrink:0;
+  color:var(--gold);opacity:0.75;font-variant-numeric:tabular-nums;
+}
+.el-branch-cost::before{content:'\2013';opacity:0.5;margin-right:1px;}
+/* Evolution runs one branch at a time: the rest of the era's options are shut. */
+.el-branch-row.locked{opacity:0.32;filter:grayscale(0.7);}
+.el-branch-row.focused{
+  background:rgba(255,255,255,0.05);
+  box-shadow:inset 2px 0 0 rgba(255,221,153,0.7);
+}
+#el-focus-note{
+  font-size:9px;line-height:1.5;color:var(--dim);
+  padding:5px 2px 0;letter-spacing:0.3px;
+}
+#el-open-lab-btn{
+  width:100%;margin-top:8px;padding:6px;
+  background:rgba(60,150,110,0.14);border:1px solid rgba(125,255,180,0.3);
+  color:#7dffb4;font:inherit;font-size:10px;letter-spacing:1.6px;
+  border-radius:3px;cursor:pointer;transition:all 0.15s;
+}
+#el-open-lab-btn:hover{background:rgba(60,150,110,0.3);border-color:#7dffb4;}
+.el-branch-btns{display:flex;gap:2px;flex-shrink:0;}
+.el-btn{
+  width:20px;height:20px;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.1);
+  color:rgba(212,197,232,0.55);
+  font-size:13px;line-height:1;
+  cursor:pointer;border-radius:2px;transition:all 0.15s;
+  display:flex;align-items:center;justify-content:center;
+  font-family:monospace;
+  padding-bottom:1px;
+}
+.el-btn:hover{
+  background:rgba(68,255,204,0.12);
+  border-color:rgba(68,255,204,0.5);
+  color:#44ffcc;
+}
+.el-btn:active{transform:scale(0.9);}
+.el-btn:disabled{opacity:0.2;cursor:default;pointer-events:none;}
+
+/* Commit button */
+.el-commit-wrap{
+  padding:10px 14px 12px;
+  border-top:1px solid rgba(68,204,136,0.1);
+  margin-top:2px;
+}
+#el-commit-btn{
+  width:100%;padding:9px 0;
+  font-family:'Cinzel',serif;font-size:10px;letter-spacing:2.5px;text-transform:uppercase;
+  border-radius:3px;cursor:default;pointer-events:none;
+  border:1px solid rgba(255,255,255,0.1);
+  background:rgba(255,255,255,0.04);
+  color:rgba(212,197,232,0.3);
+  transition:all 0.4s ease;
+  position:relative;overflow:hidden;
+}
+#el-commit-btn.ready{
+  cursor:pointer;pointer-events:auto;
+  border-color:rgba(68,255,204,0.6);
+  background:linear-gradient(135deg,rgba(68,255,204,0.08) 0%,rgba(200,169,110,0.06) 100%);
+  color:#44ffcc;
+  box-shadow:0 0 14px rgba(68,255,204,0.18),inset 0 1px 0 rgba(68,255,204,0.1);
+  animation:commitGlow 2.5s ease-in-out infinite;
+}
+#el-commit-btn.ready::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent 0%,rgba(68,255,204,0.07) 50%,transparent 100%);
+  transform:translateX(-100%);
+  animation:commitSheen 3s ease-in-out infinite 0.5s;
+}
+@keyframes commitGlow{
+  0%,100%{box-shadow:0 0 10px rgba(68,255,204,0.15),inset 0 1px 0 rgba(68,255,204,0.08)}
+  50%{box-shadow:0 0 22px rgba(68,255,204,0.35),0 0 40px rgba(200,169,110,0.1),inset 0 1px 0 rgba(68,255,204,0.15)}
+}
+@keyframes commitSheen{
+  0%{transform:translateX(-100%)}60%,100%{transform:translateX(200%)}
+}
+#el-commit-btn.ready:hover{
+  background:linear-gradient(135deg,rgba(68,255,204,0.14) 0%,rgba(200,169,110,0.1) 100%);
+  border-color:#44ffcc;
+  color:#fff;
+}
+.el-hint{
+  font-size:8px;color:rgba(212,197,232,0.3);letter-spacing:1px;
+  margin-top:6px;text-align:center;line-height:1.6;
+}
+
+/* ─── Species Traits Modal ─── */
+#traits-overlay{
+  display:none;position:fixed;inset:0;z-index:5000;
+  background:rgba(0,0,2,0.88);
+  backdrop-filter:blur(8px);
+  -webkit-backdrop-filter:blur(8px);
+  align-items:flex-start;justify-content:center;
+  overflow-y:auto;
+  padding:24px 12px 32px;
+}
+#traits-overlay.open{display:flex;}
+
+#traits-modal{
+  width:min(860px,98vw);
+  background:linear-gradient(170deg,rgba(4,2,14,0.98) 0%,rgba(2,6,10,0.98) 100%);
+  border:1px solid rgba(68,255,204,0.2);
+  border-radius:4px;
+  box-shadow:
+    0 0 60px rgba(68,255,204,0.06),
+    0 0 120px rgba(123,94,167,0.08),
+    inset 0 1px 0 rgba(68,255,204,0.1);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  position:relative;
+}
+
+/* Corner ornaments */
+#traits-modal::before,#traits-modal::after{
+  content:'';position:absolute;
+  width:40px;height:40px;
+  pointer-events:none;
+}
+#traits-modal::before{
+  top:0;left:0;
+  border-top:1px solid rgba(68,255,204,0.45);
+  border-left:1px solid rgba(68,255,204,0.45);
+}
+#traits-modal::after{
+  top:0;right:0;
+  border-top:1px solid rgba(68,255,204,0.45);
+  border-right:1px solid rgba(68,255,204,0.45);
+}
+
+/* Modal header */
+.tm-header{
+  padding:28px 32px 20px;
+  border-bottom:1px solid rgba(68,255,204,0.12);
+  text-align:center;
+  position:relative;
+}
+.tm-eyebrow{
+  font-size:9px;letter-spacing:5px;color:rgba(68,255,204,0.5);
+  text-transform:uppercase;margin-bottom:8px;
+}
+.tm-title{
+  font-family:'Cinzel Decorative',serif;
+  font-size:22px;color:var(--gold);letter-spacing:3px;
+  text-shadow:0 0 30px rgba(200,169,110,0.5),0 0 60px rgba(200,169,110,0.2);
+}
+.tm-subtitle{
+  font-size:10px;color:rgba(212,197,232,0.4);
+  letter-spacing:2px;margin-top:6px;text-transform:uppercase;
+}
+.tm-close-btn{
+  position:absolute;top:20px;right:24px;
+  width:28px;height:28px;
+  background:none;border:1px solid rgba(255,255,255,0.1);
+  color:rgba(212,197,232,0.4);font-size:14px;cursor:pointer;
+  border-radius:2px;transition:all 0.2s;
+  display:flex;align-items:center;justify-content:center;
+}
+.tm-close-btn:hover{border-color:rgba(255,85,51,0.5);color:rgba(255,85,51,0.7);}
+
+/* Progress indicator */
+.tm-progress-row{
+  padding:10px 32px;
+  display:flex;align-items:center;gap:10px;
+  border-bottom:1px solid rgba(68,255,204,0.07);
+  background:rgba(68,255,204,0.02);
+}
+.tm-progress-label{
+  font-size:8px;color:rgba(212,197,232,0.4);letter-spacing:2px;text-transform:uppercase;
+  flex-shrink:0;width:130px;
+}
+.tm-progress-pips{
+  display:flex;gap:6px;flex:1;
+}
+.tm-pip{
+  flex:1;height:2px;border-radius:2px;
+  background:rgba(255,255,255,0.06);
+  transition:background 0.35s ease, box-shadow 0.35s ease;
+}
+.tm-pip.done{
+  background:#44ffcc;
+  box-shadow:0 0 6px rgba(68,255,204,0.6);
+}
+.tm-progress-count{
+  font-size:10px;color:rgba(68,255,204,0.6);
+  letter-spacing:1px;flex-shrink:0;
+  font-variant-numeric:tabular-nums;
+}
+
+/* Categories grid */
+.tm-categories{
+  padding:24px 28px;
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:16px;
+}
+@media(max-width:640px){
+  .tm-categories{grid-template-columns:1fr 1fr;}
+}
+
+/* Single category block */
+.tm-category{
+  display:flex;flex-direction:column;gap:8px;
+}
+.tm-cat-header{
+  display:flex;align-items:center;gap:8px;
+  padding-bottom:6px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+.tm-cat-icon{
+  width:22px;height:22px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+}
+.tm-cat-title{
+  font-size:9px;letter-spacing:2.5px;text-transform:uppercase;
+  color:rgba(212,197,232,0.55);
+}
+.tm-cat-check{
+  margin-left:auto;width:14px;height:14px;flex-shrink:0;
+  border:1px solid rgba(255,255,255,0.1);border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.3s;
+}
+.tm-cat-check.selected{
+  background:#44ffcc;border-color:#44ffcc;
+  box-shadow:0 0 8px rgba(68,255,204,0.7);
+}
+.tm-cat-check.selected::after{
+  content:'';display:block;
+  width:5px;height:5px;border-radius:50%;
+  background:#000;
+}
+
+/* Option cards within a category */
+.tm-options{
+  display:flex;flex-direction:column;gap:4px;
+}
+.tm-option{
+  padding:7px 10px;
+  border:1px solid rgba(255,255,255,0.06);
+  border-radius:3px;
+  background:rgba(255,255,255,0.02);
+  cursor:pointer;
+  transition:all 0.2s ease;
+  display:flex;align-items:center;gap:8px;
+  position:relative;
+  overflow:hidden;
+}
+.tm-option::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;
+  width:2px;background:transparent;
+  transition:background 0.2s ease, box-shadow 0.2s ease;
+}
+.tm-option:hover{
+  background:rgba(68,255,204,0.04);
+  border-color:rgba(68,255,204,0.2);
+}
+.tm-option:hover::before{
+  background:rgba(68,255,204,0.4);
+}
+.tm-option.selected{
+  background:rgba(68,255,204,0.07);
+  border-color:rgba(68,255,204,0.45);
+  box-shadow:0 0 14px rgba(68,255,204,0.08),inset 0 1px 0 rgba(68,255,204,0.06);
+}
+.tm-option.selected::before{
+  background:linear-gradient(180deg,#44ffcc,var(--gold));
+  box-shadow:0 0 8px rgba(68,255,204,0.6);
+}
+.tm-option-glyph{
+  font-size:12px;width:16px;text-align:center;flex-shrink:0;
+  opacity:0.6;transition:opacity 0.2s;
+}
+.tm-option.selected .tm-option-glyph{opacity:1;}
+.tm-option-name{
+  font-size:10px;letter-spacing:1px;text-transform:uppercase;
+  color:rgba(212,197,232,0.55);
+  transition:color 0.2s;
+  flex:1;
+}
+.tm-option.selected .tm-option-name{
+  color:#44ffcc;
+}
+.tm-option-desc{
+  font-size:8px;color:rgba(212,197,232,0.28);letter-spacing:0.5px;
+  margin-left:auto;text-align:right;max-width:80px;line-height:1.4;
+  display:none;
+}
+/* show desc only in larger viewport or wide modal */
+@media(min-width:800px){
+  .tm-option-desc{display:block;}
+}
+
+/* Footer: naming + evolve button */
+.tm-footer{
+  padding:18px 28px 24px;
+  border-top:1px solid rgba(68,255,204,0.1);
+  background:rgba(68,255,204,0.02);
+  display:flex;flex-direction:column;gap:14px;
+}
+.tm-naming-row{
+  display:flex;align-items:center;gap:12px;
+}
+.tm-naming-label{
+  font-size:9px;letter-spacing:2px;text-transform:uppercase;
+  color:rgba(212,197,232,0.45);flex-shrink:0;
+}
+#traits-species-name{
+  flex:1;
+  background:rgba(255,255,255,0.03);
+  border:1px solid rgba(68,255,204,0.2);
+  border-radius:3px;
+  padding:7px 12px;
+  font-family:'Cinzel',serif;font-size:12px;letter-spacing:1.5px;
+  color:#44ffcc;
+  outline:none;
+  transition:border-color 0.2s, box-shadow 0.2s;
+}
+#traits-species-name::placeholder{
+  color:rgba(212,197,232,0.2);letter-spacing:1px;
+}
+#traits-species-name:focus{
+  border-color:rgba(68,255,204,0.5);
+  box-shadow:0 0 12px rgba(68,255,204,0.1);
+}
+.tm-footer-btns{
+  display:flex;align-items:center;justify-content:flex-end;gap:12px;
+}
+.tm-cancel-btn{
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:2px;text-transform:uppercase;
+  background:none;border:1px solid rgba(255,255,255,0.1);
+  color:rgba(212,197,232,0.3);padding:10px 20px;
+  border-radius:2px;cursor:pointer;transition:all 0.2s;
+}
+.tm-cancel-btn:hover{border-color:rgba(255,85,51,0.4);color:rgba(255,85,51,0.6);}
+#traits-evolve-btn{
+  font-family:'Cinzel',serif;font-size:11px;letter-spacing:3px;text-transform:uppercase;
+  padding:11px 32px;border-radius:3px;cursor:default;pointer-events:none;
+  border:1px solid rgba(255,255,255,0.1);
+  background:rgba(255,255,255,0.04);
+  color:rgba(212,197,232,0.2);
+  transition:all 0.4s ease;
+  position:relative;overflow:hidden;
+}
+#traits-evolve-btn.ready{
+  cursor:pointer;pointer-events:auto;
+  border-color:rgba(200,169,110,0.55);
+  background:linear-gradient(135deg,rgba(200,169,110,0.1) 0%,rgba(68,255,204,0.06) 100%);
+  color:var(--gold);
+  text-shadow:0 0 16px rgba(200,169,110,0.6);
+  box-shadow:0 0 20px rgba(200,169,110,0.15),0 0 40px rgba(68,255,204,0.05);
+  animation:evolveGlow 2s ease-in-out infinite;
+}
+#traits-evolve-btn.ready::before{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(200,169,110,0.08),transparent);
+  transform:translateX(-100%);
+  animation:evolveSheen 3.5s ease-in-out infinite 1s;
+}
+@keyframes evolveGlow{
+  0%,100%{box-shadow:0 0 16px rgba(200,169,110,0.12),0 0 32px rgba(68,255,204,0.04)}
+  50%{box-shadow:0 0 28px rgba(200,169,110,0.28),0 0 56px rgba(68,255,204,0.1)}
+}
+@keyframes evolveSheen{
+  0%{transform:translateX(-100%)}50%,100%{transform:translateX(200%)}
+}
+#traits-evolve-btn.ready:hover{
+  background:linear-gradient(135deg,rgba(200,169,110,0.18) 0%,rgba(68,255,204,0.1) 100%);
+  border-color:var(--gold);color:#fff;text-shadow:0 0 20px rgba(200,169,110,0.8);
+}
+.tm-selection-notice{
+  font-size:9px;color:rgba(212,197,232,0.3);letter-spacing:1px;
+  flex:1;
+}
+
+/* ─── Big Bang overlay text ─── */
+#bigbang-overlay{
+  position:fixed;bottom:60px;left:50%;transform:translateX(-50%);
+  text-align:center;z-index:30;pointer-events:none;
+}
+#enter-universe-btn{
+  display:none;
+  pointer-events:auto;
+  background:transparent;
+  border:1px solid var(--gold);
+  color:var(--gold);font-family:'Cinzel Decorative',serif;
+  font-size:13px;letter-spacing:3px;
+  padding:14px 50px;cursor:pointer;
+  box-shadow:0 0 30px rgba(200,169,110,0.25);
+  animation:enterPulse 2s ease-in-out infinite;
+  transition:all 0.3s;
+}
+@keyframes enterPulse{
+  0%,100%{box-shadow:0 0 20px rgba(200,169,110,0.2)}
+  50%{box-shadow:0 0 40px rgba(200,169,110,0.5)}
+}
+#enter-universe-btn:hover{
+  background:rgba(200,169,110,0.1);
+  box-shadow:0 0 50px rgba(200,169,110,0.6);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCREEN 3: GAME
+═══════════════════════════════════════════════════════════════ */
+#screen-game{padding:0;overflow:hidden}
+
+#game-canvas{
+  position:fixed;inset:0;
+  display:block;width:100%;height:100%;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PLANET VIEW OVERLAY
+═══════════════════════════════════════════════════════════════ */
+#planet-overlay{
+  display:none;
+  position:fixed;inset:0;z-index:200;
+  background:#000;
+  flex-direction:column;
+}
+
+#planet-overlay-top{
+  height:56px;
+  background:var(--dark);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 18px;gap:16px;
+  flex-shrink:0;
+}
+.planet-overlay-title{
+  font-family:'Cinzel Decorative',serif;
+  font-size:13px;color:var(--gold);letter-spacing:2px;
+}
+#close-planet-btn{
+  margin-left:auto;
+  background:transparent;border:1px solid rgba(255,85,51,0.4);
+  color:rgba(255,85,51,0.8);font-family:'Cinzel',serif;
+  font-size:10px;letter-spacing:2px;
+  padding:6px 16px;cursor:pointer;transition:all 0.2s;
+}
+#close-planet-btn:hover{background:rgba(255,85,51,0.1);border-color:var(--red);color:var(--red)}
+#bio-toggle-btn {
+  padding: 4px 12px;
+  font-family: 'Cinzel Decorative', serif;
+  font-size: 9px;
+  letter-spacing: 1px;
+  background: rgba(0,180,130,0.08);
+  border: 1px solid rgba(0,180,130,0.3);
+  color: rgba(0,180,130,0.7);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: all 0.2s;
+}
+#bio-toggle-btn.active {
+  background: rgba(0,200,160,0.20);
+  border-color: var(--teal);
+  color: #44ccaa;
+}
+#bio-toggle-btn:hover {
+  background: rgba(0,200,160,0.12);
+  border-color: var(--teal);
+  color: #fff;
+}
+
+#planet-overlay-body{
+  display:flex;flex:1;overflow:hidden;
+}
+#planet-canvas{display:block;flex:1;min-width:0;}
+#diorama-mount{flex:1;min-width:0;overflow:hidden;}
+
+/* ── Planet Info Panel ─────────────────────────────────────── */
+#planet-info-panel{
+  width:340px;flex-shrink:0;
+  background:rgba(4,2,12,0.97);
+  border-left:1px solid var(--border);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}
+#pi-tabs{
+  display:flex;border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.pi-tab{
+  flex:1;padding:10px 4px;
+  background:transparent;border:none;border-bottom:2px solid transparent;
+  color:var(--dim);font-family:'Cinzel',serif;font-size:9px;letter-spacing:1.5px;
+  cursor:pointer;transition:all 0.2s;
+}
+.pi-tab:hover{color:var(--gold);}
+.pi-tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+.pi-tab-content{
+  display:none;flex:1;overflow-y:auto;padding:16px;
+}
+.pi-tab-content.active{display:block;}
+
+/* Overview tab */
+.pi-planet-name{
+  font-family:'Cinzel Decorative',serif;font-size:15px;
+  color:var(--gold);letter-spacing:2px;margin-bottom:4px;
+}
+.pi-planet-type-badge{
+  display:inline-block;
+  font-family:'Cinzel',serif;font-size:9px;letter-spacing:2px;
+  padding:2px 8px;border:1px solid var(--purple);
+  color:var(--purple);margin-bottom:14px;
+}
+.pi-section{margin-bottom:16px;}
+.pi-section-title{
+  font-family:'Cinzel',serif;font-size:8px;letter-spacing:3px;
+  color:var(--dim);border-bottom:1px solid rgba(255,255,255,0.06);
+  padding-bottom:5px;margin-bottom:8px;text-transform:uppercase;
+}
+.pi-row{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:5px;
+}
+.pi-row-label{font-size:10px;color:rgba(200,169,110,0.6);}
+.pi-row-value{font-size:10px;color:var(--text);text-align:right;}
+.pi-tile-coord{float:right;font-size:9px;color:rgba(200,169,110,0.45);letter-spacing:0.5px;}
+.pi-tile-actions{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;}
+.pi-tile-btn{
+  background:rgba(255,255,255,0.04);border:1px solid rgba(200,169,110,0.25);
+  color:var(--text);font:inherit;font-size:9px;letter-spacing:0.4px;
+  padding:5px 4px;text-align:left;text-transform:uppercase;
+}
+.pi-tile-btn:hover:not([disabled]){background:rgba(200,169,110,0.14);border-color:rgba(200,169,110,0.5);}
+.pi-tile-btn[disabled]{opacity:0.35;}
+.pi-tile-btn .cost{display:block;font-size:8px;color:rgba(200,169,110,0.6);margin-top:2px;}
+.pi-note{
+  font-size:9px;line-height:1.5;color:rgba(200,169,110,0.55);
+  font-style:italic;margin-top:6px;
+}
+.pi-bar-wrap{
+  background:rgba(255,255,255,0.06);border-radius:2px;
+  height:4px;margin-top:3px;overflow:hidden;
+}
+.pi-bar{height:100%;border-radius:2px;transition:width 0.4s;}
+.pi-dna-row{
+  display:flex;gap:8px;margin-bottom:8px;
+}
+.pi-dna-chip{
+  flex:1;padding:6px 8px;
+  background:rgba(123,94,167,0.1);border:1px solid rgba(123,94,167,0.25);
+  border-radius:3px;
+}
+.pi-dna-chip-label{font-size:7px;letter-spacing:2px;color:var(--dim);margin-bottom:2px;}
+.pi-dna-chip-value{font-size:9px;color:var(--purple);text-transform:capitalize;}
+.pi-resource-dot{
+  display:inline-flex;align-items:center;gap:5px;
+  font-size:9px;color:var(--text);margin-right:10px;margin-bottom:5px;
+}
+.pi-res-swatch{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.pi-no-data{font-size:10px;color:var(--dim);font-style:italic;padding:8px 0;}
+
+/* Codex tab */
+.pi-codex-species{
+  display:flex;align-items:center;gap:10px;margin-bottom:14px;
+}
+.pi-codex-species-icon{
+  width:42px;height:42px;border-radius:50%;
+  background:rgba(123,94,167,0.2);border:1px solid rgba(123,94,167,0.4);
+  display:flex;align-items:center;justify-content:center;
+  font-size:20px;flex-shrink:0;
+}
+.pi-codex-species-name{font-family:'Cinzel',serif;font-size:13px;color:var(--gold);}
+.pi-codex-species-desc{font-size:9px;color:var(--dim);margin-top:2px;}
+.pi-tech-track{margin-bottom:12px;}
+.pi-tech-step{
+  display:flex;align-items:center;gap:8px;
+  padding:4px 0;border-left:2px solid rgba(255,255,255,0.06);
+  padding-left:10px;margin-bottom:2px;font-size:9px;color:var(--dim);
+  position:relative;
+}
+.pi-tech-step::before{
+  content:'';position:absolute;left:-5px;top:50%;transform:translateY(-50%);
+  width:8px;height:8px;border-radius:50%;
+  background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);
+}
+.pi-tech-step.reached{color:var(--text);border-left-color:var(--purple);}
+.pi-tech-step.current{color:var(--gold);border-left-color:var(--gold);}
+.pi-tech-step.current::before{background:var(--gold);}
+.pi-tech-step.reached::before{background:var(--purple);}
+.pi-devotion-bar{
+  height:6px;background:rgba(255,255,255,0.06);border-radius:3px;
+  margin-top:4px;overflow:hidden;
+}
+.pi-devotion-fill{
+  height:100%;border-radius:3px;
+  background:linear-gradient(90deg,#c8a020,#ffe566);
+  transition:width 0.4s;
+}
+.pi-art-placeholder{
+  padding:20px;
+  background:rgba(123,94,167,0.05);
+  border:1px dashed rgba(123,94,167,0.2);
+  border-radius:4px;
+  text-align:center;
+  color:var(--dim);font-size:9px;letter-spacing:1px;
+}
+
+/* Legend tab */
+.pi-legend-row{
+  display:flex;align-items:center;gap:10px;
+  margin-bottom:8px;font-size:10px;color:var(--text);
+}
+.pi-legend-swatch{
+  width:22px;height:14px;border-radius:2px;flex-shrink:0;
+  border:1px solid rgba(255,255,255,0.08);
+}
+.pi-legend-group-title{
+  font-size:8px;letter-spacing:2px;color:var(--dim);
+  margin:12px 0 6px;text-transform:uppercase;
+}
+
+/* Panel expand */
+#planet-info-panel.expanded{width:620px;}
+#pi-expand-btn{
+  margin-left:auto;padding:0 10px;height:100%;
+  background:transparent;border:none;border-left:1px solid var(--border);
+  color:var(--dim);font-size:13px;cursor:pointer;transition:color 0.2s;
+  flex-shrink:0;
+}
+#pi-expand-btn:hover{color:var(--gold);}
+
+/* Accordion sections */
+.pi-accordion-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  cursor:pointer;user-select:none;
+  padding:5px 0;margin-bottom:0;
+}
+.pi-accordion-hdr:hover .pi-section-title{color:var(--gold);}
+.pi-accordion-arrow{
+  font-size:9px;color:var(--dim);transition:transform 0.2s;
+}
+.pi-accordion-body{
+  overflow:hidden;
+  max-height:0;
+  transition:max-height 0.3s ease;
+}
+.pi-accordion-body.open{max-height:600px;}
+.pi-accordion-hdr.open .pi-accordion-arrow{transform:rotate(90deg);}
+
+/* ═══════════════════════════════════════════════════════════════
+   MISC UTILITIES
+═══════════════════════════════════════════════════════════════ */
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* Tooltip hint */
+.hint{font-size:11px;color:var(--dim);letter-spacing:1px;text-align:center}
+
+/* ─── Meteor Impact Notification ─── */
+#meteor-impact-overlay{
+  display:none;position:fixed;inset:0;z-index:5000;
+  pointer-events:none;
+  align-items:center;justify-content:center;
+}
+#meteor-impact-overlay.open{display:flex;animation:meteorFadeIn 0.5s ease-out forwards}
+#meteor-impact-overlay.closing{animation:meteorFadeOut 0.8s ease-in forwards}
+#meteor-impact-card{
+  display:flex;flex-direction:column;align-items:center;gap:14px;
+  background:rgba(4,2,14,0.92);
+  border:1px solid rgba(255,140,40,0.45);
+  border-radius:4px;
+  padding:28px 36px;
+  box-shadow:0 0 60px rgba(255,100,20,0.3), 0 0 120px rgba(255,60,0,0.1);
+  max-width:420px;width:90vw;
+}
+#meteor-impact-img{
+  width:280px;height:180px;object-fit:cover;border-radius:3px;
+  border:1px solid rgba(255,120,30,0.35);
+}
+#meteor-impact-title{
+  font-family:'Cinzel Decorative',serif;font-size:11px;letter-spacing:3px;
+  color:rgba(255,160,60,0.9);text-transform:uppercase;
+}
+#meteor-impact-planet{
+  font-size:18px;color:var(--gold2);letter-spacing:2px;
+  font-family:'Cinzel',serif;font-weight:700;
+}
+#meteor-impact-sub{
+  font-size:10px;color:var(--dim);letter-spacing:1.5px;text-align:center;font-style:italic;
+}
+@keyframes meteorFadeIn{
+  0%{opacity:0;transform:scale(0.88)}100%{opacity:1;transform:scale(1)}
+}
+@keyframes meteorFadeOut{
+  0%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.06)}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CUSTOM CURSORS — DIVINE EYE
+   Default: The Cosmic Eye (divine sight)
+   Pointer: Divine Touch (tilted eye with gold halo — for interactables)
+   not-allowed: Dim closed eye (for disabled states)
+═══════════════════════════════════════════════════════════════ */
+
+/*
+  SVG DATA URI NOTES:
+  - default cursor hotspot: 16 16 (center iris)
+  - pointer cursor hotspot: 14 6  (upper focus point of tilted eye)
+  - All SVG url-encoded: spaces→%20, #→%23, "→', <>→%3C %3E
+*/
+
+/* --- DEFAULT: Cosmic Eye — applied globally via wildcard + !important --- */
+/* Overrides any element-level cursor:pointer declarations in earlier rules. */
+*, *::before, *::after {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='iris' cx='50%25' cy='50%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%23e8f8ff' stop-opacity='1'/%3E%3Cstop offset='35%25' stop-color='%2344ffcc' stop-opacity='0.95'/%3E%3Cstop offset='70%25' stop-color='%230a8888' stop-opacity='0.7'/%3E%3Cstop offset='100%25' stop-color='%23000820' stop-opacity='0'/%3E%3C/radialGradient%3E%3CradialGradient id='hull' cx='50%25' cy='50%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%230d0525' stop-opacity='0.95'/%3E%3Cstop offset='100%25' stop-color='%23050210' stop-opacity='0.98'/%3E%3C/radialGradient%3E%3Cfilter id='glow' x='-50%25' y='-50%25' width='200%25' height='200%25'%3E%3CfeGaussianBlur stdDeviation='1.2' result='blur'/%3E%3CfeMerge%3E%3CfeMergeNode in='blur'/%3E%3CfeMergeNode in='SourceGraphic'/%3E%3C/feMerge%3E%3C/filter%3E%3C/defs%3E%3Cpath d='M16 2 C22 8, 26 12, 26 16 C26 20, 22 24, 16 30 C10 24, 6 20, 6 16 C6 12, 10 8, 16 2 Z' fill='%23c8a96e' opacity='0.9'/%3E%3Cpath d='M16 4 C21 9.5, 24 13, 24 16 C24 19, 21 22.5, 16 28 C11 22.5, 8 19, 8 16 C8 13, 11 9.5, 16 4 Z' fill='url(%23hull)'/%3E%3Ccircle cx='16' cy='16' r='5.5' fill='none' stroke='%237b5ea7' stroke-width='0.8' opacity='0.7'/%3E%3Ccircle cx='16' cy='16' r='5' fill='url(%23iris)' filter='url(%23glow)'/%3E%3Ccircle cx='16' cy='16' r='1.8' fill='%23ffffff' opacity='0.95'/%3E%3Cline x1='16' y1='2' x2='16' y2='9' stroke='%23c8a96e' stroke-width='0.7' opacity='0.5'/%3E%3Cline x1='16' y1='23' x2='16' y2='30' stroke='%23c8a96e' stroke-width='0.7' opacity='0.5'/%3E%3Cline x1='6' y1='16' x2='10' y2='16' stroke='%2344ffcc' stroke-width='0.6' opacity='0.4'/%3E%3Cline x1='22' y1='16' x2='26' y2='16' stroke='%2344ffcc' stroke-width='0.6' opacity='0.4'/%3E%3Cline x1='8.5' y1='9' x2='10.5' y2='11' stroke='%23ffdd99' stroke-width='0.5' opacity='0.35'/%3E%3Cline x1='23.5' y1='9' x2='21.5' y2='11' stroke='%23ffdd99' stroke-width='0.5' opacity='0.35'/%3E%3Cline x1='8.5' y1='23' x2='10.5' y2='21' stroke='%23ffdd99' stroke-width='0.5' opacity='0.3'/%3E%3Cline x1='23.5' y1='23' x2='21.5' y2='21' stroke='%23ffdd99' stroke-width='0.5' opacity='0.3'/%3E%3C/svg%3E") 16 16, crosshair !important;
+}
+
+/* --- POINTER: Divine Touch — overrides the wildcard for all interactables --- */
+a, button, [role="button"],
+input[type="button"], input[type="submit"], input[type="reset"],
+input[type="range"], select, label[for],
+[class*="btn"], [class*="-tab"], [class*="row"],
+[style*="cursor:pointer"], [style*="cursor: pointer"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cdefs%3E%3CradialGradient id='iris2' cx='50%25' cy='50%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%23ffffff' stop-opacity='1'/%3E%3Cstop offset='30%25' stop-color='%23ffdd99' stop-opacity='0.95'/%3E%3Cstop offset='65%25' stop-color='%23c8a96e' stop-opacity='0.75'/%3E%3Cstop offset='100%25' stop-color='%23000820' stop-opacity='0'/%3E%3C/radialGradient%3E%3Cfilter id='glow2' x='-60%25' y='-60%25' width='220%25' height='220%25'%3E%3CfeGaussianBlur stdDeviation='1.5' result='blur'/%3E%3CfeMerge%3E%3CfeMergeNode in='blur'/%3E%3CfeMergeNode in='SourceGraphic'/%3E%3C/feMerge%3E%3C/filter%3E%3C/defs%3E%3Cg transform='rotate(45 16 16)'%3E%3Cpath d='M16 6 C20.5 10, 23 13, 23 16 C23 19, 20.5 22, 16 26 C11.5 22, 9 19, 9 16 C9 13, 11.5 10, 16 6 Z' fill='%23c8a96e' opacity='0.85'/%3E%3Cpath d='M16 8 C19.5 11.5, 21 14, 21 16 C21 18, 19.5 20.5, 16 24 C12.5 20.5, 11 18, 11 16 C11 14, 12.5 11.5, 16 8 Z' fill='%230d0525' opacity='0.96'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%23c8a96e' stroke-width='0.9' opacity='0.55' stroke-dasharray='2.5 2.5'/%3E%3Ccircle cx='16' cy='16' r='4.5' fill='url(%23iris2)' filter='url(%23glow2)'/%3E%3Ccircle cx='16' cy='16' r='1.5' fill='%23ffffff' opacity='1'/%3E%3Cline x1='16' y1='6.5' x2='16' y2='10.5' stroke='%23ffdd99' stroke-width='0.7' opacity='0.5' transform='rotate(45 16 16)'/%3E%3Cline x1='16' y1='21.5' x2='16' y2='25.5' stroke='%23ffdd99' stroke-width='0.7' opacity='0.5' transform='rotate(45 16 16)'/%3E%3C/svg%3E") 16 16, pointer !important;
+}
+
+/* --- NOT-ALLOWED: Closed Eye (disabled state) --- */
+[disabled], [aria-disabled="true"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M16 14 C22 14, 26 15.2, 26 16 C26 16.8, 22 18, 16 18 C10 18, 6 16.8, 6 16 C6 15.2, 10 14, 16 14 Z' fill='%23120d22' stroke='%234a3d5a' stroke-width='0.9'/%3E%3Cpath d='M6 16 C10 14, 13 13.2, 16 13 C19 13.2, 22 14, 26 16' fill='none' stroke='%236a5d7a' stroke-width='1' stroke-linecap='round'/%3E%3Cline x1='11' y1='14.5' x2='10.5' y2='13' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='14' y1='13.4' x2='14' y2='11.8' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='18' y1='13.4' x2='18' y2='11.8' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='21' y1='14.5' x2='21.5' y2='13' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3C/svg%3E") 16 16, not-allowed !important;
+}
+#leader-dialogue-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 900;
+  align-items: center;
+  justify-content: center;
+}
+#leader-dialogue-overlay.active {
+  display: flex;
+}
+#leader-dialogue-panel {
+  background: #0a0a0f;
+  border: 1px solid #4a3060;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 0 40px #7700aa55;
+}
+/* Universe Timeline */
+#timeline-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.82);
+  z-index: 910;
+  align-items: center;
+  justify-content: center;
+}
+#timeline-overlay.active { display: flex; }
+#timeline-modal {
+  background: #07070f;
+  border: 1px solid #2a1a3a;
+  border-radius: 8px;
+  width: min(680px, 94vw);
+  height: min(80vh, 700px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 60px #33006688;
+}
+.timeline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #1e1030;
+  flex-shrink: 0;
+}
+.timeline-title {
+  font-family: 'Cinzel Decorative', serif;
+  font-size: 13px;
+  color: #c8a96e;
+  letter-spacing: 2px;
+}
+#timeline-close-btn {
+  background: transparent;
+  border: none;
+  color: #664488;
+  font-size: 16px;
+  cursor: pointer;
+}
+#timeline-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 12px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.tl-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(100,60,140,0.08);
+}
+.tl-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 4px;
+  border: 2px solid rgba(0,0,0,0.4);
+}
+.tl-dot-war      { background: #ff6644; }
+.tl-dot-cosmic   { background: #ff9944; }
+.tl-dot-milestone{ background: #ffdd88; }
+.tl-dot-discovery{ background: #44cccc; }
+.tl-body { flex: 1; min-width: 0; }
+.tl-meta {
+  font-size: 9px;
+  color: #553366;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.tl-text {
+  font-size: 11px;
+  color: #bbaacc;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#timeline-count {
+  font-size: 9px;
+  color: #442255;
+  padding: 8px 20px;
+  border-top: 1px solid #1e1030;
+  flex-shrink: 0;
+}
+
+/* First Contact Modal */
+#first-contact-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.88);
+  z-index: 920;
+  align-items: center;
+  justify-content: center;
+}
+#first-contact-overlay.active { display: flex; }
+#first-contact-modal {
+  background: #05050e;
+  border: 1px solid #003344;
+  border-radius: 8px;
+  padding: 32px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 0 80px #004466aa;
+  text-align: center;
+}
+.fc-header {
+  font-family: 'Cinzel Decorative', serif;
+  font-size: 11px;
+  color: #44cccc;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.fc-title {
+  font-size: 20px;
+  color: #aaeeff;
+  margin-bottom: 16px;
+  font-weight: bold;
+}
+.fc-body {
+  font-size: 12px;
+  color: #88aacc;
+  line-height: 1.7;
+  margin-bottom: 24px;
+  font-style: italic;
+}
+.fc-choices { display: flex; flex-direction: column; gap: 8px; }
+.fc-choice-btn {
+  padding: 10px 16px;
+  background: #0a1520;
+  border: 1px solid #224455;
+  color: #aaccdd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+.fc-choice-btn:hover { background: #102030; border-color: #44aacc; color: #ddeeff; }
+.fc-choice-sub { font-size: 10px; color: #446677; margin-top: 3px; }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 0: START MENU
+══════════════════════════════════════════════════════════ -->
+<div class="screen active" id="screen-menu">
+  <div class="menu-nebula"></div>
+  <div class="menu-content">
+    <div class="menu-logo">ETERNAL<br>SYSTEMS</div>
+    <div class="menu-tagline">A universe waits. Dare you witness it?</div>
+    <div class="menu-divider"></div>
+    <button class="menu-btn primary" id="begin-btn">BEGIN GENESIS</button>
+    <button class="menu-btn" id="continue-btn">CONTINUE</button>
+    <button class="menu-btn" id="menu-settings-btn">⚙ SETTINGS</button>
+    <div id="no-save-msg">No saved universe found.</div>
+    <div style="height:10px"></div>
+    <div class="hint">SCROLL · PAN · CLICK STARS · [F] FOCUS · [ESC] PLANET VIEW</div>
+  </div>
+  <div class="menu-version">ETERNAL SYSTEMS v0.1 · PROCEDURAL AI SIMULATION</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 1: D20 STAT ROLLING
+══════════════════════════════════════════════════════════ -->
+<div class="screen" id="screen-rolling">
+  <button id="rolling-back-btn" style="position:absolute;top:18px;left:18px;background:transparent;border:1px solid rgba(255,255,255,0.15);color:var(--dim);font-family:'Cinzel',serif;font-size:9px;letter-spacing:2px;padding:6px 14px;cursor:pointer;transition:all 0.2s;z-index:10;" onmouseover="this.style.color='#fff';this.style.borderColor='rgba(255,255,255,0.4)'" onmouseout="this.style.color='';this.style.borderColor='rgba(255,255,255,0.15)'">← BACK</button>
+  <div class="rolling-title">BEFORE THE BIG BANG</div>
+  <div class="rolling-subtitle">DEFINE THE PARAMETERS OF YOUR COSMOS</div>
+
+  <div id="planet-name-header">
+    <label class="planet-name-label">YOUR HOME PLANET</label>
+    <input type="text" id="planet-name-input" placeholder="e.g. Terra Nova" maxlength="30" autocomplete="off"/>
+    <div class="planet-name-hint">This name is woven into the seed of your universe</div>
+  </div>
+
+  <div id="stat-cards"></div>
+
+  <div id="god-roll-section">
+    <div class="god-roll-card">
+      <div class="god-roll-header">⟁ The God Rolls for Dominion</div>
+      <div class="god-roll-num" id="god-roll-num">—</div>
+      <div class="god-roll-label" id="god-roll-label"></div>
+    </div>
+  </div>
+
+  <!-- ── Soul Questions (shown after God rolls) ── -->
+  <div id="planet-questions-section">
+    <div class="pq-header">
+      <div class="pq-god-title">The God reads your soul</div>
+      <div class="pq-god-subtitle">"Answer with honesty. Your world will be shaped by what you are."</div>
+    </div>
+    <div class="pq-grid">
+
+      <div class="pq-card" id="pq-card-climate">
+        <div class="pq-god-voice">The God asks</div>
+        <div class="pq-question">"Before you existed — what silence called to you?"</div>
+        <div class="pq-choices">
+          <button class="pq-choice" data-q="climate" data-v="desert"
+            data-reveal="Your world: dry, vast, and patient — a desert world"
+          >The hush of open dunes, heat and emptiness stretching without end</button>
+          <button class="pq-choice" data-q="climate" data-v="temperate"
+            data-reveal="Your world: fertile, restless, alive — a temperate world"
+          >The smell of rain through leaves, life stirring in every direction</button>
+          <button class="pq-choice" data-q="climate" data-v="frozen"
+            data-reveal="Your world: pristine, still, and cold — a frozen world"
+          >The cold at the edge of everything, clean and utterly untouched</button>
+        </div>
+        <div class="pq-reveal" id="pq-reveal-climate"></div>
+      </div>
+
+      <div class="pq-card" id="pq-card-oceans">
+        <div class="pq-god-voice">The God asks</div>
+        <div class="pq-question">"What does your deepest longing sound like?"</div>
+        <div class="pq-choices">
+          <button class="pq-choice" data-q="oceans" data-v="barren"
+            data-reveal="Your world: solid, grounded, unyielding — little water"
+          >Stone on stone. Solid ground. I need certainty beneath me</button>
+          <button class="pq-choice" data-q="oceans" data-v="mixed"
+            data-reveal="Your world: shore and sea in balance — mixed continents"
+          >The line where land meets wave — I am drawn to the edge of things</button>
+          <button class="pq-choice" data-q="oceans" data-v="ocean_world"
+            data-reveal="Your world: deep, boundless, swallowing — a world ocean"
+          >The pressure of vast dark water. I need to go deeper still</button>
+        </div>
+        <div class="pq-reveal" id="pq-reveal-oceans"></div>
+      </div>
+
+      <div class="pq-card" id="pq-card-chaos">
+        <div class="pq-god-voice">The God asks</div>
+        <div class="pq-question">"When the storm finds you — what are you?"</div>
+        <div class="pq-choices">
+          <button class="pq-choice" data-q="chaos" data-v="serene"
+            data-reveal="Your world: clear skies, calm winds — a serene world"
+          >The eye. The still center that the storm bends around</button>
+          <button class="pq-choice" data-q="chaos" data-v="turbulent"
+            data-reveal="Your world: shifting skies, restless winds — turbulent"
+          >Something caught between — neither fury nor peace, always becoming</button>
+          <button class="pq-choice" data-q="chaos" data-v="storm"
+            data-reveal="Your world: eternal storms, crackling skies — wild"
+          >The storm itself. I am the disruption that cannot be tamed</button>
+        </div>
+        <div class="pq-reveal" id="pq-reveal-chaos"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="rolling-actions">
+    <button class="action-btn" id="roll-btn">⬡ ROLL</button>
+    <button class="action-btn primary-action" id="genesis-btn" style="display:none">
+      ✦ WITNESS THE GENESIS ✦
+    </button>
+    <div class="hint" id="roll-hint">Roll each stat in order. Higher is stronger. Fate is unforgiving.</div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 2: BIG BANG
+══════════════════════════════════════════════════════════ -->
+<div class="screen" id="screen-bigbang">
+  <canvas id="bigbang-canvas"></canvas>
+
+  <!-- HUD overlaid on Big Bang canvas -->
+  <div class="top-bar">
+    <div class="top-logo">ETERNAL SYSTEMS</div>
+    <div class="top-sep"></div>
+    <div id="tick-display">TICK: 0 &nbsp;|&nbsp; AGE: 0 YRS</div>
+    <div class="speed-controls">
+      <button class="speed-btn" data-speed="0" title="Pause">❚❚</button>
+      <button class="speed-btn active" data-speed="1">1×</button>
+      <button class="speed-btn" data-speed="10">10×</button>
+      <button class="speed-btn" data-speed="50">50×</button>
+      <button class="speed-btn" data-speed="200">200×</button>
+      <button class="speed-btn" data-speed="1000">1000×</button>
+    </div>
+    <div class="top-spacer"></div>
+    <div id="dp-display" style="display:none">✦ 0 DP</div>
+    <div id="dna-display" style="font-size:12px;color:#44cc88;letter-spacing:1px;flex-shrink:0;display:none">🧬 0 DNA</div>
+    <div id="tech-display" style="font-size:12px;color:#44aaff;letter-spacing:1px;flex-shrink:0;display:none">⚙ 0 TP</div>
+    <div class="top-sep"></div>
+    <div id="save-controls">
+      <span id="save-indicator">✓ SAVED</span>
+      <button id="export-save-btn" title="Export .eternal save file">↓ EXPORT</button>
+      <button id="import-save-btn" title="Import .eternal save file">↑ IMPORT</button>
+      <input type="file" id="import-file-input" accept=".eternal" style="display:none">
+    </div>
+    <button id="top-codex-btn" title="Open Codex">📖 CODEX</button>
+    <button class="hud-btn" id="timeline-btn" title="Universe Timeline">⏳</button>
+    <button id="top-mystar-btn" title="Focus player star">◎ MY STAR</button>
+    <button id="top-notif-btn" title="Event log">🔔<span id="notif-badge"></span></button>
+    <button id="settings-btn" title="Settings">⚙</button>
+    <div id="god-name-top" style="display:none">—</div>
+  </div>
+
+  <!-- ── LEFT PANEL: Divine Powers + DNA + Tech ── -->
+  <div class="left-panel">
+    <!-- Divine Actions section -->
+    <div class="lp-section">
+      <div class="lp-section-header">
+        <span class="lp-section-title">✦ Divine Powers</span>
+        <span class="lp-section-value" id="divine-dp-counter">0 DP</span>
+      </div>
+      <div class="divine-panel" style="border-top:none;padding-top:0">
+        <button class="divine-action-btn" id="nudge-evolution-btn" disabled>
+          <span class="divine-action-name">⬆ NUDGE EVOLUTION</span>
+          <span class="divine-action-desc">Advance your civilization one tech tier</span>
+          <span class="divine-action-cost">10 DP</span>
+        </button>
+        <button class="divine-action-btn" id="divine-explore-btn" disabled>
+          <span class="divine-action-name">✦ DIVINE SIGHT</span>
+          <span class="divine-action-desc">Reveal uncharted regions of the cosmos</span>
+          <span class="divine-action-cost">20 DP</span>
+        </button>
+        <button class="divine-action-btn" id="bless-harvest-btn" disabled>
+          <span class="divine-action-name">🌾 BLESS HARVEST</span>
+          <span class="divine-action-desc">Enrich your world — biosphere flourishes</span>
+          <span class="divine-action-cost">5 DP</span>
+        </button>
+        <button class="divine-action-btn" id="send-prophet-btn" disabled>
+          <span class="divine-action-name">✦ SEND PROPHET</span>
+          <span class="divine-action-desc">Inspire your people — next era arrives faster</span>
+          <span class="divine-action-cost">15 DP</span>
+        </button>
+        <button class="divine-action-btn" id="trigger-revelation-btn" disabled>
+          <span class="divine-action-name">✦ TRIGGER REVELATION</span>
+          <span class="divine-action-desc">Send a divine sign — deepen your faith's devotion</span>
+          <span class="divine-action-cost">15 DP</span>
+        </button>
+        <button class="divine-action-btn" id="send-meteor-btn" disabled style="display:none">
+          <span class="divine-action-name">☄ SEND METEOR</span>
+          <span class="divine-action-desc">Hurl a life-seeding meteor at the nearest lifeless world</span>
+          <span class="divine-action-cost">20 DP</span>
+        </button>
+        <button class="divine-action-btn" id="smite-asteroid-btn" disabled style="display:none">
+          <span class="divine-action-name">☄ SMITE ASTEROID</span>
+          <span class="divine-action-desc">Destroy the incoming asteroid threatening your world</span>
+          <span class="divine-action-cost">25 DP</span>
+        </button>
+        <button class="divine-action-btn" id="terraform-btn" disabled style="display:none">
+          <span class="divine-action-name">⬡ TERRAFORM</span>
+          <span class="divine-action-desc">Reshape your home world through divine geological intervention</span>
+          <span class="divine-action-cost" id="terraform-cost">50 DP</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Terraform Target Modal -->
+    <div id="terraform-overlay" class="modal-overlay" style="display:none">
+      <div class="modal-panel" style="max-width:420px">
+        <div class="modal-header">
+          <span class="modal-title">⬡ DIVINE TERRAFORMING</span>
+          <button class="modal-close-btn" id="terraform-close-btn">✕</button>
+        </div>
+        <div style="padding:16px 20px 8px">
+          <p style="color:#aaa;font-size:11px;margin:0 0 14px">
+            Channel divine geological forces to reshape your home world. Each stage takes centuries.
+          </p>
+          <div id="terraform-options" style="display:flex;flex-direction:column;gap:10px"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DNA Investment Panel — Evolution Lab (shown during biology phases) -->
+    <div id="dna-panel">
+
+      <!-- Header -->
+      <div class="el-header">
+        <!-- Inline DNA helix SVG -->
+        <svg class="el-helix-icon" width="16" height="22" viewBox="0 0 16 22" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M2 1 C6 4, 10 4, 14 7 C10 10, 6 10, 2 13 C6 16, 10 16, 14 19" stroke="#44ffcc" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0.8"/>
+          <path d="M14 1 C10 4, 6 4, 2 7 C6 10, 10 10, 14 13 C10 16, 6 16, 2 19" stroke="rgba(68,255,204,0.35)" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+          <line x1="4.5" y1="4.5" x2="11.5" y2="4.5" stroke="#44ffcc" stroke-width="0.8" opacity="0.5"/>
+          <line x1="3" y1="7" x2="13" y2="7" stroke="#44ffcc" stroke-width="0.8" opacity="0.35"/>
+          <line x1="3" y1="13" x2="13" y2="13" stroke="#44ffcc" stroke-width="0.8" opacity="0.35"/>
+          <line x1="4.5" y1="16.5" x2="11.5" y2="16.5" stroke="#44ffcc" stroke-width="0.8" opacity="0.5"/>
+        </svg>
+        <span class="el-title">Evolution Lab</span>
+        <span class="el-phase-badge" id="el-phase-badge">Microbial</span>
+      </div>
+
+      <!-- Phase progress -->
+      <div class="el-phase-row">
+        <div class="el-phase-labels">
+          <span class="el-phase-name" id="el-phase-name">Microbial Life</span>
+          <span class="el-phase-pct" id="el-phase-pct">0%</span>
+        </div>
+        <div class="el-phase-track"><div class="el-phase-fill" id="dna-phase-bar" style="width:0%"></div></div>
+      </div>
+
+      <!-- DNA accumulation bar -->
+      <div class="el-accum-row">
+        <div class="el-accum-labels">
+          <span class="el-accum-label">DNA Points</span>
+          <span class="el-accum-count" id="el-accum-count">0 / 100</span>
+        </div>
+        <div class="el-accum-track">
+          <div class="el-accum-fill" id="el-accum-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Branch rows (populated by JS via id="dna-branch-rows") -->
+      <div class="el-branches" id="dna-branch-rows"></div>
+      <div id="el-focus-note">Choose one branch to evolve this era.</div>
+
+      <!-- Commit button -->
+      <button id="el-open-lab-btn" title="Open the full Evolution Lab">⬡ OPEN EVOLUTION LAB</button>
+
+      <div class="el-commit-wrap">
+        <button id="el-commit-btn" disabled>Accumulate 100 DNA</button>
+        <div class="el-hint">Invest points to shape your species traits.<br>Intelligence hastens evolution. Aggression breeds war.</div>
+      </div>
+
+    </div>
+
+    <!-- Tech points display (shown when tech points available) -->
+    <div id="tech-panel" style="display:none;padding:10px 14px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--dim);letter-spacing:2px;text-transform:uppercase;margin-bottom:6px">⚙ Technology</div>
+      <div id="tech-display-left" style="font-size:14px;color:#44aaff;letter-spacing:1px">0 Tech Points</div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT PANEL: God Chat + Events ── -->
+  <div class="right-panel">
+    <div class="god-nameplate">
+      <div id="god-name-display">AWAITING GENESIS...</div>
+      <div class="god-mood-dot"></div>
+    </div>
+    <div id="chat-thread">
+      <div class="msg msg-god">Before light, there was only potential. The universe stirs.</div>
+    </div>
+    <div id="player-input-area">
+      <input id="player-input" type="text" placeholder="Speak to the god..." maxlength="200"/>
+      <button id="send-btn">SEND</button>
+    </div>
+    <div class="event-feed-header">
+      <span class="event-feed-label">Events</span>
+      <button id="event-log-expand-btn">EXPAND ⤢</button>
+    </div>
+    <div id="event-feed"></div>
+  </div>
+
+  <!-- hidden focus-player-btn for backward compat with main.ts -->
+  <button id="focus-player-btn" style="display:none"></button>
+
+  <!-- Notification Toasts -->
+  <div id="toast-container"></div>
+
+  <!-- Event Log Modal -->
+  <div id="event-log-modal">
+    <div class="event-log-titlebar">
+      <span class="event-log-title">EVENT LOG</span>
+      <button class="event-log-close" id="event-log-close-btn">CLOSE ✕</button>
+    </div>
+    <div class="event-log-toolbar">
+      <input id="event-log-search" type="text" placeholder="Search events..." autocomplete="off" spellcheck="false">
+      <div class="event-log-filters">
+        <button class="elf-btn active" data-filter="all">ALL</button>
+        <button class="elf-btn" data-filter="milestone">MILESTONE</button>
+        <button class="elf-btn" data-filter="war">WAR</button>
+        <button class="elf-btn" data-filter="cosmic">COSMIC</button>
+        <button class="elf-btn" data-filter="discovery">DISCOVERY</button>
+      </div>
+      <span id="event-log-count">0 events</span>
+    </div>
+    <div class="event-log-list" id="event-log-list"></div>
+  </div>
+
+  <div class="bottom-bar">
+    <button id="view-homeworld-btn" title="View your home world surface">◎ HOME WORLD</button>
+    <div class="bb-sep"></div>
+    <div class="info-block">
+      <div class="info-label">Planet</div>
+      <div class="info-value" id="planet-name-bar">—</div>
+    </div>
+    <div class="info-block">
+      <div class="info-label">Life</div>
+      <div class="info-value" id="species-bar">—</div>
+    </div>
+    <div class="info-block">
+      <div class="info-label">Phase</div>
+      <div class="info-value" id="phase-bar">—</div>
+    </div>
+    <div class="info-block">
+      <div class="info-label">Civilization</div>
+      <div class="info-value" id="civ-bar">—</div>
+    </div>
+    <div class="info-block" style="margin-left:auto">
+      <div class="info-label">View</div>
+      <div id="zoom-tiers">
+        <button class="zt-btn" data-tier="universe">UNIVERSE</button>
+        <button class="zt-btn" data-tier="galaxy">GALAXY</button>
+        <button class="zt-btn" data-tier="system">SYSTEM</button>
+        <button class="zt-btn" data-tier="planet">PLANET</button>
+      </div>
+    </div>
+    <div class="info-block">
+      <div class="info-value" style="font-size:9px;color:var(--dim)">Scroll to zoom · Drag to pan</div>
+    </div>
+  </div>
+
+  <!-- Star info popup -->
+  <div id="star-info-panel">
+    <div id="star-info-name">—</div>
+    <div id="star-info-tech">—</div>
+    <canvas id="sys-orrery"></canvas>
+    <div id="star-planet-list"></div>
+    <div class="star-info-btns">
+      <button class="star-btn" id="close-star-info">✕ CLOSE</button>
+    </div>
+  </div>
+
+  <!-- Enter Universe button (appears after Big Bang settles) -->
+  <div id="bigbang-overlay">
+    <button id="enter-universe-btn">ENTER YOUR UNIVERSE</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     SCREEN 3: GAME (same HUD, different canvas)
+══════════════════════════════════════════════════════════ -->
+<div class="screen" id="screen-game">
+  <canvas id="game-canvas"></canvas>
+  <!-- HUD is shared from bigbang screen — elements are not duplicated.
+       Instead the bigbang HUD elements remain fixed on top. -->
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     PLANET VIEW OVERLAY
+══════════════════════════════════════════════════════════ -->
+<div id="planet-overlay">
+  <div id="planet-overlay-top">
+    <div class="planet-overlay-title" id="planet-overlay-title">◎ PLANET SURFACE VIEW</div>
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1px">SCROLL TO ZOOM · DRAG TO PAN</div>
+    <button id="close-planet-btn">✕ RETURN TO STAR MAP</button>
+  </div>
+  <div id="planet-overlay-body">
+    <canvas id="planet-canvas" style="display:none;"></canvas>
+    <div id="diorama-mount" style="flex:1;min-width:0;position:relative;display:none;"></div>
+
+    <!-- ── Planet Info Panel ── -->
+    <div id="planet-info-panel">
+      <div id="pi-tabs">
+        <button class="pi-tab active" data-tab="overview">OVERVIEW</button>
+        <button class="pi-tab" data-tab="codex">CODEX</button>
+        <button class="pi-tab" data-tab="legend">LEGEND</button>
+        <button id="pi-expand-btn" title="Expand panel">⇤</button>
+      </div>
+
+      <!-- OVERVIEW -->
+      <div id="pi-tab-overview" class="pi-tab-content active">
+        <div class="pi-planet-name" id="pi-planet-name">—</div>
+        <div class="pi-planet-type-badge" id="pi-type-badge">UNKNOWN</div>
+
+        <div class="pi-section" id="pi-tile-section" style="display:none">
+          <div class="pi-section-title">Selected Tile <span id="pi-tile-coord" class="pi-tile-coord"></span></div>
+          <div class="pi-row"><span class="pi-row-label">Biome</span><span class="pi-row-value" id="pi-tile-biome">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Elevation</span><span class="pi-row-value" id="pi-tile-elev">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Climate</span><span class="pi-row-value" id="pi-tile-climate">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Fertility</span><span class="pi-row-value" id="pi-tile-fert">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Life</span><span class="pi-row-value" id="pi-tile-life">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Settlement</span><span class="pi-row-value" id="pi-tile-civ">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Dominant Species</span><span class="pi-row-value" id="pi-tile-species">—</span></div>
+          <div class="pi-note" id="pi-tile-species-detail"></div>
+          <div class="pi-tile-actions" id="pi-tile-actions"></div>
+          <div class="pi-note" id="pi-tile-msg"></div>
+        </div>
+
+        <div class="pi-section">
+          <div class="pi-section-title">System</div>
+          <div class="pi-row"><span class="pi-row-label">Star System</span><span class="pi-row-value" id="pi-star-system">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Planet Index</span><span class="pi-row-value" id="pi-planet-index">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Simulation Age</span><span class="pi-row-value" id="pi-sim-age">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Habitability</span><span class="pi-row-value" id="pi-habitability">—</span></div>
+        </div>
+
+        <div class="pi-section" id="pi-biology-section" style="display:none">
+          <div class="pi-section-title">Biology</div>
+          <div class="pi-row"><span class="pi-row-label">Biochemistry</span><span class="pi-row-value" id="pi-biochem">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Evolutionary Tempo</span><span class="pi-row-value" id="pi-tempo">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Status</span><span class="pi-row-value" id="pi-bio-status">—</span></div>
+          <div class="pi-note" id="pi-biochem-note"></div>
+        </div>
+
+        <div class="pi-section">
+          <div class="pi-section-title">Civilization</div>
+          <div class="pi-row"><span class="pi-row-label">Era</span><span class="pi-row-value" id="pi-era">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Population</span><span class="pi-row-value" id="pi-population">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Biosphere</span><span class="pi-row-value" id="pi-biosphere">—</span></div>
+          <div class="pi-bar-wrap"><div class="pi-bar" id="pi-biosphere-bar" style="width:0%;background:#44aa66;"></div></div>
+        </div>
+
+        <div class="pi-section" id="pi-dna-section" style="display:none">
+          <div class="pi-section-title">World DNA</div>
+          <div class="pi-dna-row">
+            <div class="pi-dna-chip"><div class="pi-dna-chip-label">CLIMATE</div><div class="pi-dna-chip-value" id="pi-dna-climate">—</div></div>
+            <div class="pi-dna-chip"><div class="pi-dna-chip-label">OCEANS</div><div class="pi-dna-chip-value" id="pi-dna-oceans">—</div></div>
+            <div class="pi-dna-chip"><div class="pi-dna-chip-label">CHAOS</div><div class="pi-dna-chip-value" id="pi-dna-chaos">—</div></div>
+          </div>
+        </div>
+
+        <div class="pi-section" id="pi-religion-section" style="display:none">
+          <div class="pi-section-title">Religion</div>
+          <div class="pi-row"><span class="pi-row-label">Faith</span><span class="pi-row-value" id="pi-religion-name">—</span></div>
+          <div class="pi-row"><span class="pi-row-label">Devotion</span><span class="pi-row-value" id="pi-devotion-pct">—</span></div>
+          <div class="pi-bar-wrap"><div class="pi-bar" id="pi-devotion-bar" style="width:0%;background:linear-gradient(90deg,#c8a020,#ffe566);"></div></div>
+        </div>
+
+        <div class="pi-section">
+          <div class="pi-section-title">Resources</div>
+          <div id="pi-resources">—</div>
+        </div>
+      </div>
+
+      <!-- CODEX -->
+      <div id="pi-tab-codex" class="pi-tab-content">
+
+        <!-- Species -->
+        <div class="pi-section">
+          <div class="pi-accordion-hdr open" data-acc="species">
+            <div class="pi-section-title" style="margin:0">Species</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body open" id="pi-acc-species">
+            <div style="height:8px"></div>
+            <div class="pi-codex-species">
+              <div class="pi-codex-species-icon" id="pi-species-icon">👁</div>
+              <div>
+                <div class="pi-codex-species-name" id="pi-species-name">Unknown</div>
+                <div class="pi-codex-species-desc" id="pi-species-desc">No data available</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Evolution Timeline -->
+        <div class="pi-section">
+          <div class="pi-accordion-hdr open" data-acc="evo">
+            <div class="pi-section-title" style="margin:0">Evolution Timeline</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body open" id="pi-acc-evo">
+            <div style="height:8px"></div>
+            <div class="pi-tech-track" id="pi-tech-track"></div>
+          </div>
+        </div>
+
+        <!-- Technology -->
+        <div class="pi-section">
+          <div class="pi-accordion-hdr open" data-acc="tech">
+            <div class="pi-section-title" style="margin:0">Technology</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body open" id="pi-acc-tech">
+            <div style="height:8px"></div>
+            <div class="pi-row"><span class="pi-row-label">Current Level</span><span class="pi-row-value" id="pi-tech-level">—</span></div>
+            <div style="font-size:9px;color:var(--dim);margin-top:6px;line-height:1.6;" id="pi-tech-desc">—</div>
+          </div>
+        </div>
+
+        <!-- Planetary DNA -->
+        <div class="pi-section" id="pi-codex-dna-section" style="display:none">
+          <div class="pi-accordion-hdr" data-acc="dna">
+            <div class="pi-section-title" style="margin:0">Planetary DNA</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body" id="pi-acc-dna">
+            <div style="height:8px"></div>
+            <div style="font-size:9px;color:var(--dim);line-height:1.7;" id="pi-codex-dna-text">—</div>
+          </div>
+        </div>
+
+        <!-- Cultural Archives -->
+        <div class="pi-section">
+          <div class="pi-accordion-hdr" data-acc="art">
+            <div class="pi-section-title" style="margin:0">Cultural Archives</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body" id="pi-acc-art">
+            <div style="height:8px"></div>
+            <div class="pi-art-placeholder">
+              ART &amp; CULTURAL RECORDS<br>
+              <span style="font-size:8px;opacity:0.5;">[ Coming in a future epoch ]</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LEGEND -->
+      <div id="pi-tab-legend" class="pi-tab-content">
+        <div class="pi-legend-group-title">Terrain</div>
+        <div id="pi-legend-terrain"></div>
+        <div class="pi-legend-group-title">Structures</div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#c8a96e;box-shadow:0 0 4px #ffdd88;"></div>
+          <span>Cities &amp; Settlements</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:rgba(200,169,110,0.25);border-style:dashed;"></div>
+          <span>Road / Trade Network</span>
+        </div>
+        <div class="pi-legend-group-title">Atmosphere</div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:rgba(240,240,255,0.5);"></div>
+          <span>Cloud Cover</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:rgba(0,0,10,0.7);"></div>
+          <span>Night Side (Terminator)</span>
+        </div>
+        <div class="pi-legend-group-title">Resources</div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#aaaaaa;"></div><span>Minerals</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#ffdd55;box-shadow:0 0 4px #ffdd55;"></div><span>Rare Metals</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#ff88ff;box-shadow:0 0 4px #ff88ff;"></div><span>Exotic Matter</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#88ffee;box-shadow:0 0 4px #88ffee;"></div><span>Energy Crystals</span>
+        </div>
+        <div class="pi-legend-row">
+          <div class="pi-legend-swatch" style="background:#44aacc;box-shadow:0 0 4px #44aacc;"></div><span>Biological Resources</span>
+        </div>
+      </div>
+    </div>
+    <!-- /planet-info-panel -->
+  </div>
+</div>
+
+<script type="module" src="/src/main.ts"></script>
+
+<!-- ── In-game Naming Modal ───────────────────────────────── -->
+<div id="ingame-naming-overlay">
+  <div id="ingame-naming-modal">
+    <div class="ingame-naming-icon" id="ingame-naming-icon">🌱</div>
+    <div class="ingame-naming-title" id="ingame-naming-title">LIFE EMERGES</div>
+    <div class="ingame-naming-desc" id="ingame-naming-desc">The first spark of life stirs on your world. What do you call these creatures?</div>
+    <input type="text" id="ingame-naming-input" placeholder="e.g. Humans" maxlength="40" autocomplete="off"/>
+    <div class="ingame-naming-actions">
+      <button id="ingame-naming-confirm">BESTOW THIS NAME</button>
+      <button id="ingame-naming-randomize">⚄ RANDOM</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Speciation Modal ───────────────────────────────────────────────────────── -->
+<div id="speciation-overlay">
+  <div id="speciation-modal">
+    <div class="sp-icon">🌿</div>
+    <div class="sp-title">SPECIES DIVERGES</div>
+    <div class="sp-desc" id="sp-desc">A new lineage branches from your world's evolutionary tree.</div>
+    <div class="sp-parent">Diverged from: <span id="sp-parent-name">—</span></div>
+    <div class="sp-label">Name this lineage</div>
+    <div style="display:flex;gap:8px">
+      <input type="text" id="speciation-name-input" placeholder="New species name" maxlength="40" autocomplete="off" style="flex:1"/>
+      <button id="speciation-randomize">⚄ RANDOM</button>
+    </div>
+    <div class="sp-label">Shape their nature (optional)</div>
+    <div class="sp-trait-grid">
+      <button class="sp-trait-btn" data-trait="aggression">🗡 Aggressive</button>
+      <button class="sp-trait-btn" data-trait="intelligence">🧠 Intelligent</button>
+      <button class="sp-trait-btn" data-trait="adaptability">🛡 Resilient</button>
+      <button class="sp-trait-btn" data-trait="none">✦ No nudge</button>
+    </div>
+    <div class="sp-actions">
+      <button id="speciation-confirm">BLESS THIS LINEAGE</button>
+      <button id="speciation-dismiss">DISMISS</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── War Dice Modal ─────────────────────────────────────────────────────────── -->
+<div id="war-dice-overlay">
+  <div id="war-dice-modal">
+    <div class="wd-header">
+      <div class="wd-phase-label" id="wd-phase-label">⚔ CAMPAIGN BEGINS</div>
+      <div class="wd-vs">
+        <span class="wd-faction wd-faction-atk" id="wd-attacker-name">INVADERS</span>
+        <span class="wd-vs-sep">VS</span>
+        <span class="wd-faction wd-faction-def" id="wd-defender-name">YOUR FORCES</span>
+      </div>
+    </div>
+    <div class="wd-arena">
+      <div class="wd-side">
+        <div class="wd-side-label">INVADER ASSAULT</div>
+        <div class="wd-dice-row" id="wd-atk-dice"></div>
+        <div class="wd-side-result" id="wd-atk-result" style="color:#ff9090"></div>
+      </div>
+      <div class="wd-divider">⚔</div>
+      <div class="wd-side">
+        <div class="wd-side-label">YOUR DEFENSE</div>
+        <div class="wd-dice-row" id="wd-def-dice">
+          <div class="wd-die def">?</div>
+          <div class="wd-die def">?</div>
+          <div class="wd-die def">?</div>
+        </div>
+        <div class="wd-side-result" id="wd-def-result" style="color:#90b0ff"></div>
+      </div>
+    </div>
+    <div class="wd-outcome" id="wd-outcome" style="display:none"></div>
+    <div class="wd-actions">
+      <button class="wd-btn primary" id="wd-roll-btn">🎲 ROLL DEFENSE</button>
+      <button class="wd-btn" id="wd-dismiss-btn">RETREAT TO MAP</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Codex Modal ─────────────────────────────────────────── -->
+<div id="codex-overlay">
+  <div id="codex-modal">
+    <div class="codex-header">
+      <div class="codex-title">✦ CODEX</div>
+      <div class="codex-subtitle">Chronicles of your universe</div>
+      <button id="codex-close-btn">✕</button>
+    </div>
+    <div class="codex-tabs">
+      <button class="codex-tab active" data-cat="all">ALL</button>
+      <button class="codex-tab" data-cat="species">🐾 SPECIES</button>
+      <button class="codex-tab" data-cat="flora">🌿 FLORA</button>
+      <button class="codex-tab" data-cat="biology">🧬 BIOLOGY</button>
+      <button class="codex-tab" data-cat="civilisation">🏛 CIVILISATION</button>
+      <button class="codex-tab" data-cat="war">⚔ WAR</button>
+      <button class="codex-tab" data-cat="divine">✦ DIVINE</button>
+      <button class="codex-tab" data-cat="extinction">💀 EXTINCTION</button>
+    </div>
+    <div class="codex-search-wrap">
+      <input id="codex-search" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search records — name, anatomy, habitat, diet…" />
+    </div>
+    <div class="codex-body">
+      <div class="codex-list" id="codex-entry-list"></div>
+      <div class="codex-detail" id="codex-entry-detail">
+        <div class="codex-detail-empty">Select a record to read its history.</div>
+      </div>
+    </div>
+    <div class="codex-footer">
+      <span id="codex-count">0 entries recorded</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     PLANET MAP  (M22d) — the whole world, not one hemisphere
+     Opened by double-clicking the diorama.
+══════════════════════════════════════════════════════════ -->
+<div id="planet-map-overlay">
+  <div id="planet-map-panel">
+    <div id="pm-top">
+      <div id="pm-title">◎ SURFACE MAP</div>
+      <div id="pm-layers">
+        <button class="pm-layer active" data-layer="biome">BIOME</button>
+        <button class="pm-layer" data-layer="species">SPECIES</button>
+        <button class="pm-layer" data-layer="civ">TERRITORY</button>
+        <button class="pm-layer" data-layer="elevation">ELEVATION</button>
+      </div>
+      <button id="pm-close">✕ CLOSE</button>
+    </div>
+    <div id="pm-body">
+      <div id="pm-canvas-wrap">
+        <canvas id="pm-canvas"></canvas>
+        <div id="pm-hint">Click anywhere to inspect · click a species to commune with it</div>
+      </div>
+      <div id="pm-side">
+        <div id="pm-empty" class="pm-empty">Select a place on the map.</div>
+
+        <div id="pm-cell" style="display:none">
+          <div class="pm-sec-title">Location <span id="pm-coord" class="pm-coord"></span></div>
+          <div class="pm-row"><span>Biome</span><b id="pm-biome">—</b></div>
+          <div class="pm-row"><span>Elevation</span><b id="pm-elev">—</b></div>
+          <div class="pm-row"><span>Temperature</span><b id="pm-temp">—</b></div>
+          <div class="pm-row"><span>Moisture</span><b id="pm-moist">—</b></div>
+          <div class="pm-row"><span>Fertility</span><b id="pm-fert">—</b></div>
+          <div class="pm-row"><span>Life density</span><b id="pm-life">—</b></div>
+          <div class="pm-row"><span>Settled</span><b id="pm-civ">—</b></div>
+        </div>
+
+        <div id="pm-species" style="display:none">
+          <div class="pm-sec-title">Species</div>
+          <div id="pm-sp-name" class="pm-sp-name">—</div>
+          <div id="pm-sp-tagline" class="pm-sp-tagline">—</div>
+          <div class="pm-traits" id="pm-sp-traits"></div>
+          <div class="pm-row"><span>Population</span><b id="pm-sp-pop">—</b></div>
+          <div class="pm-row"><span>Range</span><b id="pm-sp-range">—</b></div>
+          <div class="pm-row"><span>Intelligence</span><b id="pm-sp-int">—</b></div>
+
+          <div class="pm-sec-title" style="margin-top:12px">Divine acts upon them</div>
+          <div class="pm-acts" id="pm-sp-acts"></div>
+          <div class="pm-note" id="pm-sp-msg"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ── Planet map (M22d) ─────────────────────────────────────────────────────
+   A full equirectangular view of the whole grid. The diorama only ever shows
+   one hemisphere, so half the world was unreachable before this existed. */
+#planet-map-overlay{
+  position:fixed; inset:0; z-index:260; display:none;
+  background:rgba(2,1,8,0.86); backdrop-filter:blur(3px);
+  align-items:center; justify-content:center;
+}
+#planet-map-overlay.active{ display:flex; }
+#planet-map-panel{
+  width:min(1500px,96vw); height:min(920px,94vh);
+  background:var(--dark); border:1px solid var(--border); border-radius:8px;
+  display:flex; flex-direction:column; overflow:hidden;
+  box-shadow:0 24px 90px rgba(0,0,0,0.75);
+}
+#pm-top{
+  display:flex; align-items:center; gap:14px; padding:10px 14px;
+  border-bottom:1px solid var(--border); flex:0 0 auto;
+}
+#pm-title{ color:var(--gold); letter-spacing:3px; font-size:12px; }
+#pm-layers{ display:flex; gap:5px; margin-left:6px; }
+.pm-layer{
+  background:rgba(20,12,40,0.8); border:1px solid var(--border); color:var(--dim);
+  padding:4px 10px; font:inherit; font-size:9px; letter-spacing:1.4px;
+  border-radius:3px; cursor:pointer;
+}
+.pm-layer:hover{ color:var(--text); }
+.pm-layer.active{ color:var(--gold2); border-color:var(--purple); background:rgba(60,36,100,0.6); }
+#pm-close{
+  margin-left:auto; background:transparent; border:1px solid var(--border);
+  color:var(--dim); padding:5px 12px; font:inherit; font-size:10px;
+  letter-spacing:1.5px; border-radius:3px; cursor:pointer;
+}
+#pm-close:hover{ color:var(--gold); border-color:var(--purple); }
+#pm-body{ flex:1; display:flex; min-height:0; }
+#pm-canvas-wrap{ flex:1; min-width:0; position:relative; display:flex;
+  align-items:center; justify-content:center; padding:10px; }
+#pm-canvas{
+  max-width:100%; max-height:100%; image-rendering:pixelated;
+  border:1px solid var(--border); cursor:crosshair; background:#05040d;
+}
+#pm-hint{
+  position:absolute; bottom:14px; left:50%; transform:translateX(-50%);
+  font-size:9px; color:var(--dim); letter-spacing:1.4px; pointer-events:none;
+}
+#pm-side{
+  width:330px; flex:0 0 330px; border-left:1px solid var(--border);
+  padding:14px; overflow-y:auto;
+}
+.pm-empty{ color:var(--dim); font-size:11px; padding:20px 4px; line-height:1.7; }
+.pm-sec-title{
+  color:var(--gold); font-size:9px; letter-spacing:2px; margin-bottom:7px;
+  padding-bottom:4px; border-bottom:1px solid var(--border);
+}
+.pm-coord{ color:var(--dim); letter-spacing:1px; float:right; }
+.pm-row{
+  display:flex; justify-content:space-between; gap:10px;
+  font-size:11px; padding:3px 0; color:var(--dim);
+}
+.pm-row b{ color:var(--text); font-weight:normal; text-align:right; }
+.pm-sp-name{ color:var(--gold2); font-size:14px; margin:2px 0 3px; }
+.pm-sp-tagline{ color:var(--dim); font-size:10px; font-style:italic; margin-bottom:9px; line-height:1.5; }
+.pm-traits{ display:flex; flex-wrap:wrap; gap:4px; margin-bottom:9px; }
+.pm-trait{
+  background:rgba(60,36,100,0.5); border:1px solid var(--border);
+  color:var(--purple2); font-size:9px; letter-spacing:0.6px;
+  padding:2px 6px; border-radius:3px;
+}
+.pm-acts{ display:flex; flex-direction:column; gap:5px; }
+.pm-act{
+  display:flex; justify-content:space-between; align-items:center; gap:8px;
+  background:rgba(20,12,40,0.8); border:1px solid var(--border); color:var(--text);
+  padding:7px 10px; font:inherit; font-size:11px; border-radius:3px;
+  cursor:pointer; text-align:left; width:100%;
+}
+.pm-act:hover:not(:disabled){ border-color:var(--purple); color:var(--gold2); }
+.pm-act:disabled{ opacity:0.4; cursor:not-allowed; }
+.pm-act .cost{ color:var(--gold); font-size:9px; letter-spacing:1px; }
+.pm-note{ color:var(--dim); font-size:10px; margin-top:9px; line-height:1.6; min-height:14px; }
+</style>
+
+<!-- ── Settings Modal ─────────────────────────────────────── -->
+
+<style>
+/* ── Evolution Lab pop-up (M22h) ─────────────────────────────────
+   A pixel-art CRT terminal, after `dna_lab pop-up idea.jpg`. The DNA lab lived
+   in a thin HUD strip where the most consequential decision in the game got the
+   same visual weight as a stat readout. */
+#evo-lab-overlay{
+  position:fixed; inset:0; z-index:270; display:none;
+  background:rgba(1,4,3,0.88); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+  font-family:'Courier New',ui-monospace,monospace;
+}
+#evo-lab-overlay.active{ display:flex; }
+
+#evo-lab-frame{
+  --phos:#7dffb4;      /* phosphor green */
+  --phos-dim:#3f8f66;
+  --panel-bg:#0b1a14;
+  --panel-line:#1f4d38;
+  width:min(1280px,95vw); height:min(760px,93vh);
+  background:linear-gradient(180deg,#0e211a,#081410);
+  border:3px solid #2a5c46;
+  border-radius:12px;
+  box-shadow:0 0 0 6px #10281f, 0 0 0 8px #1d3f31, 0 30px 90px rgba(0,0,0,0.8),
+             inset 0 0 90px rgba(40,255,160,0.05);
+  padding:16px 18px 12px;
+  display:flex; flex-direction:column; gap:12px;
+  position:relative; overflow:hidden;
+  image-rendering:pixelated;
+}
+/* Scanlines and a phosphor bloom, drawn over everything but not clickable. */
+#evo-lab-frame::after{
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(180deg,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.16) 3px, rgba(0,0,0,0.16) 4px);
+  mix-blend-mode:multiply;
+}
+#evo-lab-frame::before{
+  content:''; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(ellipse at 50% 45%,
+    rgba(125,255,180,0.07), rgba(0,0,0,0) 70%);
+}
+
+#evo-title{
+  text-align:center; color:var(--phos); font-size:26px; letter-spacing:6px;
+  text-shadow:0 0 12px rgba(125,255,180,0.55); flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center; gap:14px;
+}
+#evo-title .rule{ flex:1; height:1px; background:linear-gradient(90deg,transparent,var(--panel-line)); }
+#evo-title .rule.r{ background:linear-gradient(270deg,transparent,var(--panel-line)); }
+
+#evo-body{ flex:1; display:flex; gap:12px; min-height:0; }
+.evo-col{
+  background:var(--panel-bg); border:1px solid var(--panel-line);
+  border-radius:6px; padding:10px; display:flex; flex-direction:column;
+  min-height:0; overflow:hidden;
+}
+#evo-specimen{ width:266px; flex:0 0 266px; }
+#evo-genome{ flex:1; min-width:0; }
+#evo-bank{ width:280px; flex:0 0 280px; }
+
+.evo-head{
+  color:var(--phos); font-size:11px; letter-spacing:2.5px; text-align:center;
+  padding-bottom:7px; margin-bottom:9px; border-bottom:1px solid var(--panel-line);
+  flex:0 0 auto;
+}
+
+/* ── specimen tank ── */
+#evo-tank{
+  background:linear-gradient(180deg,rgba(60,220,150,0.12),rgba(20,90,60,0.05));
+  border:1px solid var(--panel-line); border-radius:5px;
+  height:210px; display:flex; align-items:center; justify-content:center;
+  position:relative; overflow:hidden; flex:0 0 auto;
+}
+#evo-tank canvas{ image-rendering:pixelated; }
+#evo-tank::after{
+  content:''; position:absolute; left:8%; right:8%; bottom:10px; height:7px;
+  background:radial-gradient(ellipse,rgba(125,255,180,0.35),transparent 70%);
+}
+#evo-specimen-name{ color:var(--phos); font-size:15px; margin:10px 0 1px; }
+#evo-specimen-kind{ color:var(--phos-dim); font-size:10px; margin-bottom:9px; line-height:1.5; }
+.evo-stat{
+  display:flex; justify-content:space-between; font-size:11px;
+  color:var(--phos-dim); padding:2px 0;
+}
+.evo-stat b{ color:var(--phos); font-weight:normal; }
+
+/* ── genome column ── */
+#evo-helix{ width:100%; height:74px; display:block; image-rendering:pixelated; flex:0 0 auto; }
+#evo-slots{
+  display:flex; gap:5px; margin:9px 0; flex-wrap:wrap; flex:0 0 auto;
+}
+.evo-slot{
+  border:1px solid var(--panel-line); color:var(--phos-dim);
+  font-size:9px; letter-spacing:1px; padding:2px 8px; border-radius:3px;
+}
+.evo-slot.on{ color:#04140d; background:var(--phos); border-color:var(--phos); }
+#evo-genes{
+  flex:1; overflow-y:auto; display:grid; gap:7px;
+  grid-template-columns:repeat(2,minmax(0,1fr)); align-content:start;
+}
+.evo-gene{
+  border:1px solid var(--panel-line); border-radius:4px; padding:7px 9px;
+  background:rgba(20,60,44,0.35);
+}
+.evo-gene .g-label{ color:var(--phos-dim); font-size:8px; letter-spacing:1.4px; }
+.evo-gene .g-value{ color:var(--phos); font-size:12px; margin:2px 0 1px; }
+.evo-gene .g-note{ color:var(--phos-dim); font-size:9px; opacity:0.8; }
+
+/* ── gene bank ── */
+#evo-bank-list{ flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:5px; }
+.evo-bank-row{
+  display:flex; align-items:center; gap:8px;
+  border:1px solid var(--panel-line); border-radius:4px; padding:6px 8px;
+  background:rgba(20,60,44,0.3); cursor:pointer; text-align:left; width:100%;
+  font:inherit; color:var(--phos);
+}
+.evo-bank-row:hover:not(:disabled){ background:rgba(40,110,80,0.4); border-color:var(--phos-dim); }
+.evo-bank-row:disabled{ cursor:not-allowed; }
+.evo-bank-row.locked{ opacity:0.3; filter:grayscale(0.6); }
+.evo-bank-row.focused{ box-shadow:inset 2px 0 0 var(--phos); background:rgba(60,150,110,0.35); }
+.evo-bank-glyph{ font-size:15px; width:20px; text-align:center; flex-shrink:0; }
+.evo-bank-mid{ flex:1; min-width:0; }
+.evo-bank-name{ font-size:11px; }
+.evo-bank-sub{ font-size:9px; color:var(--phos-dim); }
+.evo-bank-cost{ font-size:10px; color:#ffe08a; flex-shrink:0; text-align:right; }
+#evo-bank-foot{
+  border-top:1px solid var(--panel-line); margin-top:8px; padding-top:8px; flex:0 0 auto;
+}
+#evo-focus-line{ color:var(--phos-dim); font-size:9px; line-height:1.5; margin-top:5px; }
+
+#evo-actions{
+  display:flex; gap:10px; justify-content:center; flex:0 0 auto; padding-top:2px;
+}
+.evo-btn{
+  background:transparent; border:1px solid var(--panel-line); color:var(--phos);
+  font:inherit; font-size:12px; letter-spacing:2px; padding:7px 20px;
+  border-radius:4px; cursor:pointer;
+}
+.evo-btn:hover{ background:rgba(60,150,110,0.3); border-color:var(--phos); }
+</style>
+
+<!-- ── Evolution Lab pop-up (M22h) ─────────────────────────── -->
+<div id="evo-lab-overlay">
+  <div id="evo-lab-frame">
+    <div id="evo-title"><span class="rule"></span>&#129516; EVOLUTION LAB<span class="rule r"></span></div>
+
+    <div id="evo-body">
+      <div class="evo-col" id="evo-specimen">
+        <div class="evo-head">SPECIMEN</div>
+        <div id="evo-tank"></div>
+        <div id="evo-specimen-name">—</div>
+        <div id="evo-specimen-kind">—</div>
+        <div id="evo-specimen-stats"></div>
+      </div>
+
+      <div class="evo-col" id="evo-genome">
+        <div class="evo-head">GENOME SEQUENCING</div>
+        <canvas id="evo-helix"></canvas>
+        <div id="evo-slots"></div>
+        <div id="evo-genes"></div>
+      </div>
+
+      <div class="evo-col" id="evo-bank">
+        <div class="evo-head">GENE BANK</div>
+        <div id="evo-bank-list"></div>
+        <div id="evo-bank-foot">
+          <div class="evo-stat"><span>DNA POINTS</span><b id="evo-dna-points">0</b></div>
+          <div class="evo-stat"><span>BIOLOGY PHASE</span><b id="evo-phase">—</b></div>
+          <div id="evo-focus-line">Choose one branch to evolve this era.</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="evo-actions">
+      <button class="evo-btn" id="evo-close-btn">[ CLOSE ]</button>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ── Codex: search, species records (M22i) ─────────────────────── */
+.codex-search-wrap{ padding:8px 12px 4px; }
+#codex-search{
+  width:100%; box-sizing:border-box;
+  background:rgba(12,6,28,0.85); border:1px solid var(--border);
+  color:var(--text); font:inherit; font-size:11px;
+  padding:6px 10px; border-radius:3px; outline:none;
+}
+#codex-search::placeholder{ color:var(--dim); }
+#codex-search:focus{ border-color:var(--purple); }
+
+.codex-entry-cat-badge.species{ background:rgba(90,150,110,0.3); color:#8fe0a8; }
+.codex-entry-cat-badge.flora{   background:rgba(120,160,60,0.3);  color:#c8e878; }
+/* A lineage that died out is still worth reading, just visibly past tense. */
+.codex-entry-item.extinct .codex-entry-name{ color:var(--dim); text-decoration:line-through; }
+
+.cx-portrait{
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(20,60,44,0.22); border:1px solid var(--border);
+  border-radius:5px; padding:12px; margin:10px 0 4px; min-height:96px;
+}
+.cx-portrait canvas{ image-rendering:pixelated; }
+.cx-sec{
+  color:var(--gold); font-size:9px; letter-spacing:2px;
+  margin:14px 0 5px; padding-bottom:3px; border-bottom:1px solid var(--border);
+}
+.cx-row{
+  display:flex; justify-content:space-between; gap:12px;
+  font-size:11px; padding:2px 0; color:var(--dim);
+}
+.cx-row b{ color:var(--text); font-weight:normal; text-align:right; }
+</style>
+
+
+<style>
+/* ── Zoom tier switcher (M22a) ──────────────────────────────────
+   Zooming used to be one continuous scale with no notion of altitude, so the
+   star map and the planet view were disconnected screens rather than two ends
+   of the same continuum. */
+#zoom-tiers{ display:flex; gap:3px; }
+.zt-btn{
+  background:rgba(20,12,40,0.8); border:1px solid var(--border); color:var(--dim);
+  font:inherit; font-size:8px; letter-spacing:1.2px;
+  padding:3px 7px; border-radius:2px; cursor:pointer; transition:all 0.15s;
+}
+.zt-btn:hover{ color:var(--text); border-color:var(--purple); }
+/* The tier you are actually at, whether you got there by button or by scrolling. */
+.zt-btn.active{
+  color:var(--gold2); border-color:var(--gold);
+  background:rgba(90,70,30,0.45);
+}
+</style>
+
+<div id="settings-overlay">
+  <div id="settings-modal">
+    <div class="settings-title">⚙ Settings</div>
+
+    <div class="settings-row">
+      <div class="settings-label">Gemini API Key</div>
+      <div class="settings-desc">
+        Power the AI God with Gemini 2.5 Flash (free tier). Without a key, the offline narrator is used.
+        Get a free key at <span style="color:var(--purple2)">aistudio.google.com</span>
+      </div>
+      <div class="settings-input-row">
+        <input class="settings-input" type="password" id="gemini-key-input" placeholder="AIza..."/>
+        <button class="settings-action-btn" id="toggle-key-visibility">👁</button>
+        <button class="settings-action-btn" id="test-gemini-btn">TEST</button>
+      </div>
+      <div id="gemini-status">
+        <span id="gemini-status-dot" class="status-none">●</span>
+        <span id="gemini-status-text">No key configured</span>
+      </div>
+    </div>
+
+    <div class="settings-row">
+      <div class="settings-label">Audio</div>
+      <div class="settings-vol-row">
+        <label>MASTER</label>
+        <input type="range" id="vol-master" min="0" max="100" value="80">
+        <span id="vol-master-val">80</span>
+      </div>
+      <div class="settings-vol-row">
+        <label>MUSIC</label>
+        <input type="range" id="vol-music" min="0" max="100" value="55">
+        <span id="vol-music-val">55</span>
+      </div>
+      <div class="settings-vol-row">
+        <label>SFX</label>
+        <input type="range" id="vol-sfx" min="0" max="100" value="75">
+        <span id="vol-sfx-val">75</span>
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      <button class="settings-action-btn" id="settings-close-btn">CANCEL</button>
+      <button class="settings-action-btn primary" id="settings-save-btn">SAVE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Meteor Impact Notification ──────────────────────────── -->
+<div id="meteor-impact-overlay">
+  <div id="meteor-impact-card">
+    <div id="meteor-impact-title">METEOR IMPACT DETECTED</div>
+    <img id="meteor-impact-img" src="" alt="Meteor Impact"/>
+    <div id="meteor-impact-planet"></div>
+    <div id="meteor-impact-sub">Microbial life seeded across the void</div>
+  </div>
+</div>
+
+<!-- ── Species Traits Modal ─────────────────────────────────────────── -->
+<div id="traits-overlay">
+  <div id="traits-modal">
+
+    <!-- Header -->
+    <div class="tm-header">
+      <div class="tm-eyebrow">Genetic Codex — Divine Selection</div>
+      <div class="tm-title">SHAPE YOUR SPECIES</div>
+      <div class="tm-subtitle">Choose the form life will take upon your world</div>
+      <button class="tm-close-btn" id="traits-close-btn" title="Cancel">&#x2715;</button>
+    </div>
+
+    <!-- Selection progress pips -->
+    <div class="tm-progress-row">
+      <span class="tm-progress-label">Traits Selected</span>
+      <div class="tm-progress-pips" id="tm-pips">
+        <div class="tm-pip" data-pip="0"></div>
+        <div class="tm-pip" data-pip="1"></div>
+        <div class="tm-pip" data-pip="2"></div>
+        <div class="tm-pip" data-pip="3"></div>
+        <div class="tm-pip" data-pip="4"></div>
+        <div class="tm-pip" data-pip="5"></div>
+      </div>
+      <span class="tm-progress-count" id="tm-progress-count">0 / 6</span>
+    </div>
+
+    <!-- Categories grid -->
+    <div class="tm-categories">
+
+      <!-- 1. Body Plan -->
+      <div class="tm-category" data-category="bodyPlan">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <circle cx="9" cy="4" r="2" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <path d="M9 6 L9 12 M6 8 L12 8 M7 12 L6 16 M11 12 L12 16" stroke="#c8a96e" stroke-width="1.2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Body Plan</span>
+          <div class="tm-cat-check" id="check-bodyPlan"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="bodyPlan" data-value="Bipedal">
+            <span class="tm-option-glyph">&#9651;</span>
+            <span class="tm-option-name">Bipedal</span>
+            <span class="tm-option-desc">Upright, tool-bearing</span>
+          </div>
+          <div class="tm-option" data-category="bodyPlan" data-value="Quadrupedal">
+            <span class="tm-option-glyph">&#9670;</span>
+            <span class="tm-option-name">Quadrupedal</span>
+            <span class="tm-option-desc">Swift, ground-bound</span>
+          </div>
+          <div class="tm-option" data-category="bodyPlan" data-value="Aquatic">
+            <span class="tm-option-glyph">&#8767;</span>
+            <span class="tm-option-name">Aquatic</span>
+            <span class="tm-option-desc">Fluid, ocean-dwelling</span>
+          </div>
+          <div class="tm-option" data-category="bodyPlan" data-value="Aerial">
+            <span class="tm-option-glyph">&#9652;</span>
+            <span class="tm-option-name">Aerial</span>
+            <span class="tm-option-desc">Winged, sky-born</span>
+          </div>
+          <div class="tm-option" data-category="bodyPlan" data-value="Amorphous">
+            <span class="tm-option-glyph">&#9679;</span>
+            <span class="tm-option-name">Amorphous</span>
+            <span class="tm-option-desc">Formless, adaptive</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Size Class -->
+      <div class="tm-category" data-category="sizeClass">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <rect x="1" y="13" width="3" height="4" rx="0.5" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <rect x="5.5" y="10" width="3" height="7" rx="0.5" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <rect x="10" y="6" width="3" height="11" rx="0.5" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <rect x="14.5" y="1" width="3" height="16" rx="0.5" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Size Class</span>
+          <div class="tm-cat-check" id="check-sizeClass"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="sizeClass" data-value="Microscopic">
+            <span class="tm-option-glyph">&#183;</span>
+            <span class="tm-option-name">Microscopic</span>
+            <span class="tm-option-desc">Invisible to gods</span>
+          </div>
+          <div class="tm-option" data-category="sizeClass" data-value="Diminutive">
+            <span class="tm-option-glyph">&#8901;</span>
+            <span class="tm-option-name">Diminutive</span>
+            <span class="tm-option-desc">Small but many</span>
+          </div>
+          <div class="tm-option" data-category="sizeClass" data-value="Medium">
+            <span class="tm-option-glyph">&#9632;</span>
+            <span class="tm-option-name">Medium</span>
+            <span class="tm-option-desc">Balanced form</span>
+          </div>
+          <div class="tm-option" data-category="sizeClass" data-value="Large">
+            <span class="tm-option-glyph">&#9724;</span>
+            <span class="tm-option-name">Large</span>
+            <span class="tm-option-desc">Imposing, durable</span>
+          </div>
+          <div class="tm-option" data-category="sizeClass" data-value="Colossal">
+            <span class="tm-option-glyph">&#11035;</span>
+            <span class="tm-option-name">Colossal</span>
+            <span class="tm-option-desc">Titan of the world</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. Primary Sense -->
+      <div class="tm-category" data-category="primarySense">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <ellipse cx="9" cy="9" rx="7" ry="4.5" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <circle cx="9" cy="9" r="2.2" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <circle cx="9" cy="9" r="0.8" fill="#c8a96e"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Primary Sense</span>
+          <div class="tm-cat-check" id="check-primarySense"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="primarySense" data-value="Visual">
+            <span class="tm-option-glyph">&#9711;</span>
+            <span class="tm-option-name">Visual</span>
+            <span class="tm-option-desc">Light-guided</span>
+          </div>
+          <div class="tm-option" data-category="primarySense" data-value="Echolocation">
+            <span class="tm-option-glyph">&#9006;</span>
+            <span class="tm-option-name">Echolocation</span>
+            <span class="tm-option-desc">Sound-mapped</span>
+          </div>
+          <div class="tm-option" data-category="primarySense" data-value="Chemoreception">
+            <span class="tm-option-glyph">&#10022;</span>
+            <span class="tm-option-name">Chemoreception</span>
+            <span class="tm-option-desc">Scent-latticed</span>
+          </div>
+          <div class="tm-option" data-category="primarySense" data-value="Electromagnetic">
+            <span class="tm-option-glyph">&#9889;</span>
+            <span class="tm-option-name">Electromagnetic</span>
+            <span class="tm-option-desc">Field-sensitive</span>
+          </div>
+          <div class="tm-option" data-category="primarySense" data-value="Telepathic">
+            <span class="tm-option-glyph">&#10024;</span>
+            <span class="tm-option-name">Telepathic</span>
+            <span class="tm-option-desc">Mind-perceiving</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Social Structure -->
+      <div class="tm-category" data-category="socialStructure">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <circle cx="9" cy="4" r="1.8" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <circle cx="3.5" cy="13" r="1.8" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <circle cx="14.5" cy="13" r="1.8" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <path d="M9 5.8 L5 11.2 M9 5.8 L13 11.2 M5.3 13 L12.7 13" stroke="#c8a96e" stroke-width="0.9" opacity="0.6"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Social Structure</span>
+          <div class="tm-cat-check" id="check-socialStructure"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="socialStructure" data-value="Solitary">
+            <span class="tm-option-glyph">&#9675;</span>
+            <span class="tm-option-name">Solitary</span>
+            <span class="tm-option-desc">Lone apex</span>
+          </div>
+          <div class="tm-option" data-category="socialStructure" data-value="Pack">
+            <span class="tm-option-glyph">&#9653;</span>
+            <span class="tm-option-name">Pack</span>
+            <span class="tm-option-desc">Coordinated hunters</span>
+          </div>
+          <div class="tm-option" data-category="socialStructure" data-value="Tribal">
+            <span class="tm-option-glyph">&#9670;</span>
+            <span class="tm-option-name">Tribal</span>
+            <span class="tm-option-desc">Culture-bearing</span>
+          </div>
+          <div class="tm-option" data-category="socialStructure" data-value="Hive Mind">
+            <span class="tm-option-glyph">&#11835;</span>
+            <span class="tm-option-name">Hive Mind</span>
+            <span class="tm-option-desc">One will, many forms</span>
+          </div>
+          <div class="tm-option" data-category="socialStructure" data-value="Symbiotic">
+            <span class="tm-option-glyph">&#9854;</span>
+            <span class="tm-option-name">Symbiotic</span>
+            <span class="tm-option-desc">Intertwined existence</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. Locomotion -->
+      <div class="tm-category" data-category="locomotion">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <path d="M2 14 C5 10, 8 8, 12 6 C14 5, 16 4, 16 4" stroke="#c8a96e" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+              <polyline points="12,2 16,4 14,8" stroke="#c8a96e" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Locomotion</span>
+          <div class="tm-cat-check" id="check-locomotion"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="locomotion" data-value="Walking">
+            <span class="tm-option-glyph">&#9135;</span>
+            <span class="tm-option-name">Walking</span>
+            <span class="tm-option-desc">Land-striding</span>
+          </div>
+          <div class="tm-option" data-category="locomotion" data-value="Swimming">
+            <span class="tm-option-glyph">&#8767;</span>
+            <span class="tm-option-name">Swimming</span>
+            <span class="tm-option-desc">Depth-crossing</span>
+          </div>
+          <div class="tm-option" data-category="locomotion" data-value="Flying">
+            <span class="tm-option-glyph">&#8679;</span>
+            <span class="tm-option-name">Flying</span>
+            <span class="tm-option-desc">Sky-claiming</span>
+          </div>
+          <div class="tm-option" data-category="locomotion" data-value="Burrowing">
+            <span class="tm-option-glyph">&#8681;</span>
+            <span class="tm-option-name">Burrowing</span>
+            <span class="tm-option-desc">Earth-threading</span>
+          </div>
+          <div class="tm-option" data-category="locomotion" data-value="Phasing">
+            <span class="tm-option-glyph">&#10022;</span>
+            <span class="tm-option-name">Phasing</span>
+            <span class="tm-option-desc">Matter-passing</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 6. Cognitive Style -->
+      <div class="tm-category" data-category="cognitiveStyle">
+        <div class="tm-cat-header">
+          <div class="tm-cat-icon">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <path d="M9 2 C5 2, 2 5, 2 9 C2 11, 3 13, 5 14.5 L5 16 L7 15.5 C7.6 15.8, 8.3 16, 9 16 C13 16, 16 13, 16 9 C16 5, 13 2, 9 2 Z" stroke="#c8a96e" stroke-width="1.2" fill="none"/>
+              <path d="M6 8 Q9 6, 12 8 M6 11 Q9 13, 12 11" stroke="#c8a96e" stroke-width="0.9" opacity="0.7"/>
+            </svg>
+          </div>
+          <span class="tm-cat-title">Cognitive Style</span>
+          <div class="tm-cat-check" id="check-cognitiveStyle"></div>
+        </div>
+        <div class="tm-options">
+          <div class="tm-option" data-category="cognitiveStyle" data-value="Analytical">
+            <span class="tm-option-glyph">&#9636;</span>
+            <span class="tm-option-name">Analytical</span>
+            <span class="tm-option-desc">Logic-bound minds</span>
+          </div>
+          <div class="tm-option" data-category="cognitiveStyle" data-value="Intuitive">
+            <span class="tm-option-glyph">&#9728;</span>
+            <span class="tm-option-name">Intuitive</span>
+            <span class="tm-option-desc">Pattern-sensing</span>
+          </div>
+          <div class="tm-option" data-category="cognitiveStyle" data-value="Collective">
+            <span class="tm-option-glyph">&#9685;</span>
+            <span class="tm-option-name">Collective</span>
+            <span class="tm-option-desc">Shared cognition</span>
+          </div>
+          <div class="tm-option" data-category="cognitiveStyle" data-value="Instinctual">
+            <span class="tm-option-glyph">&#8857;</span>
+            <span class="tm-option-name">Instinctual</span>
+            <span class="tm-option-desc">Primal efficiency</span>
+          </div>
+          <div class="tm-option" data-category="cognitiveStyle" data-value="Transcendent">
+            <span class="tm-option-glyph">&#10023;</span>
+            <span class="tm-option-name">Transcendent</span>
+            <span class="tm-option-desc">Beyond thought</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /tm-categories -->
+
+    <!-- Footer: naming + evolve -->
+    <div class="tm-footer">
+      <div class="tm-naming-row">
+        <label class="tm-naming-label" for="traits-species-name">Species Name</label>
+        <input
+          id="traits-species-name"
+          type="text"
+          maxlength="40"
+          placeholder="Enter species designation..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <div class="tm-footer-btns">
+        <span class="tm-selection-notice" id="tm-selection-notice">Select all 6 trait categories to proceed</span>
+        <button class="tm-cancel-btn" id="traits-close-btn-footer">Cancel</button>
+        <button id="traits-evolve-btn" disabled>EVOLVE &#9672;</button>
+      </div>
+    </div>
+
+  </div><!-- /traits-modal -->
+</div><!-- /traits-overlay -->
+
+<!-- M16: Leader Dialogue -->
+<div id="leader-dialogue-overlay">
+  <div id="leader-dialogue-panel">
+    <!-- Header: flag canvas + name/meta -->
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+      <canvas id="leader-flag-canvas" width="36" height="24" style="border-radius:2px; flex-shrink:0;"></canvas>
+      <div>
+        <div id="leader-dlg-name" style="font-family:'Cinzel Decorative',serif; font-size:13px; color:#c8a96e; letter-spacing:1px;">—</div>
+        <div id="leader-dlg-meta" style="font-size:10px; color:#8866aa; margin-top:2px;">—</div>
+      </div>
+    </div>
+    <!-- Attitude badge -->
+    <div id="leader-dlg-attitude" style="font-size:9px; color:#664488; text-transform:uppercase; letter-spacing:1px; margin-bottom:12px;"></div>
+    <!-- Leader message text -->
+    <div id="leader-dlg-message" style="font-size:13px; color:#ccbbdd; line-height:1.6; min-height:60px; padding:12px; background:rgba(255,255,255,0.03); border-radius:4px; border-left:2px solid #7700aa; margin-bottom:16px; font-style:italic;">…</div>
+    <!-- DP notice -->
+    <div id="leader-dlg-dp-notice" style="font-size:9px; color:#886688; margin-bottom:12px;"></div>
+    <!-- Response option buttons (populated by JS) -->
+    <div id="leader-response-options" style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;"></div>
+    <!-- Free-form input -->
+    <div style="display:flex; gap:6px; margin-bottom:12px;">
+      <input id="leader-freeform-input" type="text" placeholder="Speak as a god... (+1 DP)" maxlength="200"
+        style="flex:1; background:#0d0d18; border:1px solid #4a3060; color:#ccbbdd; padding:6px 10px; border-radius:4px; font-size:12px;"/>
+      <button id="leader-freeform-send" style="padding:6px 12px; background:#330044; border:1px solid #7700aa; color:#cc99ff; border-radius:4px; font-size:11px;">SPEAK</button>
+    </div>
+    <!-- Close button -->
+    <div style="text-align:right;">
+      <button id="leader-dlg-close" style="padding:6px 16px; background:transparent; border:1px solid #443355; color:#886688; border-radius:4px; font-size:11px; text-transform:uppercase; letter-spacing:1px;">DISMISS</button>
+    </div>
+  </div>
+</div>
+
+<!-- M15: Universe Timeline -->
+<div id="timeline-overlay">
+  <div id="timeline-modal">
+    <div class="timeline-header">
+      <div class="timeline-title">⏳ UNIVERSE TIMELINE</div>
+      <button id="timeline-close-btn">✕</button>
+    </div>
+    <div id="timeline-list"></div>
+    <div id="timeline-count">0 events recorded</div>
+  </div>
+</div>
+
+<!-- M15: First Contact -->
+<div id="first-contact-overlay">
+  <div id="first-contact-modal">
+    <div class="fc-header">⊕ INCOMING TRANSMISSION</div>
+    <div class="fc-title">FIRST CONTACT</div>
+    <div class="fc-body" id="fc-body-text">A signal has been detected...</div>
+    <div class="fc-choices" id="fc-choices"></div>
+  </div>
+</div>
+
+</body>
+</html>

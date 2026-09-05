@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UniverseDNA",
+  "description": "The procedural genome of an Eternal Systems universe. All generation derives from masterSeed + these parameters.",
+  "type": "object",
+  "required": ["meta", "cosmicStructure", "life", "civilizations", "events", "safeRanges"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["universeName", "masterSeed", "createdAt", "currentTick", "virtualAge", "playerPlanetId"],
+      "properties": {
+        "universeName":   { "type": "string", "description": "Player-chosen or AI-generated universe name" },
+        "masterSeed":     { "type": "string", "description": "SHA-256 of universeName+diceRolls+planetAnswers" },
+        "createdAt":      { "type": "number", "description": "Unix timestamp of universe creation" },
+        "currentTick":    { "type": "number", "minimum": 0 },
+        "virtualAge":     { "type": "number", "description": "Universe age in virtual years", "minimum": 0 },
+        "playerPlanetId": { "type": "string", "description": "UUID of the player's home planet" },
+        "diceRolls": {
+          "type": "object",
+          "properties": {
+            "playerRoll": { "type": "integer", "minimum": 1, "maximum": 20 },
+            "godRoll":    { "type": "integer", "minimum": 1, "maximum": 20 },
+            "total":      { "type": "integer", "minimum": 2, "maximum": 40 }
+          }
+        },
+        "planetSetupAnswers": {
+          "type": "object",
+          "properties": {
+            "climate":      { "enum": ["arctic", "temperate", "arid", "oceanic", "volcanic", "exotic"] },
+            "terrain":      { "enum": ["flat_plains", "mountain_ranges", "deep_oceans", "crystal_formations", "gaseous_layers"] },
+            "atmosphere":   { "enum": ["oxygen", "methane", "ammonia", "exotic_compounds"] },
+            "biology":      { "enum": ["carbon", "silicon", "energy", "crystalline", "plasma"] },
+            "temperament":  { "enum": ["aggressive", "cooperative", "reclusive", "curious", "hive_minded"] }
+          }
+        }
+      }
+    },
+
+    "cosmicStructure": {
+      "type": "object",
+      "properties": {
+        "galaxyCount": {
+          "type": "integer", "minimum": 1, "maximum": 100,
+          "description": "Total galaxies in universe. Only 50 max simulated at full fidelity."
+        },
+        "starSystemsPerGalaxy": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "integer", "minimum": 1,   "maximum": 50 },
+            "max": { "type": "integer", "minimum": 10,  "maximum": 500 }
+          }
+        },
+        "planetsPerSystem": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "integer", "minimum": 0,  "maximum": 3 },
+            "max": { "type": "integer", "minimum": 1,  "maximum": 12 }
+          }
+        },
+        "moonsPerPlanet": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "integer", "minimum": 0, "maximum": 2 },
+            "max": { "type": "integer", "minimum": 0, "maximum": 8 }
+          }
+        },
+        "blackHoleProbability":     { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "nebulaDensity":            { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "rogueBodyProbability":     { "type": "number", "minimum": 0.0, "maximum": 0.3 },
+        "asteroidBeltProbability":  { "type": "number", "minimum": 0.0, "maximum": 0.5 },
+        "regionTypes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "lifeProbMod", "hazardMod"],
+            "properties": {
+              "type":        { "enum": ["dense_cluster", "calm_zone", "black_hole_influence", "nebula_nursery", "void"] },
+              "lifeProbMod": { "type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Additive modifier to life emergence probability" },
+              "hazardMod":   { "type": "number", "minimum": 0.0,  "maximum": 2.0, "description": "Multiplier on cosmic event frequency" }
+            }
+          }
+        },
+        "planetTypes": {
+          "type": "array",
+          "items": {
+            "enum": ["habitable", "frozen", "lava", "gas_giant", "ocean", "rogue", "desert", "toxic", "crystal", "exotic"]
+          },
+          "description": "Allowed planet types for this universe"
+        }
+      }
+    },
+
+    "life": {
+      "type": "object",
+      "properties": {
+        "emergenceProbability": {
+          "type": "number", "minimum": 0.0, "maximum": 1.0,
+          "description": "Base probability of life emerging per habitable planet per 1000 virtual years"
+        },
+        "biologyTypes": {
+          "type": "array",
+          "items": { "enum": ["carbon", "silicon", "energy", "crystalline", "plasma", "unknown"] },
+          "description": "Allowed biology substrate types"
+        },
+        "intelligenceProbability": {
+          "type": "number", "minimum": 0.0, "maximum": 1.0,
+          "description": "Probability that complex life develops sentience"
+        },
+        "evolutionSpeedMod": {
+          "type": "number", "minimum": 0.1, "maximum": 10.0,
+          "description": "Multiplier on species evolution tick rate"
+        },
+        "extremophileProbability": {
+          "type": "number", "minimum": 0.0, "maximum": 1.0,
+          "description": "Probability of life emerging in extreme environments (gas giants, radiation zones)"
+        },
+        "plantTypes": {
+          "type": "array",
+          "items": { "enum": ["photosynthetic", "chemotrophic", "bioluminescent", "fungal_network", "xenovegetation"] }
+        },
+        "hiveMindProbability": {
+          "type": "number", "minimum": 0.0, "maximum": 0.5,
+          "description": "Probability a sentient species is hive-minded rather than individual"
+        }
+      }
+    },
+
+    "civilizations": {
+      "type": "object",
+      "properties": {
+        "formationThreshold": {
+          "type": "integer", "minimum": 50, "maximum": 1000,
+          "description": "Minimum species intelligence score required to form a civilization"
+        },
+        "warProbabilityBase":    { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "tradeProbabilityBase":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "religionEmergenceProb": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "interstellarThreshold": {
+          "type": "integer", "minimum": 5, "maximum": 20,
+          "description": "Minimum technology level for interstellar travel capability"
+        },
+        "maxActiveCivilizations": {
+          "type": "integer", "minimum": 1, "maximum": 200,
+          "description": "Hard cap on simultaneously active civilizations (performance limit)"
+        },
+        "warDurationTicks": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "integer", "minimum": 50 },
+            "max": { "type": "integer", "maximum": 500 }
+          }
+        },
+        "resourceTypes": {
+          "type": "array",
+          "items": { "enum": ["minerals", "rare_metals", "exotic_matter", "energy_crystals", "biological", "dark_energy"] }
+        }
+      }
+    },
+
+    "events": {
+      "type": "object",
+      "properties": {
+        "supernovaFrequency":    { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "gammaRayBurstFreq":     { "type": "number", "minimum": 0.0, "maximum": 0.1 },
+        "asteroidImpactFreq":    { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "blackHoleActivityFreq": { "type": "number", "minimum": 0.0, "maximum": 0.5 },
+        "voidStormFrequency":    { "type": "number", "minimum": 0.0, "maximum": 0.3 },
+        "extinctionPlagueFreq":  { "type": "number", "minimum": 0.0, "maximum": 0.2 }
+      }
+    },
+
+    "safeRanges": {
+      "type": "object",
+      "description": "HARD LIMITS. The AI God may NOT exceed these values when modifying DNA. DNAModifier.safeApply() enforces these.",
+      "properties": {
+        "maxSimulatedEntities":   { "type": "integer", "maximum": 10000 },
+        "maxConcurrentEvents":    { "type": "integer", "maximum": 25 },
+        "maxPlanetsRendered":     { "type": "integer", "maximum": 200 },
+        "maxCivilizationsActive": { "type": "integer", "maximum": 200 },
+        "aiCallsPerMinute":       { "type": "integer", "maximum": 20 },
+        "aiQueueDepthMax":        { "type": "integer", "maximum": 100 },
+        "maxParticlesPerEvent":   { "type": "integer", "maximum": 5000 },
+        "maxDrawCallsPerFrame":   { "type": "integer", "maximum": 150 }
+      }
+    },
+
+    "aiGod": {
+      "type": "object",
+      "description": "Persistent AI God state. Evolves over time.",
+      "properties": {
+        "name":                   { "type": "string" },
+        "philosophy":             { "type": "string" },
+        "temperament":            { "type": "string" },
+        "mood":                   { "enum": ["contemplative", "restless", "sorrowful", "curious", "wrathful", "transcendent"] },
+        "focusedSystemId":        { "type": ["string", "null"] },
+        "relationship_with_player": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "total_decisions_made":   { "type": "integer" },
+        "personality_traits":     { "type": "array", "items": { "type": "string" } },
+        "evolution_log":          {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tick":    { "type": "number" },
+              "change":  { "type": "string" },
+              "trigger": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "playerActions": {
+      "type": "array",
+      "description": "Immutable chronological log of all player divine actions. Required for deterministic universe replay.",
+      "items": {
+        "type": "object",
+        "required": ["tick", "action", "target", "cost"],
+        "properties": {
+          "tick":      { "type": "number" },
+          "action":    { "type": "string" },
+          "target":    { "type": "string" },
+          "cost":      { "type": "number" },
+          "result":    { "type": "string" },
+          "diceRoll":  { "type": ["integer", "null"], "description": "D20 roll if applicable, for determinism" }
+        }
+      }
+    }
+  }
+}
