@@ -145,8 +145,8 @@ export async function generateCulture(
 ): Promise<Civilization> {
   if (!gemini || gemini.offlineMode) return base;
   try {
-    const raw = await gemini.sendPlayerMessage(
-      buildCulturePrompt(genome, civName, techTier), '');
+    const raw = await gemini.generateSystemContent(
+      buildCulturePrompt(genome, civName, techTier));
     return validateCultureResponse(raw, base) ?? base;
   } catch {
     return base;

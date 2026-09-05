@@ -814,7 +814,14 @@ function wireEngineEvents(eng: BigBangEngine): void {
 
   eng.onCultureGenerated = (starId) => {
     const ps = engine?.getPlayerStar();
-    if (ps && ps.id === starId) renderCultureSection(ps);
+    if (ps && ps.id === starId) { renderCultureSection(ps); return; }
+    // The panel is just as likely to be open on someone ELSE'''s world. Without
+    // this it kept showing the procedural culture, and only a close-and-reopen
+    // revealed the Gemini one.
+    if (_panelStarId === starId) {
+      const s = engine?.getStarById(starId);
+      if (s) renderCultureSection(s);
+    }
   };
 }
 
@@ -1236,7 +1243,12 @@ function formatPop(n: number): string {
   return Math.round(n / 1e3) + ' thousand';
 }
 
+// Which star the planet panel is currently showing. `onCultureGenerated` needs
+// it to know whether a late Gemini result is worth re-rendering for.
+let _panelStarId: number | null = null;
+
 function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
+  _panelStarId = star.id;
   const planet = star.planets[planetIndex] ?? star.planets[0];
   const isPlayer = star.isPlayerStar;
   const dna = isPlayer ? gameState.playerPlanetDNA : null;

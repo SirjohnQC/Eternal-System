@@ -466,6 +466,15 @@ console.log('\n═══ Culture regenerates on upheaval ═══');
     check('a world that is no longer intelligent is left with no culture',
           !gameState.civilizations[star.id]);
     star.biologyPhase = phase;
+
+    // The exodus case, which had no coverage and so slipped through the first
+    // fix: the rebuild used to be gated on a record ALREADY existing, which left
+    // a refuge star — newly intelligent, so with no prior record — permanently
+    // cultureless, the player'''s own world included after they fled.
+    delete gameState.civilizations[star.id];
+    (engine as any).invalidateCulture(star, 'refuge');
+    check('an intelligent star with no prior record still gets a culture',
+          gameState.civilizations[star.id] != null);
   }
 }
 

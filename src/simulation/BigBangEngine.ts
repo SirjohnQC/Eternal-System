@@ -1322,14 +1322,6 @@ export class BigBangEngine {
                  ?? best.planets[0];
     if (landing) { landing.hasLife = true; landing.biosphere = 0.4; landing.discovery = 'landing'; }
 
-    // `best` is set to biologyPhase 'intelligent' directly above, bypassing the
-    // normal ladder climb, so it may still be carrying whatever culture record
-    // it had before (someone else's, or none) — never the arriving people's.
-    // Clear it so the refuge does not wear a stale culture, and let
-    // `invalidateCulture` rebuild one for the people who actually arrived —
-    // `best` was set to `intelligent` directly above, so it qualifies.
-    this.invalidateCulture(best, 'the exodus');
-
     if (star.isPlayerStar) {
       // The player follows their people. Their world IS wherever they are.
       star.isPlayerStar = false;
@@ -1344,6 +1336,15 @@ export class BigBangEngine {
           `${best.civName}, and they begin again there.`);
       }
     }
+
+    // Rebuild the refuge's culture LAST, once `best.isPlayerStar` is settled
+    // above. `ensureCivilization` branches on it to choose between the player's
+    // real evolved genome and a stand-in NPC one, so running this any earlier
+    // gave a player who had just fled their homeworld a culture derived from a
+    // random NPC species. `best` was set to 'intelligent' further up, bypassing
+    // the normal ladder climb, so it carries either a stale record or none —
+    // neither belongs to the people who actually arrived.
+    this.invalidateCulture(best, 'the exodus');
     return true;
   }
 
@@ -2021,22 +2022,27 @@ export class BigBangEngine {
     // Upgrade in the background. A failure leaves the procedural record standing.
     const gemini = this.geminiService;
     if (!gemini || gemini.offlineMode) return;
-    // `Civilization.id` is `civ_${starId}` — a pure function of starId alone,
-    // with no per-game nonce — while `gameState.civilizations` is a module-level
-    // singleton, not scoped to this engine instance. Comparing `.id` alone
-    // would only catch "this star died/was replaced within the SAME game";
-    // it would not catch "the player abandoned this game and started a new one
-    // whose star at the same id also became intelligent" before this promise
-    // resolves — that would let a stale response built from the OLD universe's
-    // genome and civName silently overwrite the NEW game's live record.
-    // `gameState.masterSeed` changes on every new game (launchBigBang /
-    // applyLoadedSave both reassign it before this could ever fire), so
-    // capturing it now and re-checking it in `.then()` closes that gap too.
+    // Two guards, because neither is sufficient alone.
+    //
+    // `gameState.masterSeed` catches a different GAME: the player abandoned this
+    // universe and started another whose star at the same id also reached
+    // intelligence before this promise resolved.
+    //
+    // Object IDENTITY catches the same-seed case, which the seed check cannot
+    // see. `Civilization.id` is `civ_${starId}` — a pure function of starId with
+    // no per-generation nonce — so comparing ids would treat a throwaway record
+    // and the real one as interchangeable. That matters because `enterUniverse`
+    // and `applyLoadedSave` both re-run the deterministic tick-0 pre-seed on the
+    // SAME seed and then restore the real data a line later: a late response
+    // from the discarded pre-seed pass would pass a seed check and an id check
+    // both, and silently overwrite the record just restored from the save.
+    // Comparing against `base` itself fails closed — any replacement, even an
+    // identical-looking one, is a different object.
     const seedAtCall = gameState.masterSeed;
     void generateCulture(base, genome, star.civName, TECH_LEVELS[star.civLevel] ?? 'Primitive', gemini)
       .then(result => {
         if (gameState.masterSeed === seedAtCall &&
-            gameState.civilizations[star.id]?.id === base.id) {
+            gameState.civilizations[star.id] === base) {
           gameState.civilizations[star.id] = result;
           this.onCultureGenerated?.(star.id, result);
         }
@@ -2051,10 +2057,15 @@ export class BigBangEngine {
    * civLevel change" would fire constantly.
    */
   private invalidateCulture(star: StarBody, reason: string): void {
-    if (!gameState.civilizations[star.id]) return;
-    delete gameState.civilizations[star.id];
-    if (this.isStarKnownToPlayer(star)) {
-      this.onCivEvent?.(`${star.civName} is remade in the wake of ${reason}.`);
+    // Clearing and rebuilding are INDEPENDENT. Gating the rebuild on there
+    // having been something to clear is what left the exodus refuge — a star
+    // that is newly intelligent and so has no prior record — permanently
+    // cultureless, the player's own world included.
+    if (gameState.civilizations[star.id]) {
+      delete gameState.civilizations[star.id];
+      if (this.isStarKnownToPlayer(star)) {
+        this.onCivEvent?.(`${star.civName} is remade in the wake of ${reason}.`);
+      }
     }
 
     // Rebuild straight away, from what the species is NOW.
@@ -4249,6 +4260,14 @@ export class BigBangEngine {
     // on the intelligent-phase TRANSITION — which, for a restored star, already
     // happened in a past session and will never fire again.
     if (snap.civilizations)  gameState.civilizations   = snap.civilizations;
+    // A save written before this field existed restores none, and the
+    // transition above will never fire again for those stars — so without this
+    // backfill every civilisation in an old save stays cultureless for good.
+    // `ensureCivilization` no-ops where a record is already present, so this is
+    // idempotent and costs nothing on a current save.
+    for (const s of this.stars) {
+      if (!s.isDead && s.biologyPhase === 'intelligent') this.ensureCivilization(s);
+    }
     this.supernovaFlashes = [];
     this.revelationFlashes = [];
     this.planetTextureCache.clear();
