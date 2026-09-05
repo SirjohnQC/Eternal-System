@@ -61,9 +61,8 @@ function capped(v: unknown, max: number): string | null {
 }
 
 function num01(v: unknown): number | null {
-  const n = typeof v === 'number' ? v : Number(v);
-  if (!Number.isFinite(n)) return null;        // rejects "very high"
-  return Math.max(0, Math.min(1, n));          // clamps 999 and -5
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null; // rejects "very high", null, true, [], ""
+  return Math.max(0, Math.min(1, v));          // clamps 999 and -5
 }
 
 /**
