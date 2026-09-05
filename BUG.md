@@ -1,6 +1,15 @@
 # Open bugs
 
-None outstanding.
+Reported 2026-09-05. All three are tracked as **M25** in `ROADMAP.md`.
+
+- **Planets and galaxies are way too close — they all end up collapsing into
+  the same solar system.** Same root cause as the one failing check in the
+  suite: `playerProgressCheck` sits at 3/12 because colliding stars keep
+  resetting worlds to magma before biology can climb. Fix belongs in
+  cosmology spacing, NOT in `LifeSystem.ts`.
+- **Evolving species get stuck on the same pattern.**
+- **Home-world view not in sync with the planet view.**
+
 
 ## Fixed
 

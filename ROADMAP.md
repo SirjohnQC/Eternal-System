@@ -1600,6 +1600,62 @@ data behind it.
 
 ---
 
+## MILESTONE 25: Cosmic Spacing and Collision Tuning (Planned)
+Raised by Sirjohn 2026-09-05: *"Planets and galaxies are way too close, they
+all finish by collapsing to the same solar system."*
+
+**This is the same root cause as the one failing check in the suite.**
+`tools/playerProgressCheck.ts` asserts that a reasonable share of seeds see a
+passive player's world advance past microbial, and it fails at 3/12. An earlier
+measurement recorded ~1 in 6 seeds stalling with collision supernovae OFF
+against about half with them ON. Stars drift together, collide, and reset
+worlds to magma faster than biology can climb. The player sees a collapsing
+cosmos; the metric sees a stalled biosphere; it is one problem.
+
+- [ ] Star and galaxy placement — spacing that survives long runs
+- [ ] Revisit `COLLISION_SUPERNOVA_MASS` and the drift model
+- [ ] Planets that are genuinely too close SHOULD collide — keep the drama,
+      lose the universal collapse
+- [ ] Re-measure `playerProgressCheck` across 12 seeds, with a control run at
+      collisions disabled so the two numbers are comparable
+
+**Do not fix this in `LifeSystem.ts`.** The metric has been tuned against three
+times already as though it were a biology-tempo problem. It is a cosmology
+problem and the fix belongs in `BigBangEngine.ts`.
+
+### Also reported 2026-09-05
+- [ ] Evolving species get stuck on the same pattern
+- [ ] Home-world view not in sync with the planet view
+
+---
+
+## MILESTONE 26: Player-Facing Clarity and Reach (Planned)
+Ideas raised by Sirjohn 2026-09-05, grouped by what they actually change.
+
+**Evolution and DNA**
+- [ ] Vegetation evolves on its own — DNA points buy cellular evolution only
+- [ ] The Evolution Lab should let the player move between species and spend
+      DNA on each, not just the primary lineage
+
+**Cosmology and events**
+- [ ] A large asteroid can trigger an ice age and reshape the early planet
+- [ ] Solar systems should have exoplanets
+- [ ] A supernova should leave a star-dust cloud that persists for a very long
+      time, rather than fading immediately
+
+**Presentation**
+- [ ] Reshade planets, suns and stars, and allow closer zoom, so their scale
+      actually reads
+- [ ] Species, settlements, vegetation and technology (satellites, say) should
+      be visible from every view, not only the diorama
+- [ ] The planet map needs a legend for its colours
+
+**Notifications**
+- [ ] An asteroid striking another system should only notify the player if that
+      system has been sighted
+
+---
+
 ## KNOWN BACKLOG (Post-Prototype)
 
 - Multiplayer universe sharing (read-only spectator link)
