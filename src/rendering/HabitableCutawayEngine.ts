@@ -172,18 +172,6 @@ export const CUTAWAY_FACE_SQUASH = 0.50;
  */
 export const CUTAWAY_FACE_DROP = 0.04;
 
-/**
- * Minimum bottom-rock band height as a fraction of the lower wall.
- * Target snow-globe: most of the underworld is WATER; rock is only a jagged
- * crescent at the base (with magma), not a dirt fill of the lower hemisphere.
- */
-export const CUTAWAY_BOTTOM_ROCK = 0.26;
-
-/**
- * Thin soil lip under the flat board (screen pixels, scaled lightly with rx).
- */
-export const CUTAWAY_BOARD_LIP = 0.045;
-
 /** Vertical centre of the body circle, given the top face's ellipse. */
 export function cutawayBodyCy(cyTop: number, rx: number, ry: number): number {
   return cyTop + (rx - ry) - Math.round(rx * CUTAWAY_FACE_DROP);
@@ -206,6 +194,12 @@ export interface CutawayGeom {
 }
 
 export interface CutawayBakeOpts extends CutawayGeom {
+  /** Body-circle radius. Optional until the legacy host adopts habitableGeom. */
+  R?: number;
+  /** Height of the sheer front wall. Optional until the legacy host adopts it. */
+  wall?: number;
+  /** Vertical centre of the body circle. Optional for legacy host compatibility. */
+  cyBody?: number;
   /** Size of the layer canvases, in virtual pixels. */
   w: number;
   h: number;
@@ -555,188 +549,88 @@ export function paintCutawaySurface(
   g.putImageData(img, x0, yTop);
 }
 
-// ─── Underworld: soil lip, deep water, bottom rock ───────────────────────────
+// ─── Underworld: spherical crust + sheer front wall ──────────────────────────
 
 /**
- * Paint the underworld of the snow-globe diorama.
+ * Paint the spherical crust beneath the living board.
  *
- * Target layout (flat board in a glass sphere):
- *   1. thin brown soil lip hugging the underside of the tabletop
- *   2. deep water volume filling most of the lower circle (with cage lines)
- *   3. jagged rock crescent only at the bottom, with ember veins
- *
- * Upper air stays empty — the atmosphere shell owns that. Do not paint strata
- * into the sky.
+ * The tabletop ellipse stays transparent: surface and fluids own it. A short
+ * front wall carries either ocean facets or land cliffs, while all remaining
+ * body pixels are screen-depth-aligned geological strata.
  */
 export function paintCutawayCrust(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed } = opts;
+  const fallback = habitableGeom(VW, VH);
+  const R = opts.R ?? fallback.R;
+  const wall = opts.wall ?? fallback.wall;
+  const cyBody = opts.cyBody ?? fallback.cyBody;
   const pal = paletteFor(opts.planetType);
-  const cyBody = cutawayBodyCy(cyTop, rx, ry);
-  const R = rx;
   g.clearRect(0, 0, VW, VH);
   if (R < 8) return;
 
-  const s = new Stream(seed ^ 0x51ed2701);
-  const left = cx - R;
-  const cols = R * 2 + 1;
+  const x0 = Math.max(0, Math.floor(cx - R));
+  const x1 = Math.min(VW - 1, Math.ceil(cx + R));
+  const y0 = Math.max(0, Math.floor(cyBody - R));
+  const y1 = Math.min(VH - 1, Math.ceil(cyBody + R));
 
-  const faceBottom = new Float32Array(cols);
-  const bodyBottom = new Float32Array(cols);
-  const lipBottom  = new Float32Array(cols);
-  const rockTop    = new Float32Array(cols);
+  for (let y = y0; y <= y1; y++) {
+    const dyBody = y - cyBody;
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx;
+      if (dx * dx + dyBody * dyBody > R * R) continue;
+      const faceX = dx / rx;
+      const faceY = (y - cyTop) / ry;
+      if (faceX * faceX + faceY * faceY <= 1) continue;
+      if (y < cyTop + ry * 0.28 && Math.abs(dx) <= rx) continue;
 
-  const lipH = Math.max(3, Math.round(R * CUTAWAY_BOARD_LIP));
-  const silt = pal.strata[0];
-  const cliff = pal.strata[1];
-  const sub = pal.strata.slice(1);
-
-  for (let i = 0; i < cols; i++) {
-    const dxn = (left + i - cx) / R;
-    const e = Math.sqrt(Math.max(0, 1 - dxn * dxn));
-    const fb = Math.max(cyTop + ry * e, cyBody - R * e);
-    const bb = cyBody + R * e;
-    faceBottom[i] = fb;
-    bodyBottom[i] = bb;
-
-    const wallH = Math.max(1, bb - fb);
-    const lb = Math.min(fb + lipH, bb - 2);
-    lipBottom[i] = lb;
-
-    const jag = fbm1(dxn * 4.2, seed, 4) * 0.55
-              + fbm1(dxn * 13.0, seed + 77, 3) * 0.30
-              + fbm1(dxn * 29.0, seed + 401, 2) * 0.15;
-    const rockBand = wallH * CUTAWAY_BOTTOM_ROCK * (0.72 + jag * 0.55);
-    let rt = bb - Math.max(6, rockBand);
-    rt = Math.round(rt / 2) * 2;
-    rt = Math.max(lb + 2, Math.min(rt, bb - 4));
-    rockTop[i] = rt;
-  }
-
-  // Thin soil lip under the board.
-  for (let i = 0; i < cols; i++) {
-    const x = left + i;
-    if (x < 0 || x >= VW) continue;
-    const fb = faceBottom[i], lb = lipBottom[i];
-    const h = lb - fb;
-    if (h < 1) continue;
-    const dxn = (x - cx) / R;
-    const lit = 0.70 + 0.35 * clamp01(dxn * KEY_X + 0.4);
-    for (let y = 0; y < h; y++) {
-      const t = y / Math.max(1, h - 1);
-      const base = t < 0.45 ? cliff : silt;
-      const f = lit * (1 - t * 0.22) * (0.94 + hash1(x * 91 + y * 7, seed) * 0.1);
-      g.fillStyle = css(shade(base, f));
-      g.fillRect(x, Math.round(fb + y), 1, 1);
-    }
-  }
-
-  // Deep water volume — most of the lower hemisphere.
-  for (let i = 0; i < cols; i++) {
-    const x = left + i;
-    if (x < 0 || x >= VW) continue;
-    const dxn = (x - cx) / R;
-    const top = lipBottom[i], bot = rockTop[i];
-    const h = bot - top;
-    if (h < 1) continue;
-    const lit = 0.72 + 0.32 * clamp01(dxn * KEY_X + 0.42);
-    for (let y = 0; y < h; y++) {
-      const depthRatio = y / h;
-      g.fillStyle = css(rgb(
-        Math.floor((pal.waterDeep.r + depthRatio * 18) * lit),
-        Math.floor((pal.waterDeep.g + depthRatio * 26) * lit),
-        Math.floor((pal.waterDeep.b + depthRatio * 42) * lit),
+      const depth = (y - (cyBody - R)) / (2 * R);
+      const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.60;
+      const band = Math.max(0, Math.min(
+        pal.strata.length - 1, Math.floor(depth * pal.strata.length + wave),
       ));
-      g.fillRect(x, Math.round(top + y), 1, 1);
+      const light = quantise(
+        0.34 + 0.78 * clamp01((dx / R) * KEY_X + (dyBody / R) * KEY_Y + 0.60),
+        0.10,
+      );
+      const grain = 0.92 + hash1(x * 733 + y * 13, seed) * 0.14;
+      const ember = depth > 0.78 && hash1(x * 179 + y * 991, seed + 19) > 0.986;
+      g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[band], light * grain));
+      g.fillRect(x, y, 1, 1);
     }
   }
 
-  g.fillStyle = css(pal.foam, 0.40);
-  for (let i = 0; i < cols; i++) {
-    const x = left + i;
-    if (x < 0 || x >= VW) continue;
-    if (rockTop[i] - lipBottom[i] < 2) continue;
-    g.fillRect(x, Math.round(lipBottom[i]), 1, 1);
-  }
+  // The front rim is a thin vertical cut, not a lower-hemisphere water bowl.
+  const rimX0 = Math.max(0, Math.ceil(cx - rx));
+  const rimX1 = Math.min(VW - 1, Math.floor(cx + rx));
+  for (let x = rimX0; x <= rimX1; x++) {
+    const faceX = (x - cx) / rx;
+    const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
+    const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
+    const bottomY = frontY + wall + ridge;
+    const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY) - 1));
+    const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
+    const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
 
-  // Cage lines through the water.
-  for (let i = 0; i < cols; i += 10) {
-    const x = left + i;
-    if (x < 0 || x >= VW) continue;
-    const top = Math.round(lipBottom[i]) + 1;
-    const bot = Math.round(rockTop[i]) - 1;
-    if (bot <= top) continue;
-    g.fillStyle = css(pal.facet, 0.14);
-    for (let y = top; y < bot; y++) g.fillRect(x, y, 1, 1);
-  }
-
-  // Bottom rock crescent only.
-  for (let i = 0; i < cols; i++) {
-    const x = left + i;
-    if (x < 0 || x >= VW) continue;
-    const dxn = (x - cx) / R;
-    const rt = rockTop[i], bb = bodyBottom[i];
-    const depth = bb - rt;
-    if (depth < 1) continue;
-    const lit = quantise(0.30 + 0.78 * clamp01(dxn * KEY_X + 0.44), 0.10);
-    const flank = 1 - Math.pow(clamp01((Math.abs(dxn) - 0.52) / 0.48), 2) * 0.40;
-    const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.65
-               + (fbm1(x * 0.08, seed + 733, 2) - 0.5) * 0.25;
-    for (let y = 0; y < depth; y++) {
-      const absY = rt + y;
-      const depthF = y / Math.max(1, depth);
-      let f = lit * flank * (1 - depthF * 0.28);
-      const bandPos = depthF * sub.length + wave * 0.35;
-      const bi = Math.max(0, Math.min(sub.length - 1, Math.floor(bandPos)));
-      let base = y < 2 ? silt : sub[bi];
-      const frac = bandPos - Math.floor(bandPos);
-      if (frac < 0.08) f *= 0.66;
-      else if (frac < 0.18) f *= 1.12;
-      f *= 0.92 + hash1(x * 733 + y * 13, seed) * 0.14;
-      g.fillStyle = css(shade(base, f));
-      g.fillRect(x, Math.round(absY), 1, 1);
-    }
-    g.fillStyle = 'rgba(6,5,12,0.55)';
-    g.fillRect(x, Math.round(bb) - 1, 1, 1);
-  }
-
-  // Ember glow + veins in bottom rock.
-  g.save();
-  g.beginPath();
-  g.arc(cx, cyBody, R - 1, 0, Math.PI * 2);
-  g.clip();
-  g.globalCompositeOperation = 'lighter';
-  const glowY = cyBody + R * 0.78;
-  const glow = g.createRadialGradient(cx, glowY, 0, cx, glowY, R * 0.38);
-  glow.addColorStop(0, css(pal.ember, 0.14));
-  glow.addColorStop(0.5, css(pal.ember, 0.04));
-  glow.addColorStop(1, css(pal.ember, 0));
-  g.fillStyle = glow;
-  g.fillRect(cx - R, glowY - R, R * 2, R * 2);
-  g.globalCompositeOperation = 'source-over';
-  g.restore();
-
-  const veins = 4 + (seed % 3);
-  for (let k = 0; k < veins; k++) {
-    let x = cx + s.range(-R * 0.70, R * 0.70);
-    const i0 = Math.round(x) - left;
-    if (i0 < 0 || i0 >= cols) continue;
-    const lo = rockTop[i0] + 2;
-    const hi = bodyBottom[i0] - 3;
-    if (hi <= lo) continue;
-    let y = s.range(lo, hi);
-    const len = s.range(3, 12);
-    const drift = s.range(-0.7, 0.7);
-    for (let step = 0; step < len; step++) {
-      const i = Math.round(x) - left;
-      if (i < 0 || i >= cols) break;
-      if (y < rockTop[i] + 1 || y > bodyBottom[i] - 2) break;
-      const hot = step === 0 || s.next() > 0.62;
-      g.fillStyle = css(hot ? pal.emberHot : pal.ember, hot ? 0.9 : 0.65);
-      g.fillRect(Math.round(x), Math.round(y), 1, 1);
-      x += drift;
-      y += s.range(0.4, 1.1);
+    for (let y = Math.ceil(frontY); y <= Math.floor(bottomY); y++) {
+      if (y < 0 || y >= VH || (x - cx) ** 2 + (y - cyBody) ** 2 > R * R) continue;
+      const faceY = (y - cyTop) / ry;
+      if (faceX * faceX + faceY * faceY <= 1) continue;
+      const t = clamp01((y - frontY) / Math.max(1, bottomY - frontY));
+      const light = quantise(0.70 + 0.30 * clamp01(faceX * KEY_X + 0.42), 0.08);
+      if (water) {
+        const facet = x % 14 === 0 ? 0.20 : 0;
+        g.fillStyle = css(shade(rgb(
+          mix(pal.waterLip.r, pal.waterDeep.r, t),
+          mix(pal.waterLip.g, pal.waterDeep.g, t),
+          mix(pal.waterLip.b, pal.waterDeep.b, t),
+        ), light + facet));
+      } else {
+        const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
+        g.fillStyle = css(shade(pal.strata[stripe], light));
+      }
+      g.fillRect(x, y, 1, 1);
     }
   }
 }

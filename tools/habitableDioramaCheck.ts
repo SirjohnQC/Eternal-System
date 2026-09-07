@@ -115,17 +115,14 @@ const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
   paintCutawaySurface, paintCutawayCrust, bakeCutawayAtmosphere,
-  cutawayBodyCy, cutawayFaceCy, CUTAWAY_FACE_SQUASH,
+  habitableGeom,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
 type CutawayBakeOpts = Parameters<typeof type.paintCutawaySurface>[1];
 
 const VW = 480, VH = 320;
-const cx = Math.round(VW / 2);
-const rx = Math.round(Math.min(VW * 0.34, VH * 0.44));
-const ry = Math.max(6, Math.round(rx * CUTAWAY_FACE_SQUASH));
-const cyBody = Math.round(VH * 0.56);
-const cyTop = cutawayFaceCy(cyBody, rx, ry);
+const geom = habitableGeom(VW, VH);
+const { cx, cyBody, cyTop, R, rx, ry, wall } = geom;
 const MAX_LIFT = 9;
 
 function liftOf(elev: number): number {
@@ -191,7 +188,7 @@ function check(label: string, ok: boolean, detail: string): void {
 // ─── Pancake god-view geometry (Task 1) ───────────────────────────────────────
 
 const {
-  habitableGeom, bobOf, BOARD_SQUASH, BOARD_WIDTH, ATMO_RATIO, ATMO_MIN_PX, CY_TOP_DROP,
+  bobOf, BOARD_SQUASH, BOARD_WIDTH, ATMO_RATIO, ATMO_MIN_PX, CY_TOP_DROP,
 } = await import('../src/rendering/HabitableCutawayEngine');
 
 const g480 = habitableGeom(480, 320);
@@ -213,17 +210,10 @@ check('bob amplitude at least 1', Math.abs(bobOf(Math.PI / 1.4, g480.R)) >= 1,
 console.log('');
 
 const faceArea = Math.PI * rx * ry;
-// Wall area under the cut: ∫ (bodyBottom − faceBottom) dx over the diameter.
-let wallArea = 0;
-for (let x = cx - rx; x <= cx + rx; x++) {
-  const e = Math.sqrt(Math.max(0, 1 - ((x - cx) / rx) ** 2));
-  wallArea += (cyBody + rx * e) - (cyTop + ry * e);
-}
 
-console.log(`\n  body: cx=${cx} cyTop=${cyTop} cyBody=${cyBody} rx=${rx} ry=${ry}`
-          + `  (cutawayBodyCy→${cutawayBodyCy(cyTop, rx, ry)})`
-          + `  maxLift=${MAX_LIFT}px`);
-console.log(`  face area ~${Math.round(faceArea)}px²   wall area ~${Math.round(wallArea)}px²\n`);
+console.log(`\n  body: cx=${cx} cyTop=${cyTop} cyBody=${cyBody} R=${R} rx=${rx} ry=${ry}`
+          + `  wall=${wall}px maxLift=${MAX_LIFT}px`);
+console.log(`  face area ~${Math.round(faceArea)}px²\n`);
 
 for (const planetType of ['ocean', 'rocky'] as const) {
   console.log(`  ── ${planetType} ──`);
@@ -256,7 +246,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   const pick = new Int32Array(VW * VH);
   const occupancy = new Uint8Array(VW * VH);
   const opts = {
-    w: VW, h: VH, cx, cyTop, rx, ry,
+    w: VW, h: VH, cx, cyTop, cyBody, R, rx, ry, wall,
     seed: 0xbeef, grid, planetType,
     discToGrid, rimFalloff, liftOf, smoothElevation,
     maxLift: MAX_LIFT, lush: 0.6, pick,
@@ -285,8 +275,8 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('occupancy has land', landPx > 10, `${landPx} land px`);
   check('surface does not paint water', waterPainted === 0, `${waterPainted} water px on land canvas`);
   const crustCovered = cCtx.mask.reduce((a, b) => a + b, 0);
-  check('crust layer has pixels', crustCovered > wallArea * 0.70,
-        `${crustCovered}px covered (wall ~${Math.round(wallArea)})`);
+  check('crust layer has pixels', crustCovered > rx * wall * 0.40,
+        `${crustCovered}px covered`);
   check('atmosphere layer drew something', aCtx.pathOps + aCtx.clippedOps > 0,
         `${aCtx.pathOps} strokes, ${aCtx.clippedOps} clipped fills`);
 
@@ -294,18 +284,20 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   // Back-hemisphere rock ABOVE the tabletop is intentional (3/4 seating).
   // Forbid only: pixels outside the body, or crust stamped inside the face
   // ellipse (the surface layer owns that).
-  let outsideBody = 0, insideFace = 0;
+  let outsideBody = 0, insideFace = 0, wallPx = 0;
   for (let y = 0; y < VH; y++) {
     for (let x = 0; x < VW; x++) {
       if (cCtx.mask[y * VW + x] === 0) continue;
-      // Allow one pixel of slack: the silhouette pixel sits ON the circle.
-      if (Math.hypot(x - cx, y - cyBody) > rx + 1.5) outsideBody++;
+      if (Math.hypot(x - cx, y - cyBody) > R + 1.5) outsideBody++;
       const fdx = (x - cx) / rx, fdy = (y - cyTop) / ry;
       if (fdx * fdx + fdy * fdy <= 0.98) insideFace++;
+      const front = cyTop + Math.sqrt(Math.max(0, 1 - fdx * fdx)) * ry;
+      if (Math.abs(fdx) <= 1 && y >= front && y <= front + wall + 6) wallPx++;
     }
   }
-  check('no crust outside the silhouette', outsideBody === 0, `${outsideBody} stray px`);
-  check('no crust inside the tabletop', insideFace === 0, `${insideFace} stray px`);
+  check('no crust outside sphere R', outsideBody === 0, `${outsideBody} stray`);
+  check('no crust inside pancake', insideFace === 0, `${insideFace} stray`);
+  check('sheer wall exists', wallPx > rx * wall * 0.4, `${wallPx} wall px`);
 
   // 3 — the pick buffer is usable.
   let picked = 0, pickOutside = 0;
@@ -341,16 +333,6 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   }
   check('occupancy keeps water pick', waterPickLand === 0 && waterPickEmpty === 0,
         `${waterPickLand} land IDs, ${waterPickEmpty} empty`);
-
-  // 4 — the water column exists: a band of crust right under the rim at the
-  //     centre column, before the rock starts.
-  const centreCol: number[] = [];
-  for (let y = cyTop + ry; y < cyBody + rx; y++) {
-    if (cCtx.mask[y * VW + cx]) centreCol.push(y);
-  }
-  check('crust spans the centre column',
-        centreCol.length > (cyBody + rx - (cyTop + ry)) * 0.9,
-        `${centreCol.length} of ${cyBody + rx - (cyTop + ry)} rows`);
 
   console.log('');
 }
