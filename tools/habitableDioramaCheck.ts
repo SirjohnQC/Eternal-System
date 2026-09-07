@@ -115,7 +115,7 @@ const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
   paintCutawaySurface, paintCutawayCrust, paintAtmosphere, paintFluids,
-  habitableGeom,
+  habitableGeom, HabitableCutawayEngine,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
 type CutawayBakeOpts = Parameters<typeof type.paintCutawaySurface>[1];
@@ -252,6 +252,16 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     maxLift: MAX_LIFT, lush: 0.6, pick,
   } as unknown as CutawayBakeOpts;
   opts.occupancy = occupancy;
+
+  const engine = new HabitableCutawayEngine();
+  engine.bake({
+    w: VW, h: VH, seed: opts.seed, grid, planetType,
+    discToGrid, rimFalloff, liftOf, smoothElevation,
+    maxLift: MAX_LIFT, lush: 0.6,
+  });
+  check('class bake occupancy', engine.occupancy.some(v => v === 1), 'has water');
+  const classHit = engine.hitTest(engine.geom.cx, engine.geom.cyTop);
+  check('hitTest centre', classHit !== null, JSON.stringify(classHit));
 
   const surfaceCanvas = makeCanvas(VW, VH);
   const crustCanvas = makeCanvas(VW, VH);

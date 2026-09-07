@@ -893,6 +893,181 @@ export function makeWispSprite(
   return c;
 }
 
+export interface HabitableFrameInput {
+  g: CanvasRenderingContext2D;
+  dt: number;
+  elapsed: number;
+  bg: HTMLCanvasElement;
+  drawFarSpace: (g: CanvasRenderingContext2D) => void;
+  drawOverlays: (g: CanvasRenderingContext2D) => void;
+  drawNearMoons: (g: CanvasRenderingContext2D) => void;
+  weatherMix: Array<{ kind: string; weight: number }>;
+}
+
+interface Wisp {
+  x: number;
+  y: number;
+  speed: number;
+  alpha: number;
+  sprite: HTMLCanvasElement;
+}
+
+const WISP_COLOURS: Record<string, { body: RGB; under: RGB }> = {
+  cumulus: { body: rgb(244, 250, 255), under: rgb(142, 174, 204) },
+  storm: { body: rgb(132, 150, 178), under: rgb(55, 66, 88) },
+  ash: { body: rgb(168, 150, 140), under: rgb(78, 62, 58) },
+  smog: { body: rgb(174, 156, 118), under: rgb(90, 76, 54) },
+  ice_haze: { body: rgb(225, 244, 255), under: rgb(138, 180, 208) },
+};
+
+/**
+ * Owns static layers and composites moving habitable-world effects.
+ * `drawGeom` includes bob for host-owned overlay placement.
+ */
+export class HabitableCutawayEngine {
+  geom: HabitableGeom = habitableGeom(1, 1);
+  occupancy = new Uint8Array(1);
+  pick = new Int32Array(1);
+
+  private crust = document.createElement('canvas');
+  private land = document.createElement('canvas');
+  private w = 1;
+  private h = 1;
+  private planetType: HabitableType = 'ocean';
+  private elapsed = 0;
+  private wisps: Wisp[] = [];
+  private lastWispSig = '';
+
+  constructor() {
+    this.resizeLayers(1, 1);
+  }
+
+  get bob(): number {
+    return bobOf(this.elapsed, this.geom.R);
+  }
+
+  get drawGeom(): HabitableGeom & { bob: number } {
+    return { ...this.geom, bob: this.bob };
+  }
+
+  bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
+    w: number; h: number; weatherMix?: Array<{ kind: string; weight: number }>;
+  }): void {
+    this.w = Math.max(1, Math.round(opts.w));
+    this.h = Math.max(1, Math.round(opts.h));
+    this.geom = habitableGeom(this.w, this.h);
+    this.planetType = opts.planetType;
+    this.elapsed = 0;
+    this.occupancy = new Uint8Array(this.w * this.h);
+    this.pick = new Int32Array(this.w * this.h);
+    this.wisps = [];
+    this.lastWispSig = '\0';
+    this.resizeLayers(this.w, this.h);
+    const bakeOpts: CutawayBakeOpts = {
+      ...opts, ...this.geom, w: this.w, h: this.h,
+      occupancy: this.occupancy, pick: this.pick,
+    };
+    const crustG = this.crust.getContext('2d');
+    const landG = this.land.getContext('2d');
+    if (crustG) paintCutawayCrust(crustG, bakeOpts);
+    if (landG) paintCutawaySurface(landG, bakeOpts);
+    this.rebuildWisps(opts.weatherMix ?? []);
+  }
+
+  frame(input: HabitableFrameInput): void {
+    const { g, elapsed } = input;
+    this.elapsed = elapsed;
+    this.rebuildWisps(input.weatherMix);
+    const bob = this.bob;
+    const layerBob = Math.round(bob);
+
+    g.drawImage(input.bg, 0, 0);
+    input.drawFarSpace(g);
+    const atmo = g.createImageData(this.w, this.h);
+    paintAtmosphere(atmo, this.geom, this.planetType, bob);
+    g.putImageData(atmo, 0, 0);
+    g.drawImage(this.crust, 0, layerBob);
+    g.drawImage(this.land, 0, layerBob);
+    const fluids = g.createImageData(this.w, this.h);
+    paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, bob);
+    g.putImageData(fluids, 0, 0);
+    input.drawOverlays(g);
+    this.drawWisps(g, elapsed, bob);
+    input.drawNearMoons(g);
+
+    const vig = g.createRadialGradient(
+      this.geom.cx, this.geom.cyBody + bob, this.geom.rx * 0.7,
+      this.geom.cx, this.geom.cyBody + bob, Math.max(this.w, this.h) * 0.75,
+    );
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,0,0.55)');
+    g.fillStyle = vig;
+    g.fillRect(0, 0, this.w, this.h);
+  }
+
+  hitTest(px: number, py: number): { row: number; col: number } | null {
+    const y = py - Math.round(this.bob);
+    if (px < 0 || px >= this.w || y < 0 || y >= this.h) return null;
+    const id = this.pick[y * this.w + px];
+    if (!id || id <= 0) return null;
+    return { row: Math.floor((id - 1) / GRID_SIZE), col: (id - 1) % GRID_SIZE };
+  }
+
+  private resizeLayers(w: number, h: number): void {
+    this.crust.width = w; this.crust.height = h;
+    this.land.width = w; this.land.height = h;
+  }
+
+  private rebuildWisps(weatherMix: Array<{ kind: string; weight: number }>): void {
+    const sig = weatherMix.map(m => `${m.kind}:${m.weight}`).join('|');
+    if (sig === this.lastWispSig) return;
+    this.lastWispSig = sig;
+    const stream = new Stream((this.geom.cx * 8191 + this.geom.R * 131 + sig.length) >>> 0);
+    const positive = weatherMix.filter(m => m.weight > 0);
+    const total = positive.reduce((sum, m) => sum + m.weight, 0);
+    const count = positive.length === 0 ? 1 : 5 + stream.int(0, 3);
+    const pickKind = (): string => {
+      if (total <= 0) return 'cumulus';
+      let roll = stream.next() * total;
+      for (const mix of positive) {
+        roll -= mix.weight;
+        if (roll <= 0) return mix.kind;
+      }
+      return positive[positive.length - 1].kind;
+    };
+    this.wisps = Array.from({ length: count }, () => {
+      const kind = pickKind();
+      const colour = WISP_COLOURS[kind] ?? WISP_COLOURS.cumulus;
+      const width = stream.range(this.geom.rx * 0.22, this.geom.rx * 0.62);
+      const height = width * stream.range(0.09, 0.17);
+      return {
+        x: this.geom.cx + stream.range(-this.geom.R, this.geom.R),
+        y: this.geom.cyTop + stream.range(-this.geom.ry * 0.3, this.geom.R * 0.7),
+        speed: stream.range(2.5, 7),
+        alpha: stream.range(0.25, 0.58),
+        sprite: makeWispSprite(width, height, stream.int(1, 1 << 20), colour.body, colour.under),
+      };
+    });
+  }
+
+  private drawWisps(g: CanvasRenderingContext2D, elapsed: number, bob: number): void {
+    const { cx, cyBody, R, T } = this.geom;
+    const radius = R + T;
+    g.save();
+    g.beginPath();
+    g.arc(cx, cyBody + bob, radius, 0, Math.PI * 2);
+    g.clip();
+    for (const wisp of this.wisps) {
+      const span = radius * 2;
+      const x = ((wisp.x + elapsed * wisp.speed - (cx - radius)) % span + span) % span + cx - radius;
+      g.globalAlpha = wisp.alpha;
+      g.drawImage(wisp.sprite, Math.round(x - wisp.sprite.width / 2), Math.round(wisp.y + bob - wisp.sprite.height / 2));
+    }
+    g.globalAlpha = 1;
+    g.restore();
+  }
+}
+
 // ─── Convenience / smoke entry point ──────────────────────────────────────────
 
 /**
