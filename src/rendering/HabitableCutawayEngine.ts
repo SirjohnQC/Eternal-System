@@ -408,6 +408,9 @@ export function paintCutawaySurface(
     px: number, py: number, cr: number, cg: number, cb: number, cellId: number,
   ): void => {
     if (py < yTop || py > y1 || px < x0 || px > x1) return;
+    // Occupied water already stamped pick; cliffs must not overwrite it.
+    if (opts.occupancy && py >= 0 && py < VH && px >= 0 && px < VW
+        && opts.occupancy[py * VW + px]) return;
     const o = ((py - yTop) * bw + (px - x0)) * 4;
     d[o]     = cr < 0 ? 0 : cr > 255 ? 255 : cr;
     d[o + 1] = cg < 0 ? 0 : cg > 255 ? 255 : cg;

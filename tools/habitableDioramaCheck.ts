@@ -324,6 +324,24 @@ for (const planetType of ['ocean', 'rocky'] as const) {
         `${picked} cells stamped (face ~${Math.round(faceArea)})`);
   check('pick buffer stays on the face', pickOutside === 0, `${pickOutside} stray px`);
 
+  // Occupancy water must keep the water-cell pick ID. Land cliffs used to
+  // overwrite pick through put(), then the alpha punch left a land ID on a
+  // transparent fluid pixel.
+  let waterPickLand = 0, waterPickEmpty = 0;
+  for (let y = 0; y < VH; y++) {
+    for (let x = 0; x < VW; x++) {
+      const i = y * VW + x;
+      if (!occupancy[i]) continue;
+      const gp = discToGrid((x - cx) / rx, (y - cyTop) / ry);
+      if (!gp) continue;
+      const expected = gp.row * GRID_SIZE + gp.col + 1;
+      if (pick[i] === 0) waterPickEmpty++;
+      else if (pick[i] !== expected) waterPickLand++;
+    }
+  }
+  check('occupancy keeps water pick', waterPickLand === 0 && waterPickEmpty === 0,
+        `${waterPickLand} land IDs, ${waterPickEmpty} empty`);
+
   // 4 — the water column exists: a band of crust right under the rim at the
   //     centre column, before the rock starts.
   const centreCol: number[] = [];
