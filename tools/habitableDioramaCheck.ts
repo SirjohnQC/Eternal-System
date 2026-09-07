@@ -25,6 +25,7 @@ class RecordingCtx {
   mask: Uint8Array;
   rectPixels = 0;
   imagePixels = 0;
+  putImageDataCalls = 0;
   clippedOps = 0;
   pathOps = 0;
   private clipDepth = 0;
@@ -80,6 +81,7 @@ class RecordingCtx {
     img: { width: number; height: number; data: Uint8ClampedArray },
     dx: number, dy: number,
   ): void {
+    this.putImageDataCalls++;
     for (let y = 0; y < img.height; y++) {
       for (let x = 0; x < img.width; x++) {
         if (img.data[(y * img.width + x) * 4 + 3] === 0) continue;
@@ -262,6 +264,16 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('class bake occupancy', engine.occupancy.some(v => v === 1), 'has water');
   const classHit = engine.hitTest(engine.geom.cx, engine.geom.cyTop);
   check('hitTest centre', classHit !== null, JSON.stringify(classHit));
+  const frameCanvas = makeCanvas(VW, VH);
+  const frameCtx = frameCanvas.getContext() as RecordingCtx;
+  engine.frame({
+    g: frameCtx as unknown as CanvasRenderingContext2D,
+    dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
+    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+    weatherMix: [],
+  });
+  check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
+        `${frameCtx.putImageDataCalls} live putImageData calls`);
 
   const surfaceCanvas = makeCanvas(VW, VH);
   const crustCanvas = makeCanvas(VW, VH);

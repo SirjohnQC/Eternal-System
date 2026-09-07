@@ -931,6 +931,8 @@ export class HabitableCutawayEngine {
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
+  private atmoScratch = document.createElement('canvas');
+  private fluidScratch = document.createElement('canvas');
   private w = 1;
   private h = 1;
   private planetType: HabitableType = 'ocean';
@@ -985,12 +987,20 @@ export class HabitableCutawayEngine {
     input.drawFarSpace(g);
     const atmo = g.createImageData(this.w, this.h);
     paintAtmosphere(atmo, this.geom, this.planetType, bob);
-    g.putImageData(atmo, 0, 0);
+    const atmoG = this.atmoScratch.getContext('2d');
+    if (atmoG) {
+      atmoG.putImageData(atmo, 0, 0);
+      g.drawImage(this.atmoScratch, 0, 0);
+    }
     g.drawImage(this.crust, 0, layerBob);
     g.drawImage(this.land, 0, layerBob);
     const fluids = g.createImageData(this.w, this.h);
     paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, bob);
-    g.putImageData(fluids, 0, 0);
+    const fluidG = this.fluidScratch.getContext('2d');
+    if (fluidG) {
+      fluidG.putImageData(fluids, 0, 0);
+      g.drawImage(this.fluidScratch, 0, 0);
+    }
     input.drawOverlays(g);
     this.drawWisps(g, elapsed, bob);
     input.drawNearMoons(g);
@@ -1016,6 +1026,8 @@ export class HabitableCutawayEngine {
   private resizeLayers(w: number, h: number): void {
     this.crust.width = w; this.crust.height = h;
     this.land.width = w; this.land.height = h;
+    this.atmoScratch.width = w; this.atmoScratch.height = h;
+    this.fluidScratch.width = w; this.fluidScratch.height = h;
   }
 
   private rebuildWisps(weatherMix: Array<{ kind: string; weight: number }>): void {
