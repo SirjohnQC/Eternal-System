@@ -930,6 +930,14 @@ export class IsoDioramaRenderer {
     this.surfaceDirty = false;
   }
 
+  /** Repaint only habitable terrain; animation-owned cutaway state remains live. */
+  private rebakeHabitableSurface(): void {
+    this.cutaway.rebakeSurface();
+    this.pickBuf = this.cutaway.pick;
+    this.lastSurfaceBake = this.elapsed;
+    this.surfaceDirty = false;
+  }
+
   private bakeAll(): void {
     this.bakeBackground();
     if (this.habitable) {
@@ -1293,7 +1301,7 @@ export class IsoDioramaRenderer {
   /** The top face: azimuthal projection of the grid, shaded and rimmed with surf. */
   private bakeSurface(): void {
     if (this.habitable) {
-      this.bakeHabitableCutaway();
+      this.rebakeHabitableSurface();
       return;
     }
     const g = this.surfaceLayer.getContext('2d')!;
@@ -2032,6 +2040,7 @@ export class IsoDioramaRenderer {
   private drawInhabitants(g: CanvasRenderingContext2D, t: number): void {
     if (this.inhabitants.length === 0 && this.settlements.length === 0) return;
     const { cx, cy, rx, ry } = this;
+    const layerBob = this.habitable ? this.cutaway.drawGeom.bob : 0;
 
     g.save();
     g.beginPath();
@@ -2042,13 +2051,13 @@ export class IsoDioramaRenderer {
       // A small idle bob keeps the world alive without implying real movement.
       const bob = Math.sin(t * c.sway + c.phase) * 0.6;
       g.drawImage(c.sprite,
-        Math.round(c.x - c.w / 2), Math.round(c.y - c.h + bob),
+        Math.round(c.x - c.w / 2), Math.round(c.y + layerBob - c.h + bob),
         Math.round(c.w), Math.round(c.h));
     }
 
     for (const st of this.settlements) {
       g.drawImage(st.sprite,
-        Math.round(st.x - st.w / 2), Math.round(st.y - st.h),
+        Math.round(st.x - st.w / 2), Math.round(st.y + layerBob - st.h),
         Math.round(st.w), Math.round(st.h));
     }
 
@@ -2288,9 +2297,7 @@ export class IsoDioramaRenderer {
       const m = moons[i];
       // Each moon runs at its own rate and starts from its own phase, so they
       // separate instead of moving as one rigid body.
-      // Habitable callbacks need the faster compositor cadence. Legacy worlds
-      // retain their established orbital timing.
-      const speedMultiplier = this.habitable ? 144 : 12;
+      const speedMultiplier = 12;
       const a = m.orbitalAngle + angle * (m.orbitalSpeed * speedMultiplier);
       // Behind the planet for the far half of the orbit.
       const isFront = Math.sin(a) > 0;
@@ -2393,6 +2400,7 @@ export class IsoDioramaRenderer {
 
   private drawCityLights(g: CanvasRenderingContext2D, t: number): void {
     if (this.cityDots.length === 0) return;
+    const layerBob = this.habitable ? this.cutaway.drawGeom.bob : 0;
     // Night side of the disc — lights read strongest away from the key light.
     for (const dot of this.cityDots) {
       const flicker = 0.55 + 0.45 * Math.sin(t * dot.rate + dot.phase);
@@ -2401,11 +2409,11 @@ export class IsoDioramaRenderer {
       const nightBias = clamp01(0.55 - dx * 0.45);
       const a = flicker * (0.35 + nightBias * 0.65);
       g.fillStyle = `rgba(255,226,150,${a})`;
-      g.fillRect(dot.x, dot.y, 1, 1);
+      g.fillRect(dot.x, dot.y + layerBob, 1, 1);
       if (a > 0.75) {
         g.fillStyle = `rgba(255,200,110,${a * 0.25})`;
-        g.fillRect(dot.x - 1, dot.y, 3, 1);
-        g.fillRect(dot.x, dot.y - 1, 1, 3);
+        g.fillRect(dot.x - 1, dot.y + layerBob, 3, 1);
+        g.fillRect(dot.x, dot.y + layerBob - 1, 1, 3);
       }
     }
   }
@@ -2462,6 +2470,7 @@ export class IsoDioramaRenderer {
   private drawDivineEffects(g: CanvasRenderingContext2D, dt: number): void {
     if (this.effects.length === 0) return;
     const { cx, cy, rx, ry } = this;
+    const bodyRadius = this.habitable ? this.cutaway.drawGeom.R : rx;
 
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const fx = this.effects[i];
@@ -2477,7 +2486,7 @@ export class IsoDioramaRenderer {
       // Confine the act to the world it landed on. On the habitable path the
       // body is the circle below the cut face, so clipping to a circle centred
       // on the FACE would let washes and beams spill into empty space above it.
-      if (this.habitable) g.arc(cx, this.bodyCy, rx - 1, 0, Math.PI * 2);
+      if (this.habitable) g.arc(cx, this.bodyCy, bodyRadius - 1, 0, Math.PI * 2);
       else g.arc(cx, cy, rx, 0, Math.PI * 2);
       g.clip();
       g.globalCompositeOperation = 'lighter';
@@ -2500,7 +2509,7 @@ export class IsoDioramaRenderer {
       // rim — so the beam has to start there or it hangs in space.
       if (style.beam) {
         const beamW = Math.max(3, fx.reach * 0.28);
-        const beamTop = this.habitable ? cy - ry - rx * 0.10 : cy - rx;
+        const beamTop = this.habitable ? this.bodyCy - bodyRadius + 1 : cy - rx;
         const grad = g.createLinearGradient(fx.x, beamTop, fx.x, fx.y);
         grad.addColorStop(0, css(style.color, 0));
         grad.addColorStop(1, css(style.color, 0.55 * fade));

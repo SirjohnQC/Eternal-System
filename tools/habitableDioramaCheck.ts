@@ -23,9 +23,11 @@
 
 class RecordingCtx {
   mask: Uint8Array;
+  blueMask: Uint8Array;
   rectPixels = 0;
   imagePixels = 0;
   putImageDataCalls = 0;
+  createImageDataCalls = 0;
   clippedOps = 0;
   pathOps = 0;
   private clipDepth = 0;
@@ -40,6 +42,7 @@ class RecordingCtx {
 
   constructor(readonly W: number, readonly H: number) {
     this.mask = new Uint8Array(W * H);
+    this.blueMask = new Uint8Array(W * H);
   }
 
   private mark(x: number, y: number): void {
@@ -65,15 +68,23 @@ class RecordingCtx {
   fillRect(x: number, y: number, w: number, h: number): void {
     if (this.clipDepth > 0) { this.clippedOps++; return; }
     const x0 = Math.round(x), y0 = Math.round(y);
+    const colour = typeof this.fillStyle === 'string'
+      ? this.fillStyle.match(/^rgba?\((\d+),(\d+),(\d+)/)
+      : null;
+    const blue = !!colour && Number(colour[3]) > Number(colour[1]) + 15;
     for (let dy = 0; dy < Math.round(h); dy++) {
       for (let dx = 0; dx < Math.round(w); dx++) {
         this.mark(x0 + dx, y0 + dy);
+        if (blue && x0 + dx >= 0 && y0 + dy >= 0 && x0 + dx < this.W && y0 + dy < this.H) {
+          this.blueMask[(y0 + dy) * this.W + x0 + dx] = 1;
+        }
         this.rectPixels++;
       }
     }
   }
 
   createImageData(w: number, h: number) {
+    this.createImageDataCalls++;
     return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
   }
 
@@ -274,6 +285,19 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   });
   check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
         `${frameCtx.putImageDataCalls} live putImageData calls`);
+  const imageAllocations = frameCtx.createImageDataCalls;
+  engine.frame({
+    g: frameCtx as unknown as CanvasRenderingContext2D,
+    dt: 1 / 60, elapsed: 1.1, bg: makeCanvas(VW, VH),
+    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+    weatherMix: [],
+  });
+  check('frame reuses live ImageData', frameCtx.createImageDataCalls === imageAllocations,
+        `${frameCtx.createImageDataCalls - imageAllocations} new frame allocations`);
+  const bobBeforeSurfaceRebake = engine.bob;
+  engine.rebakeSurface();
+  check('surface rebake preserves bob', engine.bob === bobBeforeSurfaceRebake,
+        `before=${bobBeforeSurfaceRebake.toFixed(3)} after=${engine.bob.toFixed(3)}`);
 
   const surfaceCanvas = makeCanvas(VW, VH);
   const crustCanvas = makeCanvas(VW, VH);
@@ -338,7 +362,26 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   }
   check('no crust outside sphere R', outsideBody === 0, `${outsideBody} stray`);
   check('no crust inside pancake', insideFace === 0, `${insideFace} stray`);
-  check('sheer wall exists', wallPx > rx * wall * 0.4, `${wallPx} wall px`);
+  check('sheer wall has coverage', wallPx > rx * wall * 0.4, `${wallPx} wall px`);
+
+  // The occupancy cell nearest the front rim controls the wall material. The
+  // pixel immediately above it is outside the ellipse near the limb and must
+  // not turn this deliberately-water edge into a land cliff.
+  const limbX = Math.round(cx + rx * 0.85);
+  const limbFaceX = (limbX - cx) / rx;
+  const limbY = Math.floor(cyTop + Math.sqrt(1 - limbFaceX * limbFaceX) * ry);
+  const limbOccupancy = new Uint8Array(VW * VH);
+  limbOccupancy[limbY * VW + limbX] = 1;
+  const limbCanvas = makeCanvas(VW, VH);
+  const limbCtx = limbCanvas.getContext() as RecordingCtx;
+  paintCutawayCrust(limbCtx as unknown as CanvasRenderingContext2D, {
+    ...opts, occupancy: limbOccupancy,
+  });
+  let limbWaterWallPx = 0;
+  for (let y = limbY; y <= Math.min(VH - 1, limbY + wall + 6); y++) {
+    limbWaterWallPx += limbCtx.blueMask[y * VW + limbX];
+  }
+  check('limb wall reads in-ellipse occupancy', limbWaterWallPx > 0, `${limbWaterWallPx} water wall px`);
 
   // 3 — the pick buffer is usable.
   let picked = 0, pickOutside = 0;
@@ -375,13 +418,32 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('occupancy keeps water pick', waterPickLand === 0 && waterPickEmpty === 0,
         `${waterPickLand} land IDs, ${waterPickEmpty} empty`);
 
-  const fluidImg = ag.createImageData(VW, VH);
-  paintFluids(fluidImg, geom, occupancy, planetType, 1.0, 0);
-  let painted = 0;
-  for (let i = 0; i < occupancy.length; i++) {
-    if (occupancy[i] && fluidImg.data[i * 4 + 3] > 0) painted++;
+  const layerBob = 2;
+  let waterPixel = -1;
+  for (let y = Math.ceil(cyTop - ry + 4); y <= Math.floor(cyTop + ry - 4) && waterPixel < 0; y++) {
+    for (let x = Math.ceil(cx - rx + 4); x <= Math.floor(cx + rx - 4); x++) {
+      if (occupancy[y * VW + x]) { waterPixel = y * VW + x; break; }
+    }
   }
-  check('fluids paint occupancy', painted > waterPx * 0.8, `${painted}/${waterPx}`);
+  const singleWater = new Uint8Array(VW * VH);
+  singleWater[waterPixel] = 1;
+  const fluidImg = ag.createImageData(VW, VH);
+  paintFluids(fluidImg, geom, singleWater, planetType, 1.0, layerBob);
+  const shiftedWaterPixel = waterPixel + layerBob * VW;
+  check('fluids follow bobbed occupancy',
+        fluidImg.data[shiftedWaterPixel * 4 + 3] === 255 && fluidImg.data[waterPixel * 4 + 3] === 0,
+        `rest=${waterPixel} shifted=${shiftedWaterPixel}`);
+
+  const liveBob = Math.round(bobOf(Math.PI / 1.4, engine.geom.R));
+  engine.frame({
+    g: frameCtx as unknown as CanvasRenderingContext2D,
+    dt: 1 / 60, elapsed: Math.PI / 1.4, bg: makeCanvas(VW, VH),
+    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+    weatherMix: [],
+  });
+  check('hitTest follows bobbed surface',
+        JSON.stringify(engine.hitTest(engine.geom.cx, engine.geom.cyTop + liveBob)) === JSON.stringify(classHit),
+        `bob=${liveBob} rest=${JSON.stringify(classHit)}`);
 
   console.log('');
 }

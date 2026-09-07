@@ -5,7 +5,7 @@
  * atmosphere) and `assets/mockups/ocean-cutaway-ref.jpg` (bare ocean slab).
  *
  * ── The geometry ──────────────────────────────────────────────────────────────
- * The body silhouette is a full CIRCLE of radius `rx` — a whole planet, not a
+ * The body silhouette is a full CIRCLE of radius `R` — a whole planet, not a
  * torn-off chunk. The living surface is a foreshortened ellipse seated INTO that
  * circle (not flush with the crest), with a thick sheer wall under the front rim
  * — the `diorama_test.html` 3/4 "god over the world" read:
@@ -160,7 +160,7 @@ export interface CutawayGeom {
   cx: number;
   /** Centre of the top-face ellipse. */
   cyTop: number;
-  /** Top-face x-radius — also the body sphere's radius. */
+  /** Top-face x-radius. */
   rx: number;
   /** Top-face y-radius. */
   ry: number;
@@ -576,7 +576,9 @@ export function paintCutawayCrust(
     const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
     const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
     const bottomY = frontY + wall + ridge;
-    const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY) - 1));
+    // `floor(frontY) - 1` is just outside the ellipse at the limb, making every
+    // tip look like water. Sample the nearest pixel still inside the face.
+    const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
     const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
 
@@ -656,10 +658,10 @@ export function cutawayWaterSurf(type: HabitableType): {
  */
 export function paintFluids(
   img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
-  planetType: HabitableType, elapsed: number, bob: number,
+  planetType: HabitableType, elapsed: number, layerBob: number,
 ): void {
   const { cx, rx, ry } = geom;
-  const cy = geom.cyTop + bob;
+  const cy = geom.cyTop + layerBob;
   const t = elapsed;
   const pal = cutawayWaterSurf(planetType);
   const d = img.data;
@@ -671,7 +673,8 @@ export function paintFluids(
   for (let py = y0; py <= y1; py++) {
     for (let px = x0; px <= x1; px++) {
       const idx = py * w + px;
-      if (occupancy[idx] !== 1) continue;
+      const sourceY = py - layerBob;
+      if (sourceY < 0 || sourceY >= h || occupancy[sourceY * w + px] !== 1) continue;
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
       const r2 = dx * dx + dy * dy;
@@ -800,6 +803,9 @@ export class HabitableCutawayEngine {
   private land = document.createElement('canvas');
   private atmoScratch = document.createElement('canvas');
   private fluidScratch = document.createElement('canvas');
+  private atmoImage: ImageData | null = null;
+  private fluidImage: ImageData | null = null;
+  private surfaceBakeOpts: CutawayBakeOpts | null = null;
   private w = 1;
   private h = 1;
   private planetType: HabitableType = 'ocean';
@@ -836,11 +842,18 @@ export class HabitableCutawayEngine {
       ...opts, ...this.geom, w: this.w, h: this.h,
       occupancy: this.occupancy, pick: this.pick,
     };
+    this.surfaceBakeOpts = bakeOpts;
     const crustG = this.crust.getContext('2d');
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, bakeOpts);
     this.rebuildWisps(opts.weatherMix ?? []);
+  }
+
+  /** Repaint the mutable top-face data without resetting animation or crust. */
+  rebakeSurface(): void {
+    const landG = this.land.getContext('2d');
+    if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.surfaceBakeOpts);
   }
 
   frame(input: HabitableFrameInput): void {
@@ -852,7 +865,9 @@ export class HabitableCutawayEngine {
 
     g.drawImage(input.bg, 0, 0);
     input.drawFarSpace(g);
-    const atmo = g.createImageData(this.w, this.h);
+    const atmo = this.atmoImage;
+    if (!atmo) return;
+    atmo.data.fill(0);
     paintAtmosphere(atmo, this.geom, this.planetType, bob);
     const atmoG = this.atmoScratch.getContext('2d');
     if (atmoG) {
@@ -861,8 +876,10 @@ export class HabitableCutawayEngine {
     }
     g.drawImage(this.crust, 0, layerBob);
     g.drawImage(this.land, 0, layerBob);
-    const fluids = g.createImageData(this.w, this.h);
-    paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, bob);
+    const fluids = this.fluidImage;
+    if (!fluids) return;
+    fluids.data.fill(0);
+    paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, layerBob);
     const fluidG = this.fluidScratch.getContext('2d');
     if (fluidG) {
       fluidG.putImageData(fluids, 0, 0);
@@ -895,6 +912,10 @@ export class HabitableCutawayEngine {
     this.land.width = w; this.land.height = h;
     this.atmoScratch.width = w; this.atmoScratch.height = h;
     this.fluidScratch.width = w; this.fluidScratch.height = h;
+    const atmoG = this.atmoScratch.getContext('2d');
+    const fluidG = this.fluidScratch.getContext('2d');
+    this.atmoImage = atmoG?.createImageData(w, h) ?? null;
+    this.fluidImage = fluidG?.createImageData(w, h) ?? null;
   }
 
   private rebuildWisps(weatherMix: Array<{ kind: string; weight: number }>): void {
