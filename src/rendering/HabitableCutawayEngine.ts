@@ -783,6 +783,52 @@ export function cutawayWaterSurf(type: HabitableType): {
   return paletteFor(type).waterSurf;
 }
 
+/**
+ * Live glitter water on occupancy pixels. Wave from diorama_test, sped up.
+ * Only occupancy===1 inside the pancake at `cyTop + bob`. Opaque RGB, alpha 255.
+ */
+export function paintFluids(
+  img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
+  planetType: HabitableType, elapsed: number, bob: number,
+): void {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + bob;
+  const t = elapsed;
+  const pal = cutawayWaterSurf(planetType);
+  const d = img.data;
+  const w = img.width, h = img.height;
+  const y0 = Math.max(0, Math.floor(cy - ry));
+  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  const x0 = Math.max(0, Math.floor(cx - rx));
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const idx = py * w + px;
+      if (occupancy[idx] !== 1) continue;
+      const dx = (px - cx) / rx;
+      const dy = (py - cy) / ry;
+      const r2 = dx * dx + dy * dy;
+      if (r2 > 1) continue;
+      const wave = Math.sin(r2 * 12 - t * 3.2) + Math.cos(px * 0.12 + py * 0.1 + t * 1.4) * 0.4;
+      let c = pal.mid;
+      if (wave > 0.48) c = pal.glint;
+      else if (wave > 0.12) c = pal.light;
+      else if (wave < -0.55) c = pal.deep;
+      let cr = c.r, cg = c.g, cb = c.b;
+      if (r2 > 0.94) {
+        cr = Math.min(255, cr + 45);
+        cg = Math.min(255, cg + 45);
+        cb = Math.min(255, cb + 55);
+      }
+      const o = idx * 4;
+      d[o] = cr;
+      d[o + 1] = cg;
+      d[o + 2] = cb;
+      d[o + 3] = 255;
+    }
+  }
+}
+
 // ─── Wispy clouds ─────────────────────────────────────────────────────────────
 
 /**

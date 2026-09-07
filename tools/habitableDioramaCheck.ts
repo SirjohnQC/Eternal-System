@@ -114,7 +114,7 @@ function makeCanvas(w = 480, h = 320): any {
 const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
-  paintCutawaySurface, paintCutawayCrust, paintAtmosphere,
+  paintCutawaySurface, paintCutawayCrust, paintAtmosphere, paintFluids,
   habitableGeom,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
@@ -352,6 +352,14 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   }
   check('occupancy keeps water pick', waterPickLand === 0 && waterPickEmpty === 0,
         `${waterPickLand} land IDs, ${waterPickEmpty} empty`);
+
+  const fluidImg = ag.createImageData(VW, VH);
+  paintFluids(fluidImg, geom, occupancy, planetType, 1.0, 0);
+  let painted = 0;
+  for (let i = 0; i < occupancy.length; i++) {
+    if (occupancy[i] && fluidImg.data[i * 4 + 3] > 0) painted++;
+  }
+  check('fluids paint occupancy', painted > waterPx * 0.8, `${painted}/${waterPx}`);
 
   console.log('');
 }
