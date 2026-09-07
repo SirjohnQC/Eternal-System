@@ -35,6 +35,10 @@ import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE } from '../s
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import { bakeCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
+import {
+  HabitableCutawayEngine,
+  type HabitableType,
+} from './HabitableCutawayEngine';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -370,6 +374,7 @@ export class IsoDioramaRenderer {
   private bgLayer!:      HTMLCanvasElement;   // space, nebula, stars
   private crustLayer!:   HTMLCanvasElement;   // rock underside + rim cut band
   private surfaceLayer!: HTMLCanvasElement;   // top face terrain
+  private cutaway = new HabitableCutawayEngine();
 
   private mount:  HTMLElement | null = null;
   private raf = 0;
@@ -445,12 +450,58 @@ export class IsoDioramaRenderer {
 
   // ── Geometry (in virtual pixels) ────────────────────────────────────────────
 
-  private get cx(): number { return Math.round(this.VW / 2); }
-  private get cy(): number { return Math.round(this.VH * 0.46); }
-  /** Top-face ellipse x-radius; also the dome radius. */
-  private get rx(): number { return Math.round(Math.min(this.VW * 0.30, this.VH * 0.42)); }
-  /** Top-face ellipse y-radius — flattened for the ~25° camera pitch. */
-  private get ry(): number { return Math.max(6, Math.round(this.rx * 0.30)); }
+  /**
+   * Does this world bake through {@link HabitableCutawayEngine}?
+   *
+   * Ocean and rocky worlds are the ones the mockup describes — a sliced planet
+   * with a biome tabletop and a layered crust. Lava, ice and gas keep the legacy
+   * floating-disc-under-glass bake until Phase 2 gives each of them its own
+   * treatment; switching them over now would leave three worlds looking like a
+   * half-finished ocean.
+   */
+  private get habitable(): boolean {
+    return this.planetType === 'ocean' || this.planetType === 'rocky';
+  }
+
+  private get cx(): number {
+    return this.habitable ? this.cutaway.drawGeom.cx : Math.round(this.VW / 2);
+  }
+
+  /**
+   * Centre of the top-face ellipse.
+   *
+   * Habitable path: derived from the body circle with a crest DROP so the
+   * tabletop sits into the sphere (3/4 god view), matching `diorama_test`.
+   */
+  private get cy(): number {
+    if (this.habitable) {
+      const geom = this.cutaway.drawGeom;
+      return geom.cyTop + geom.bob;
+    }
+    return Math.round(this.VH * 0.46);
+  }
+
+  /** Top-face ellipse x-radius; also the body radius / legacy dome radius. */
+  private get rx(): number {
+    if (this.habitable) return this.cutaway.drawGeom.rx;
+    return Math.round(Math.min(this.VW * 0.30, this.VH * 0.42));
+  }
+
+  /** Top-face ellipse y-radius — flattened for the camera pitch. */
+  private get ry(): number {
+    if (this.habitable) return this.cutaway.drawGeom.ry;
+    return Math.max(6, Math.round(this.rx * 0.30));
+  }
+
+  /** Centre of the habitable body's silhouette circle. Meaningless elsewhere. */
+  private get bodyCy(): number {
+    if (this.habitable) {
+      const geom = this.cutaway.drawGeom;
+      return geom.cyBody + geom.bob;
+    }
+    return this.cy;
+  }
+
   /** Height of the water cut band directly under the rim. */
   private get cutH(): number { return Math.round(this.rx * 0.13); }
   /** Depth of the rock crust below the cut band. */
@@ -734,6 +785,8 @@ export class IsoDioramaRenderer {
     const px = Math.round((clientX - rect.left) * (this.VW / rect.width));
     const py = Math.round((clientY - rect.top) * (this.VH / rect.height));
 
+    if (this.habitable) return this.cutaway.hitTest(px, py);
+
     // Prefer what was actually PAINTED at this pixel: terrain is extruded, so a
     // peak covers pixels that the flat projection maps to a different cell.
     if (this.pickBuf && px >= 0 && px < this.VW && py >= 0 && py < this.VH) {
@@ -778,7 +831,12 @@ export class IsoDioramaRenderer {
    * apparent depth — enough for a mountain to read as a mountain without the
    * silhouette ceasing to look like a disc.
    */
-  private get maxLift(): number { return Math.max(LIFT_STEP, Math.round(this.rx * 0.11)); }
+  private get maxLift(): number {
+    // Habitable: diorama_test tiers scaled up (1/3/6 → 2/5/9) so height, species
+    // and settlements read on the flat board. Legacy keeps its taller disc lift.
+    if (this.habitable) return 9;
+    return Math.max(LIFT_STEP, Math.round(this.rx * 0.11));
+  }
 
   /**
    * Vertical displacement for a point of ground, in whole pixels.
@@ -793,6 +851,13 @@ export class IsoDioramaRenderer {
    */
   private liftOf(elev: number): number {
     if (elev < SEA_LEVEL) return 0;
+    // Habitable: same three-tier language as diorama_test (all land lifts, so
+    // coasts shelf above water and peaks stand clear for life/settlements).
+    if (this.habitable) {
+      if (elev > 0.72) return 9;
+      if (elev > 0.58) return 5;
+      return 2;
+    }
     const t = clamp01((elev - SEA_LEVEL) / (1 - SEA_LEVEL));
     // QUANTISED into a few chunky terraces rather than a continuous ramp.
     // Continuous height puts most of the continent one pixel up (measured: the
@@ -836,8 +901,45 @@ export class IsoDioramaRenderer {
 
   // ─── Baking ────────────────────────────────────────────────────────────────
 
+  /**
+   * Arguments for the habitable cutaway bake.
+   *
+   * The engine does not know about `PlanetGrid` focus, elevation terracing or
+   * the pick buffer, so the projection and relief helpers are handed to it as
+   * callbacks. That keeps ONE implementation of the azimuthal mapping — picking,
+   * tile markers, settlements and divine effects all still go through
+   * `discToGrid` / `gridToDisc` here, so they stay in register with the terrain.
+   */
+  private bakeHabitableCutaway(): void {
+    const bio = this.biosphere;
+    this.cutaway.bake({
+      w: this.VW, h: this.VH,
+      seed: this.planetSeed,
+      grid: this.grid,
+      planetType: this.planetType as HabitableType,
+      discToGrid: (dx, dy) => this.discToGrid(dx, dy),
+      rimFalloff: (r) => this.rimFalloff(r),
+      liftOf: (elev) => this.liftOf(elev),
+      smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
+      maxLift: this.maxLift,
+      lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
+      weatherMix: this.cloudMixFor(),
+    });
+    this.pickBuf = this.cutaway.pick;
+    this.lastSurfaceBake = this.elapsed;
+    this.surfaceDirty = false;
+  }
+
   private bakeAll(): void {
     this.bakeBackground();
+    if (this.habitable) {
+      this.bakeHabitableCutaway();
+      this.buildCityDots();
+      this.buildRipples();
+      this.buildInhabitants();
+      this.embers = [];
+      return;
+    }
     this.bakeCrust();
     this.bakeSurface();
     this.buildClouds();
@@ -918,6 +1020,10 @@ export class IsoDioramaRenderer {
    * crystals and lit boulder facets. Also paints the water cut band under the rim.
    */
   private bakeCrust(): void {
+    if (this.habitable) {
+      this.bakeHabitableCutaway();
+      return;
+    }
     const g = this.crustLayer.getContext('2d')!;
     const { VW, VH, cx, cy, rx, ry, cutH, crustH } = this;
     g.clearRect(0, 0, VW, VH);
@@ -1186,6 +1292,10 @@ export class IsoDioramaRenderer {
 
   /** The top face: azimuthal projection of the grid, shaded and rimmed with surf. */
   private bakeSurface(): void {
+    if (this.habitable) {
+      this.bakeHabitableCutaway();
+      return;
+    }
     const g = this.surfaceLayer.getContext('2d')!;
     const { VW, VH, cx, cy, rx, ry } = this;
     g.clearRect(0, 0, VW, VH);
@@ -1661,6 +1771,7 @@ export class IsoDioramaRenderer {
   private buildClouds(): void {
     this.clouds = [];
     this.lastCloudSig = this.cloudMixSignature();
+    if (this.habitable) return;
     // Gated on the planet TYPE, not on `hasDome`. Ash and acid are properties of
     // an atmosphere, not of the glass: a molten world has the most dramatic sky
     // of any of them and used to render with an empty one, because it is the one
@@ -1825,10 +1936,18 @@ export class IsoDioramaRenderer {
         // Stand props ON the terrain: the surface is extruded by elevation now,
         // so an unlifted position buries a town inside the hill it sits on.
         const lift = this.liftAtCell(cell, r);
-        if (cell.civId != null &&
-            cell.elevation - this.rimFalloff(r) >= SEA_LEVEL) {
+        const onLand = cell.elevation - this.rimFalloff(r) >= SEA_LEVEL;
+        if (cell.civId != null && onLand) {
           settlementSpots.push({ x: px, y: py - lift, fertility: cell.fertility });
         } else if (cell.dominantSpeciesId && cell.lifeDensity > 0.35) {
+          // Test the elevation the SURFACE WAS DRAWN FROM, not the grid's own.
+          // `rimFalloff` sinks the outer hemisphere so the projection reads as a
+          // continent in an ocean, and the cells it sinks keep their land biome
+          // and their life density — so a walking animal placed off the raw grid
+          // ends up standing on open water, and the whole rim rings with
+          // creatures wading in the sea.
+          const swims = byId.get(cell.dominantSpeciesId)?.dna.locomotion === 'swimming';
+          if (!onLand && !swims) continue;
           creatureSpots.push({ x: px, y: py - lift, id: cell.dominantSpeciesId });
         }
       }
@@ -1957,6 +2076,38 @@ export class IsoDioramaRenderer {
   // ─── Frame ─────────────────────────────────────────────────────────────────
 
   private frame(dt: number): void {
+    if (this.habitable) {
+      if (this.surfaceDirty &&
+          this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL) {
+        this.bakeSurface();
+        this.buildCityDots();
+        this.buildInhabitants();
+      }
+      this.cutaway.frame({
+        g: this.ctx,
+        dt,
+        elapsed: this.elapsed,
+        bg: this.bgLayer,
+        drawFarSpace: (g) => {
+          this.drawStarBloom(g, this.elapsed);
+          this.drawSiblings(g, this.elapsed);
+          this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
+        },
+        drawOverlays: (g) => {
+          this.drawCityLights(g, this.elapsed);
+          this.drawInhabitants(g, this.elapsed);
+          this.drawTileMarkers(g, this.elapsed);
+          this.drawDivineEffects(g, dt);
+        },
+        drawNearMoons: (g) => {
+          this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), true);
+        },
+        weatherMix: this.cloudMixFor(),
+      });
+      this.displayCtx.drawImage(this.buf, 0, 0);
+      return;
+    }
+
     const g = this.ctx;
     const { VW, VH, cx, cy, rx, ry } = this;
     const t = this.elapsed;
@@ -1989,6 +2140,11 @@ export class IsoDioramaRenderer {
 
     // 4 — atmospheric halo behind the body. A gas giant is a full sphere
     // centred in the frame, not a disc, so its halo is centred too.
+    //
+    // SKIPPED on the habitable path. A 1.45×-radius pulsing glow is the single
+    // biggest reason the old earth-like worlds read as "soft blob in space"
+    // instead of the mockup's hard-edged planet; those worlds get the thin baked
+    // shell at step 12b instead.
     const isGas = this.planetType === 'gas';
     const haloCy = isGas ? VH * 0.5 : cy + ry * 0.4;
     const haloR = rx * (isGas ? 1.35 : 1.45);
@@ -2043,7 +2199,9 @@ export class IsoDioramaRenderer {
     // 13 — moons on the near half of their orbits, in front of the dome
     this.drawMoons(g, moonAngle, true);
 
-    // 14 — vignette
+    // 14 — vignette. Centred on the BODY, not the cut face: the habitable
+    // silhouette reaches a full radius below the ellipse, and a vignette hung
+    // off the face darkens the bottom third of the planet.
     const vig = g.createRadialGradient(cx, cy, rx * 0.7, cx, cy, Math.max(VW, VH) * 0.75);
     vig.addColorStop(0, 'rgba(0,0,0,0)');
     vig.addColorStop(1, 'rgba(0,0,0,0.55)');
@@ -2086,13 +2244,16 @@ export class IsoDioramaRenderer {
     const { VW, VH, cx, cy } = this;
 
     const siblings = planets.filter((_, i) => i !== this.planetIndex).slice(0, 4);
+    // Same reason as the moons: the habitable cut face is not the centre of the
+    // frame, so the far half of each orbit has to be measured from the body.
+    const baseY = this.habitable ? this.bodyCy : cy;
     for (let i = 0; i < siblings.length; i++) {
       const p = siblings[i];
       const period = 95 + i * 40;
       const angle = t * (Math.PI * 2 / period) + (i / siblings.length) * Math.PI * 2;
       const ox = Math.cos(angle) * VW * (0.30 + i * 0.09);
       const oy = Math.sin(angle) * VH * (0.30 + i * 0.07);
-      const x = cx + ox, y = cy + oy - VH * 0.12;
+      const x = cx + ox, y = baseY + oy - VH * 0.12;
       if (x < -8 || x > VW + 8 || y < -8 || y > VH + 8) continue;
 
       const c = planetTypeRGB(p.type);
@@ -2127,14 +2288,21 @@ export class IsoDioramaRenderer {
       const m = moons[i];
       // Each moon runs at its own rate and starts from its own phase, so they
       // separate instead of moving as one rigid body.
-      const a = m.orbitalAngle + angle * (m.orbitalSpeed * 12);
+      // Orrery moon speeds are ~12× slower than the original 0.04–0.12 band;
+      // keep the diorama's visual rate by scaling the phase the same way.
+      const a = m.orbitalAngle + angle * (m.orbitalSpeed * 144);
       // Behind the planet for the far half of the orbit.
       const isFront = Math.sin(a) > 0;
       if (isFront !== front) continue;
 
       const dist = 1.45 + i * 0.30;
       const x = cx + Math.cos(a) * rx * dist;
-      const y = cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
+      // Orbit the BODY on the habitable path. Hanging the orbit off the cut face
+      // (which sits a full radius above the body's centre) threw the far half of
+      // every orbit off the top of the frame.
+      const y = this.habitable
+        ? this.bodyCy + Math.sin(a) * rx * dist * 0.55
+        : cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
       // Scaled off the moon's real radius, floored so the smallest still reads.
       const r = Math.max(2, rx * 0.05 + m.radius * 3.2);
       const tint = hexToRGB(m.color);
@@ -2185,6 +2353,7 @@ export class IsoDioramaRenderer {
 
   private drawOceanShimmer(g: CanvasRenderingContext2D, t: number, dt: number): void {
     if (this.planetType === 'lava' || this.planetType === 'gas') return;
+
     const { cx, cy, rx, ry } = this;
 
     g.save();
@@ -2304,7 +2473,11 @@ export class IsoDioramaRenderer {
 
       g.save();
       g.beginPath();
-      g.arc(cx, cy, rx, 0, Math.PI * 2);
+      // Confine the act to the world it landed on. On the habitable path the
+      // body is the circle below the cut face, so clipping to a circle centred
+      // on the FACE would let washes and beams spill into empty space above it.
+      if (this.habitable) g.arc(cx, this.bodyCy, rx - 1, 0, Math.PI * 2);
+      else g.arc(cx, cy, rx, 0, Math.PI * 2);
       g.clip();
       g.globalCompositeOperation = 'lighter';
 
@@ -2321,14 +2494,17 @@ export class IsoDioramaRenderer {
         g.beginPath(); g.arc(fx.x, fx.y, wr, 0, Math.PI * 2); g.fill();
       }
 
-      // A shaft of light from the top of the dome down onto the target.
+      // A shaft of light from the top of the atmosphere down onto the target.
+      // The habitable body has no dome above the face — its ceiling IS the face
+      // rim — so the beam has to start there or it hangs in space.
       if (style.beam) {
         const beamW = Math.max(3, fx.reach * 0.28);
-        const grad = g.createLinearGradient(fx.x, cy - rx, fx.x, fx.y);
+        const beamTop = this.habitable ? cy - ry - rx * 0.10 : cy - rx;
+        const grad = g.createLinearGradient(fx.x, beamTop, fx.x, fx.y);
         grad.addColorStop(0, css(style.color, 0));
         grad.addColorStop(1, css(style.color, 0.55 * fade));
         g.fillStyle = grad;
-        g.fillRect(fx.x - beamW / 2, cy - rx, beamW, fx.y - (cy - rx));
+        g.fillRect(fx.x - beamW / 2, beamTop, beamW, fx.y - beamTop);
       }
 
       // Rings expanding outward along the ground plane, so they read as lying on
@@ -2372,9 +2548,12 @@ export class IsoDioramaRenderer {
     const { cx, cy, rx, ry } = this;
 
     g.save();
-    // Clouds live inside the dome: clip to the dome circle above the horizon.
+    // Clouds live inside the atmosphere. On the habitable path that is the body
+    // circle, which sits a full radius below the cut face; on the legacy path it
+    // is the dome, centred on the face.
     g.beginPath();
-    g.arc(cx, cy, rx, 0, Math.PI * 2);
+    if (this.habitable) g.arc(cx, this.bodyCy, rx - 1, 0, Math.PI * 2);
+    else g.arc(cx, cy, rx, 0, Math.PI * 2);
     g.clip();
 
     // ── Precipitation, drawn under the clouds that produce it ────────────────
