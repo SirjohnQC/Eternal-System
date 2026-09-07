@@ -1947,7 +1947,7 @@ export class IsoDioramaRenderer {
           // ends up standing on open water, and the whole rim rings with
           // creatures wading in the sea.
           const swims = byId.get(cell.dominantSpeciesId)?.dna.locomotion === 'swimming';
-          if (!onLand && !swims) continue;
+          if (this.habitable && !onLand && !swims) continue;
           creatureSpots.push({ x: px, y: py - lift, id: cell.dominantSpeciesId });
         }
       }
@@ -2288,9 +2288,10 @@ export class IsoDioramaRenderer {
       const m = moons[i];
       // Each moon runs at its own rate and starts from its own phase, so they
       // separate instead of moving as one rigid body.
-      // Orrery moon speeds are ~12× slower than the original 0.04–0.12 band;
-      // keep the diorama's visual rate by scaling the phase the same way.
-      const a = m.orbitalAngle + angle * (m.orbitalSpeed * 144);
+      // Habitable callbacks need the faster compositor cadence. Legacy worlds
+      // retain their established orbital timing.
+      const speedMultiplier = this.habitable ? 144 : 12;
+      const a = m.orbitalAngle + angle * (m.orbitalSpeed * speedMultiplier);
       // Behind the planet for the far half of the orbit.
       const isFront = Math.sin(a) > 0;
       if (isFront !== front) continue;
