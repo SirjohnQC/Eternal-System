@@ -114,7 +114,7 @@ function makeCanvas(w = 480, h = 320): any {
 const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
-  paintCutawaySurface, paintCutawayCrust, bakeCutawayAtmosphere,
+  paintCutawaySurface, paintCutawayCrust, paintAtmosphere,
   habitableGeom,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
@@ -260,8 +260,29 @@ for (const planetType of ['ocean', 'rocky'] as const) {
 
   paintCutawaySurface(sCtx as unknown as CanvasRenderingContext2D, opts);
   paintCutawayCrust(cCtx as unknown as CanvasRenderingContext2D, opts);
-  const atmo = bakeCutawayAtmosphere(VW, VH, { cx, cyTop, rx, ry }, planetType);
-  const aCtx = atmo.getContext('2d') as unknown as RecordingCtx;
+
+  const bob = 0;
+  const atmoCanvas = makeCanvas(VW, VH);
+  const ag = atmoCanvas.getContext() as RecordingCtx;
+  const img = ag.createImageData(VW, VH);
+  paintAtmosphere(img, geom, planetType, bob);
+  ag.putImageData(img, 0, 0);
+
+  let ringMin = Infinity, ringMax = 0, ringCount = 0;
+  for (let y = 0; y < VH; y++) {
+    for (let x = 0; x < VW; x++) {
+      if (!ag.mask[y * VW + x]) continue;
+      const d = Math.hypot(x - geom.cx, y - (geom.cyBody + bob));
+      if (d > geom.R + 0.5) {
+        ringCount++;
+        const t = d - geom.R;
+        if (t < ringMin) ringMin = t;
+        if (t > ringMax) ringMax = t;
+      }
+    }
+  }
+  check('atmo ring exists', ringCount > 200, `${ringCount} ring px`);
+  check('atmo ring >= 12px', ringMax >= 12, `outer=${ringMax.toFixed(1)} T=${geom.T}`);
 
   // 1 — land canvas paints land only; occupancy stamps the fluid ellipse.
   let waterPx = 0, landPx = 0, waterPainted = 0;
@@ -277,8 +298,6 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   const crustCovered = cCtx.mask.reduce((a, b) => a + b, 0);
   check('crust layer has pixels', crustCovered > rx * wall * 0.40,
         `${crustCovered}px covered`);
-  check('atmosphere layer drew something', aCtx.pathOps + aCtx.clippedOps > 0,
-        `${aCtx.pathOps} strokes, ${aCtx.clippedOps} clipped fills`);
 
   // 2 — geometric containment of the crust.
   // Back-hemisphere rock ABOVE the tabletop is intentional (3/4 seating).

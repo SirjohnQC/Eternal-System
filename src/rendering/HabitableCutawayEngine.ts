@@ -638,8 +638,51 @@ export function paintCutawayCrust(
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
 
 /**
+ * Live thick atmosphere: ring `R < dist <= R+T` with ^1.6 falloff, sun-side
+ * 0.85 / shadow 0.28, plus a limb wrap on the last `max(5, round(0.08*R))`
+ * of the sphere at alpha 0.22. Colour from `paletteFor(type).atmo`.
+ *
+ * Writes RGBA into an existing ImageData. Thickness is `geom.T`, never
+ * `pal.atmoThickness`. `bakeCutawayAtmosphere` is the old thin shell and is
+ * not the habitable look (Task 7/8 delete it).
+ */
+export function paintAtmosphere(
+  img: ImageData, geom: HabitableGeom, planetType: HabitableType, bob: number,
+): void {
+  const { cx, R, T } = geom;
+  const cy = geom.cyBody + bob;
+  const atmo = paletteFor(planetType).atmo;
+  const atmoR = R + T;
+  const d = img.data;
+  const w = img.width, h = img.height;
+  const limb = Math.max(5, Math.round(R * 0.08));
+  const y0 = Math.max(0, Math.floor(cy - atmoR));
+  const y1 = Math.min(h - 1, Math.ceil(cy + atmoR));
+  const x0 = Math.max(0, Math.floor(cx - atmoR));
+  const x1 = Math.min(w - 1, Math.ceil(cx + atmoR));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx, dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const o = (y * w + x) * 4;
+      if (dist > R && dist <= atmoR) {
+        const falloff = Math.pow(1 - (dist - R) / T, 1.6);
+        const glow = falloff * (dx / atmoR > -0.1 ? 0.85 : 0.28);
+        d[o] = atmo.r; d[o + 1] = atmo.g; d[o + 2] = atmo.b;
+        d[o + 3] = Math.round(glow * 255);
+      } else if (dist <= R && dist > R - limb) {
+        d[o] = atmo.r; d[o + 1] = atmo.g; d[o + 2] = atmo.b;
+        d[o + 3] = Math.round(0.22 * 255);
+      }
+    }
+  }
+}
+
+/**
  * Bake the snow-globe atmosphere: thin outer rim + soft translucent wash in the
  * UPPER half only (above the living board). No filled lower-globe haze.
+ *
+ * @deprecated Habitable look is `paintAtmosphere` + `geom.T`. Task 7/8 delete this.
  */
 export function bakeCutawayAtmosphere(
   w: number, h: number, geom: CutawayGeom, planetType: HabitableType,
