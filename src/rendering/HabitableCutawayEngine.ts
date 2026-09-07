@@ -229,9 +229,12 @@ export interface CutawayBakeOpts extends CutawayGeom {
   /**
    * Written with `row * GRID_SIZE + col + 1` for every surface pixel painted,
    * so picking hits the cell that was actually DRAWN at a pixel rather than the
-   * flat projection of it. Length must be `w * h`.
+   * flat projection of it. Length must be `w * h`. Water cells still stamp pick
+   * even though they leave the land canvas empty.
    */
   pick?: Int32Array | null;
+  /** Length `w * h`, 1 = fluid on the ellipse. */
+  occupancy?: Uint8Array | null;
 }
 
 export interface CutawayBakeResult {
@@ -375,7 +378,8 @@ const KEY_Y = -0.45;
 
 /**
  * Paint the cut face: an azimuthal projection of the grid as a flat living
- * board (diorama_test language) — tiered land with cliff faces, ocean flush.
+ * board (diorama_test language) — tiered land with cliff faces. Water cells
+ * leave the land canvas empty and stamp occupancy + pick for live fluids.
  */
 export function paintCutawaySurface(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
@@ -398,6 +402,7 @@ export function paintCutawaySurface(
 
   const pick = opts.pick && opts.pick.length === VW * VH ? opts.pick : null;
   if (pick) pick.fill(0);
+  if (opts.occupancy && opts.occupancy.length === VW * VH) opts.occupancy.fill(0);
 
   const put = (
     px: number, py: number, cr: number, cg: number, cb: number, cellId: number,
@@ -416,7 +421,6 @@ export function paintCutawaySurface(
   const lush = clamp01(opts.lush ?? 0.3);
   // Cliff face under extruded land — same role as diorama_test's terrain.cliff.
   const cliff = pal.strata[1];
-  const cyBody = cutawayBodyCy(cyTop, rx, ry);
 
   // Painter's order: far rows first, so nearer ground occludes what is behind it.
   for (let py = yFace0; py <= y1; py++) {
@@ -425,17 +429,14 @@ export function paintCutawaySurface(
       const dx = (px - cx) / rx;
       const r = Math.hypot(dx, dy);
       if (r > 1) continue;
-      // Trim the tabletop to the body silhouette — see the file header. Without
-      // this the disc's tips hang a few pixels outside the atmosphere shell.
-      if (py < cyBody - rx * Math.sqrt(Math.max(0, 1 - dx * dx))) continue;
 
       let cr = 0, cg = 0, cb = 0, lift = 0, cellId = 0;
 
       if (!grid) {
-        // No grid yet (first bake before data arrives): a plausible bare ocean,
-        // so the body is never a hole in space.
-        const band = r > 0.78 ? pal.biome.ocean : pal.biome.deep_ocean;
-        cr = band.r; cg = band.g; cb = band.b;
+        // No grid yet: treat the disc as water so fluids can fill it in frame().
+        const idx = py * VW + px;
+        if (opts.occupancy && idx >= 0 && idx < opts.occupancy.length) opts.occupancy[idx] = 1;
+        continue;
       } else {
         const gp = opts.discToGrid(dx, dy);
         if (!gp) continue;
@@ -450,25 +451,17 @@ export function paintCutawaySurface(
         // which is what altitude actually does to a mountain.
         if (biome === 'mountain' && cell.elevation > 0.82) biome = 'snow';
 
+        if (isWater(biome)) {
+          const idx = py * VW + px;
+          if (opts.occupancy && idx >= 0 && idx < opts.occupancy.length) opts.occupancy[idx] = 1;
+          if (pick) pick[idx] = gp.row * GRID_SIZE + gp.col + 1;
+          continue; // do not call put()
+        }
+
         let base = pal.biome[biome];
         let br = base.r, bg = base.g, bb = base.b;
 
-        if (isWater(biome)) {
-          // Depth plate first, then a static swell pattern so the baked face
-          // already looks wet before the animated overlay runs.
-          const depth = clamp01((SEA_LEVEL - elev) / 0.18);
-          const ws = pal.waterSurf;
-          let band = depth < 0.22 ? ws.light : depth < 0.55 ? ws.mid : ws.deep;
-          const swell = Math.sin(r * 11.5 + dx * 2.1)
-                      + Math.cos(dx * 7.2 + dy * 5.8 + seed * 0.01) * 0.45
-                      + (fbm1(px * 0.07 + py * 0.05, seed + 91, 3) - 0.5) * 1.1;
-          if (swell > 0.72) band = ws.glint;
-          else if (swell > 0.28) band = ws.light;
-          else if (swell < -0.55) band = ws.deep;
-          br = band.r; bg = band.g; bb = band.b;
-          // Brighten the extreme rim so the ocean catches the atmosphere.
-          if (r > 0.94) { br = Math.min(255, br + 40); bg = Math.min(255, bg + 40); bb = Math.min(255, bb + 50); }
-        } else if (biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
+        if (biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
                    && biome !== 'volcanic' && biome !== 'beach') {
           // Vegetation responds to the living biosphere, gated on the cell's own
           // fertility so deserts and savanna still read as themselves.
@@ -540,6 +533,18 @@ export function paintCutawaySurface(
             cellId);
       } else {
         put(px, top, cr, cg, cb, cellId);
+      }
+    }
+  }
+
+  // Land cliffs can extrude onto a farther water cell's pixel. Punch those
+  // back to alpha 0 so occupancy water stays empty for live fluids.
+  if (opts.occupancy) {
+    for (let py = yTop; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const idx = py * VW + px;
+        if (idx < 0 || idx >= opts.occupancy.length || !opts.occupancy[idx]) continue;
+        d[((py - yTop) * bw + (px - x0)) * 4 + 3] = 0;
       }
     }
   }

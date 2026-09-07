@@ -254,12 +254,14 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   );
 
   const pick = new Int32Array(VW * VH);
+  const occupancy = new Uint8Array(VW * VH);
   const opts = {
     w: VW, h: VH, cx, cyTop, rx, ry,
     seed: 0xbeef, grid, planetType,
     discToGrid, rimFalloff, liftOf, smoothElevation,
     maxLift: MAX_LIFT, lush: 0.6, pick,
   } as unknown as CutawayBakeOpts;
+  opts.occupancy = occupancy;
 
   const surfaceCanvas = makeCanvas(VW, VH);
   const crustCanvas = makeCanvas(VW, VH);
@@ -271,11 +273,18 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   const atmo = bakeCutawayAtmosphere(VW, VH, { cx, cyTop, rx, ry }, planetType);
   const aCtx = atmo.getContext('2d') as unknown as RecordingCtx;
 
-  // 1 — layers are not empty.
-  const surfaceCovered = sCtx.mask.reduce((a, b) => a + b, 0);
+  // 1 — land canvas paints land only; occupancy stamps the fluid ellipse.
+  let waterPx = 0, landPx = 0, waterPainted = 0;
+  for (let i = 0; i < occupancy.length; i++) {
+    if (occupancy[i]) {
+      waterPx++;
+      if (sCtx.mask[i]) waterPainted++;
+    } else if (sCtx.mask[i]) landPx++;
+  }
+  check('occupancy has water', waterPx > faceArea * 0.15, `${waterPx} fluid px`);
+  check('occupancy has land', landPx > 10, `${landPx} land px`);
+  check('surface does not paint water', waterPainted === 0, `${waterPainted} water px on land canvas`);
   const crustCovered = cCtx.mask.reduce((a, b) => a + b, 0);
-  check('surface layer has pixels', surfaceCovered > faceArea * 0.75,
-        `${surfaceCovered}px covered (face ~${Math.round(faceArea)})`);
   check('crust layer has pixels', crustCovered > wallArea * 0.70,
         `${crustCovered}px covered (wall ~${Math.round(wallArea)})`);
   check('atmosphere layer drew something', aCtx.pathOps + aCtx.clippedOps > 0,
