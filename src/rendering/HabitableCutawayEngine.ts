@@ -17,9 +17,8 @@
  *        cyTop + ry + wallDepth   ─── bottom of the cake wall (water / cliff)
  *        cyBody + rx              ─── bottom of the circle
  *
- * with `cyBody = cyTop + (rx − ry) − rx·CUTAWAY_FACE_DROP`. Under the board:
- * thin soil lip → deep water (cage lines) → rock crescent at the floor only.
- * Air above the board stays empty aside from the soft dome wash.
+ * with a deep, layered rock body beneath the board. Air above the board stays
+ * empty aside from the thick atmospheric shell.
  *
  * Past |dx| > ~0.94·rx the ellipse rim would sit OUTSIDE the circle. Both passes
  * clamp to the circle, which blunts the last few percent of the tabletop's tips
@@ -156,32 +155,6 @@ export function habitableGeom(VW: number, VH: number): HabitableGeom {
   return { cx, cyBody, cyTop, R, rx, ry, wall, T: T2 };
 }
 
-// ─── Legacy cutaway geometry (IsoDioramaRenderer until Task 7) ──────────────
-// Task 7 will switch the host to `habitableGeom`; keep these formulas unchanged.
-
-/**
- * How squashed the cut face is. `diorama_test` uses ry/rx ≈ 30/58 ≈ 0.52 —
- * a flat living board, not a thin slit on a globe. Match that.
- */
-export const CUTAWAY_FACE_SQUASH = 0.50;
-
-/**
- * How far below the sphere crest the tabletop sits, as a fraction of `rx`.
- * Keep this small — a large drop opens an empty crescent that either reads as a
- * hollow bowl or tempts a rock fill that dirties the atmosphere.
- */
-export const CUTAWAY_FACE_DROP = 0.04;
-
-/** Vertical centre of the body circle, given the top face's ellipse. */
-export function cutawayBodyCy(cyTop: number, rx: number, ry: number): number {
-  return cyTop + (rx - ry) - Math.round(rx * CUTAWAY_FACE_DROP);
-}
-
-/** Top-face ellipse centre, given the body circle (inverse of `cutawayBodyCy`). */
-export function cutawayFaceCy(cyBody: number, rx: number, ry: number): number {
-  return cyBody - (rx - ry) + Math.round(rx * CUTAWAY_FACE_DROP);
-}
-
 export interface CutawayGeom {
   /** Horizontal centre of the body, in virtual pixels. */
   cx: number;
@@ -236,8 +209,6 @@ export interface CutawayBakeResult {
   surface: HTMLCanvasElement;
   /** Cutaway water column + rock strata + ember core. */
   crust: HTMLCanvasElement;
-  /** Thin atmosphere shell: rim stroke, inner haze, tight outer bloom. */
-  atmosphere: HTMLCanvasElement;
 }
 
 // ─── Palettes ─────────────────────────────────────────────────────────────────
@@ -263,8 +234,6 @@ interface CutawayPalette {
   emberHot: RGB;
   /** Atmosphere shell colour. */
   atmo: RGB;
-  /** Outer shell thickness in body-radius fractions (test harness ~16px on R≈200). */
-  atmoThickness: number;
 }
 
 const OCEAN_PALETTE: CutawayPalette = {
@@ -305,7 +274,6 @@ const OCEAN_PALETTE: CutawayPalette = {
   ember:    rgb(206, 84, 26),
   emberHot: rgb(255, 184, 74),
   atmo:     rgb(65, 165, 255),
-  atmoThickness: 0.045,
 };
 
 const ROCKY_PALETTE: CutawayPalette = {
@@ -346,7 +314,6 @@ const ROCKY_PALETTE: CutawayPalette = {
   ember:    rgb(198, 78, 24),
   emberHot: rgb(255, 176, 70),
   atmo:     rgb(100, 170, 230),
-  atmoThickness: 0.04,
 };
 
 function paletteFor(type: HabitableType): CutawayPalette {
@@ -642,9 +609,7 @@ export function paintCutawayCrust(
  * 0.85 / shadow 0.28, plus a limb wrap on the last `max(5, round(0.08*R))`
  * of the sphere at alpha 0.22. Colour from `paletteFor(type).atmo`.
  *
- * Writes RGBA into an existing ImageData. Thickness is `geom.T`, never
- * `pal.atmoThickness`. `bakeCutawayAtmosphere` is the old thin shell and is
- * not the habitable look (Task 7/8 delete it).
+ * Writes RGBA into an existing ImageData. Thickness is always `geom.T`.
  */
 export function paintAtmosphere(
   img: ImageData, geom: HabitableGeom, planetType: HabitableType, bob: number,
@@ -676,104 +641,6 @@ export function paintAtmosphere(
       }
     }
   }
-}
-
-/**
- * Bake the snow-globe atmosphere: thin outer rim + soft translucent wash in the
- * UPPER half only (above the living board). No filled lower-globe haze.
- *
- * @deprecated Habitable look is `paintAtmosphere` + `geom.T`. Task 7/8 delete this.
- */
-export function bakeCutawayAtmosphere(
-  w: number, h: number, geom: CutawayGeom, planetType: HabitableType,
-): HTMLCanvasElement {
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, w);
-  c.height = Math.max(1, h);
-  const g = c.getContext('2d');
-  if (!g) return c;
-
-  const { cx, cyTop, rx, ry } = geom;
-  const R = rx;
-  const cyBody = cutawayBodyCy(cyTop, rx, ry);
-  const pal = paletteFor(planetType);
-  const atmo = pal.atmo;
-  if (R < 8) return c;
-
-  const thick = Math.max(2, Math.round(R * pal.atmoThickness));
-  const atmoR = R + thick;
-  const faceFront = cyTop + ry;
-
-  // Soft blue dome fill — upper hemisphere only, above the tabletop.
-  g.save();
-  g.beginPath();
-  g.arc(cx, cyBody, R - 1, 0, Math.PI * 2);
-  g.clip();
-  const dome = g.createRadialGradient(cx, cyBody - R * 0.35, R * 0.05, cx, cyBody, R);
-  dome.addColorStop(0, css(atmo, 0.10));
-  dome.addColorStop(0.55, css(atmo, 0.05));
-  dome.addColorStop(1, css(atmo, 0));
-  g.fillStyle = dome;
-  g.fillRect(cx - R, cyBody - R, R * 2, Math.max(1, faceFront - (cyBody - R) + 4));
-  // Carve out below the board so water/rock stay un-hazed.
-  g.globalCompositeOperation = 'destination-out';
-  g.fillStyle = 'rgba(0,0,0,1)';
-  g.fillRect(0, Math.round(faceFront), c.width, c.height);
-  g.globalCompositeOperation = 'source-over';
-  g.restore();
-
-  // Thin outer annulus.
-  const img = g.createImageData(c.width, c.height);
-  const d = img.data;
-  const y0 = Math.max(0, Math.floor(cyBody - atmoR));
-  const y1 = Math.min(c.height - 1, Math.ceil(cyBody + atmoR));
-  const x0 = Math.max(0, Math.floor(cx - atmoR));
-  const x1 = Math.min(c.width - 1, Math.ceil(cx + atmoR));
-
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx, dy = y - cyBody;
-      const dist = Math.hypot(dx, dy);
-      if (dist <= R || dist > atmoR) continue;
-      const falloff = Math.pow(1 - (dist - R) / thick, 1.8);
-      const sunFacing = dx / atmoR;
-      const glow = falloff * (sunFacing > -0.1 ? 0.55 : 0.16);
-      if (glow < 0.03) continue;
-      const o = (y * c.width + x) * 4;
-      d[o] = atmo.r;
-      d[o + 1] = atmo.g;
-      d[o + 2] = atmo.b;
-      d[o + 3] = Math.min(255, Math.round(glow * 130));
-    }
-  }
-  // Composite annulus over existing dome.
-  const tmp = document.createElement('canvas');
-  tmp.width = c.width; tmp.height = c.height;
-  const tg = tmp.getContext('2d')!;
-  tg.putImageData(img, 0, 0);
-  g.drawImage(tmp, 0, 0);
-
-  g.lineWidth = 1;
-  g.strokeStyle = css(rgb(
-    Math.min(255, atmo.r + 70), Math.min(255, atmo.g + 50), Math.min(255, atmo.b + 25),
-  ), 0.40);
-  g.beginPath();
-  g.arc(cx, cyBody, R - 0.5, 0, Math.PI * 2);
-  g.stroke();
-
-  // Night-side fade.
-  g.globalCompositeOperation = 'destination-out';
-  const fade = g.createLinearGradient(
-    cx + R * 0.9, cyBody - R, cx - R * 0.5, cyBody + R,
-  );
-  fade.addColorStop(0, 'rgba(0,0,0,0)');
-  fade.addColorStop(0.45, 'rgba(0,0,0,0.10)');
-  fade.addColorStop(1, 'rgba(0,0,0,0.65)');
-  g.fillStyle = fade;
-  g.fillRect(0, 0, c.width, c.height);
-  g.globalCompositeOperation = 'source-over';
-
-  return c;
 }
 
 /** Surface water bands for the animated fluid overlay (habitable path). */
@@ -1083,7 +950,7 @@ export class HabitableCutawayEngine {
 // ─── Convenience / smoke entry point ──────────────────────────────────────────
 
 /**
- * Bake all three habitable layers into fresh canvases.
+ * Bake the static habitable layers into fresh canvases.
  *
  * `IsoDioramaRenderer` calls the individual paint functions so it can rebake the
  * surface on its own throttle without touching the crust. This wrapper exists
@@ -1107,6 +974,5 @@ export function bakeHabitableCutaway(opts: CutawayBakeOpts): CutawayBakeResult {
   return {
     surface,
     crust,
-    atmosphere: bakeCutawayAtmosphere(opts.w, opts.h, opts, opts.planetType),
   };
 }
