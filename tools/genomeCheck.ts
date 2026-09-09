@@ -93,5 +93,76 @@ check('genomeSeedFor collision-free over 640 planets', collisions === 0,
   `${collisions} collisions`);
 check('genomeSeedFor stable', genomeSeedFor(5, 3) === genomeSeedFor(5, 3));
 
+// ── Engine-level: every planet carries a stable genomeSeed ──────────────────
+// The brief's minimal DOM stub is too thin for `new BigBangEngine()` (its
+// canvas context calls `getContext` on an undefined canvas). Per the ruling
+// in the task brief, the fuller stub from tools/smokeTest.ts is used instead.
+const noopCtx2 = new Proxy({}, {
+  get(_t, prop) {
+    if (prop === 'canvas') return { width: 1200, height: 800 };
+    if (prop === 'createLinearGradient' || prop === 'createRadialGradient') {
+      return () => ({ addColorStop() {} });
+    }
+    if (prop === 'getImageData' || prop === 'createImageData') {
+      return (a: number, b: number, w = 1, h = 1) =>
+        ({ data: new Uint8ClampedArray(Math.max(1, w * h * 4)), width: w, height: h });
+    }
+    if (prop === 'measureText') return () => ({ width: 10 });
+    return () => undefined;
+  },
+  set() { return true; },
+});
+function makeCanvas2(): any {
+  return {
+    width: 1200, height: 800, style: {},
+    getContext: () => noopCtx2,
+    addEventListener() {}, removeEventListener() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1200, height: 800 }),
+  };
+}
+const g2: any = globalThis as any;
+g2.document = {
+  createElement: () => makeCanvas2(),
+  getElementById: () => null, querySelector: () => null,
+  querySelectorAll: () => [], addEventListener() {},
+};
+g2.window = g2;
+g2.requestAnimationFrame = () => 0;
+g2.cancelAnimationFrame = () => {};
+g2.addEventListener = () => {};
+g2.eternalSpeed = 60;
+
+const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
+
+// BigBangEngine's constructor unconditionally calls `canvas.getContext('2d')`
+// on its argument — no canvas means an immediate throw regardless of the
+// document/window stub above. Per the task's Ruling 1, pass the same stub
+// canvas smokeTest.ts uses rather than inventing a new one.
+const engine: any = new BigBangEngine(makeCanvas2());
+// init() requires (stats, seed) — it is not optional despite the `?.` guard.
+// Reusing the same stats/seed shape tools/smokeTest.ts uses.
+engine.init?.({ life: 15, evolution: 13, hostility: 12, entropy: 11, divine: 10 }, 'genome_check');
+for (let i = 0; i < 4000; i++) engine.step?.();
+
+const planets: any[] = [];
+for (const star of engine.stars ?? []) for (const p of star.planets ?? []) planets.push({ star, p });
+
+check('cosmos has planets', planets.length > 0, `${planets.length}`);
+check('every planet has a genomeSeed',
+  planets.every(({ p }) => Number.isFinite(p.genomeSeed)),
+  `${planets.filter(({ p }) => !Number.isFinite(p.genomeSeed)).length} missing`);
+
+// Terraforming must not change identity.
+const victim = planets[0].p;
+const before = victim.genomeSeed;
+victim.type = victim.type === 'ocean' ? 'desert' : 'ocean';
+check('genomeSeed survives a type change', victim.genomeSeed === before);
+
+// Save round-trip must preserve it.
+const snap = JSON.parse(JSON.stringify(engine.serialize()));
+const restored = snap.stars?.[0]?.planets?.[0];
+check('genomeSeed survives serialize round-trip',
+  Number.isFinite(restored?.genomeSeed));
+
 console.log(failed === 0 ? '\nAll genome checks passed.' : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

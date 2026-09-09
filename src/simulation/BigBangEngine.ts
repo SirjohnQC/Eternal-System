@@ -8,6 +8,7 @@ import {
   type PlanetDNA,
 } from './GameState';
 import { bakePlanetTexture } from './PlanetRenderer';
+import { genomeSeedFor } from './PlanetGenome';
 import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
 import {
@@ -142,6 +143,12 @@ export interface Planet {
    * player's home is overwritten from the ritual answers.
    */
   dna?: PlanetDNA;
+  /**
+   * Seed for this planet's PlanetGenome. Assigned once at creation and never
+   * rewritten — terraforming changes `type` but must NOT change identity.
+   * Absent on saves written before the genome landed; backfilled on load.
+   */
+  genomeSeed?: number;
 }
 
 /**
@@ -756,12 +763,18 @@ export class BigBangEngine {
    * so newborn stars are indistinguishable from primordial ones.
    */
   private createStar(x: number, y: number): StarBody {
+    // Hoisted so planets can be stamped with a genome seed derived from it.
+    // Taking the counter BEFORE generatePlanets is safe: that method never
+    // reads starIdCounter, and it does not touch this.rng either, so the RNG
+    // sequence — and therefore every existing world — is unchanged.
+    const starId = this.starIdCounter++;
     const mass = this.rng.nextFloat(1, 8);
     const planets = this.generatePlanets(this.stats, mass);
+    planets.forEach((p, i) => { p.genomeSeed = genomeSeedFor(starId, i); });
     // Belts are optional and density varies — not every system has one.
     const hasBelt = planets.length >= 2 && this.rng.chance(0.22 + this.stats.entropy / 55);
     return {
-      id: this.starIdCounter++,
+      id: starId,
       x, y, vx: 0, vy: 0,
       mass,
       radius: 2.5 + mass * 0.8,
@@ -5379,6 +5392,14 @@ export class BigBangEngine {
     this.tick = snap.tick;
     this.phase = snap.phase;
     this.stars = snap.stars;
+    // Saves written before the genome existed have no genomeSeed. Derive it
+    // once from the same inputs creation uses, so an old save and a new game
+    // produce identical worlds.
+    for (const star of this.stars) {
+      star.planets.forEach((p, i) => {
+        if (!Number.isFinite(p.genomeSeed)) p.genomeSeed = genomeSeedFor(star.id, i);
+      });
+    }
     // Migrate older saves missing eccentricity / belt density.
     for (const s of this.stars) {
       if (s.asteroidBeltDensity == null) {
