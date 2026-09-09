@@ -164,5 +164,28 @@ const restored = snap.stars?.[0]?.planets?.[0];
 check('genomeSeed survives serialize round-trip',
   Number.isFinite(restored?.genomeSeed));
 
+// The loadState backfill is the old-save determinism guarantee. Exercise it
+// in BOTH directions rather than trusting it by inspection: a backfill that
+// silently overwrites an existing seed would destroy world identity on every
+// load, and is the worse of the two bugs.
+const snap2: any = JSON.parse(JSON.stringify(engine.serialize()));
+delete snap2.stars[0].planets[0].genomeSeed;
+check('snapshot really had the seed stripped',
+  snap2.stars[0].planets[0].genomeSeed === undefined);
+engine.loadState(snap2);
+const want = genomeSeedFor(engine.stars[0].id, 0);
+check('loadState backfills a missing genomeSeed',
+  engine.stars[0].planets[0].genomeSeed === want,
+  `got ${engine.stars[0].planets[0].genomeSeed}, expected ${want}`);
+
+const snap3: any = JSON.parse(JSON.stringify(engine.serialize()));
+const keepIdx = snap3.stars[0].planets.length > 1 ? 1 : 0;
+const SENTINEL = 123456789;
+snap3.stars[0].planets[keepIdx].genomeSeed = SENTINEL;
+engine.loadState(snap3);
+check('loadState leaves an existing genomeSeed alone',
+  engine.stars[0].planets[keepIdx].genomeSeed === SENTINEL,
+  `got ${engine.stars[0].planets[keepIdx].genomeSeed}`);
+
 console.log(failed === 0 ? '\nAll genome checks passed.' : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
