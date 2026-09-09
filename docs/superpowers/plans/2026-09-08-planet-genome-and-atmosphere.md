@@ -601,20 +601,47 @@ function coastRatio(grid: any): number {
   return land > 0 ? coast / land : 0;
 }
 
-const rows: Array<{ seed: number; land: number; big: number; coast: number }> = [];
+/** Distinct connected landmasses of at least `minCells` cells. Specks are noise. */
+function landmassCount(grid: any, minCells = 40): number {
+  const seen = new Uint8Array(GRID_SIZE * GRID_SIZE);
+  const stack: number[] = [];
+  let n = 0;
+  for (let r = 0; r < GRID_SIZE; r++) for (let c = 0; c < GRID_SIZE; c++) {
+    const i = r * GRID_SIZE + c;
+    if (seen[i] || isWater(grid[r][c].biome)) continue;
+    let size = 0;
+    stack.push(i); seen[i] = 1;
+    while (stack.length) {
+      const j = stack.pop()!;
+      const jr = (j / GRID_SIZE) | 0, jc = j % GRID_SIZE;
+      size++;
+      for (const [dr, dc] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const nr = jr + dr, nc = (jc + dc + GRID_SIZE) % GRID_SIZE; // x wraps
+        if (nr < 0 || nr >= GRID_SIZE) continue;
+        const k = nr * GRID_SIZE + nc;
+        if (seen[k] || isWater(grid[nr][nc].biome)) continue;
+        seen[k] = 1; stack.push(k);
+      }
+    }
+    if (size >= minCells) n++;
+  }
+  return n;
+}
+
+const rows: Array<{ seed: number; land: number; big: number; coast: number; masses: number }> = [];
 for (let s = 0; s < SEEDS; s++) {
   const grid = generatePlanetGrid(TYPE, 1000 + s * 7919, null);
   rows.push({ seed: 1000 + s * 7919, land: landFrac(grid),
-              big: biggestMassShare(grid), coast: coastRatio(grid) });
+              big: biggestMassShare(grid), coast: coastRatio(grid),
+              masses: landmassCount(grid) });
 }
 
 const spread = (get: (r: typeof rows[0]) => number): number => {
   const v = rows.map(get);
   return Math.max(...v) - Math.min(...v);
 };
-const landSpread  = spread(r => r.land);
-const bigSpread   = spread(r => r.big);
 const coastSpread = spread(r => r.coast);
+const maxMasses   = Math.max(...rows.map(r => r.masses));
 
 console.log(`\n  ${SEEDS} '${TYPE}' worlds, distinct seeds\n`);
 console.log('  metric              min     max     spread');
@@ -622,13 +649,30 @@ const line = (n: string, get: (r: typeof rows[0]) => number) => {
   const v = rows.map(get);
   console.log(`  ${n.padEnd(18)} ${Math.min(...v).toFixed(3)}   ${Math.max(...v).toFixed(3)}   ${(Math.max(...v)-Math.min(...v)).toFixed(3)}`);
 };
-line('land fraction', r => r.land);
-line('biggest mass share', r => r.big);
+line('land fraction', r => r.land);          // diagnostic only - see below
+line('biggest mass share', r => r.big);      // diagnostic only - see below
 line('coast / land', r => r.coast);
+line('landmasses >=40', r => r.masses);
 
 // Thresholds. A generator that makes genuinely different worlds should easily
 // clear these; today's single-recipe generator cannot get near them.
-const WANT_LAND = 0.35, WANT_BIG = 0.45, WANT_COAST = 0.30;
+// Measured on the current generator across these 24 'ocean' seeds:
+//   land fraction      0.502 - 0.878  (spread 0.376)
+//   biggest mass share 0.523 - 1.000  (spread 0.477)
+//   coast / land       0.013 - 0.050  (spread 0.037)
+//   landmasses >=40    1 - 7          (17 of 24 seeds have 1 or 2)
+//
+// Land fraction and biggest-mass share ALREADY vary widely today, so they are
+// printed as diagnostics and deliberately NOT asserted. They measure how much
+// land a world has and how consolidated it is - not what SHAPE it is, and shape
+// is the actual defect. Asserting on metrics that already vary would make this
+// instrument unfalsifiable: its control could never pass.
+//
+// The two that do discriminate are landmass COUNT (an archipelago has dozens;
+// this generator tops out at 7) and coastline character (uniformly smooth and
+// blobby, 0.013-0.050 on every world).
+const WANT_MASSES = 40;   // an archipelago world must be reachable at all
+const WANT_COAST  = 0.15; // coastline character must genuinely differ
 
 let failed = 0;
 function assert(name: string, ok: boolean, detail: string): void {
@@ -640,15 +684,16 @@ if (CONTROL) {
   console.log('\n  CONTROL MODE — asserting the spread is NARROW.');
   console.log('  This must PASS on the current generator. If it fails, the');
   console.log('  metric is measuring the wrong thing.\n');
-  assert('land fraction is narrow',  landSpread  < WANT_LAND,  `${landSpread.toFixed(3)} < ${WANT_LAND}`);
-  assert('biggest mass is narrow',   bigSpread   < WANT_BIG,   `${bigSpread.toFixed(3)} < ${WANT_BIG}`);
-  assert('coast ratio is narrow',    coastSpread < WANT_COAST, `${coastSpread.toFixed(3)} < ${WANT_COAST}`);
+  assert('landmass count stays low', maxMasses <= 12, `${maxMasses} <= 12`);
+  assert('coastline character is uniform', coastSpread < WANT_COAST,
+    `${coastSpread.toFixed(3)} < ${WANT_COAST}`);
 } else {
   console.log('\n  Asserting the spread is WIDE. Expected to FAIL until');
   console.log('  terrain archetypes land.\n');
-  assert('land fraction varies',  landSpread  >= WANT_LAND,  `${landSpread.toFixed(3)} >= ${WANT_LAND}`);
-  assert('biggest mass varies',   bigSpread   >= WANT_BIG,   `${bigSpread.toFixed(3)} >= ${WANT_BIG}`);
-  assert('coast ratio varies',    coastSpread >= WANT_COAST, `${coastSpread.toFixed(3)} >= ${WANT_COAST}`);
+  assert('archipelago worlds are reachable', maxMasses >= WANT_MASSES,
+    `${maxMasses} >= ${WANT_MASSES}`);
+  assert('coastline character varies', coastSpread >= WANT_COAST,
+    `${coastSpread.toFixed(3)} >= ${WANT_COAST}`);
 }
 
 process.exit(failed === 0 ? 0 : 1);
@@ -709,7 +754,13 @@ Create `tools/atmosphereCheck.ts`:
  *
  * Measured on the shipped renderer at rx=130, ry=65. The thresholds below are
  * calibrated against these — re-measure if the geometry changes:
- *   seam 2.67  ·  hueSplit 0.0 deg  ·  thickness variance 1 px  ·  innerFall 2
+ *   seam 2.67  ·  hueSplit 0.0 deg  ·  thickness variance 1 px  ·  innerFall -1
+ *
+ * innerFall is NEGATIVE today. The alpha profile from the rim inward is
+ * 18, 9, 4, 4, 4, 4, 5, 5, 5, 6 at 0/10/.../90% of the radius: it collapses
+ * within 20% of the radius and then sits flat, rising slightly toward the
+ * sunlit limb. So there is no aerial perspective at all, and what floor does
+ * remain tilts the wrong way.
  *
  * Build + run:
  *   node_modules/.bin/esbuild tools/atmosphereCheck.ts --bundle --platform=node \
