@@ -184,17 +184,23 @@ lives.
 
 ### Why the current atmosphere reads as pasted on
 
-Four specific causes in `diorama_test.html:404-420`, all cheap to fix:
+**In the shipped engine** (`paintAtmosphere`, `HabitableCutawayEngine.ts:1215`):
 
-1. `sunFacing > -0.1 ? 0.85 : 0.28` — a **hard branch** at the terminator.
-   Intensity jumps with no gradient. This is the biggest tell.
-2. One flat `atmoColor` at two intensities. Real haze splits by wavelength —
-   warm where lit, deep blue where not.
-3. Constant `atmoThickness` draws a geometric annulus. It reads as an outline
-   because it is one.
-4. It only glows outward. The inward pass is a flat `0.22` tint over the last
-   5px (`:439`) — a hard-edged band. Air sells itself through **aerial
-   perspective**: terrain desaturating and lifting into haze toward the limb.
+1. **A ~4x alpha discontinuity at the face-ellipse boundary** —
+   `hit.face > 1 ? (0.07 + limb*0.52) : (0.03 + limb*0.10)`. This is the seam.
+2. **One flat colour, alpha only** (`d[o] = atmo.r` …) — no wavelength split, so
+   no warm-lit / cool-shadowed scatter.
+3. **Uniform `OZONE_FADE_PX = 8`** — a geometric ring, which reads as an outline.
+4. **No aerial perspective.** The inner term is an *additive tint*, not
+   desaturation of the terrain toward the limb.
+5. **It is a half-dome** — `if (y > cy + ry) return null`. No atmosphere exists
+   below the tabletop. Correct for a pancake, wrong once the body is a sphere.
+
+Note the shipped terminator is already smooth (`lit = 0.55 + 0.45·clamp(…)`).
+
+**In `diorama_test.html:404-420`** (the motion/colour reference, not the shipped
+path) there is additionally a hard terminator branch,
+`sunFacing > -0.1 ? 0.85 : 0.28`, which jumps with no gradient. Do not port it.
 
 A prototype with a smooth terminator, two-tone scatter, and real inward
 gradient confirmed the fix works. Remaining issue: the falloff was too wide and
