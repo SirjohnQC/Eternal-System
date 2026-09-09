@@ -34,6 +34,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
+import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGenome';
 
 // ─── Small colour + noise helpers ─────────────────────────────────────────────
 //
@@ -1217,17 +1218,19 @@ export function paintAtmosphere(
   sunAzimuth = 0,
   intensity = 1,
   tint?: RGB,
+  air?: AtmosphereChannel,
 ): void {
   if (intensity <= 0.01) return;
+  const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + bob;
   const pal = paletteFor(planetType);
   const atmo = tint ?? pal.atmo;
-  const dens = pal.atmoDensity;
+  const dens = chan.density;
   const d = img.data;
   const w = img.width, h = img.height;
   const sunX = Math.cos(sunAzimuth);
-  const fade = OZONE_FADE_PX;
+  const fade = chan.thicknessPx;
   const y0 = Math.max(0, Math.floor(cy - rx - fade));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
   const x0 = Math.max(0, Math.floor(cx - rx - fade));
@@ -1244,9 +1247,12 @@ export function paintAtmosphere(
       const inside = Math.max(0, rx - hit.distPx);
       const limb = Math.exp(-(inside * inside) / twoSig) * edge;
       const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, 0.5 + hit.dx * sunX));
-      const glow = hit.face > 1
-        ? (0.07 + limb * 0.52) * lit * intensity * dens
-        : (0.03 + limb * 0.10) * lit * intensity * dens;
+      // Dome and tabletop air used to be two branches, which put a ~4x alpha
+      // step exactly on the face-ellipse edge. Crossfade across it instead.
+      const domeGlow  = (0.07 + limb * 0.52) * lit * intensity * dens;
+      const faceGlow  = (0.03 + limb * 0.10) * lit * intensity * dens;
+      const blend     = Math.max(0, Math.min(1, (hit.face - 0.82) / 0.36));
+      const glow      = faceGlow + (domeGlow - faceGlow) * blend;
       const a = Math.round(Math.min(255, glow * 255));
       if (a < 3) continue;
       const o = (y * w + x) * 4;
