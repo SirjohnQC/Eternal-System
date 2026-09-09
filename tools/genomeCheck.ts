@@ -1,0 +1,62 @@
+/**
+ * PlanetGenome guards.
+ *
+ * Build + run:
+ *   node_modules/.bin/esbuild tools/genomeCheck.ts --bundle --platform=node \
+ *     --format=esm --outfile=/tmp/genomeCheck.mjs && node /tmp/genomeCheck.mjs
+ */
+const { rollPlanetGenome, genomeFromLegacy, genomeSeedFor } =
+  await import('../src/simulation/PlanetGenome');
+
+let failed = 0;
+function check(name: string, ok: boolean, detail = ''): void {
+  if (ok) { console.log(`  PASS  ${name}`); return; }
+  console.log(`  FAIL  ${name}${detail ? ' — ' + detail : ''}`);
+  failed++;
+}
+
+const TYPES = ['rocky', 'ocean', 'gas', 'ice', 'lava',
+               'toxic', 'crystal', 'desert', 'storm', 'carbon'];
+
+// 1. Determinism — same inputs, deep-equal output, every time.
+for (const t of TYPES) {
+  const a = rollPlanetGenome(4242, t, null);
+  const b = rollPlanetGenome(4242, t, null);
+  check(`deterministic: ${t}`, JSON.stringify(a) === JSON.stringify(b));
+}
+
+// 2. Different seeds must actually differ.
+const s1 = rollPlanetGenome(1, 'ocean', null);
+const s2 = rollPlanetGenome(2, 'ocean', null);
+check('distinct seeds differ', JSON.stringify(s1) !== JSON.stringify(s2));
+
+// 3. The genome records the type it was rolled from and never re-reads it.
+const g = rollPlanetGenome(77, 'lava', null);
+check('sourceType captured', g.sourceType === 'lava');
+check('seed captured', g.seed === 77);
+
+// 4. Legacy shim is deterministic and type-keyed.
+for (const t of TYPES) {
+  const a = genomeFromLegacy(t, 9);
+  const b = genomeFromLegacy(t, 9);
+  check(`legacy deterministic: ${t}`, JSON.stringify(a) === JSON.stringify(b));
+  check(`legacy atmosphere present: ${t}`,
+    typeof a.atmosphere.density === 'number' && a.atmosphere.thicknessPx > 0);
+}
+
+// 5. Seed derivation is stable and collision-free for a plausible cosmos.
+const seen = new Set<number>();
+let collisions = 0;
+for (let star = 0; star < 80; star++) {
+  for (let i = 0; i < 8; i++) {
+    const s = genomeSeedFor(star, i);
+    if (seen.has(s)) collisions++;
+    seen.add(s);
+  }
+}
+check('genomeSeedFor collision-free over 640 planets', collisions === 0,
+  `${collisions} collisions`);
+check('genomeSeedFor stable', genomeSeedFor(5, 3) === genomeSeedFor(5, 3));
+
+console.log(failed === 0 ? '\nAll genome checks passed.' : `\n${failed} FAILED`);
+process.exit(failed === 0 ? 0 : 1);
