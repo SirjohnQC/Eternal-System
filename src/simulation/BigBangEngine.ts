@@ -5,10 +5,17 @@ import {
   DNABranch, DEFAULT_DNA_BRANCH,
   CodexEntry, civLevelToPhase,
   gameState, runtimeState, DEFAULT_PLANET_DNA,
+  type PlanetDNA,
 } from './GameState';
 import { bakePlanetTexture } from './PlanetRenderer';
 import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
+import {
+  bakeStarBody, bakeStarCorona, bakeStarGlow, bakePlanetSprite, bakeMoonSprite,
+  wrapEquirectToGlobe, starTempBand, starVisualProfile, parseHexColor,
+  type PlanetKind as CosmicPlanetKind,
+  type MoonKind as CosmicMoonKind,
+} from '../rendering/CosmicPixelSprites';
 import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation,
   type EvolutionEvent,
@@ -107,17 +114,58 @@ export type MoonKind = 'rock' | 'ice' | 'iron' | 'volcanic' | 'carbon' | 'ocean'
 
 export interface Planet {
   orbitalAngle: number;
+  /** Semi-major axis (mean orbital distance) in world units. */
   orbitalRadius: number;
   orbitalSpeed: number;
+  /**
+   * Orbit eccentricity 0–~0.55. 0 = circle; higher = elliptical path with the
+   * star at one focus.
+   */
+  eccentricity: number;
+  /** Orientation of the ellipse (argument of periapsis), radians. */
+  periapsisAngle: number;
   radius: number;
-  type: 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava';
+  type: 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
+      | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
   hasLife: boolean;
+  /** Scorched / frozen husk — no biosphere, drawn as ash/gray. */
+  isDead?: boolean;
   biosphere: number;    // 0–1
   color: string;
   discovery: PlanetDiscovery;
   name: string;         // assigned on first telescope-level discovery
   /** Natural satellites. Empty for most planets; gas giants keep the most. */
   moons: Moon[];
+  /**
+   * Climate / ocean / chaos profile — drives terrain bake so the orrery globe
+   * stays close to the diorama / surface map. Rolled per planet at birth;
+   * player's home is overwritten from the ritual answers.
+   */
+  dna?: PlanetDNA;
+}
+
+/**
+ * World-space offset of a planet from its star at the given anim tick.
+ * Uses a lightweight Kepler approx so eccentric orbits look elliptical.
+ */
+export function planetOffsetFromStar(p: Planet, animTick: number): { x: number; y: number; r: number } {
+  const a = p.orbitalRadius;
+  const e = Math.min(0.72, Math.max(0, p.eccentricity ?? 0));
+  const M = p.orbitalAngle + animTick * p.orbitalSpeed;
+  const peri = p.periapsisAngle ?? 0;
+  if (e < 0.015) {
+    return { x: Math.cos(M) * a, y: Math.sin(M) * a, r: a };
+  }
+  // Eccentric anomaly (few fixed-point iterations)
+  let E = M;
+  for (let i = 0; i < 4; i++) E = M + e * Math.sin(E);
+  const cosE = Math.cos(E), sinE = Math.sin(E);
+  const x0 = a * (cosE - e);
+  const y0 = a * Math.sqrt(Math.max(0, 1 - e * e)) * sinE;
+  const c = Math.cos(peri), s = Math.sin(peri);
+  const x = x0 * c - y0 * s;
+  const y = x0 * s + y0 * c;
+  return { x, y, r: Math.hypot(x, y) };
 }
 
 /**
@@ -127,19 +175,56 @@ export interface Planet {
  * a "galaxy" zoom tier to show. The Big Bang now throws its stars toward a
  * handful of centres instead of scattering them uniformly, which is what makes
  * the opening read as galaxies forming rather than one spray of dots.
+ *
+ * Morphology (spiral / barred / …) drives both star placement and the pixel-art
+ * envelope — soft radial glows read as modern VFX, not the CRT observatory look.
  */
+export type GalaxyMorph = 'spiral' | 'barred' | 'lenticular' | 'elliptical' | 'irregular';
+
+/** Compact corpse left after death or primordial burnout. */
+export type RemnantKind = 'white_dwarf' | 'neutron' | 'black_hole';
+
+/** How densely a morph tends to pack systems (relative weights). */
+export function galaxyMorphWeight(morph: GalaxyMorph): number {
+  switch (morph) {
+    case 'elliptical': return 1.7;
+    case 'lenticular': return 1.45;
+    case 'barred':     return 1.05;
+    case 'spiral':     return 1.0;
+    case 'irregular':  return 0.5;
+  }
+}
+
 export interface Galaxy {
   id: number;
   name: string;
-  /** Centre in world coordinates; tracks the mean position of its stars. */
+  /**
+   * Drawn envelope centre. Matches the fixed kinematic centre — we do NOT
+   * chase the star-mean (that yanked the whole swirl every census at high speed).
+   */
   x: number;
   y: number;
+  /** Fixed orbit centre — set at birth, never moved by census. */
+  cx: number;
+  cy: number;
   /** Radius covering most of its stars, in world units. */
   radius: number;
+  /** Soft-follow target for envelope radius only. */
+  tRadius: number;
   color: string;
-  /** Rotation of the elliptical envelope, radians. */
+  /** Rotation of the disc / spiral pattern, radians. */
   tilt: number;
   starIds: number[];
+  /** Hubble-ish class — decides arms, bar, and pixel-art silhouette. */
+  morph: GalaxyMorph;
+  /** Spiral arm count (2–4). Ignored for elliptical / irregular. */
+  armCount: number;
+  /** How tightly arms wind (higher = tighter). */
+  armPitch: number;
+  /** Bar half-length as a fraction of radius (0 if unbarred). */
+  barLength: number;
+  /** Disc thickness squash (face-on ≈ 1, edge-on ≈ 0.35). */
+  discFlat: number;
 }
 
 /**
@@ -154,8 +239,10 @@ export type ZoomTier = 'universe' | 'galaxy' | 'system' | 'planet';
 
 /** Camera scale at which each tier begins, and the scale a jump lands on. */
 export const ZOOM_TIERS: Array<{ tier: ZoomTier; min: number; nominal: number; label: string }> = [
-  { tier: 'universe', min: 0.00, nominal: 0.28, label: 'Universe' },
-  { tier: 'galaxy',   min: 0.45, nominal: 0.95, label: 'Galaxy'   },
+  // Nominal scales drop with the larger WORLD_SIZE so "Universe" still frames
+  // the whole disc and "Galaxy" frames one island in the void.
+  { tier: 'universe', min: 0.00, nominal: 0.12, label: 'Universe' },
+  { tier: 'galaxy',   min: 0.22, nominal: 0.70, label: 'Galaxy'   },
   { tier: 'system',   min: 1.80, nominal: 3.20, label: 'System'   },
   { tier: 'planet',   min: 4.40, nominal: 5.00, label: 'Planet'   },
 ];
@@ -181,10 +268,28 @@ export interface StarBody {
   explorationRadius: number;
   isPlayerStar: boolean;
   isDead: boolean;
+  /**
+   * When `isDead`, what the corpse looks like. Primordial burnouts and
+   * supernova/merger remnants both keep a visible body + husk planets.
+   */
+  remnantKind?: RemnantKind;
   asteroidBelt: boolean;
+  /** 0–1 rock density when asteroidBelt is true. */
+  asteroidBeltDensity: number;
   lastEventTick: number;
   /** Which galaxy this star belongs to (M22b). */
   galaxyId?: number;
+  /**
+   * Mean orbital radius around the galaxy centre (M25).
+   * Stars swirl at this radius with mild eccentricity — they do not fall
+   * inward toward heavier neighbours.
+   */
+  orbitRadius?: number;
+  /**
+   * Current angle on the galactic orbit (radians). Advanced once per sim tick;
+   * render uses this + a fractional tick so high speed stays smooth.
+   */
+  orbitAngle?: number;
   formationStage: PlanetFormationStage | null;
   /**
    * Condensed out of a supernova remnant during play, rather than existing from
@@ -357,14 +462,41 @@ import {
   BIO_PHASE_TICKS,
 } from '../constants';
 
-const GRAVITY_CONSTANT = 0.009;   // weaker gravity → less clustering
-// Multiplier of the summed radii at which two stars merge. This was 2.0, which
-// with no counter-pressure let the whole cluster coalesce: a long game collapsed
-// to a handful of stars and then to one.
-const COLLISION_DIST   = 1.15;
+// M25 cosmology: stars ORBIT their galaxy — they do not fall into neighbours.
+// Pairwise N-body gravity + heavy damping was the old model; everything drifted
+// toward the heaviest body and merged. Real galaxies keep systems on long
+// orbits, and mergers only happen when two stars pass extremely close.
+/** Galactic gravitational parameter (GM). Sets circular-orbit speeds.
+ *  Kept tiny so even at 200× the swirl is barely perceptible — a full
+ *  revolution takes many minutes of real time at that speed. */
+const GALACTIC_MU      = 0.008;
+/** Softens the galactic core so stars near the centre are not slingshot. */
+const GALACTIC_SOFT    = 50;
+/** Hard cap on galactic angular speed (radians per sim tick). At 200×
+ *  (~200 ticks/sec) this is ~0.7°/sec — just noticeable, not a blender. */
+const MAX_GALACTIC_OMEGA = 0.00006;
+/** Eccentricity phase advance per tick — slow radial breathing, not pulsing. */
+const ORBIT_ECC_RATE   = 0.00002;
+/**
+ * Close-approach merge distance (world units). Pure contact `(ra+rb)*k` never
+ * fires under co-rotating galactic orbits — systems keep their angular
+ * separation forever. A modest absolute floor restores rare mergers without
+ * the old N-body cascade into the heaviest neighbour.
+ */
+const MERGE_DIST       = 22;
+/** Soft capture range — gently pull orbit radii together so a future merge
+ *  can happen, instead of two near-misses skating past forever. */
+const CAPTURE_DIST     = 48;
 const NEBULA_EXPAND    = 0.35;
 const NEBULA_FADE      = 0.003;
-const DAMPING          = 0.992;
+const MAX_ORBITAL_SPEED = 1.35;
+/** Minimum target separation (world units) between stars in the same galaxy.
+ *  Must exceed 2× a typical outer orbit (~120) plus void, and still hold after
+ *  14% galactic eccentricity, or neighbouring solar systems overlap. */
+const MIN_STAR_SEPARATION = 360;
+/** Radians per animTick (~60/s). Inner year ~100s at 1× so the orrery is
+ *  readable; Kepler √(1/a) plus 15% jitter still varies the worlds. */
+const PLANET_ORBIT_MU = 0.0012;
 const ASTEROID_SPAWN   = 35;      // spawn asteroids more frequently
 const PANSPERMIA_DIST  = 80;
 const FOG_ALPHA        = 0.93;
@@ -460,6 +592,9 @@ export class BigBangEngine {
   private ctx: CanvasRenderingContext2D;
   private fogCanvas: HTMLCanvasElement;
   private fogCtx: CanvasRenderingContext2D;
+  /** Skip full fog rebuild when camera/holes haven't moved enough. */
+  private fogCacheKey = '';
+  private fogCacheValid = false;
 
   stars: StarBody[] = [];
   nebulae: NebulaCloud[] = [];
@@ -491,6 +626,8 @@ export class BigBangEngine {
   private stellarNurseries: Array<{
     x: number; y: number; starsLeft: number; nextSpawnTick: number;
   }> = [];
+  /** Big-Bang landing sites — inflation is visual; orbits snap here. */
+  private spawnTargets = new Map<number, { x: number; y: number }>();
   private warIdCounter = 0;
   private orbitalFleetIdCounter = 0;
   private cosmicSignals: CosmicSignal[] = [];
@@ -505,6 +642,19 @@ export class BigBangEngine {
   pixiMode = false;
   /** Called at end of each frame when pixiMode is true. */
   onPixiFrame: ((engine: BigBangEngine) => void) | null = null;
+  /** Optional FPS HUD / diagnostics (avg over ~0.5s windows). */
+  onFpsSample: ((fps: number, frameMs: number) => void) | null = null;
+  private fpsWindowStart = performance.now();
+  private fpsFrameCount = 0;
+  private fpsFrameMsSum = 0;
+  currentFps = 0;
+  currentFrameMs = 0;
+  /**
+   * When false, stars still attract but never merge or detonate.
+   * Measurement control for M25 (`tools/playerProgressCheck.ts` collisions-off
+   * pass) — not a player-facing setting.
+   */
+  collisionsEnabled = true;
 
   private rng!: SeedRNG;
   private camera: Camera = { x: WORLD_SIZE/2, y: WORLD_SIZE/2, scale: 1.5, tx: WORLD_SIZE/2, ty: WORLD_SIZE/2, ts: 1.5 };
@@ -513,6 +663,13 @@ export class BigBangEngine {
   private running = false;
   private animHandle = 0;
   private exploredAreas: Array<{ x: number; y: number; r: number }> = [];
+  /** Index of the fog bubble that tracks the player's moving home star. */
+  private playerFogIndex = -1;
+  /**
+   * Soft-follow the home star / galaxy with the camera while zoomed in.
+   * Cleared when the player pans; restored by VIEW / focus / clicking home.
+   */
+  private cameraFollowHome = true;
   private _lastClickTime = 0;
   private _lastClickedStarId = -1;
 
@@ -600,6 +757,9 @@ export class BigBangEngine {
    */
   private createStar(x: number, y: number): StarBody {
     const mass = this.rng.nextFloat(1, 8);
+    const planets = this.generatePlanets(this.stats, mass);
+    // Belts are optional and density varies — not every system has one.
+    const hasBelt = planets.length >= 2 && this.rng.chance(0.22 + this.stats.entropy / 55);
     return {
       id: this.starIdCounter++,
       x, y, vx: 0, vy: 0,
@@ -610,11 +770,12 @@ export class BigBangEngine {
       hasLife: false,
       civLevel: 0,
       civName: this.generateCivName(),
-      planets: this.generatePlanets(this.stats, mass),
+      planets,
       explorationRadius: 30,
       isPlayerStar: false,
       isDead: false,
-      asteroidBelt: this.rng.chance(this.stats.entropy / 30),
+      asteroidBelt: hasBelt,
+      asteroidBeltDensity: hasBelt ? this.rng.nextFloat(0.2, 1.0) : 0,
       lastEventTick: 0,
       formationStage: null,
       formationTick: 0,
@@ -627,6 +788,67 @@ export class BigBangEngine {
       bioPhaseProgress: 0,
       dna: { ...DEFAULT_DNA_BRANCH },
     };
+  }
+
+  /**
+   * Turn a star into a visible remnant with husk planets.
+   * Used for primordial burnouts and post-supernova / merger corpses.
+   */
+  private makeRemnant(star: StarBody, reason: 'primordial' | 'supernova' | 'merger'): void {
+    star.isDead = true;
+    star.hasLife = false;
+    star.civLevel = 0;
+    star.biologyPhase = 'microbial';
+    star.bioPhaseProgress = 0;
+    star.religionName = '';
+    star.religionDevotion = 0;
+    star.formationStage = null;
+    star.isNewSystem = false;
+
+    if (star.mass >= 6) {
+      star.remnantKind = this.rng.chance(0.55) ? 'black_hole' : 'neutron';
+    } else if (star.mass >= 3.5) {
+      star.remnantKind = this.rng.chance(0.4) ? 'neutron' : 'white_dwarf';
+    } else {
+      star.remnantKind = 'white_dwarf';
+    }
+
+    if (star.remnantKind === 'black_hole') {
+      star.radius = Math.max(1.1, star.radius * 0.32);
+      star.temperature = 1800;
+      star.mass = Math.max(star.mass, 8);
+    } else if (star.remnantKind === 'neutron') {
+      star.radius = Math.max(1.3, star.radius * 0.38);
+      star.temperature = 14000;
+    } else {
+      star.radius = Math.max(1.5, star.radius * 0.42);
+      star.temperature = 9500;
+    }
+
+    this.huskPlanets(star);
+    if (reason !== 'primordial') {
+      this.invalidateCulture(star, 'annihilation');
+    }
+  }
+
+  /** Scorch / freeze every world in a dead system into ash husks. */
+  private huskPlanets(star: StarBody): void {
+    const huskColors = ['#5a5854', '#6e6a62', '#4a4844', '#7a756c', '#3d3c3a', '#8a8478'];
+    for (const p of star.planets) {
+      p.isDead = true;
+      p.hasLife = false;
+      p.biosphere = 0;
+      if (p.type === 'gas' || p.type === 'ocean' || p.type === 'lava') {
+        p.type = this.rng.chance(0.35) ? 'ice' : 'rocky';
+      }
+      p.color = this.rng.pick(huskColors);
+      p.dna = { climate: 'frozen', oceans: 'barren', chaos: 'serene' };
+      p.radius = Math.max(0.35, p.radius * 0.88);
+      for (const m of p.moons) {
+        // Moons stay, but read as cold rock.
+        m.kind = m.kind === 'ice' ? 'ice' : 'rock';
+      }
+    }
   }
 
   /**
@@ -658,27 +880,59 @@ export class BigBangEngine {
 
       if (n.starsLeft <= 0) { this.stellarNurseries.splice(i, 1); continue; }
 
-      // Scatter the newborn away from the collapse site so it doesn't instantly
-      // re-merge with whatever is still there.
-      const angle = this.rng.nextFloat(0, Math.PI * 2);
-      const dist  = this.rng.nextFloat(60, 180);
-      let nx = n.x + Math.cos(angle) * dist;
-      let ny = n.y + Math.sin(angle) * dist;
+      // Scatter far from the collapse site AND away from living neighbours —
+      // without a separation check newborns land on top of survivors and either
+      // instantly merge or look stacked (especially with larger pixel suns).
+      let nx = n.x, ny = n.y;
+      let bestX = nx, bestY = ny, bestMin = -1;
+      const live = this.stars.filter(s => !s.isDead);
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const angle = this.rng.nextFloat(0, Math.PI * 2);
+        const dist  = this.rng.nextFloat(MIN_STAR_SEPARATION, MIN_STAR_SEPARATION * 2.4);
+        let tx = n.x + Math.cos(angle) * dist;
+        let ty = n.y + Math.sin(angle) * dist;
 
-      // Keep it inside the disc.
-      const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
-      const dr = Math.hypot(nx - cx, ny - cy);
-      if (dr > UNIVERSE_RADIUS) {
-        nx = cx + (nx - cx) / dr * UNIVERSE_RADIUS * 0.95;
-        ny = cy + (ny - cy) / dr * UNIVERSE_RADIUS * 0.95;
+        const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
+        const dr = Math.hypot(tx - cx, ty - cy);
+        if (dr > UNIVERSE_RADIUS) {
+          tx = cx + (tx - cx) / dr * UNIVERSE_RADIUS * 0.95;
+          ty = cy + (ty - cy) / dr * UNIVERSE_RADIUS * 0.95;
+        }
+
+        let minD = Infinity;
+        for (const s of live) {
+          const d = Math.hypot(tx - s.x, ty - s.y);
+          if (d < minD) minD = d;
+        }
+        if (minD >= MIN_STAR_SEPARATION) {
+          bestX = tx; bestY = ty; bestMin = minD;
+          break;
+        }
+        if (minD > bestMin) {
+          bestMin = minD;
+          bestX = tx; bestY = ty;
+        }
       }
+      nx = bestX; ny = bestY;
 
       const star = this.createStar(nx, ny);
-      // A little orbital motion so it isn't immediately pulled straight back in.
-      const tangent = Math.atan2(ny - cy, nx - cx) + Math.PI / 2;
-      const orbitalV = this.rng.nextFloat(0.15, 0.5);
-      star.vx = Math.cos(tangent) * orbitalV;
-      star.vy = Math.sin(tangent) * orbitalV;
+
+      // Join the nearest galaxy and take up a proper galactic orbit — not a
+      // throw toward the universe centre (that was the old "fall inward" path).
+      let bestGal = this.galaxies[0];
+      let bestD = Infinity;
+      for (const g of this.galaxies) {
+        const d = Math.hypot(nx - g.x, ny - g.y);
+        if (d < bestD) { bestD = d; bestGal = g; }
+      }
+      if (bestGal) {
+        star.galaxyId = bestGal.id;
+        bestGal.starIds.push(star.id);
+        star.orbitRadius = Math.max(28, Math.min(bestD, bestGal.radius * 0.95));
+        star.orbitAngle = Math.atan2(ny - bestGal.cy, nx - bestGal.cx);
+        this.setCircularOrbit(star, bestGal, this.rng.nextFloat(0.9, 1.15));
+        this.placeStarOnOrbit(star, bestGal, star.orbitAngle, star.age);
+      }
 
       // A system condensed out of a supernova remnant is NEW. It runs the same
       // young-world sequence the player's own planet does — magma, cooling,
@@ -719,10 +973,15 @@ export class BigBangEngine {
     this.asteroids = [];
     this.fleets = [];
     this.exploredAreas = [];
+    this.playerFogIndex = -1;
+    this.fogCacheValid = false;
+    this.fogCacheKey = '';
+    this.cameraFollowHome = true;
     this.cosmicEvents = [];
     this.activeWars = [];
     this.supernovaFlashes = [];
     this.galaxies = [];
+    this.galaxySpriteCache.clear();
     this.newSystemsFormed = 0;
     this.newSystemsBornAlive = 0;
     this.cosmicEventIdCounter = 0;
@@ -730,6 +989,7 @@ export class BigBangEngine {
     this.nextCosmicCheckTick = 2000;
     this.starIdCounter = 0;
     this.stellarNurseries = [];
+    this.spawnTargets.clear();
 
     // Roll this universe's DNA branches here rather than in the UI layer.
     // They were previously set only by `launchBigBang`, so any engine created
@@ -751,80 +1011,118 @@ export class BigBangEngine {
     gameState.playerSpecies = [];
     gameState.playerBiosphere = { ...DEFAULT_BIOSPHERE };
 
-    const starCount = Math.floor(40 + stats.life * 6);   // 46–160 stars
+    // Denser census now that cull + wall-clock pacing hold 120Hz — life roll
+    // still sets the pool; morph weights how that pool splits across galaxies.
+    const starCount = Math.floor(18 + stats.life * 2.1);   // 20–60 stars
     const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
 
-    // Size the blast so the universe lands INSIDE its boundary. The old fixed
-    // force threw most stars well past the rim at high entropy, so they piled
-    // up against the edge instead of spreading — which is what made the cosmos
-    // read as a hard-edged shape rather than a galaxy.
-    const spreadFrac = 0.42 + (stats.entropy / 20) * 0.50;       // 0.44 … 0.92
+    // Size the blast so the universe lands INSIDE its boundary. Use most of the
+    // disc so galaxies can sit far apart with void between them.
+    const spreadFrac = 0.58 + (stats.entropy / 20) * 0.36;       // 0.58 … 0.94
     const maxDrift   = UNIVERSE_RADIUS * spreadFrac;
 
     // ── Galaxies first, stars second ────────────────────────────────────────
     // The Big Bang throws its matter toward a handful of centres rather than
     // scattering it evenly, so what condenses out is galaxies. Without this
     // there is no structure above "star" for a galaxy tier to show.
-    // FEW and LARGE. Galaxy radius is really a stellar-density control, and
-    // density drives everything downstream: too tight and gravity runs away,
-    // mergers cascade and the cosmos ends up with one biochemistry and no
-    // civilisations at all (measured). Too loose and the envelopes overlap into
-    // a single blob and there are visibly no galaxies. Fewer, bigger galaxies
-    // are the way to have both.
+    // FEW, SMALL, FAR APART. Galaxy radius is a stellar-density control — too
+    // tight and gravity cascades; too large and envelopes merge into one blob.
+    // After M25 the sim is healthy; this pass makes the *look* match real space:
+    // vast empty stretches between galaxies, and sparse systems inside each.
     const galaxyCount = this.rng.nextInt(3, 4);
-    // Centres ride a ring far enough out to leave room between them.
-    const ringR = maxDrift * this.rng.nextFloat(0.50, 0.62);
-    // The largest radius that still leaves adjacent galaxies clear of each
-    // other, derived from the count rather than guessed — half the arc between
-    // neighbours, with a margin. This is what keeps them DISTINCT at any count.
-    const spacingLimit = ringR * Math.sin(Math.PI / galaxyCount) * 0.92;
+    // Centres ride a wide ring so neighbours sit across real void.
+    const ringR = maxDrift * this.rng.nextFloat(0.72, 0.88);
+    // Room for denser census under MIN_STAR_SEPARATION (relax may still grow).
+    const envelopeCap = ringR * Math.sin(Math.PI / galaxyCount) * 0.74;
 
     for (let gi = 0; gi < galaxyCount; gi++) {
-      const ga = (gi / galaxyCount) * Math.PI * 2 + this.rng.nextFloat(-0.25, 0.25);
-      const gr = ringR * this.rng.nextFloat(0.88, 1.12);
+      const ga = (gi / galaxyCount) * Math.PI * 2 + this.rng.nextFloat(-0.18, 0.18);
+      const gr = ringR * this.rng.nextFloat(0.90, 1.08);
+      // Real sky mix, biased toward spirals so the cosmos reads as spiral/barred
+      // islands (the look we want) rather than soft elliptical blobs.
+      const morphRoll = this.rng.next();
+      const morph: GalaxyMorph =
+        morphRoll < 0.48 ? 'barred' :
+        morphRoll < 0.78 ? 'spiral' :
+        morphRoll < 0.88 ? 'lenticular' :
+        morphRoll < 0.95 ? 'elliptical' : 'irregular';
+      const armCount = morph === 'spiral' || morph === 'barred'
+        ? this.rng.nextInt(2, 4) : 0;
+      const gx = cx + Math.cos(ga) * gr;
+      const gy = cy + Math.sin(ga) * gr;
+      const gRadius = Math.min(
+        envelopeCap,
+        maxDrift * 0.48,
+        Math.max(320, maxDrift - gr),
+      ) * this.rng.nextFloat(0.92, 1.0);
       this.galaxies.push({
         id: gi,
-        name: this.generateGalaxyName(),
-        x: cx + Math.cos(ga) * gr,
-        y: cy + Math.sin(ga) * gr,
-        // Bounded three ways: by neighbour spacing, by a hard ceiling that keeps
-        // any one galaxy from swallowing the disc, and by the universe rim.
-        radius: Math.min(
-          spacingLimit,
-          maxDrift * 0.42,
-          Math.max(60, maxDrift - gr),
-        ) * this.rng.nextFloat(0.86, 1.0),
+        name: this.generateGalaxyName(morph),
+        x: gx,
+        y: gy,
+        cx: gx,
+        cy: gy,
+        radius: gRadius,
+        tRadius: gRadius,
         color: ['#8ea8ff', '#ffc9a0', '#c7a0ff', '#a0ffd8', '#ffa0c8'][gi % 5],
         tilt: this.rng.nextFloat(0, Math.PI),
         starIds: [],
+        morph,
+        armCount,
+        armPitch: this.rng.nextFloat(0.18, 0.42),
+        barLength: morph === 'barred' ? this.rng.nextFloat(0.35, 0.55) : 0,
+        // Mostly face-on-ish with some tilt — pixel spirals read better that way.
+        discFlat: morph === 'elliptical' || morph === 'lenticular'
+          ? this.rng.nextFloat(0.70, 0.95)
+          : this.rng.nextFloat(0.42, 0.72),
       });
     }
 
-    for (let i = 0; i < starCount; i++) {
-      // Weight membership so galaxies differ in size rather than all holding
-      // the same share.
-      const gal = this.galaxies[this.rng.nextInt(0, this.galaxies.length - 1)];
+    // Targets already chosen in each galaxy — used to enforce MIN_STAR_SEPARATION
+    // so the Big Bang does not aim two stars at the same neighbourhood.
+    const placedTargets: Array<{ x: number; y: number; galaxyId: number }> = [];
+    const morphWeights = this.galaxies.map(g => galaxyMorphWeight(g.morph));
+    const weightSum = morphWeights.reduce((a, b) => a + b, 0);
 
-      // Where in its galaxy this star ends up. sqrt() keeps the distribution
-      // roughly area-uniform so the disc fills out instead of bunching.
-      const la = this.rng.nextFloat(0, Math.PI * 2);
-      const lr = gal.radius * Math.sqrt(this.rng.nextFloat(0.02, 1));
-      const tx = gal.x + Math.cos(la) * lr;
-      const ty = gal.y + Math.sin(la) * lr;
+    for (let i = 0; i < starCount; i++) {
+      // Morph-weighted membership — ellipticals denser, irregulars sparse.
+      let pick = this.rng.next() * weightSum;
+      let host = this.galaxies[0];
+      for (let gi = 0; gi < this.galaxies.length; gi++) {
+        pick -= morphWeights[gi];
+        if (pick <= 0) { host = this.galaxies[gi]; break; }
+      }
+      let pos = this.pickSeparatedPoint(host, placedTargets);
+      if (!pos) {
+        for (const g of this.galaxies) {
+          if (g.id === host.id) continue;
+          pos = this.pickSeparatedPoint(g, placedTargets);
+          if (pos) { host = g; break; }
+        }
+      }
+      if (!pos) pos = this.sampleGalaxyPoint(host);
+
+      const target = { x: pos.x, y: pos.y, galaxyId: host.id };
+      placedTargets.push(target);
 
       // Aim the star at that destination, so inflation resolves into clumps.
-      const dx = tx - cx, dy = ty - cy;
+      const dx = target.x - cx, dy = target.y - cy;
       const dist = Math.hypot(dx, dy) || 1;
       const outwardForce = dist / INFLATION_DRIFT;
       const angle = Math.atan2(dy, dx);
       const spinForce = outwardForce * this.rng.nextFloat(0.04, 0.14);
 
       const star = this.createStar(cx + this.rng.nextFloat(-3, 3), cy + this.rng.nextFloat(-3, 3));
+      this.spawnTargets.set(star.id, target);
       star.vx = Math.cos(angle) * outwardForce - Math.sin(angle) * spinForce;
       star.vy = Math.sin(angle) * outwardForce + Math.cos(angle) * spinForce;
-      star.galaxyId = gal.id;
-      gal.starIds.push(star.id);
+      star.galaxyId = host.id;
+      host.starIds.push(star.id);
       this.stars.push(star);
+    }
+
+    for (const gal of this.galaxies) {
+      this.relaxStarTargets(gal, placedTargets, envelopeCap);
     }
 
     // Mark player's star (first one)
@@ -832,6 +1130,13 @@ export class BigBangEngine {
     this.stars[0].temperature = 5800; // Sun-like
     this.stars[0].civLevel = 0;
     this.playerStarId = 0;
+
+    // Primordial corpses — entropy-weighted (~8–15%). Never the player's sun.
+    const remnantChance = 0.08 + (stats.entropy / 20) * 0.07;
+    for (const s of this.stars) {
+      if (s.isPlayerStar) continue;
+      if (this.rng.chance(remnantChance)) this.makeRemnant(s, 'primordial');
+    }
 
     // Pre-seed NPC biospheres. How many, and how far along each one is, are both
     // rolls — the starting universe should not always look the same. Some games
@@ -895,10 +1200,16 @@ export class BigBangEngine {
     const playerPlanet = ps0.planets[playerIdx];
     if (playerPlanet) {
       if (gameState.playerPlanetName) playerPlanet.name = gameState.playerPlanetName;
+      // Keep orrery / surface / diorama on the same DNA the player answered.
+      if (gameState.playerPlanetDNA) playerPlanet.dna = { ...gameState.playerPlanetDNA };
       // The player's world is guaranteed to be a good one — this is the world the
       // whole game is about — but it still gets its own chemistry and tempo, so
       // no two playthroughs climb the ladder at the same speed.
-      playerPlanet.orbitalRadius = 12 + (ps0.temperature - 3000) / 27000 * 34;
+      // Habitable-band semi-major; near-circular so home is easy to read.
+      playerPlanet.orbitalRadius = 18 + (ps0.temperature - 3000) / 27000 * 28;
+      playerPlanet.eccentricity = this.rng.nextFloat(0, 0.08);
+      playerPlanet.periapsisAngle = this.rng.nextFloat(0, Math.PI * 2);
+      playerPlanet.type = preferred;
       ps0.habitability = undefined;
       ps0.bestPlanetIndex = playerIdx;
       this.igniteLife(ps0, playerIdx);
@@ -934,37 +1245,130 @@ export class BigBangEngine {
 
   start(): void {
     this.running = true;
+    this.paceToWallClock = true;
+    this.lastFrameTime = performance.now();
+    this.lastPresentTime = 0;
     this.animHandle = requestAnimationFrame(this.loop.bind(this));
   }
 
   stop(): void {
     this.running = false;
+    this.paceToWallClock = false;
+    this.lastFrameTime = 0;
+    this.lastPresentTime = 0;
     if (this.animHandle) cancelAnimationFrame(this.animHandle);
+  }
+
+  /**
+   * Cap presented frames per second. `0` = unlimited (match display refresh).
+   * RAF still ticks every vsync; update/render are skipped until the interval elapses.
+   */
+  setTargetFps(fps: number): void {
+    this.targetFps = fps > 0 ? fps : 0;
+  }
+
+  getTargetFps(): number {
+    return this.targetFps;
+  }
+
+  /**
+   * Bake galaxy envelopes (and anything else that hitchs on first paint)
+   * before the inflation loop starts. Safe to call after init(); does not
+   * start the sim. Yields between galaxies so a loading screen can paint.
+   */
+  async warmVisualCaches(
+    onProgress?: (done: number, total: number, label: string) => void,
+  ): Promise<void> {
+    const gals = this.galaxies;
+    const total = Math.max(1, gals.length);
+    for (let i = 0; i < gals.length; i++) {
+      this.getGalaxySprite(gals[i]);
+      onProgress?.(i + 1, total, `Mapping ${gals[i].name}`);
+      await new Promise<void>(r => setTimeout(r, 0));
+    }
+    onProgress?.(total, total, 'Cosmos ready');
   }
 
   private loop(): void {
     if (!this.running) return;
-    this.update();
-    this.render();
+
+    // Frame-rate cap: keep RAF on vsync, but only present when enough wall time
+    // has passed. Skipped frames do not advance sim/anim (wall-clock pacing stays).
+    const wake = performance.now();
+    if (this.targetFps > 0 && this.lastPresentTime > 0) {
+      const minDt = 1000 / this.targetFps;
+      if (wake - this.lastPresentTime < minDt - 0.5) {
+        this.animHandle = requestAnimationFrame(this.loop.bind(this));
+        return;
+      }
+    }
+    this.lastPresentTime = wake;
+
+    const t0 = performance.now();
+    const dtMs = this.pullFrameDeltaMs();
+    this.update(dtMs);
+    this.render(dtMs);
+    const frameMs = performance.now() - t0;
+    this.fpsFrameMsSum += frameMs;
+    this.fpsFrameCount++;
+    const now = performance.now();
+    if (now - this.fpsWindowStart >= 500) {
+      this.currentFps = this.fpsFrameCount / ((now - this.fpsWindowStart) / 1000);
+      this.currentFrameMs = this.fpsFrameMsSum / Math.max(1, this.fpsFrameCount);
+      this.fpsWindowStart = now;
+      this.fpsFrameMsSum = 0;
+      this.fpsFrameCount = 0;
+      this.onFpsSample?.(this.currentFps, this.currentFrameMs);
+    }
     this.animHandle = requestAnimationFrame(this.loop.bind(this));
   }
 
-  update(): void {
+  /** Wall-clock dt while the RAF loop runs; clamp spikes after tab blurs. */
+  private pullFrameDeltaMs(): number {
+    const now = performance.now();
+    if (!this.lastFrameTime) {
+      this.lastFrameTime = now;
+      return 1000 / 60;
+    }
+    const dt = now - this.lastFrameTime;
+    this.lastFrameTime = now;
+    return Math.min(50, Math.max(0, dt));
+  }
+
+  update(dtMs?: number): void {
     const speed = (window as unknown as Record<string, unknown>)['eternalSpeed'] as number ?? 1;
 
-    // Big Bang phases (inflation + gravity) always run at 1 tick/frame — animation speed, not game speed.
-    // The fractional accumulator only applies once the universe is settled.
+    // Headless tools call update() in a tight loop without start(): treat each
+    // call as one 60Hz frame (old contract). The live RAF loop passes real dt.
+    const dt = this.paceToWallClock ? (dtMs ?? this.pullFrameDeltaMs()) : (1000 / 60);
+
+    // Big Bang phases run at ~60 ticks/sec wall-clock so a 240Hz display does
+    // not finish inflation in one second. Settled 1× is ~1 tick/sec — intentional
+    // long-eras pacing (see CIV_TICK_RATE comments).
+    // Floor with a tiny epsilon: 240 × (1/240) underflows 1.0 in IEEE float.
+    const takeTicks = (): number => {
+      const n = Math.floor(this.tickAccumulator + 1e-9);
+      this.tickAccumulator -= n;
+      return n;
+    };
     let ticksThisFrame: number;
     if (speed <= 0) {
-      // Paused. The Big Bang phases normally run a fixed tick per frame, but an
-      // explicit pause has to hold there too or the control lies to the player.
       ticksThisFrame = 0;
     } else if (this.phase !== 'settled') {
-      ticksThisFrame = 1;
+      this.tickAccumulator += dt / 1000 * 60;
+      ticksThisFrame = takeTicks();
+    } else if (this.paceToWallClock) {
+      this.tickAccumulator += speed * (dt / 1000);
+      ticksThisFrame = takeTicks();
     } else {
       this.tickAccumulator += speed / 60;
-      ticksThisFrame = Math.floor(this.tickAccumulator);
-      this.tickAccumulator -= ticksThisFrame;
+      ticksThisFrame = takeTicks();
+    }
+
+    // Snap orbits to the last committed sim tick before collisions / logic run.
+    // (Previous frame may have left positions at a fractional display offset.)
+    if (this.phase === 'settled' || this.phase === 'gravity') {
+      this.syncOrbitPositions(0);
     }
 
     for (let s = 0; s < ticksThisFrame; s++) {
@@ -975,6 +1379,9 @@ export class BigBangEngine {
         this.updateInflation();
         if (this.tick >= INFLATION_TICKS) {
           this.phase = 'gravity';
+          // Inflation aimed stars at their galaxies; now put them on circular
+          // orbits so they swirl instead of falling into each other.
+          this.assignGalacticOrbits();
         }
       } else {
         this.updateGravity();
@@ -992,8 +1399,10 @@ export class BigBangEngine {
             this.camera.tx = ps.x;
             this.camera.ty = ps.y;
             this.camera.ts = 3.5;
+            this.cameraFollowHome = true;
             // Punch a large hole in the fog at the player's actual settled position
             this.exploredAreas.push({ x: ps.x, y: ps.y, r: 300 });
+            this.playerFogIndex = this.exploredAreas.length - 1;
           }
         }
       }
@@ -1010,10 +1419,53 @@ export class BigBangEngine {
       this.updateReligions();
     }
 
+    // Sub-tick orbit placement — smooth between sim ticks at high game-speed.
+    // Galaxy centres stay fixed (census must not drag the kinematic origin).
+    if (this.phase === 'settled' || this.phase === 'gravity') {
+      this.syncOrbitPositions(this.tickAccumulator);
+      this.smoothGalaxyRadii();
+      this.updatePlayerSightAndCamera();
+    }
+
     // Camera lerp
     this.camera.x += (this.camera.tx - this.camera.x) * 0.06;
     this.camera.y += (this.camera.ty - this.camera.y) * 0.06;
     this.camera.scale += (this.camera.ts - this.camera.scale) * 0.06;
+  }
+
+  /**
+   * Keep the home fog bubble on the moving player star, and soft-follow the
+   * camera while zoomed into galaxy/system (unless the player has panned away).
+   */
+  private updatePlayerSightAndCamera(): void {
+    const ps = this.getPlayerStar();
+    if (!ps || ps.isDead) return;
+
+    const sightR = Math.max(300, ps.explorationRadius);
+    if (this.playerFogIndex >= 0 && this.playerFogIndex < this.exploredAreas.length) {
+      const hole = this.exploredAreas[this.playerFogIndex];
+      hole.x = ps.x;
+      hole.y = ps.y;
+      hole.r = Math.max(hole.r, sightR);
+    } else if (this.phase === 'settled') {
+      this.exploredAreas.push({ x: ps.x, y: ps.y, r: sightR });
+      this.playerFogIndex = this.exploredAreas.length - 1;
+    }
+
+    if (!this.cameraFollowHome || this.isDragging) return;
+    // Universe view is a map overview — don't yank the camera there.
+    if (this.zoomTier === 'universe') return;
+
+    let tx = ps.x, ty = ps.y;
+    if (this.zoomTier === 'galaxy') {
+      const gal = this.galaxies.find(g => g.id === ps.galaxyId);
+      if (gal) { tx = gal.cx; ty = gal.cy; }
+    }
+    // Snappier than the general camera lerp so the home star doesn't drift
+    // into the fog while the galaxy swirls at high speed.
+    const k = 0.18;
+    this.camera.tx += (tx - this.camera.tx) * k;
+    this.camera.ty += (ty - this.camera.ty) * k;
   }
 
   /**
@@ -1046,7 +1498,7 @@ export class BigBangEngine {
   private updateInflation(): void {
     // Zoom camera out as the explosion expands: close-up for first 20 ticks, then pull back
     if (this.tick === 20) {
-      this.camera.ts = 0.22;
+      this.camera.ts = 0.14;
     }
 
     for (const star of this.stars) {
@@ -1061,63 +1513,156 @@ export class BigBangEngine {
     // and would instantly cascade-merge into one body. Let them spread first.
   }
 
+  /**
+   * Put every living star on a near-circular orbit around its galaxy centre.
+   *
+   * Called once when inflation ends. Without this, residual Big-Bang radial
+   * velocities plus pairwise gravity make every system drift into the heaviest
+   * neighbour — the opposite of how a galaxy holds together.
+   */
+  private assignGalacticOrbits(): void {
+    for (const star of this.stars) {
+      // Remnants still ride the disc — only skip unbound corpses with no galaxy.
+      if (star.galaxyId == null) continue;
+      const gal = this.galaxies.find(g => g.id === star.galaxyId);
+      if (!gal) continue;
+      // Inflation is a visual throw from the origin; land on the spaced target
+      // so ballistic spin cannot collapse neighbouring systems.
+      const target = this.spawnTargets.get(star.id);
+      if (target) {
+        star.x = target.x;
+        star.y = target.y;
+      }
+      const r = Math.hypot(star.x - gal.cx, star.y - gal.cy);
+      star.orbitRadius = Math.max(28, Math.min(r, gal.radius * 0.95));
+      star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
+      this.setCircularOrbit(star, gal, this.rng.nextFloat(0.92, 1.08));
+      this.placeStarOnOrbit(star, gal, star.orbitAngle!, star.age);
+    }
+    this.spawnTargets.clear();
+  }
+
+  /** Tangential velocity for a circular orbit at the star's current radius. */
+  private setCircularOrbit(star: StarBody, gal: Galaxy, speedScale = 1): void {
+    const dx = star.x - gal.cx, dy = star.y - gal.cy;
+    const r = Math.hypot(dx, dy) || 1;
+    const soft2 = r * r + GALACTIC_SOFT * GALACTIC_SOFT;
+    const v = r * Math.sqrt(GALACTIC_MU / (soft2 * Math.sqrt(soft2))) * speedScale;
+    const tx = -dy / r, ty = dx / r;
+    star.vx = tx * Math.min(v, MAX_ORBITAL_SPEED);
+    star.vy = ty * Math.min(v, MAX_ORBITAL_SPEED);
+  }
+
+  /** Galactic angular speed for a star at its mean orbit radius. */
+  private galacticOmega(star: StarBody): number {
+    const r = Math.max(8, star.orbitRadius ?? 28);
+    const soft2 = r * r + GALACTIC_SOFT * GALACTIC_SOFT;
+    let omega = Math.sqrt(GALACTIC_MU / (soft2 * Math.sqrt(soft2)));
+    omega = Math.min(omega, MAX_GALACTIC_OMEGA);
+    omega *= 1 + Math.sin(star.id * 12.9898) * 0.018;
+    return omega;
+  }
+
+  /** Place a star on its galactic ellipse around the fixed kinematic centre. */
+  private placeStarOnOrbit(star: StarBody, gal: Galaxy, ang: number, age: number): void {
+    const ecc = 0.08;
+    const phase = age * ORBIT_ECC_RATE + star.id * 1.73;
+    const rNow = (star.orbitRadius ?? 28) * (1 + ecc * Math.sin(phase));
+    const omega = this.galacticOmega(star);
+    star.x = gal.cx + Math.cos(ang) * rNow;
+    star.y = gal.cy + Math.sin(ang) * rNow;
+    star.vx = -Math.sin(ang) * rNow * omega;
+    star.vy =  Math.cos(ang) * rNow * omega;
+  }
+
+  /**
+   * Write world positions from committed orbitAngle (+ optional sub-tick fraction
+   * so high game-speed still paints smoothly between sim ticks).
+   */
+  private syncOrbitPositions(fracTick: number): void {
+    const galById = new Map(this.galaxies.map(g => [g.id, g]));
+    for (const star of this.stars) {
+      if (star.galaxyId == null) continue;
+      const gal = galById.get(star.galaxyId);
+      if (!gal || star.orbitAngle == null || star.orbitRadius == null) continue;
+      const ang = star.orbitAngle + this.galacticOmega(star) * fracTick;
+      this.placeStarOnOrbit(star, gal, ang, star.age);
+      this.constrainToUniverse(star);
+    }
+  }
+
   private updateGravity(): void {
     const active = this.stars.filter(s => !s.isDead);
+    const galById = new Map(this.galaxies.map(g => [g.id, g]));
 
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        const a = active[i], b = active[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const dist2 = dx * dx + dy * dy;
-        const dist = Math.sqrt(dist2);
-
-        if (dist < (a.radius + b.radius) * COLLISION_DIST) {
-          this.mergeStars(a, b);
-          continue;
-        }
-
-        if (dist < 250) {
-          const force = GRAVITY_CONSTANT * a.mass * b.mass / dist2;
-          const fx = force * dx / dist, fy = force * dy / dist;
-          a.vx += fx / a.mass;  a.vy += fy / a.mass;
-          b.vx -= fx / b.mass;  b.vy -= fy / b.mass;
-        }
-      }
+    // Rare close-approach mergers (not the old pairwise gravity cascade).
+    if (this.collisionsEnabled) {
+      this.resolveCloseApproaches(active);
     }
 
+    // Kinematic galactic swirl around a FIXED centre (gal.cx/cy).
     for (const star of active) {
-      // Dampen
-      star.vx *= DAMPING;
-      star.vy *= DAMPING;
-      // Clamp speed
-      const spd = Math.sqrt(star.vx * star.vx + star.vy * star.vy);
-      if (spd > MAX_SPEED) { star.vx *= MAX_SPEED / spd; star.vy *= MAX_SPEED / spd; }
-      star.x += star.vx;
-      star.y += star.vy;
-      this.constrainToUniverse(star);
+      if (star.isDead) continue;
+      const gal = star.galaxyId != null ? galById.get(star.galaxyId) : undefined;
+      if (!gal) {
+        star.x += star.vx;
+        star.y += star.vy;
+        this.constrainToUniverse(star);
+        star.age++;
+        continue;
+      }
+
+      if (star.orbitRadius == null || star.orbitRadius < 8) {
+        star.orbitRadius = Math.max(28, Math.hypot(star.x - gal.cx, star.y - gal.cy));
+      }
+      if (star.orbitAngle == null) {
+        star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
+      }
+
+      star.orbitAngle += this.galacticOmega(star);
       star.age++;
+      this.placeStarOnOrbit(star, gal, star.orbitAngle, star.age);
+      this.constrainToUniverse(star);
     }
 
     this.checkCollisions();
 
-    // Occasional asteroid spawn from entropy stat
     if (this.tick % ASTEROID_SPAWN === 0 && this.rng.chance(this.stats.entropy / 22)) {
       this.spawnAsteroid();
     }
   }
 
-  private checkCollisions(): void {
-    const active = this.stars.filter(s => !s.isDead);
+  /**
+   * Merge stars that nearly occupy the same point; softly attract orbit radii
+   * of near-misses in the same galaxy so a later pass can finish the job.
+   */
+  private resolveCloseApproaches(active: StarBody[]): void {
     for (let i = 0; i < active.length; i++) {
       for (let j = i + 1; j < active.length; j++) {
         const a = active[i], b = active[j];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < (a.radius + b.radius) * 1.1) {
+        if (a.isDead || b.isDead) continue;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const contact = Math.max(MERGE_DIST, (a.radius + b.radius) * 1.15);
+        if (dist < contact) {
           this.mergeStars(a, b);
+          continue;
+        }
+        if (
+          dist < CAPTURE_DIST &&
+          a.galaxyId != null && a.galaxyId === b.galaxyId &&
+          a.orbitRadius != null && b.orbitRadius != null
+        ) {
+          const mid = (a.orbitRadius + b.orbitRadius) * 0.5;
+          a.orbitRadius += (mid - a.orbitRadius) * 0.003;
+          b.orbitRadius += (mid - b.orbitRadius) * 0.003;
         }
       }
     }
+  }
+
+  private checkCollisions(): void {
+    if (!this.collisionsEnabled) return;
+    this.resolveCloseApproaches(this.stars.filter(s => !s.isDead));
   }
 
   private mergeStars(a: StarBody, b: StarBody): void {
@@ -1201,6 +1746,7 @@ export class BigBangEngine {
     }
 
     smaller.isDead = true;
+    this.makeRemnant(smaller, 'merger');
 
     // A merger that pushes the survivor past the stability limit does not settle
     // down — it detonates. Two stars falling together and going up as one is the
@@ -1276,7 +1822,7 @@ export class BigBangEngine {
 
     star.isDead = true;
     star.hasLife = false;
-    this.invalidateCulture(star, 'annihilation');
+    this.makeRemnant(star, 'supernova');
     this.seedNursery(star.x, star.y, this.rng.nextInt(2, 4));
     this.onCosmicEvent?.('supernova', star.civName);
     if (this.isStarKnownToPlayer(star)) {
@@ -1522,7 +2068,18 @@ export class BigBangEngine {
         star.explorationRadius = 30 + star.civLevel * 20;
 
         if (star.isPlayerStar) {
-          this.exploredAreas.push({ x: star.x, y: star.y, r: star.explorationRadius });
+          // Grow the tracking sight bubble rather than leaving static breadcrumbs
+          // at old galactic positions (those would drift into fog as the star orbits).
+          const sightR = Math.max(300, star.explorationRadius);
+          if (this.playerFogIndex >= 0 && this.playerFogIndex < this.exploredAreas.length) {
+            this.exploredAreas[this.playerFogIndex].r = Math.max(
+              this.exploredAreas[this.playerFogIndex].r,
+              sightR,
+            );
+          } else {
+            this.exploredAreas.push({ x: star.x, y: star.y, r: sightR });
+            this.playerFogIndex = this.exploredAreas.length - 1;
+          }
           this.onCivEvent?.(`${civLevelToPhase(star.civLevel).replace('_',' ')}: ${TECH_LEVELS[star.civLevel]}`);
           this.advancePlayerPlanetDiscovery(star);
           if (star.civLevel === 1) this.onPlayerReligionMoment?.();
@@ -2336,8 +2893,12 @@ export class BigBangEngine {
 
   // ── Rendering ─────────────────────────────────────────────────────────────
 
-  render(): void {
-    this.animTick++;
+  render(dtMs?: number): void {
+    // Advance in nominal 60Hz units so orbitalSpeed / VFX stay stable at any Hz.
+    const nominalFrames = this.paceToWallClock
+      ? (dtMs ?? 1000 / 60) / (1000 / 60)
+      : 1;
+    this.animTick += nominalFrames;
     const { width: W, height: H } = this.canvas;
     const ctx = this.ctx;
 
@@ -2366,11 +2927,13 @@ export class BigBangEngine {
 
       this.drawNebulae(ctx);
       this.drawGalaxies(ctx);
+      this.drawGalacticMedium(ctx);
       if (this.phase === 'inflation') this.drawStarTrails(ctx);
       this.drawTradeRoutes(ctx);
       this.drawStars(ctx);
       this.drawReligions(ctx);
       this.drawAsteroids(ctx);
+      this.drawSystemDebris(ctx);
       this.drawFleets(ctx);
       this.drawOrbitalFleets(ctx);
       this.drawWars(ctx);
@@ -2415,10 +2978,18 @@ export class BigBangEngine {
   private tickAccumulator = 0;
   private animTick = 0;
   private settledSinceAnimTick = 0;
+  /** True only while the RAF loop from start() is active. */
+  private paceToWallClock = false;
+  private lastFrameTime = 0;
+  /** 0 = unlimited (display refresh). Otherwise max presented fps. */
+  private targetFps = 0;
+  private lastPresentTime = 0;
 
   private bgStarCache: Array<{ x: number; y: number; r: number }> = [];
   private bgStarCacheW = 0;
   private bgStarCacheH = 0;
+  /** Pixel-art galaxy sprites (nearest-neighbour blit). Keyed by galaxy id. */
+  private galaxySpriteCache = new Map<number, { canvas: HTMLCanvasElement; key: string }>();
 
   // ── Public accessors for PixiBigBangRenderer ────────────────────────────────
   get currentAnimTick(): number { return this.animTick; }
@@ -2460,72 +3031,371 @@ export class BigBangEngine {
    * Only drawn at the tiers where a galaxy is the thing you are looking at:
    * fully at 'universe', fading out through 'galaxy', gone once you are down
    * among individual systems.
+   *
+   * Pixel-art: built on a tiny offscreen buffer (bulge + bar + spiral arms +
+   * faint disc + halo speckles) and blitted with nearest-neighbour. No soft
+   * radial gradients — those read as modern VFX, not a CRT observatory.
    */
   private drawGalaxies(ctx: CanvasRenderingContext2D): void {
     if (this.galaxies.length === 0) return;
 
     const sc = this.camera.scale;
-    // 1 at the universe tier, tapering to 0 by the time systems are legible.
     let strength = Math.max(0, Math.min(1, (1.8 - sc) / 1.5));
 
-    // Draw them during INFLATION too, and hardest of all there. This is the
-    // moment the universe is being made and the galaxies are the thing being
-    // made — gating on 'settled' meant the opening showed a spray of dots with
-    // no structure, which is the whole complaint M22b exists to answer.
     if (this.phase === 'inflation') {
-      // Fade in over the first stretch of the blast, as the clumps separate.
       strength = Math.max(strength, Math.min(1, this.tick / 90));
     }
     if (strength <= 0.01) return;
 
+    const prevSmooth = ctx.imageSmoothingEnabled;
+    ctx.imageSmoothingEnabled = false;
+
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    const pad = 80 / Math.max(0.01, sc);
+    const halfW = (typeof window !== 'undefined' ? window.innerWidth : 1200) * 0.5 / Math.max(0.01, sc) + pad;
+    const halfH = (typeof window !== 'undefined' ? window.innerHeight : 800) * 0.5 / Math.max(0.01, sc) + pad;
     for (const gal of this.galaxies) {
-      const live = gal.starIds.length;
-      if (live === 0) continue;
-
+      if (gal.starIds.length === 0) continue;
+      const size = gal.radius * 2.2;
+      // Wider spacing grew envelopes a lot — skip blit if the disc is off-camera.
+      if (
+        Math.abs(gal.x - this.camera.x) > halfW + size * 0.5 ||
+        Math.abs(gal.y - this.camera.y) > halfH + size * 0.5
+      ) continue;
+      const sprite = this.getGalaxySprite(gal);
+      ctx.globalAlpha = Math.min(1, strength * 1.15);
       ctx.save();
       ctx.translate(gal.x, gal.y);
       ctx.rotate(gal.tilt);
-      // Flattened, because a galaxy seen from anywhere but face-on is an ellipse.
-      ctx.scale(1, 0.62);
-      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, gal.radius);
-      const c = gal.color;
-      grad.addColorStop(0,    this.hexA(c, 0.58 * strength));
-      grad.addColorStop(0.35, this.hexA(c, 0.30 * strength));
-      grad.addColorStop(0.70, this.hexA(c, 0.11 * strength));
-      grad.addColorStop(1,    this.hexA(c, 0));
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(0, 0, gal.radius, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.drawImage(sprite, -size / 2, -size / 2, size, size);
       ctx.restore();
     }
     ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    ctx.imageSmoothingEnabled = prevSmooth;
 
     // Labels, only while the galaxy tier is actually the subject.
     if (strength > 0.45) {
+      ctx.save();
       ctx.textAlign = 'center';
       ctx.font = `${Math.max(7, 11 / sc)}px "Courier New", monospace`;
       for (const gal of this.galaxies) {
         if (gal.starIds.length === 0) continue;
+        if (
+          Math.abs(gal.x - this.camera.x) > halfW + gal.radius ||
+          Math.abs(gal.y - this.camera.y) > halfH + gal.radius
+        ) continue;
         ctx.fillStyle = this.hexA(gal.color, 0.75 * strength);
-        ctx.fillText(gal.name, gal.x, gal.y - gal.radius * 0.66);
+        ctx.fillText(gal.name, gal.x, gal.y - gal.radius * 0.72);
         ctx.fillStyle = this.hexA(gal.color, 0.4 * strength);
         ctx.font = `${Math.max(6, 8 / sc)}px "Courier New", monospace`;
-        const alive = this.stars.filter(st => !st.isDead && st.galaxyId === gal.id).length;
-        ctx.fillText(`${alive} systems`, gal.x, gal.y - gal.radius * 0.66 + 10 / sc);
+        let alive = 0;
+        for (const st of this.stars) {
+          if (!st.isDead && st.galaxyId === gal.id) alive++;
+        }
+        ctx.fillText(`${alive} systems`, gal.x, gal.y - gal.radius * 0.72 + 10 / sc);
         ctx.font = `${Math.max(7, 11 / sc)}px "Courier New", monospace`;
       }
       ctx.textAlign = 'start';
+      ctx.restore();
     }
-    ctx.restore();
+  }
+
+  /**
+   * Build (or reuse) a chunky pixel sprite for a galaxy.
+   * Resolution is fixed so zoom only nearest-neighbour scales it.
+   */
+  private getGalaxySprite(gal: Galaxy): HTMLCanvasElement {
+    const RES = 128;
+    // Radius is draw-scale only — baking in unit space. Keying on radius forced a
+    // full 128² rebake every time smoothGalaxyRadii eased after a census (worse
+    // with the wider M25 spacing), which felt like hitching at 1×.
+    const key = `${gal.morph}|${gal.armCount}|${gal.armPitch.toFixed(2)}|${gal.barLength.toFixed(2)}|${gal.discFlat.toFixed(2)}|${gal.color}`;
+    const hit = this.galaxySpriteCache.get(gal.id);
+    if (hit && hit.key === key) return hit.canvas;
+
+    const canvas = (typeof document !== 'undefined' && document.createElement)
+      ? document.createElement('canvas')
+      : ({ width: RES, height: RES, getContext: () => null } as unknown as HTMLCanvasElement);
+    canvas.width = RES;
+    canvas.height = RES;
+    const gctx = canvas.getContext('2d');
+    if (!gctx) {
+      this.galaxySpriteCache.set(gal.id, { canvas, key });
+      return canvas;
+    }
+    gctx.imageSmoothingEnabled = false;
+    gctx.clearRect(0, 0, RES, RES);
+
+    const [cr, cg, cb] = this.hexRGB(gal.color);
+    // 4-step pixel palette: void dust → disc → arm → bulge core (chunky, high contrast)
+    const shades: Array<[number, number, number, number]> = [
+      [cr * 0.35, cg * 0.32, cb * 0.45, 0.45],
+      [cr * 0.65, cg * 0.58, cb * 0.75, 0.72],
+      [Math.min(255, cr * 1.05 + 50), Math.min(255, cg * 0.95 + 40), Math.min(255, cb * 0.85 + 30), 0.92],
+      [Math.min(255, cr + 110), Math.min(255, cg + 100), Math.min(255, cb + 90), 1.0],
+    ];
+
+    const img = gctx.createImageData(RES, RES);
+    const data = img.data;
+    const rng = new SeedRNG(`galpx_${gal.id}_${gal.morph}`);
+
+    for (let py = 0; py < RES; py++) {
+      for (let px = 0; px < RES; px++) {
+        // Local coords in [-1, 1], with disc flattening on Y.
+        const u = (px + 0.5) / RES * 2 - 1;
+        const v = ((py + 0.5) / RES * 2 - 1) / Math.max(0.25, gal.discFlat);
+        const level = this.sampleGalaxyPixel(gal, u, v, rng);
+        if (level < 0) continue;
+        const [r, g, b, a] = shades[level];
+        const i = (py * RES + px) * 4;
+        data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = Math.floor(a * 255);
+      }
+    }
+    gctx.putImageData(img, 0, 0);
+    this.galaxySpriteCache.set(gal.id, { canvas, key });
+    return canvas;
+  }
+
+  /**
+   * Pixel brightness class for one sample in galaxy-local unit space.
+   * Returns -1 (empty), 0 dust, 1 disc, 2 arm/bar, 3 bulge.
+   */
+  private sampleGalaxyPixel(
+    gal: Galaxy, u: number, v: number, rng: SeedRNG,
+  ): number {
+    const r = Math.hypot(u, v);
+    if (r > 1.15) return -1;
+    const theta = Math.atan2(v, u);
+
+    // Halo — sparse speckles outside the main disc
+    if (r > 0.92) {
+      return rng.next() < 0.04 * (1.15 - r) * 8 ? 0 : -1;
+    }
+
+    // Bulge — dense bright core
+    if (r < 0.14) {
+      if (r < 0.06) return 3;
+      return rng.next() < 0.85 ? 3 : 2;
+    }
+
+    // Bar (barred spirals)
+    if (gal.barLength > 0 && r < gal.barLength * 1.05) {
+      const along = Math.abs(u * Math.cos(0) + v * Math.sin(0)); // bar along local X before tilt
+      // Bar is drawn in sprite space before world tilt — along u axis.
+      const barHalfW = 0.07 + gal.barLength * 0.04;
+      if (Math.abs(v) < barHalfW && along < gal.barLength) {
+        return Math.abs(v) < barHalfW * 0.45 ? 3 : 2;
+      }
+    }
+
+    // Spiral arms — wider, brighter ridges so they survive nearest-neighbour shrink
+    if ((gal.morph === 'spiral' || gal.morph === 'barred') && gal.armCount > 0) {
+      let bestArm = 99;
+      for (let a = 0; a < gal.armCount; a++) {
+        const armAng = a * (Math.PI * 2 / gal.armCount);
+        const spiralTheta = armAng + Math.log(Math.max(0.08, r)) / Math.max(0.12, gal.armPitch);
+        let dAng = theta - spiralTheta;
+        dAng = ((dAng + Math.PI) % (Math.PI * 2)) - Math.PI;
+        bestArm = Math.min(bestArm, Math.abs(dAng));
+      }
+      const armWidth = 0.32 + (1 - r) * 0.12;
+      if (bestArm < armWidth * 0.42) return 2;
+      if (bestArm < armWidth) return rng.next() < 0.7 ? 1 : 0;
+    }
+
+    // Lenticular / elliptical: smooth-ish falloff via dithered bands
+    if (gal.morph === 'elliptical' || gal.morph === 'lenticular') {
+      if (r < 0.35) return rng.next() < 0.7 ? 2 : 1;
+      if (r < 0.65) return rng.next() < 0.5 ? 1 : 0;
+      return rng.next() < 0.25 ? 0 : -1;
+    }
+
+    // Irregular: noisy clumps
+    if (gal.morph === 'irregular') {
+      const n = Math.sin(u * 9 + gal.id) * Math.cos(v * 11 + gal.id * 0.7);
+      if (n > 0.35 && r < 0.85) return 2;
+      if (n > 0.05 && r < 0.9) return rng.next() < 0.4 ? 1 : 0;
+      return rng.next() < 0.06 ? 0 : -1;
+    }
+
+    // Inter-arm disc floor
+    if (r < 0.85) return rng.next() < 0.22 * (1 - r) ? 0 : -1;
+    return -1;
+  }
+
+  /**
+   * Morphology sample that already clears MIN_STAR_SEPARATION, or null if this
+   * galaxy cannot take another island without overlapping a neighbour.
+   */
+  private pickSeparatedPoint(
+    gal: Galaxy,
+    placed: Array<{ x: number; y: number; galaxyId: number }>,
+  ): { x: number; y: number } | null {
+    const mine = placed.filter(q => q.galaxyId === gal.id);
+    if (mine.length === 0) return this.sampleGalaxyPoint(gal);
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const p = this.sampleGalaxyPoint(gal);
+      let minD = Infinity;
+      for (const q of mine) {
+        const d = Math.hypot(q.x - p.x, q.y - p.y);
+        if (d < minD) minD = d;
+      }
+      if (minD >= MIN_STAR_SEPARATION) return p;
+    }
+    return null;
+  }
+
+  /**
+   * Push same-galaxy targets apart in world space so solar-system envelopes
+   * stay islands. Grows the galaxy disc (capped) when the census needs room.
+   */
+  private relaxStarTargets(
+    gal: Galaxy,
+    pts: Array<{ x: number; y: number; galaxyId: number }>,
+    envelopeCap: number,
+  ): void {
+    const mine = pts.filter(p => p.galaxyId === gal.id);
+    if (mine.length < 2) return;
+    const minSep = MIN_STAR_SEPARATION;
+    for (let iter = 0; iter < 80; iter++) {
+      let maxOverlap = 0;
+      for (let i = 0; i < mine.length; i++) {
+        for (let j = i + 1; j < mine.length; j++) {
+          const dx = mine[j].x - mine[i].x;
+          const dy = mine[j].y - mine[i].y;
+          const d = Math.hypot(dx, dy) || 0.01;
+          if (d >= minSep) continue;
+          maxOverlap = Math.max(maxOverlap, minSep - d);
+          const push = (minSep - d) * 0.52 / d;
+          mine[i].x -= dx * push;
+          mine[i].y -= dy * push;
+          mine[j].x += dx * push;
+          mine[j].y += dy * push;
+        }
+      }
+      for (const p of mine) {
+        const dx = p.x - gal.cx, dy = p.y - gal.cy;
+        const r = Math.hypot(dx, dy);
+        const cap = gal.radius * 0.95;
+        if (r > cap && r > 0) {
+          p.x = gal.cx + dx / r * cap;
+          p.y = gal.cy + dy / r * cap;
+        }
+      }
+      if (maxOverlap < 0.5) break;
+      if (iter % 8 === 7 && maxOverlap > 1) {
+        gal.radius = Math.min(envelopeCap, gal.radius * 1.1);
+        gal.tRadius = gal.radius;
+      }
+    }
+
+    let closest = Infinity;
+    for (let i = 0; i < mine.length; i++) {
+      for (let j = i + 1; j < mine.length; j++) {
+        closest = Math.min(closest, Math.hypot(mine[j].x - mine[i].x, mine[j].y - mine[i].y));
+      }
+    }
+    if (closest >= minSep * 0.98) return;
+
+    // Disc was too tight even after growing — sit them on a ring so the floor holds.
+    const n = mine.length;
+    const needR = (minSep / 2) / Math.sin(Math.PI / n);
+    gal.radius = Math.min(envelopeCap, Math.max(gal.radius, needR * 1.15));
+    gal.tRadius = gal.radius;
+    const polar = mine.map(p => ({
+      p,
+      a: Math.atan2(p.y - gal.cy, p.x - gal.cx),
+    }));
+    polar.sort((a, b) => a.a - b.a);
+    const ringR = Math.min(gal.radius * 0.92, Math.max(needR, gal.radius * 0.62));
+    const slot = (Math.PI * 2) / n;
+    const start = polar[0].a;
+    for (let i = 0; i < polar.length; i++) {
+      polar[i].p.x = gal.cx + Math.cos(start + i * slot) * ringR;
+      polar[i].p.y = gal.cy + Math.sin(start + i * slot) * ringR;
+    }
+  }
+
+  /**
+   * Pick a world-space point inside a galaxy following its morphology.
+   * Bulge / bar / arms / disc / halo — not area-uniform.
+   */
+  private sampleGalaxyPoint(gal: Galaxy): { x: number; y: number } {
+    const roll = this.rng.next();
+    let lx = 0, ly = 0;
+    const R = gal.radius;
+
+    const toWorld = (x: number, y: number) => {
+      // Apply disc flattening then tilt into world space.
+      const fy = y * gal.discFlat;
+      const c = Math.cos(gal.tilt), s = Math.sin(gal.tilt);
+      return { x: gal.x + x * c - fy * s, y: gal.y + x * s + fy * c };
+    };
+
+    if (gal.morph === 'elliptical' || gal.morph === 'lenticular') {
+      const t = this.rng.nextFloat(0, Math.PI * 2);
+      // Concentrated toward centre
+      const rr = R * Math.pow(this.rng.next(), 0.55) * (gal.morph === 'lenticular' ? 0.95 : 0.85);
+      return toWorld(Math.cos(t) * rr, Math.sin(t) * rr);
+    }
+
+    if (gal.morph === 'irregular') {
+      const clump = this.rng.nextInt(0, 3);
+      const cx = Math.cos(clump * 1.7 + gal.id) * R * 0.35;
+      const cy = Math.sin(clump * 2.1 + gal.id) * R * 0.35;
+      const t = this.rng.nextFloat(0, Math.PI * 2);
+      const rr = R * this.rng.nextFloat(0.05, 0.4);
+      return toWorld(cx + Math.cos(t) * rr, cy + Math.sin(t) * rr);
+    }
+
+    // Spiral / barred
+    if (roll < 0.14) {
+      // Bulge
+      const t = this.rng.nextFloat(0, Math.PI * 2);
+      const rr = R * 0.14 * Math.sqrt(this.rng.next());
+      lx = Math.cos(t) * rr; ly = Math.sin(t) * rr;
+    } else if (gal.barLength > 0 && roll < 0.28) {
+      // Bar
+      const along = this.rng.nextFloat(-gal.barLength, gal.barLength) * R;
+      const side = this.rng.nextFloat(-0.06, 0.06) * R;
+      lx = along; ly = side;
+    } else if (roll < 0.82 && gal.armCount > 0) {
+      // Spiral arm
+      const arm = this.rng.nextInt(0, gal.armCount - 1);
+      const armAng = arm * (Math.PI * 2 / gal.armCount);
+      const rr = R * this.rng.nextFloat(0.16, 0.95);
+      const spiralTheta = armAng + Math.log(Math.max(0.08, rr / R)) / Math.max(0.12, gal.armPitch);
+      const jitter = this.rng.nextFloat(-0.12, 0.12);
+      lx = Math.cos(spiralTheta + jitter) * rr;
+      ly = Math.sin(spiralTheta + jitter) * rr;
+    } else if (roll < 0.93) {
+      // Inter-arm disc
+      const t = this.rng.nextFloat(0, Math.PI * 2);
+      const rr = R * Math.sqrt(this.rng.nextFloat(0.1, 0.85));
+      lx = Math.cos(t) * rr; ly = Math.sin(t) * rr;
+    } else {
+      // Halo
+      const t = this.rng.nextFloat(0, Math.PI * 2);
+      const rr = R * this.rng.nextFloat(0.9, 1.2);
+      lx = Math.cos(t) * rr; ly = Math.sin(t) * rr;
+    }
+
+    return toWorld(lx, ly);
+  }
+
+  /** '#rrggbb' → [r,g,b]. */
+  private hexRGB(hex: string): [number, number, number] {
+    const n = parseInt(hex.replace('#', ''), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   }
 
   /** '#rrggbb' + alpha → rgba() string. */
   private hexA(hex: string, a: number): string {
-    const n = parseInt(hex.replace('#', ''), 16);
-    return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+    const [r, g, b] = this.hexRGB(hex);
+    return `rgba(${r},${g},${b},${a})`;
   }
 
   private drawNebulae(ctx: CanvasRenderingContext2D): void {
@@ -2570,100 +3440,111 @@ export class BigBangEngine {
   }
 
   private drawStars(ctx: CanvasRenderingContext2D): void {
-    const playerStar = this.stars.find(s => s.isPlayerStar) ?? null;
+    const prevSmooth = ctx.imageSmoothingEnabled;
+
     for (const star of this.stars) {
-      if (star.isDead) continue;
-
-      const color = tempToColor(star.temperature);
-      const glow = star.radius * (star.isPlayerStar ? 5 : 3);
-
-      // Outer glow
-      ctx.save();
-      const grad = ctx.createRadialGradient(star.x, star.y, 0, star.x, star.y, glow);
-      grad.addColorStop(0, color);
-      grad.addColorStop(0.3, color + '88');
-      grad.addColorStop(1, color + '00');
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(star.x, star.y, glow, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Star core
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = color;
-      ctx.shadowBlur = star.radius * 4;
-      ctx.beginPath();
-      ctx.arc(star.x, star.y, star.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
-
-      // Player star: golden halo
-      if (star.isPlayerStar) {
-        ctx.strokeStyle = '#c8a96e';
-        ctx.lineWidth = 1;
-        ctx.globalAlpha = 0.5 + 0.3 * Math.sin(this.animTick * 0.05);
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, star.radius * 3.5, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+      if (star.isDead) {
+        const kind = star.remnantKind ?? 'white_dwarf';
+        const size = Math.max(star.radius * 2.4, 1.5);
+        if (kind === 'black_hole') {
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, size * 0.9, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255,120,60,0.5)';
+          ctx.lineWidth = Math.max(0.35, 0.7 / this.camera.scale);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(star.x, star.y, size * 0.42, 0, Math.PI * 2);
+          ctx.fillStyle = '#040406';
+          ctx.fill();
+        } else {
+          const band = kind === 'neutron' ? 'blue' : 'white';
+          const glow = bakeStarGlow(band, 160);
+          const body = bakeStarBody(band, 48);
+          const gSize = size * (kind === 'neutron' ? 2.2 : 1.8);
+          const bSize = size * (kind === 'neutron' ? 0.7 : 0.85);
+          ctx.imageSmoothingEnabled = true;
+          ctx.globalAlpha = kind === 'neutron' ? 0.45 : 0.28;
+          ctx.drawImage(glow, star.x - gSize / 2, star.y - gSize / 2, gSize, gSize);
+          ctx.imageSmoothingEnabled = false;
+          ctx.globalAlpha = kind === 'neutron' ? 0.95 : 0.75;
+          ctx.drawImage(body, star.x - bSize / 2, star.y - bSize / 2, bSize, bSize);
+          ctx.globalAlpha = 1;
+        }
+        continue;
       }
 
-      // Civilization indicator
+      const band = starTempBand(star.temperature);
+      const profile = starVisualProfile(band);
+      const size = Math.max(star.radius * 3.4, 2.2);
+      const pulse = 1 + profile.pulseAmp * Math.sin(this.animTick * profile.pulseSpeed + star.id);
+
+      const glow = bakeStarGlow(band, 160);
+      ctx.imageSmoothingEnabled = true;
+      const hazeSize = size * profile.hazeMul * pulse;
+      ctx.globalAlpha = profile.hazeAlpha * (0.85 + 0.15 * pulse);
+      ctx.drawImage(glow, star.x - hazeSize / 2, star.y - hazeSize / 2, hazeSize, hazeSize);
+      const glowSize = size * profile.glowMul * pulse;
+      ctx.globalAlpha = Math.min(1, profile.glowAlpha * pulse);
+      ctx.drawImage(glow, star.x - glowSize / 2, star.y - glowSize / 2, glowSize, glowSize);
+      ctx.globalAlpha = 1;
+
+      ctx.imageSmoothingEnabled = false;
+      const corona = bakeStarCorona(band, 56);
+      const coronaSize = size * (1.15 + 0.06 * Math.sin(this.animTick * profile.pulseSpeed * 1.7 + star.id));
+      const spinMul = 0.45 + ((star.id * 47) % 97) / 97 * 1.1;
+      const spinDir = (star.id * 13) & 1 ? 1 : -1;
+      const rot = this.animTick * profile.coronaSpeed * spinMul * spinDir + star.id * 1.918;
+      ctx.save();
+      ctx.translate(star.x, star.y);
+      ctx.rotate(rot);
+      ctx.globalAlpha = 0.85 + 0.15 * Math.sin(
+        this.animTick * profile.pulseSpeed * (0.7 + (star.id % 5) * 0.08) + star.id * 0.3,
+      );
+      ctx.drawImage(corona, -coronaSize / 2, -coronaSize / 2, coronaSize, coronaSize);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+
+      const spr = bakeStarBody(band, 48);
+      const bodyPulse = 1 + profile.pulseAmp * 0.35 * Math.sin(this.animTick * profile.pulseSpeed * 0.8);
+      const body = size * bodyPulse;
+      ctx.drawImage(spr, star.x - body / 2, star.y - body / 2, body, body);
+
+      if (star.isPlayerStar) {
+        const alpha = 0.55 + 0.25 * Math.sin(this.animTick * 0.05);
+        const pad = size * 0.42;
+        const t = Math.max(0.5, 0.9 / this.camera.scale);
+        ctx.fillStyle = `rgba(255,204,68,${alpha})`;
+        ctx.fillRect(star.x - pad, star.y - pad, pad * 2, t);
+        ctx.fillRect(star.x - pad, star.y + pad - t, pad * 2, t);
+        ctx.fillRect(star.x - pad, star.y - pad, t, pad * 2);
+        ctx.fillRect(star.x + pad - t, star.y - pad, t, pad * 2);
+      }
+
       if (star.hasLife && star.civLevel > 0 && this.phase === 'settled') {
         const civColor = CIV_COLORS[Math.min(star.civLevel, CIV_COLORS.length - 1)];
-        ctx.strokeStyle = civColor;
-        ctx.lineWidth = 0.8;
-        ctx.globalAlpha = 0.6;
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, star.radius + 3 + star.civLevel * 0.5, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.fillStyle = civColor;
+        const ringR = size * 0.38;
+        const step = Math.max(0.12, 2.2 / Math.max(ringR, 1));
+        const dot = Math.max(0.45, 0.7 / this.camera.scale);
+        ctx.globalAlpha = 0.7;
+        for (let a = 0; a < Math.PI * 2; a += step) {
+          ctx.fillRect(
+            star.x + Math.cos(a) * ringR - dot / 2,
+            star.y + Math.sin(a) * ringR - dot / 2,
+            dot, dot,
+          );
+        }
         ctx.globalAlpha = 1;
       }
 
-      // Diplomatic status ring (only for known non-player stars in settled phase)
-      if (!star.isPlayerStar && this.phase === 'settled' && this.isStarKnownToPlayer(star)) {
-        if (playerStar) {
-          const atWarWithPlayer = this.activeWars.some(
-            w => !w.resolved && (
-              (w.attackerStarId === star.id && w.defenderStarId === playerStar.id) ||
-              (w.defenderStarId === star.id && w.attackerStarId === playerStar.id)
-            )
-          );
-          const ringR = star.radius * 4.5;
-          if (atWarWithPlayer) {
-            // Hostile: pulsing red ring
-            const pulse = 0.6 + 0.4 * Math.sin(this.tick * 0.08 + star.id * 1.3);
-            ctx.strokeStyle = '#ff3322';
-            ctx.lineWidth = 1.2;
-            ctx.globalAlpha = pulse;
-            ctx.beginPath();
-            ctx.arc(star.x, star.y, ringR, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.globalAlpha = 1;
-          } else {
-            // Neutral known: faint grey ring
-            ctx.strokeStyle = '#667788';
-            ctx.lineWidth = 0.6;
-            ctx.globalAlpha = 0.3;
-            ctx.beginPath();
-            ctx.arc(star.x, star.y, ringR, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.globalAlpha = 1;
-          }
-        }
-      }
-
-      // Faction flag (scale-gated)
       if (this.phase === 'settled' && star.hasLife && star.civLevel >= 1) {
         const flag = gameState.factionFlags[star.id];
         if (flag && this.camera.scale >= 0.6) {
-          const flagY = star.y - star.radius * 5 - 4;
-          drawFactionFlag(ctx, flag, star.x, flagY, 6);
+          drawFactionFlag(ctx, flag, star.x, star.y - star.radius * 5 - 4, 6);
         }
       }
-
-      ctx.restore();
     }
+    ctx.imageSmoothingEnabled = prevSmooth;
   }
 
   private drawAsteroids(ctx: CanvasRenderingContext2D): void {
@@ -2674,6 +3555,89 @@ export class BigBangEngine {
       ctx.beginPath();
       ctx.arc(ast.x, ast.y, ast.radius, 0, Math.PI * 2);
       ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** Canvas fallback: dust lanes between systems (Pixi owns the live path). */
+  private drawGalacticMedium(ctx: CanvasRenderingContext2D): void {
+    const sc = this.camera.scale;
+    if (sc < 0.18 || sc > 4.2) return;
+    let visibility = 1;
+    if (sc < 0.45) visibility = (sc - 0.18) / 0.27;
+    else if (sc > 2.2) visibility = Math.max(0, 1 - (sc - 2.2) / 2.0);
+    if (visibility <= 0.02) return;
+
+    const spin = this.animTick * 0.00035;
+    ctx.save();
+    for (const gal of this.galaxies) {
+      if (gal.radius < 8) continue;
+      const [cr, cg, cb] = this.hexRGB(gal.color);
+      let s = (gal.id * 2654435761) >>> 0;
+      const rand = () => { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s >>> 0) / 0xffffffff; };
+      const flat = Math.max(0.35, gal.discFlat);
+      const cosT = Math.cos(gal.tilt), sinT = Math.sin(gal.tilt);
+      for (let i = 0; i < 90; i++) {
+        const rFrac = 0.18 + Math.pow(rand(), 0.65) * 0.78;
+        const a0 = rand() * Math.PI * 2;
+        const r = rFrac * gal.radius;
+        const ang = a0 + spin * (0.55 + (1 - rFrac) * 0.8);
+        const lx = Math.cos(ang) * r;
+        const ly = Math.sin(ang) * r * flat;
+        const wx = gal.cx + lx * cosT - ly * sinT;
+        const wy = gal.cy + lx * sinT + ly * cosT;
+        const isRock = i % 5 === 0;
+        ctx.globalAlpha = visibility * (isRock ? 0.4 : 0.18);
+        ctx.fillStyle = isRock ? '#9a9080' : `rgb(${Math.min(255, cr + 40)},${Math.min(255, cg + 30)},${Math.min(255, cb + 55)})`;
+        const sz = isRock ? 0.7 : 0.45;
+        ctx.fillRect(wx - sz / 2, wy - sz / 2, sz, sz);
+      }
+    }
+    ctx.restore();
+  }
+
+  /** Canvas fallback: per-system belts + outer dust. */
+  private drawSystemDebris(ctx: CanvasRenderingContext2D): void {
+    if (this.camera.scale < 0.85) return;
+    const sc = this.camera.scale;
+    ctx.save();
+    for (const star of this.stars) {
+      if (star.isDead || star.planets.length === 0) continue;
+      if (!star.isPlayerStar && sc < 1.15) continue;
+      let outer = 0;
+      for (const p of star.planets) if (p.orbitalRadius > outer) outer = p.orbitalRadius;
+      if (outer < 4) outer = star.radius * 8;
+
+      const dustR = outer * 1.18;
+      const dustDots = star.isPlayerStar ? 48 : 28;
+      const dustSpin = this.animTick * 0.0011;
+      ctx.fillStyle = '#b8a878';
+      for (let i = 0; i < dustDots; i++) {
+        const a = (i / dustDots) * Math.PI * 2 + dustSpin + star.id * 0.17;
+        const jitter = 0.92 + ((i * 37 + star.id * 13) % 11) * 0.012;
+        const x = star.x + Math.cos(a) * dustR * jitter;
+        const y = star.y + Math.sin(a) * dustR * jitter;
+        ctx.globalAlpha = (star.isPlayerStar ? 0.22 : 0.12) * (0.55 + (i % 3) * 0.15);
+        const sz = Math.max(0.2 / sc, 0.28);
+        ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      }
+
+      if (!star.asteroidBelt || sc < 1.05) continue;
+      const dens = Math.max(0.15, star.asteroidBeltDensity ?? 0.5);
+      const beltR = Math.max(outer * 0.55, star.radius * 5);
+      const beltW = Math.max(0.8, outer * (0.04 + dens * 0.1));
+      const rocks = Math.max(4, Math.floor((star.isPlayerStar ? 28 : 16) * dens));
+      const beltSpin = this.animTick * 0.0024;
+      for (let i = 0; i < rocks; i++) {
+        const a = (i / rocks) * Math.PI * 2 + beltSpin + star.id * 0.31;
+        const rr = beltR + Math.sin(i * 2.7 + star.id) * beltW;
+        const x = star.x + Math.cos(a) * rr;
+        const y = star.y + Math.sin(a) * rr;
+        const sz = Math.max(0.35 / sc, 0.4 + (i % 4) * 0.16 * dens);
+        ctx.globalAlpha = 0.55 + dens * 0.3;
+        ctx.fillStyle = i % 3 === 0 ? '#a89878' : '#887868';
+        ctx.fillRect(x - sz / 2, y - sz / 2, sz, sz);
+      }
     }
     ctx.restore();
   }
@@ -2904,111 +3868,126 @@ export class BigBangEngine {
     const playerStar = this.getPlayerStar();
 
     for (const star of this.stars) {
-      if (star.isDead || star.planets.length === 0) continue;
+      if (star.planets.length === 0) continue;
       const isPlayer = star === playerStar;
-      // Only draw non-player planets when zoomed in enough to matter
-      if (!isPlayer && this.camera.scale < 1.2) continue;
+      if (star.isDead) {
+        if (this.camera.scale < 1.4) continue;
+      } else if (!isPlayer && this.camera.scale < 1.2) {
+        continue;
+      }
 
       for (const [i, p] of star.planets.entries()) {
-        const angle = p.orbitalAngle + this.animTick * p.orbitalSpeed;
-        const px = star.x + Math.cos(angle) * p.orbitalRadius;
-        const py = star.y + Math.sin(angle) * p.orbitalRadius;
+        const off = planetOffsetFromStar(p, this.animTick);
+        const px = star.x + off.x;
+        const py = star.y + off.y;
 
-        // ── Orbit ring ─────────────────────────────────────────────────────
+        // ── Orbit ring (dotted pixels; elliptical when e > 0) ──────────────
         ctx.save();
-        ctx.strokeStyle = isPlayer
-          ? 'rgba(200, 169, 110, 0.45)'
-          : 'rgba(180, 200, 255, 0.22)';
-        ctx.lineWidth = 0.8 / this.camera.scale;
-        ctx.setLineDash([4 / this.camera.scale, 8 / this.camera.scale]);
-        ctx.beginPath();
-        ctx.arc(star.x, star.y, p.orbitalRadius, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        ctx.fillStyle = star.isDead
+          ? 'rgba(100, 100, 90, 0.2)'
+          : isPlayer
+            ? 'rgba(200, 169, 110, 0.45)'
+            : 'rgba(180, 200, 255, 0.22)';
+        const aMean = Math.max(p.orbitalRadius, 1);
+        const step = Math.max(0.1, 2.0 / aMean);
+        const dot = Math.max(0.45, 0.7 / this.camera.scale);
+        for (let a = 0; a < Math.PI * 2; a += step) {
+          const probe = planetOffsetFromStar(
+            { ...p, orbitalAngle: a, orbitalSpeed: 0 },
+            0,
+          );
+          ctx.fillRect(
+            star.x + probe.x - dot / 2,
+            star.y + probe.y - dot / 2,
+            dot, dot,
+          );
+        }
         ctx.restore();
 
         // ── Minimum visible radius (at least 2px on screen) ────────────────
         const displayR = Math.max(p.radius, 2 / this.camera.scale);
+        const body = displayR * 2;
 
-        // ── Atmosphere glow ────────────────────────────────────────────────
-        if (this.camera.scale > 1.0) {
-          const atmosRGB: Record<string, string> = {
-            rocky: '180, 130, 80',
-            ocean: '40, 120, 220',
-            gas:   '200, 160, 90',
-            ice:   '180, 220, 255',
-            lava:  '220, 80, 20',
-          };
-          const rgb = p.hasLife ? '60, 200, 100' : (atmosRGB[p.type] ?? '180, 130, 80');
-          const atmosR = displayR * 3;
-          const grad = ctx.createRadialGradient(px, py, displayR * 0.5, px, py, atmosR);
-          grad.addColorStop(0, `rgba(${rgb}, 0.4)`);
-          grad.addColorStop(1, `rgba(${rgb}, 0)`);
-          ctx.save();
-          ctx.globalCompositeOperation = 'screen';
-          ctx.fillStyle = grad;
-          ctx.beginPath();
-          ctx.arc(px, py, atmosR, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
-        }
-
-        // ── Planet core ────────────────────────────────────────────────────
+        // ── Planet core — terrain globe when close (matches surface bake) ──
         const screenR = displayR * this.camera.scale;
+        const useGlobe = this.camera.scale >= 1.6 || screenR >= 10;
         ctx.save();
-        ctx.beginPath();
-        ctx.arc(px, py, displayR, 0, Math.PI * 2);
+        ctx.imageSmoothingEnabled = false;
 
-        if (screenR >= 6) {
-          // Draw terrain texture as globe when planet is large enough on screen
-          const texKey = `${star.id}_${i}`;
-          let tex = this.planetTextureCache.get(texKey);
-          if (!tex) {
-            const dna = (star.isPlayerStar && i === 0)
-              ? (gameState.playerPlanetDNA ?? DEFAULT_PLANET_DNA)
-              : DEFAULT_PLANET_DNA;
-            const bioPhase = (star.isPlayerStar && i === 0) ? (star.biologyPhase ?? null) : null;
-            tex = bakePlanetTexture(star.id, i, p.type, dna, 128, bioPhase);
-            this.planetTextureCache.set(texKey, tex);
+        const homeIdx = star.isPlayerStar ? (star.bestPlanetIndex ?? 0) : -1;
+        const isHome = star.isPlayerStar && i === homeIdx;
+        const dna = isHome
+          ? (gameState.playerPlanetDNA ?? p.dna ?? DEFAULT_PLANET_DNA)
+          : (p.dna ?? DEFAULT_PLANET_DNA);
+        const bioPhase = (isHome && p.hasLife)
+          ? (star.biologyPhase ?? null) : null;
+        const grid = isHome ? runtimeState.playerPlanetGrid : null;
+        const kind = p.type as CosmicPlanetKind;
+        const withRings = kind === 'gas';
+        const seed = (star.id * 17 + i * 31) | 0;
+
+        if (useGlobe) {
+          const texKey = `globe_${star.id}_${i}_${p.hasLife ? 1 : 0}_${dna.climate}_${dna.oceans}_${dna.chaos}_${bioPhase ?? ''}`;
+          let globe = this.planetTextureCache.get(texKey);
+          if (!globe) {
+            const equirect = bakePlanetTexture(star.id, i, p.type, dna, 96, bioPhase, grid);
+            globe = wrapEquirectToGlobe(equirect, 48, {
+              rings: withRings,
+              ringTint: parseHexColor(p.color, [200, 190, 160]),
+              seed: seed ^ (p.hasLife ? 997 : 0),
+            });
+            this.planetTextureCache.set(texKey, globe);
           }
-          ctx.clip();
-          // Slow rotation: scroll texture horizontally, wrap via two full-image draws
-          const destW = displayR * 2, destH = displayR * 2;
-          const scrollFrac = (this.tick * 0.18) % tex.width / tex.width;
-          const scrollPx = scrollFrac * destW;
-          // First copy (shifted left) + second copy (wraps around right edge)
-          ctx.drawImage(tex, 0, 0, tex.width, tex.height, px - displayR - scrollPx, py - displayR, destW, destH);
-          ctx.drawImage(tex, 0, 0, tex.width, tex.height, px - displayR - scrollPx + destW, py - displayR, destW, destH);
-          // Hemisphere shading overlay — darker on right/bottom, brighter upper-left
-          const shade = ctx.createRadialGradient(
-            px - displayR * 0.3, py - displayR * 0.3, 0,
-            px + displayR * 0.2, py + displayR * 0.2, displayR * 1.6,
-          );
-          shade.addColorStop(0, 'rgba(255,255,255,0.08)');
-          shade.addColorStop(0.5, 'rgba(0,0,0,0)');
-          shade.addColorStop(1, 'rgba(0,0,0,0.65)');
-          ctx.fillStyle = shade;
-          ctx.fill();
+          if (withRings) {
+            ctx.drawImage(globe, px - body * 0.925, py - body * 0.575, body * 1.85, body * 1.15);
+          } else {
+            ctx.drawImage(globe, px - body / 2, py - body / 2, body, body);
+          }
         } else {
-          // Tiny planets — flat fill
-          ctx.fillStyle = p.hasLife ? '#4aaa55' : p.color;
-          if (isPlayer && p.hasLife) {
-            ctx.shadowColor = '#44ff88';
-            ctx.shadowBlur = 8 / this.camera.scale;
+          const spr = bakePlanetSprite(kind, p.hasLife, {
+            size: 24, seed, colorHex: p.color, rings: withRings,
+          });
+          if (withRings) {
+            ctx.drawImage(spr, px - body * 0.925, py - body * 0.575, body * 1.85, body * 1.15);
+          } else {
+            ctx.drawImage(spr, px - body / 2, py - body / 2, body, body);
           }
-          ctx.fill();
-          ctx.shadowBlur = 0;
         }
         ctx.restore();
 
-        // ── Biosphere pulse ring ───────────────────────────────────────────
+        // Moons — large moons stay readable earlier (future colony targets).
+        if (p.moons.length > 0) {
+          for (const moon of p.moons) {
+            const large = moon.radius >= p.radius * 0.4;
+            if (!large && this.camera.scale < 0.85) continue;
+            if (large && this.camera.scale < 0.55) continue;
+            const ma = moon.orbitalAngle + this.animTick * moon.orbitalSpeed;
+            const orbit = Math.max(moon.orbitalRadius, displayR * (large ? 2.1 : 1.7));
+            const mx = px + Math.cos(ma) * orbit;
+            const my = py + Math.sin(ma) * orbit;
+            const mSpr = bakeMoonSprite(moon.kind as CosmicMoonKind, 8);
+            const mSize = Math.max(
+              moon.radius * (large ? 3.6 : 2.8),
+              (large ? 1.6 : 0.9) / this.camera.scale,
+            );
+            ctx.drawImage(mSpr, mx - mSize / 2, my - mSize / 2, mSize, mSize);
+          }
+        }
+
+        // ── Biosphere pulse — dotted pixel ring ────────────────────────────
         if (p.hasLife) {
           const pulse = 0.5 + 0.4 * Math.sin(this.animTick * 0.05);
-          ctx.beginPath();
-          ctx.arc(px, py, displayR * 2.6, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(60, 220, 100, ${pulse * 0.4})`;
-          ctx.lineWidth = 0.8 / this.camera.scale;
-          ctx.stroke();
+          ctx.fillStyle = `rgba(60, 220, 100, ${pulse * 0.55})`;
+          const ringR = displayR * 1.55;
+          const step = Math.max(0.15, 2.4 / Math.max(ringR, 1));
+          const dot = Math.max(0.4, 0.65 / this.camera.scale);
+          for (let a = 0; a < Math.PI * 2; a += step) {
+            ctx.fillRect(
+              px + Math.cos(a) * ringR - dot / 2,
+              py + Math.sin(a) * ringR - dot / 2,
+              dot, dot,
+            );
+          }
         }
 
         // ── HOME label (player's living planet, high zoom only) ───────────
@@ -3062,9 +4041,9 @@ export class BigBangEngine {
     const home = playerStar.planets.find(p => p.hasLife);
     if (!home) return;
 
-    const angle = home.orbitalAngle + this.animTick * home.orbitalSpeed;
-    const wx = playerStar.x + Math.cos(angle) * home.orbitalRadius;
-    const wy = playerStar.y + Math.sin(angle) * home.orbitalRadius;
+    const angleOff = planetOffsetFromStar(home, this.animTick);
+    const wx = playerStar.x + angleOff.x;
+    const wy = playerStar.y + angleOff.y;
     const { x: sx, y: sy } = this.worldToScreen(wx, wy, W, H);
 
     ctx.save();
@@ -3150,28 +4129,51 @@ export class BigBangEngine {
 
   private drawFog(ctx: CanvasRenderingContext2D, W: number, H: number): void {
     const fogCtx = this.fogCtx;
-    this.fogCanvas.width = W;
-    this.fogCanvas.height = H;
-
-    // Fill fog
-    fogCtx.fillStyle = `rgba(0, 0, 8, ${FOG_ALPHA})`;
-    fogCtx.fillRect(0, 0, W, H);
-
-    // Punch holes for explored areas
-    fogCtx.globalCompositeOperation = 'destination-out';
-    for (const area of this.exploredAreas) {
-      const { x, y } = this.worldToScreen(area.x, area.y, W, H);
-      const r = area.r * this.camera.scale;
-      const grad = fogCtx.createRadialGradient(x, y, 0, x, y, r);
-      grad.addColorStop(0, 'rgba(0,0,0,1)');
-      grad.addColorStop(0.65, 'rgba(0,0,0,0.85)');
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      fogCtx.fillStyle = grad;
-      fogCtx.beginPath();
-      fogCtx.arc(x, y, r, 0, Math.PI * 2);
-      fogCtx.fill();
+    // Assigning canvas.width every frame reallocates the GPU buffer and was a
+    // major hitch source. Only resize when the viewport actually changes.
+    if (this.fogCanvas.width !== W || this.fogCanvas.height !== H) {
+      this.fogCanvas.width = W;
+      this.fogCanvas.height = H;
+      this.fogCacheValid = false;
     }
-    fogCtx.globalCompositeOperation = 'source-over';
+
+    // Quantize camera so tiny lerps don't force a rebuild every frame.
+    const key = [
+      W, H,
+      Math.round(this.camera.x * 2),
+      Math.round(this.camera.y * 2),
+      Math.round(this.camera.scale * 40),
+      this.exploredAreas.length,
+      this.playerFogIndex >= 0 && this.exploredAreas[this.playerFogIndex]
+        ? `${Math.round(this.exploredAreas[this.playerFogIndex].x)}:${Math.round(this.exploredAreas[this.playerFogIndex].y)}:${Math.round(this.exploredAreas[this.playerFogIndex].r)}`
+        : '',
+    ].join('|');
+
+    if (!this.fogCacheValid || key !== this.fogCacheKey) {
+      fogCtx.setTransform(1, 0, 0, 1, 0, 0);
+      fogCtx.globalCompositeOperation = 'source-over';
+      fogCtx.clearRect(0, 0, W, H);
+      fogCtx.fillStyle = `rgba(0, 0, 8, ${FOG_ALPHA})`;
+      fogCtx.fillRect(0, 0, W, H);
+
+      fogCtx.globalCompositeOperation = 'destination-out';
+      for (const area of this.exploredAreas) {
+        const { x, y } = this.worldToScreen(area.x, area.y, W, H);
+        const r = area.r * this.camera.scale;
+        if (r < 1) continue;
+        const grad = fogCtx.createRadialGradient(x, y, 0, x, y, r);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(0.65, 'rgba(0,0,0,0.85)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        fogCtx.fillStyle = grad;
+        fogCtx.beginPath();
+        fogCtx.arc(x, y, r, 0, Math.PI * 2);
+        fogCtx.fill();
+      }
+      fogCtx.globalCompositeOperation = 'source-over';
+      this.fogCacheKey = key;
+      this.fogCacheValid = true;
+    }
 
     ctx.drawImage(this.fogCanvas, 0, 0);
   }
@@ -3197,6 +4199,10 @@ export class BigBangEngine {
       const dy = (e.clientY - this.dragStart.y) / this.camera.scale;
       this.camera.tx = this.dragCamStart.x - dx;
       this.camera.ty = this.dragCamStart.y - dy;
+      // Any real pan means the player wants free look — stop auto-follow.
+      if (Math.abs(dx) + Math.abs(dy) > 2 / Math.max(this.camera.scale, 0.01)) {
+        this.cameraFollowHome = false;
+      }
     });
 
     window.addEventListener('mouseup', (e) => {
@@ -3230,9 +4236,13 @@ export class BigBangEngine {
             this.camera.tx = nearest.x;
             this.camera.ty = nearest.y;
             this.camera.ts = nearest.isPlayerStar ? 4.0 : 2.5;
+            // Clicking home re-locks follow; other stars are a one-shot look.
+            this.cameraFollowHome = !!nearest.isPlayerStar;
           }
           this.onStarSelected?.(nearest);
         }
+      } else {
+        this.cameraFollowHome = false;
       }
     });
 
@@ -3252,6 +4262,9 @@ export class BigBangEngine {
       const dy = (t.clientY - this.dragStart.y) / this.camera.scale;
       this.camera.tx = this.dragCamStart.x - dx;
       this.camera.ty = this.dragCamStart.y - dy;
+      if (Math.abs(dx) + Math.abs(dy) > 2 / Math.max(this.camera.scale, 0.01)) {
+        this.cameraFollowHome = false;
+      }
     }, { passive: false });
 
     this.canvas.addEventListener('touchend', () => { this.isDragging = false; });
@@ -3277,6 +4290,7 @@ export class BigBangEngine {
       this.camera.tx = ps.x;
       this.camera.ty = ps.y;
       this.camera.ts = deep ? 6.0 : 4.0;
+      this.cameraFollowHome = true;
     }
   }
 
@@ -3290,8 +4304,8 @@ export class BigBangEngine {
   }
 
   revealArea(x: number, y: number, radius: number): void {
-    this.exploredAreas.push({ x, y, radius } as unknown as { x: number; y: number; r: number });
-    this.exploredAreas[this.exploredAreas.length - 1] = { x, y, r: radius };
+    this.exploredAreas.push({ x, y, r: radius });
+    this.fogCacheValid = false;
   }
 
   spendDPToExplore(directionAngle: number): void {
@@ -3882,33 +4896,141 @@ export class BigBangEngine {
   }
 
   private generatePlanets(stats: UniverseStats, starMass = 4): Planet[] {
-    const count = this.rng.nextInt(1, 4);
-    const types: Planet['type'][] = ['rocky', 'ocean', 'gas', 'ice', 'lava'];
-    const colors = { rocky: '#aa8866', ocean: '#2266aa', gas: '#cc9944', ice: '#aaddee', lava: '#cc4422' };
-    const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI'];
+    // 2–7 worlds; spacing stretches so some systems are compact and others vast.
+    const count = this.rng.nextInt(2, 7);
+    const COLOR_POOL: Record<Planet['type'], string[]> = {
+      rocky:   ['#aa6446', '#997755', '#82644a', '#be8260', '#6e5040', '#c4a070', '#5a4838', '#8b6914'],
+      ocean:   ['#2266aa', '#2878be', '#195591', '#2d8ca5', '#3760a0', '#1a7a6e', '#3d5a80', '#0e4d6e'],
+      gas:     ['#cc9944', '#b48c5a', '#dcaa64', '#a07846', '#be9b78', '#c9a0c0', '#88aacc', '#d4b896', '#9a6b4a'],
+      ice:     ['#aaddee', '#c8e6ff', '#96bede', '#b4dce6', '#e8f4ff', '#90c0d8'],
+      lava:    ['#ff4623', '#dc371e', '#ff6428', '#c82d19', '#ff8833', '#a02010'],
+      toxic:   ['#5aad28', '#7acc32', '#3d8c20', '#a0d040', '#6bb830', '#90c048'],
+      crystal: ['#a050c8', '#c070e0', '#8040b0', '#d090ff', '#7030a0', '#b060d8'],
+      desert:  ['#d4a85a', '#c09040', '#e0b870', '#b88838', '#f0c880', '#a07830'],
+      storm:   ['#4a4860', '#5a5470', '#3a3850', '#6a6080', '#484860', '#706890'],
+      carbon:  ['#2a2a30', '#383840', '#1e1e24', '#44444c', '#323238', '#505058'],
+    };
+    const chaosLevels: PlanetDNA['chaos'][] = ['serene', 'turbulent', 'storm'];
+    const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
     const planets: Planet[] = [];
-    // Innermost orbit must clear the star's visual radius with a safe buffer
     const starRadius = 2.5 + starMass * 0.8;
-    const innerEdge = starRadius + 5; // minimum 5 world-unit clearance
+    // Inner edge clears the corona; outer edge can be quite far (cold fringe).
+    const minOrbit = starRadius + 4 + this.rng.nextFloat(0, 4);
+    const maxOrbit = starRadius + this.rng.nextFloat(55, 120);
+    // Uneven gaps so planets aren't locked to a tight ladder near the sun.
+    const slots: number[] = [];
+    {
+      let cursor = minOrbit;
+      for (let i = 0; i < count; i++) {
+        const remain = count - i;
+        const room = Math.max(6, maxOrbit - cursor);
+        const step = this.rng.nextFloat(room * 0.12, room * (0.35 + 0.4 / remain));
+        cursor += step;
+        slots.push(Math.min(maxOrbit, cursor));
+      }
+    }
+
     for (let i = 0; i < count; i++) {
-      const type = this.rng.pick(types);
+      const a = slots[i];
+      // Normalize distance 0 (scorching) → 1 (frozen fringe)
+      const heat = Math.max(0, Math.min(1, 1 - (a - minOrbit) / Math.max(8, maxOrbit - minOrbit)));
+      const type = this.pickPlanetTypeForDistance(heat);
+      let climate: PlanetDNA['climate'] = 'temperate';
+      let ocean: PlanetDNA['oceans'] = 'mixed';
+      if (type === 'lava') {
+        climate = 'desert';
+        ocean = 'barren';
+      } else if (type === 'ice') {
+        climate = 'frozen';
+        ocean = this.rng.chance(0.35) ? 'mixed' : 'barren';
+      } else if (type === 'ocean' || type === 'toxic') {
+        climate = heat > 0.55 ? 'temperate' : 'frozen';
+        ocean = this.rng.chance(0.55) ? 'ocean_world' : 'mixed';
+      } else if (type === 'rocky' || type === 'crystal' || type === 'carbon') {
+        // Far rocky worlds lean volcanic-vent / frozen; near ones scorched.
+        climate = heat > 0.7 ? 'desert' : heat < 0.35 ? 'frozen' : this.rng.pick(['desert', 'temperate', 'frozen']);
+        ocean = heat < 0.4 ? (this.rng.chance(0.4) ? 'mixed' : 'barren') : this.rng.pick(['barren', 'mixed']);
+      } else if (type === 'desert') {
+        climate = 'desert';
+        ocean = this.rng.chance(0.25) ? 'mixed' : 'barren';
+      } else if (type === 'storm') {
+        climate = heat > 0.55 ? 'temperate' : 'frozen';
+        ocean = this.rng.pick(['mixed', 'ocean_world', 'barren']);
+      } else if (type === 'gas') {
+        climate = heat > 0.65 ? 'desert' : heat < 0.3 ? 'frozen' : 'temperate';
+        ocean = 'barren';
+      }
+      // Far rocky/volcanic: turbulent DNA reads as vented crust in the bake.
+      let chaos = this.rng.pick(chaosLevels);
+      if (type === 'rocky' && heat < 0.4 && this.rng.chance(0.55)) chaos = 'turbulent';
+      if (type === 'lava') chaos = this.rng.chance(0.7) ? 'storm' : 'turbulent';
+      if (type === 'storm') chaos = 'storm';
+
+      const dna: PlanetDNA = { climate, oceans: ocean, chaos };
+      const radius = type === 'gas'
+        ? this.rng.nextFloat(1.5, 3.2)
+        : type === 'ice'
+          ? this.rng.nextFloat(0.55, 1.45)
+          : this.rng.nextFloat(0.45, 1.6);
+
+      // ~30% of worlds get a noticeable ellipse; most stay near-circular.
+      const eccentricity = this.rng.chance(0.32)
+        ? this.rng.nextFloat(0.12, 0.48)
+        : this.rng.nextFloat(0, 0.06);
+
       planets.push({
         orbitalAngle: this.rng.nextFloat(0, Math.PI * 2),
-        orbitalRadius: innerEdge + i * 7 + this.rng.nextFloat(0, 5),
-        orbitalSpeed: 0.008 / (i + 1),
-        radius: type === 'gas' ? this.rng.nextFloat(1.2, 2) : this.rng.nextFloat(0.5, 1.2),
+        orbitalRadius: a,
+        orbitalSpeed: (PLANET_ORBIT_MU / Math.sqrt(Math.max(0.5, a / 10))) * this.rng.nextFloat(0.85, 1.15),
+        eccentricity,
+        periapsisAngle: this.rng.nextFloat(0, Math.PI * 2),
+        radius,
         type,
         hasLife: false,
         biosphere: 0,
-        color: colors[type],
+        color: this.rng.pick(COLOR_POOL[type]),
         discovery: 'none',
         name: romanNumerals[i] ?? String(i + 1),
         moons: [],
+        dna,
       });
       const p = planets[planets.length - 1];
       p.moons = this.generateMoons(p, romanNumerals[i] ?? String(i + 1));
     }
+    void stats;
     return planets;
+  }
+
+  /** heat 1 = closest to star, 0 = outer system. */
+  private pickPlanetTypeForDistance(heat: number): Planet['type'] {
+    const r = this.rng.next();
+    if (heat > 0.72) {
+      // Scorching: magma, hot gas, barren rock, desert, carbon
+      if (r < 0.30) return 'lava';
+      if (r < 0.48) return 'gas';
+      if (r < 0.62) return 'desert';
+      if (r < 0.74) return 'carbon';
+      return 'rocky';
+    }
+    if (heat > 0.42) {
+      // Temperate band — classic + wild types
+      if (r < 0.18) return 'ocean';
+      if (r < 0.34) return 'rocky';
+      if (r < 0.48) return 'gas';
+      if (r < 0.58) return 'toxic';
+      if (r < 0.68) return 'crystal';
+      if (r < 0.78) return 'desert';
+      if (r < 0.88) return 'storm';
+      return this.rng.chance(0.5) ? 'rocky' : 'ice';
+    }
+    // Cold fringe: ice, rocky, gas, storm, carbon, crystal
+    if (r < 0.30) return 'ice';
+    if (r < 0.48) return 'rocky';
+    if (r < 0.62) return 'gas';
+    if (r < 0.74) return 'storm';
+    if (r < 0.86) return 'carbon';
+    if (r < 0.94) return 'crystal';
+    return 'ice';
   }
 
   /**
@@ -3931,11 +5053,16 @@ export class BigBangEngine {
 
     // Which compositions are plausible around this kind of planet.
     const POOLS: Record<Planet['type'], MoonKind[]> = {
-      gas:   ['ice', 'ice', 'rock', 'ocean', 'carbon'],
-      ice:   ['ice', 'ice', 'rock'],
-      ocean: ['rock', 'ice', 'carbon'],
-      rocky: ['rock', 'rock', 'iron', 'carbon'],
-      lava:  ['volcanic', 'iron', 'rock'],
+      gas:     ['ice', 'ice', 'rock', 'ocean', 'carbon'],
+      ice:     ['ice', 'ice', 'rock'],
+      ocean:   ['rock', 'ice', 'carbon'],
+      rocky:   ['rock', 'rock', 'iron', 'carbon'],
+      lava:    ['volcanic', 'iron', 'rock'],
+      toxic:   ['rock', 'carbon', 'ice'],
+      crystal: ['ice', 'rock', 'carbon'],
+      desert:  ['rock', 'iron', 'carbon'],
+      storm:   ['ice', 'rock', 'ocean'],
+      carbon:  ['carbon', 'rock', 'iron'],
     };
     const TINT: Record<MoonKind, string> = {
       rock:     '#b9b2a6',
@@ -3960,16 +5087,20 @@ export class BigBangEngine {
     for (let i = 0; i < count; i++) {
       const kind = pool[rng.nextInt(0, pool.length - 1)];
       const [hlo, hhi] = HAB[kind];
+      // Occasional large moon — readable in system view / future colony target.
+      const large = rng.chance(planet.type === 'gas' ? 0.35 : 0.18);
+      const radius = large
+        ? planet.radius * rng.nextFloat(0.42, 0.62)
+        : planet.radius * rng.nextFloat(0.16, 0.36);
       moons.push({
         name: `${label}-${'abcdefgh'[i]}`,
-        // Always meaningfully smaller than the parent, and varied between moons.
-        radius: planet.radius * rng.nextFloat(0.16, 0.38),
-        orbitalRadius: planet.radius * (2.1 + i * 1.35) + rng.nextFloat(0, 0.8),
+        radius: Math.min(radius, planet.radius * 0.7),
+        orbitalRadius: planet.radius * (2.2 + i * 1.5) + rng.nextFloat(0, 1.2) + (large ? 1.5 : 0),
         orbitalAngle: rng.nextFloat(0, Math.PI * 2),
-        orbitalSpeed: rng.nextFloat(0.05, 0.14) / (i + 1),
+        orbitalSpeed: rng.nextFloat(0.0033, 0.010) / (i + 1),
         color: TINT[kind],
         kind,
-        habitability: rng.nextFloat(hlo, hhi),
+        habitability: rng.nextFloat(hlo, hhi) + (large ? 0.08 : 0),
         colonised: false,
         colonisedTick: null,
       });
@@ -4004,38 +5135,55 @@ export class BigBangEngine {
   }
 
   /** Galaxy names read as catalogue designations rather than civ names. */
-  private generateGalaxyName(): string {
-    const shape = this.rng.pick(['Spiral', 'Barred', 'Lenticular', 'Irregular', 'Elliptical']);
+  private generateGalaxyName(morph: GalaxyMorph): string {
+    const shapeLabel: Record<GalaxyMorph, string> = {
+      spiral: 'Spiral',
+      barred: 'Barred',
+      lenticular: 'Lenticular',
+      elliptical: 'Elliptical',
+      irregular: 'Irregular',
+    };
     const greek = this.rng.pick(['Alpha', 'Beta', 'Gamma', 'Delta', 'Sigma', 'Omega', 'Theta']);
-    return `${greek} ${shape} ${this.rng.nextInt(100, 999)}`;
+    return `${greek} ${shapeLabel[morph]} ${this.rng.nextInt(100, 999)}`;
   }
 
   /** This universe's galaxies, with their centres kept current. */
   get currentGalaxies(): Galaxy[] { return this.galaxies; }
 
   /**
-   * Recompute each galaxy's centre and extent from the stars still in it.
-   *
-   * Stars drift, merge and die, so a galaxy defined once at the Big Bang
-   * gradually stops describing where its stars actually are.
+   * Refresh envelope radius from living stars. The kinematic centre (cx/cy)
+   * stays put — chasing the star-mean dragged every system whenever the census
+   * ran (~every 3s at 200×).
    */
   private updateGalaxies(): void {
     if (this.galaxies.length === 0) return;
     for (const gal of this.galaxies) {
-      let n = 0, sx = 0, sy = 0;
+      let far = 0;
+      let n = 0;
       for (const st of this.stars) {
-        if (st.isDead || st.galaxyId !== gal.id) continue;
-        n++; sx += st.x; sy += st.y;
+        if (st.galaxyId !== gal.id) continue;
+        n++;
+        far = Math.max(far, Math.hypot(st.x - gal.cx, st.y - gal.cy));
       }
       if (n === 0) continue;
-      gal.x = sx / n; gal.y = sy / n;
-      let far = 0;
-      for (const st of this.stars) {
-        if (st.isDead || st.galaxyId !== gal.id) continue;
-        far = Math.max(far, Math.hypot(st.x - gal.x, st.y - gal.y));
+      // Eccentric galactic orbits make `far` breathe every census. Ignore small
+      // swings so the drawn envelope (and any dependent work) stays put.
+      const next = Math.max(30, far * 1.12);
+      if (Math.abs(next - gal.tRadius) >= Math.max(18, gal.tRadius * 0.04)) {
+        gal.tRadius = next;
       }
-      // A little slack so the envelope contains its stars rather than clipping.
-      gal.radius = Math.max(30, far * 1.12);
+      gal.x = gal.cx;
+      gal.y = gal.cy;
+    }
+  }
+
+  /** Ease drawn radius toward the census target (centre never moves). */
+  private smoothGalaxyRadii(): void {
+    const k = 0.06;
+    for (const gal of this.galaxies) {
+      gal.radius += (gal.tRadius - gal.radius) * k;
+      gal.x = gal.cx;
+      gal.y = gal.cy;
     }
   }
 
@@ -4057,13 +5205,15 @@ export class BigBangEngine {
     if (tier === 'universe') {
       this.camera.tx = WORLD_SIZE / 2;
       this.camera.ty = WORLD_SIZE / 2;
+      this.cameraFollowHome = false;
     } else {
+      this.cameraFollowHome = true;
       const ps = this.getPlayerStar();
       if (ps) {
         if (tier === 'galaxy') {
           const gal = this.galaxies.find(gx => gx.id === ps.galaxyId);
-          this.camera.tx = gal ? gal.x : ps.x;
-          this.camera.ty = gal ? gal.y : ps.y;
+          this.camera.tx = gal ? gal.cx : ps.x;
+          this.camera.ty = gal ? gal.cy : ps.y;
         } else {
           this.camera.tx = ps.x;
           this.camera.ty = ps.y;
@@ -4229,6 +5379,16 @@ export class BigBangEngine {
     this.tick = snap.tick;
     this.phase = snap.phase;
     this.stars = snap.stars;
+    // Migrate older saves missing eccentricity / belt density.
+    for (const s of this.stars) {
+      if (s.asteroidBeltDensity == null) {
+        s.asteroidBeltDensity = s.asteroidBelt ? 0.6 : 0;
+      }
+      for (const p of s.planets ?? []) {
+        if (p.eccentricity == null) p.eccentricity = 0;
+        if (p.periapsisAngle == null) p.periapsisAngle = 0;
+      }
+    }
     this.nebulae = snap.nebulae;
     this.asteroids = snap.asteroids;
     this.fleets = snap.fleets;
@@ -4236,6 +5396,29 @@ export class BigBangEngine {
     this.cosmicEvents = snap.cosmicEvents;
     this.activeWars = snap.activeWars;
     this.exploredAreas = snap.exploredAreas;
+    this.playerFogIndex = -1;
+    this.cameraFollowHome = true;
+    {
+      const ps = this.stars.find(s => s.isPlayerStar && !s.isDead);
+      if (ps && this.exploredAreas.length > 0) {
+        // Prefer the hole nearest the player star so the tracking bubble
+        // resumes after load instead of leaving home in fog mid-orbit.
+        let best = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < this.exploredAreas.length; i++) {
+          const a = this.exploredAreas[i];
+          const d = (a.x - ps.x) ** 2 + (a.y - ps.y) ** 2;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        this.playerFogIndex = best;
+        this.exploredAreas[best].x = ps.x;
+        this.exploredAreas[best].y = ps.y;
+        this.exploredAreas[best].r = Math.max(
+          this.exploredAreas[best].r,
+          Math.max(300, ps.explorationRadius),
+        );
+      }
+    }
     this.settledSinceTick = snap.settledSinceTick;
     this.cosmicEventIdCounter = snap.cosmicEventIdCounter;
     this.warIdCounter = snap.warIdCounter;

@@ -42,7 +42,9 @@ import {
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
-export type PlanetType = 'ocean' | 'rocky' | 'lava' | 'ice' | 'gas';
+export type PlanetType =
+  | 'ocean' | 'rocky' | 'lava' | 'ice' | 'gas'
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
 
 interface RGB { r: number; g: number; b: number }
 
@@ -140,6 +142,71 @@ const PALETTES: Record<PlanetType, PlanetPalette> = {
     ore:      [rgb(210, 180, 130), rgb(160, 130, 200), rgb(120, 96, 170)],
     hasDome:  false,
     keyLight: rgb(255, 220, 170),
+  },
+  toxic: {
+    halo:     rgb(160, 200, 50),
+    skyLow:   rgb(140, 180, 70),
+    skyHigh:  rgb(60, 90, 40),
+    cutWater: rgb(40, 110, 35),
+    strata: [
+      rgb(90, 85, 45), rgb(120, 100, 50), rgb(80, 70, 40),
+      rgb(50, 60, 40),  rgb(45, 40, 28),   rgb(25, 22, 16),
+    ],
+    ore:      [rgb(180, 230, 60), rgb(120, 200, 50), rgb(220, 255, 100)],
+    hasDome:  true,
+    keyLight: rgb(200, 255, 120),
+  },
+  crystal: {
+    halo:     rgb(150, 90, 220),
+    skyLow:   rgb(180, 140, 220),
+    skyHigh:  rgb(80, 40, 130),
+    cutWater: rgb(70, 40, 130),
+    strata: [
+      rgb(100, 55, 120), rgb(140, 70, 160), rgb(90, 45, 110),
+      rgb(60, 40, 80),   rgb(50, 30, 70),   rgb(28, 16, 40),
+    ],
+    ore:      [rgb(220, 160, 255), rgb(180, 100, 240), rgb(255, 200, 255)],
+    hasDome:  true,
+    keyLight: rgb(230, 180, 255),
+  },
+  desert: {
+    halo:     rgb(210, 170, 90),
+    skyLow:   rgb(230, 200, 140),
+    skyHigh:  rgb(140, 110, 70),
+    cutWater: rgb(70, 100, 120),
+    strata: [
+      rgb(200, 160, 100), rgb(160, 120, 75), rgb(120, 90, 55),
+      rgb(180, 140, 90),  rgb(80, 55, 35),   rgb(45, 30, 20),
+    ],
+    ore:      [rgb(230, 180, 80), rgb(200, 150, 70), rgb(255, 210, 120)],
+    hasDome:  true,
+    keyLight: rgb(255, 220, 150),
+  },
+  storm: {
+    halo:     rgb(100, 90, 130),
+    skyLow:   rgb(80, 75, 100),
+    skyHigh:  rgb(35, 30, 50),
+    cutWater: rgb(30, 38, 60),
+    strata: [
+      rgb(60, 50, 55), rgb(45, 42, 55), rgb(35, 30, 40),
+      rgb(40, 38, 48), rgb(25, 22, 30), rgb(14, 12, 18),
+    ],
+    ore:      [rgb(140, 120, 180), rgb(100, 90, 140), rgb(180, 160, 200)],
+    hasDome:  true,
+    keyLight: rgb(180, 170, 210),
+  },
+  carbon: {
+    halo:     rgb(70, 120, 190),
+    skyLow:   rgb(50, 60, 80),
+    skyHigh:  rgb(20, 25, 40),
+    cutWater: rgb(20, 28, 40),
+    strata: [
+      rgb(45, 42, 40), rgb(35, 34, 36), rgb(25, 24, 26),
+      rgb(30, 30, 32), rgb(16, 15, 16), rgb(8, 8, 9),
+    ],
+    ore:      [rgb(80, 110, 160), rgb(60, 90, 140), rgb(120, 150, 190)],
+    hasDome:  true,
+    keyLight: rgb(140, 170, 210),
   },
 };
 
@@ -387,12 +454,22 @@ export class IsoDioramaRenderer {
   private VW = 480;
   private VH = 320;
 
+  private viewZoom = 1;
+  private viewPanX = 0;
+  private viewPanY = 0;
+  private isPanning = false;
+  private panStart = { x: 0, y: 0, panX: 0, panY: 0 };
+  private unbindView: Array<() => void> = [];
+  private static readonly MIN_ZOOM = 1;
+  private static readonly MAX_ZOOM = 4;
+
   // Data
   private grid:        PlanetGrid | null = null;
   private biosphere:   PlanetBiosphere | null = null;
   private species:     SpeciesGenome[] = [];
   private planet:      Planet | null = null;
   private planetType:  PlanetType = 'ocean';
+  private gasHalo:     RGB = PALETTES.gas.halo;
   private star:        StarBody | null = null;
   private planetIndex  = 0;
 
@@ -453,14 +530,17 @@ export class IsoDioramaRenderer {
   /**
    * Does this world bake through {@link HabitableCutawayEngine}?
    *
-   * Ocean and rocky worlds are the ones the mockup describes — a sliced planet
-   * with a biome tabletop and a layered crust. Lava, ice and gas keep the legacy
-   * floating-disc-under-glass bake until Phase 2 gives each of them its own
-   * treatment; switching them over now would leave three worlds looking like a
-   * half-finished ocean.
+   * Every planet type uses the pancake cutaway + soft ozone half-dome. Gas
+   * giants keep latitude bands and rings inside the cutaway engine rather than
+   * the legacy sphere path.
    */
+  private get usesCutaway(): boolean {
+    return true;
+  }
+
+  /** @deprecated Prefer {@link usesCutaway}; kept as the historical name. */
   private get habitable(): boolean {
-    return this.planetType === 'ocean' || this.planetType === 'rocky';
+    return this.usesCutaway;
   }
 
   private get cx(): number {
@@ -484,7 +564,12 @@ export class IsoDioramaRenderer {
   /** Top-face ellipse x-radius; also the body radius / legacy dome radius. */
   private get rx(): number {
     if (this.habitable) return this.cutaway.drawGeom.rx;
-    return Math.round(Math.min(this.VW * 0.30, this.VH * 0.42));
+    return Math.round(Math.min(this.VW * 0.38, this.VH * 0.48));
+  }
+
+  /** Gas-giant sphere radius. Shared by the body bake and its halo. */
+  private get gasR(): number {
+    return Math.round(Math.min(this.VW * 0.44, this.VH * 0.52));
   }
 
   /** Top-face ellipse y-radius — flattened for the camera pitch. */
@@ -500,6 +585,17 @@ export class IsoDioramaRenderer {
       return geom.cyBody + geom.bob;
     }
     return this.cy;
+  }
+
+  /** Seconds for one local day. Bigger worlds spin slower. */
+  private get dayPeriod(): number {
+    const r = this.planet?.radius ?? 5;
+    return Math.max(16, 18 + r * 5.5);
+  }
+
+  /** Local solar azimuth in radians. 0 = sun on the +x limb. */
+  private get dayAngle(): number {
+    return this.elapsed * (Math.PI * 2 / this.dayPeriod);
   }
 
   /** Height of the water cut band directly under the rim. */
@@ -535,7 +631,10 @@ export class IsoDioramaRenderer {
     s.height = '100%';
     s.display = 'block';
     s.imageRendering = 'pixelated';
+    s.transformOrigin = '50% 50%';
+    mount.style.overflow = 'hidden';
     mount.appendChild(this.display);
+    this.bindViewInput(mount);
 
     this.buf = document.createElement('canvas');
     const bctx = this.buf.getContext('2d', { alpha: false });
@@ -581,6 +680,89 @@ export class IsoDioramaRenderer {
     this.ctx.imageSmoothingEnabled = false;
 
     this.bakeAll();
+    this.clampViewPan(this.mount.getBoundingClientRect());
+    this.applyViewTransform();
+  }
+
+  private bindViewInput(mount: HTMLElement): void {
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = mount.getBoundingClientRect();
+      const mx = e.clientX - rect.left - rect.width / 2;
+      const my = e.clientY - rect.top - rect.height / 2;
+      const prev = this.viewZoom;
+      const factor = e.deltaY > 0 ? 0.86 : 1.16;
+      const next = Math.max(
+        IsoDioramaRenderer.MIN_ZOOM,
+        Math.min(IsoDioramaRenderer.MAX_ZOOM, prev * factor),
+      );
+      if (next === prev) return;
+      const wx = (mx - this.viewPanX) / prev;
+      const wy = (my - this.viewPanY) / prev;
+      this.viewZoom = next;
+      this.viewPanX = mx - wx * next;
+      this.viewPanY = my - wy * next;
+      this.clampViewPan(rect);
+      this.applyViewTransform();
+    };
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      this.isPanning = true;
+      this.panStart = { x: e.clientX, y: e.clientY, panX: this.viewPanX, panY: this.viewPanY };
+      mount.setPointerCapture(e.pointerId);
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!this.isPanning) return;
+      const dx = e.clientX - this.panStart.x;
+      const dy = e.clientY - this.panStart.y;
+      if (dx * dx + dy * dy < 36) return;
+      this.viewPanX = this.panStart.panX + dx;
+      this.viewPanY = this.panStart.panY + dy;
+      this.clampViewPan(mount.getBoundingClientRect());
+      this.applyViewTransform();
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!this.isPanning) return;
+      const dx = e.clientX - this.panStart.x;
+      const dy = e.clientY - this.panStart.y;
+      this.isPanning = false;
+      // A real drag must not also count as a tile click.
+      if (dx * dx + dy * dy >= 36) {
+        const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); };
+        mount.addEventListener('click', swallow, { capture: true, once: true });
+      }
+    };
+    mount.addEventListener('wheel', onWheel, { passive: false });
+    mount.addEventListener('pointerdown', onDown);
+    mount.addEventListener('pointermove', onMove);
+    mount.addEventListener('pointerup', onUp);
+    mount.addEventListener('pointercancel', onUp);
+    this.unbindView = [
+      () => mount.removeEventListener('wheel', onWheel),
+      () => mount.removeEventListener('pointerdown', onDown),
+      () => mount.removeEventListener('pointermove', onMove),
+      () => mount.removeEventListener('pointerup', onUp),
+      () => mount.removeEventListener('pointercancel', onUp),
+    ];
+  }
+
+  private clampViewPan(rect: DOMRect): void {
+    if (this.viewZoom <= IsoDioramaRenderer.MIN_ZOOM + 0.001) {
+      this.viewZoom = IsoDioramaRenderer.MIN_ZOOM;
+      this.viewPanX = 0;
+      this.viewPanY = 0;
+      return;
+    }
+    const maxX = (this.viewZoom - 1) * rect.width * 0.5;
+    const maxY = (this.viewZoom - 1) * rect.height * 0.5;
+    this.viewPanX = Math.max(-maxX, Math.min(maxX, this.viewPanX));
+    this.viewPanY = Math.max(-maxY, Math.min(maxY, this.viewPanY));
+  }
+
+  private applyViewTransform(): void {
+    this.display.style.transform =
+      `translate(${this.viewPanX}px, ${this.viewPanY}px) scale(${this.viewZoom})`;
   }
 
   refreshData(
@@ -669,6 +851,8 @@ export class IsoDioramaRenderer {
     this.pause();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    for (const off of this.unbindView) off();
+    this.unbindView = [];
     this.display.remove();
   }
 
@@ -1558,21 +1742,29 @@ export class IsoDioramaRenderer {
   private bakeGasGiant(g: CanvasRenderingContext2D): void {
     const { VW, VH, cx } = this;
     const cyG = Math.round(VH * 0.50);
-    const R = Math.round(Math.min(VW * 0.32, VH * 0.42));
+    const R = this.gasR;
     const seed = this.planetSeed;
     const s = new Stream(seed ^ 0x6a09e667);
 
-    // Per-world band palette so no two gas giants look alike.
+    // Per-world band palette so no two gas giants look alike. Values stay
+    // high so belts still read after limb darkening — a dim palette plus a
+    // 0.72 terminator wash used to paint the whole sphere nearly black.
     const hueBase = s.range(0, 360);
-    const bandCount = 9 + s.int(0, 5);
+    const bandCount = 8 + s.int(0, 4);
     const bands: RGB[] = [];
     for (let i = 0; i < bandCount; i++) {
-      const warm = s.next() > 0.42;
-      const hue = (hueBase + (warm ? s.range(-18, 18) : s.range(140, 210))) % 360;
-      const sat = warm ? s.range(0.28, 0.55) : s.range(0.18, 0.40);
-      const val = s.range(0.34, 0.86);
+      const warm = s.next() > 0.38;
+      const hue = (hueBase + (warm ? s.range(-22, 22) : s.range(150, 220))) % 360;
+      const sat = warm ? s.range(0.48, 0.78) : s.range(0.32, 0.58);
+      const val = warm ? s.range(0.72, 0.96) : s.range(0.58, 0.82);
       bands.push(hsvToRGB(hue, sat, val));
     }
+    let sumR = 0, sumG = 0, sumB = 0;
+    for (const c of bands) { sumR += c.r; sumG += c.g; sumB += c.b; }
+    const n = Math.max(1, bands.length);
+    this.gasHalo = {
+      r: Math.round(sumR / n), g: Math.round(sumG / n), b: Math.round(sumB / n),
+    };
 
     // ── Ring: the half behind the planet, drawn before the body ──────────────
     const hasRing = ((seed >>> 5) & 3) !== 0;  // ~75% of gas giants
@@ -1621,33 +1813,34 @@ export class IsoDioramaRenderer {
         const lat = Math.asin(Math.max(-1, Math.min(1, dy)));
         const latN = lat / (Math.PI / 2);                    // −1 … 1
 
-        // Zonal turbulence: bands shear along their own latitude.
-        const turb = fbm1(latN * 7.5 + dx * 1.6, seed + 3, 4) * 0.55
-                   + fbm1(latN * 22 + dx * 4.0, seed + 91, 3) * 0.22;
-        // Lerp between adjacent bands rather than snapping to one — hard band
-        // indices draw visible contour staircases across the sphere.
-        const bandF = (latN * 0.5 + 0.5) * bandCount + (turb - 0.38) * 1.5;
+        // Zonal turbulence: enough shear to look like weather, not enough
+        // to smear the belts into a muddy gradient.
+        const turb = fbm1(latN * 7.5 + dx * 1.6, seed + 3, 4) * 0.28
+                   + fbm1(latN * 22 + dx * 4.0, seed + 91, 3) * 0.10;
+        const bandF = (latN * 0.5 + 0.5) * bandCount + (turb - 0.38) * 0.55;
         const i0 = Math.max(0, Math.min(bandCount - 1, Math.floor(bandF)));
         const i1 = Math.max(0, Math.min(bandCount - 1, i0 + 1));
-        const ft0 = clamp01(bandF - Math.floor(bandF));
-        const ft = ft0 * ft0 * (3 - 2 * ft0);
+        const ft0 = bandF - Math.floor(bandF);
+        // Hard belt edges — blend only a sliver so neighbouring colours stay distinct.
+        const ft = ft0 < 0.16 ? 0 : ft0 > 0.84 ? 1 : 0.5;
         const c0 = bands[i0], c1 = bands[i1];
-        // Fine curl texture inside each band.
-        const curl = 0.94 + fbm1(latN * 60 + dx * 9, seed + 707, 2) * 0.13;
+        const curl = 0.96 + fbm1(latN * 60 + dx * 9, seed + 707, 2) * 0.10;
         let cr = mix(c0.r, c1.r, ft) * curl;
         let cg = mix(c0.g, c1.g, ft) * curl;
         let cb = mix(c0.b, c1.b, ft) * curl;
+        if (ft0 < 0.08) {
+          cr *= 0.72; cg *= 0.72; cb *= 0.72;
+        }
 
-        // Lighting: key from upper-left, limb darkening toward the edge.
-        const lambert = clamp01(-dx * 0.62 - dy * 0.42 + dz * 0.66);
-        const limb = Math.pow(dz, 0.34);
-        const f = (0.22 + lambert * 0.95) * limb;
+        // Lighting stays above a floor so the night side still shows belts.
+        const lambert = clamp01(-dx * 0.50 - dy * 0.28 + dz * 0.70);
+        const limb = Math.pow(Math.max(0.15, dz), 0.18);
+        const f = (0.58 + lambert * 0.50) * limb;
 
-        // Polar haze
-        const polar = Math.pow(Math.abs(latN), 5) * 0.5;
-        cr = mix(cr * f, 200, polar);
-        cg = mix(cg * f, 210, polar);
-        cb = mix(cb * f, 225, polar);
+        const polar = Math.pow(Math.abs(latN), 6) * 0.22;
+        cr = mix(cr * f, 220, polar);
+        cg = mix(cg * f, 228, polar);
+        cb = mix(cb * f, 240, polar);
 
         const idx = ((py - y0) * w + (px - x0)) * 4;
         d[idx]     = Math.max(0, Math.min(255, cr));
@@ -1664,37 +1857,42 @@ export class IsoDioramaRenderer {
     g.arc(cx, cyG, R, 0, Math.PI * 2);
     g.clip();
 
-    const stormLat = s.range(-0.5, 0.5);
-    const sx = cx + s.range(-R * 0.45, R * 0.45);
+    const stormLat = s.range(-0.35, 0.35);
+    const sx = cx + s.range(-R * 0.28, R * 0.42);
     const sy = cyG + stormLat * R;
-    const sr = R * s.range(0.13, 0.22);
-    const stormC = bands[s.int(0, bands.length - 1)];
-    for (let i = 5; i >= 1; i--) {
-      g.fillStyle = css(shade(stormC, 0.7 + i * 0.12), 0.55);
-      ellipse(g, sx, sy, sr * (i / 5), sr * (i / 5) * 0.45);
+    const sr = R * s.range(0.18, 0.28);
+    const stormC = s.next() > 0.45
+      ? hsvToRGB((hueBase + s.range(-8, 12) + 360) % 360, 0.72, 0.95)
+      : shade(bands[s.int(0, bands.length - 1)], 1.35);
+    for (let i = 6; i >= 1; i--) {
+      g.fillStyle = css(shade(stormC, 0.55 + i * 0.12), 0.72);
+      ellipse(g, sx, sy, sr * (i / 6), sr * (i / 6) * 0.42);
     }
-    g.strokeStyle = css(shade(stormC, 1.5), 0.5);
+    g.fillStyle = css(shade(stormC, 0.35), 0.55);
+    ellipse(g, sx - sr * 0.12, sy, sr * 0.28, sr * 0.16);
+    g.strokeStyle = css(shade(stormC, 1.55), 0.85);
     g.lineWidth = 1;
     g.beginPath();
-    g.ellipse(sx, sy, sr, sr * 0.45, 0, 0, Math.PI * 2);
+    g.ellipse(sx, sy, sr, sr * 0.42, 0, 0, Math.PI * 2);
     g.stroke();
 
-    // Terminator shadow on the unlit limb.
+    // Soft terminator — a hint of night, not a black wash over the body.
     const term = g.createRadialGradient(
-      cx - R * 0.45, cyG - R * 0.35, R * 0.2,
-      cx - R * 0.45, cyG - R * 0.35, R * 1.9,
+      cx - R * 0.55, cyG - R * 0.30, R * 0.15,
+      cx - R * 0.55, cyG - R * 0.30, R * 1.65,
     );
     term.addColorStop(0, 'rgba(0,0,0,0)');
-    term.addColorStop(1, 'rgba(0,0,10,0.72)');
+    term.addColorStop(0.55, 'rgba(8,4,18,0.06)');
+    term.addColorStop(1, 'rgba(8,4,18,0.22)');
     g.fillStyle = term;
     g.fillRect(cx - R, cyG - R, R * 2, R * 2);
     g.restore();
 
     // Atmospheric limb glow
-    const glow = g.createRadialGradient(cx, cyG, R * 0.94, cx, cyG, R * 1.14);
-    glow.addColorStop(0, css(PALETTES.gas.halo, 0));
-    glow.addColorStop(0.4, css(PALETTES.gas.halo, 0.22));
-    glow.addColorStop(1, css(PALETTES.gas.halo, 0));
+    const glow = g.createRadialGradient(cx, cyG, R * 0.90, cx, cyG, R * 1.22);
+    glow.addColorStop(0, css(this.gasHalo, 0));
+    glow.addColorStop(0.38, css(this.gasHalo, 0.42));
+    glow.addColorStop(1, css(this.gasHalo, 0));
     g.fillStyle = glow;
     g.fillRect(cx - R * 1.2, cyG - R * 1.2, R * 2.4, R * 2.4);
 
@@ -1732,6 +1930,40 @@ export class IsoDioramaRenderer {
       add('ice_haze', 3.0);
       add('cumulus', 0.8);
       add('storm', 0.4);
+      return mix;
+    }
+    if (type === 'toxic') {
+      add('acid', 3.2);
+      add('pollution', 1.2);
+      add('storm', 0.6);
+      return mix;
+    }
+    if (type === 'storm') {
+      add('storm', 3.5);
+      add('cumulus', 0.8);
+      add('ash', 0.4);
+      return mix;
+    }
+    if (type === 'desert') {
+      add('pollution', 1.6);
+      add('cumulus', 0.9);
+      return mix;
+    }
+    if (type === 'crystal') {
+      add('nebula', 1.8);
+      add('cumulus', 1.0);
+      add('ice_haze', 0.6);
+      return mix;
+    }
+    if (type === 'carbon') {
+      add('ash', 1.4);
+      add('pollution', 0.8);
+      add('cumulus', 0.5);
+      return mix;
+    }
+    if (type === 'gas') {
+      add('storm', 1.2);
+      add('cumulus', 0.8);
       return mix;
     }
 
@@ -1926,9 +2158,18 @@ export class IsoDioramaRenderer {
                      : 1.0;
 
     const creatureSpots: Array<{ x: number; y: number; id: string }> = [];
-    const settlementSpots: Array<{ x: number; y: number; fertility: number }> = [];
-
+    const settlementSpots: Array<{
+      x: number; y: number; sx: number; sy: number;
+      fertility: number; row: number; col: number;
+    }> = [];
+    // Coarse land mask for the disc sample lattice — used to score how far a
+    // town sits from the *visual* coastline (elev − rimFalloff), not grid water.
+    // Fertility alone prefers moist shelves that hug that coastline, so towns
+    // never read as sitting in the middle of a landmass.
     const step = 3;
+    const landKeys = new Set<string>();
+    const sampleKey = (px: number, py: number) =>
+      `${Math.round(px / step)},${Math.round(py / step)}`;
     for (let py = cy - ry; py <= cy + ry; py += step) {
       const dy = (py - cy) / ry;
       for (let px = cx - rx; px <= cx + rx; px += step) {
@@ -1945,8 +2186,12 @@ export class IsoDioramaRenderer {
         // so an unlifted position buries a town inside the hill it sits on.
         const lift = this.liftAtCell(cell, r);
         const onLand = cell.elevation - this.rimFalloff(r) >= SEA_LEVEL;
+        if (onLand) landKeys.add(sampleKey(px, py));
         if (cell.civId != null && onLand) {
-          settlementSpots.push({ x: px, y: py - lift, fertility: cell.fertility });
+          settlementSpots.push({
+            x: px, y: py - lift, sx: px, sy: py,
+            fertility: cell.fertility, row: gp.row, col: gp.col,
+          });
         } else if (cell.dominantSpeciesId && cell.lifeDensity > 0.35) {
           // Test the elevation the SURFACE WAS DRAWN FROM, not the grid's own.
           // `rimFalloff` sinks the outer hemisphere so the projection reads as a
@@ -2011,9 +2256,45 @@ export class IsoDioramaRenderer {
       });
     }
 
-    // Towns sit on the best ground available.
-    settlementSpots.sort((a, b) => b.fertility - a.fertility);
-    const townPool = settlementSpots.slice(0, Math.max(60, settlementSpots.length >> 2));
+    /** Sample-lattice steps from a town to the nearest visual water / rim. */
+    const distToVisualCoast = (px: number, py: number): number => {
+      for (let rad = 0; rad < 48; rad++) {
+        for (let a = 0; a < 16; a++) {
+          const ang = (a / 16) * Math.PI * 2;
+          const sx = px + Math.cos(ang) * rad * step;
+          const sy = py + Math.sin(ang) * rad * step;
+          const dx = (sx - cx) / rx;
+          const dy = (sy - cy) / ry;
+          if (dx * dx + dy * dy > 0.97) return rad;
+          if (!landKeys.has(sampleKey(sx, sy))) return rad;
+        }
+      }
+      return 48;
+    };
+
+    // One entry per grid cell (screen oversampling otherwise floods the pool
+    // with the same coastal shelf pixel), scored for inland depth × fertility.
+    const byCell = new Map<string, {
+      x: number; y: number; fertility: number; score: number; dCoast: number;
+    }>();
+    for (const spot of settlementSpots) {
+      const dCoast = distToVisualCoast(spot.sx, spot.sy);
+      const inland = Math.min(1, dCoast / 6);
+      const score = spot.fertility * (0.2 + 0.8 * inland);
+      const key = `${spot.row},${spot.col}`;
+      const prev = byCell.get(key);
+      if (!prev || score > prev.score) {
+        byCell.set(key, {
+          x: spot.x, y: spot.y, fertility: spot.fertility, score, dCoast,
+        });
+      }
+    }
+    const scored = [...byCell.values()].sort((a, b) => b.score - a.score);
+    // Prefer sites at least ~2 sample steps inland; fall back if the landmasses
+    // are too thin to support that many towns.
+    const inlandEnough = scored.filter(s => s.dCoast >= 2);
+    const ranked = inlandEnough.length >= MAX_SETTLEMENTS ? inlandEnough : scored;
+    const townPool = ranked.slice(0, Math.max(60, ranked.length >> 2));
     const civLevel = this.star?.civLevel ?? 0;
     let idx = 0;
     for (const spot of scatter(townPool, MAX_SETTLEMENTS, rx * 0.13)) {
@@ -2097,6 +2378,8 @@ export class IsoDioramaRenderer {
         dt,
         elapsed: this.elapsed,
         bg: this.bgLayer,
+        sunAzimuth: this.dayAngle,
+        viewZoom: this.viewZoom,
         drawFarSpace: (g) => {
           this.drawStarBloom(g, this.elapsed);
           this.drawSiblings(g, this.elapsed);
@@ -2155,16 +2438,18 @@ export class IsoDioramaRenderer {
     // instead of the mockup's hard-edged planet; those worlds get the thin baked
     // shell at step 12b instead.
     const isGas = this.planetType === 'gas';
+    const gasR = this.gasR;
     const haloCy = isGas ? VH * 0.5 : cy + ry * 0.4;
-    const haloR = rx * (isGas ? 1.35 : 1.45);
+    const haloR = isGas ? gasR * 1.42 : rx * 1.45;
     // For a gas giant the glow must start outside the body, or it washes the
     // whole sphere in atmosphere colour.
-    const haloInner = rx * (isGas ? 1.02 : 0.6);
+    const haloInner = isGas ? gasR * 1.02 : rx * 0.6;
+    const haloCol = isGas ? this.gasHalo : pal.halo;
     const halo = g.createRadialGradient(cx, haloCy, haloInner, cx, haloCy, haloR);
-    const pulse = (isGas ? 0.05 : 0.16) + (isGas ? 0.02 : 0.05) * Math.sin(t * 0.6);
-    halo.addColorStop(0, css(pal.halo, pulse));
-    halo.addColorStop(0.55, css(pal.halo, pulse * 0.45));
-    halo.addColorStop(1, css(pal.halo, 0));
+    const pulse = (isGas ? 0.24 : 0.16) + (isGas ? 0.05 : 0.05) * Math.sin(t * 0.6);
+    halo.addColorStop(0, css(haloCol, pulse));
+    halo.addColorStop(0.55, css(haloCol, pulse * 0.50));
+    halo.addColorStop(1, css(haloCol, 0));
     g.fillStyle = halo;
     g.fillRect(0, 0, VW, VH);
 
@@ -2210,12 +2495,15 @@ export class IsoDioramaRenderer {
 
     // 14 — vignette. Centred on the BODY, not the cut face: the habitable
     // silhouette reaches a full radius below the ellipse, and a vignette hung
-    // off the face darkens the bottom third of the planet.
-    const vig = g.createRadialGradient(cx, cy, rx * 0.7, cx, cy, Math.max(VW, VH) * 0.75);
-    vig.addColorStop(0, 'rgba(0,0,0,0)');
-    vig.addColorStop(1, 'rgba(0,0,0,0.55)');
-    g.fillStyle = vig;
-    g.fillRect(0, 0, VW, VH);
+    // off the face darkens the bottom third of the planet. Gas giants skip it
+    // — the same wash used to crush the already-dark sphere into a black disc.
+    if (!isGas) {
+      const vig = g.createRadialGradient(cx, cy, rx * 0.7, cx, cy, Math.max(VW, VH) * 0.75);
+      vig.addColorStop(0, 'rgba(0,0,0,0)');
+      vig.addColorStop(1, 'rgba(0,0,0,0.55)');
+      g.fillStyle = vig;
+      g.fillRect(0, 0, VW, VH);
+    }
 
     // Blit the low-res buffer to the display canvas at 1:1 virtual pixels.
     this.displayCtx.drawImage(this.buf, 0, 0);
@@ -2250,29 +2538,35 @@ export class IsoDioramaRenderer {
   private drawSiblings(g: CanvasRenderingContext2D, t: number): void {
     const planets = this.star?.planets;
     if (!planets || planets.length < 2) return;
-    const { VW, VH, cx, cy } = this;
+    const { VW, VH, cx } = this;
+    const homeR = this.planet?.orbitalRadius ?? 40;
+    const spin = this.dayAngle;
+    const baseY = this.habitable
+      ? this.bodyCy - this.cutaway.drawGeom.R * 1.05
+      : this.cy - VH * 0.22;
 
     const siblings = planets.filter((_, i) => i !== this.planetIndex).slice(0, 4);
-    // Same reason as the moons: the habitable cut face is not the centre of the
-    // frame, so the far half of each orbit has to be measured from the body.
-    const baseY = this.habitable ? this.bodyCy : cy;
     for (let i = 0; i < siblings.length; i++) {
       const p = siblings[i];
-      const period = 95 + i * 40;
-      const angle = t * (Math.PI * 2 / period) + (i / siblings.length) * Math.PI * 2;
-      const ox = Math.cos(angle) * VW * (0.30 + i * 0.09);
-      const oy = Math.sin(angle) * VH * (0.30 + i * 0.07);
-      const x = cx + ox, y = baseY + oy - VH * 0.12;
-      if (x < -8 || x > VW + 8 || y < -8 || y > VH + 8) continue;
+      const far = Math.abs((p.orbitalRadius ?? homeR) - homeR);
+      const distN = far / Math.max(homeR, 12);
+      // Sky longitude: planet spin plus their own slower orbit, scaled by distance.
+      const az = spin + (p.orbitalAngle ?? 0) + t * (p.orbitalSpeed ?? 0.01) * (3.5 / (1 + distN))
+               + i * 1.9;
+      const elev = Math.cos(az);
+      if (elev < -0.05) continue;
+      const x = cx + Math.sin(az) * VW * (0.28 + distN * 0.16);
+      const y = baseY - elev * VH * (0.14 + distN * 0.07);
+      if (x < -10 || x > VW + 10 || y < -10 || y > VH + 10) continue;
 
+      const fade = Math.min(1, (elev + 0.05) / 0.40);
       const c = planetTypeRGB(p.type);
-      const pr = Math.max(1.5, 1.5 + p.radius * 0.22);
-      g.fillStyle = css(c, 0.16);
+      const pr = Math.max(1.2, (2.2 + p.radius * 0.20) / (1 + distN * 0.7));
+      g.fillStyle = css(c, 0.14 * fade);
       g.beginPath(); g.arc(x, y, pr + 2, 0, Math.PI * 2); g.fill();
-      g.fillStyle = css(c, 0.9);
+      g.fillStyle = css(c, 0.88 * fade);
       g.beginPath(); g.arc(x, y, pr, 0, Math.PI * 2); g.fill();
-      // Terminator: the far side is unlit
-      g.fillStyle = 'rgba(0,0,0,0.45)';
+      g.fillStyle = `rgba(0,0,0,${0.45 * fade})`;
       g.beginPath(); g.arc(x - pr * 0.35, y + pr * 0.2, pr * 0.85, 0, Math.PI * 2); g.fill();
     }
   }
@@ -2303,13 +2597,11 @@ export class IsoDioramaRenderer {
       const isFront = Math.sin(a) > 0;
       if (isFront !== front) continue;
 
-      const dist = 1.45 + i * 0.30;
+      const dist = 1.55 + i * 0.34;
       const x = cx + Math.cos(a) * rx * dist;
-      // Orbit the BODY on the habitable path. Hanging the orbit off the cut face
-      // (which sits a full radius above the body's centre) threw the far half of
-      // every orbit off the top of the frame.
       const y = this.habitable
-        ? this.bodyCy + Math.sin(a) * rx * dist * 0.55
+        ? this.cutaway.drawGeom.cyTop - this.cutaway.drawGeom.ry * 1.35
+          + Math.sin(a) * this.cutaway.drawGeom.R * 0.38
         : cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
       // Scaled off the moon's real radius, floored so the smallest still reads.
       const r = Math.max(2, rx * 0.05 + m.radius * 3.2);
@@ -2406,7 +2698,7 @@ export class IsoDioramaRenderer {
       const flicker = 0.55 + 0.45 * Math.sin(t * dot.rate + dot.phase);
       if (flicker < 0.35) continue;
       const dx = (dot.x - this.cx) / this.rx;
-      const nightBias = clamp01(0.55 - dx * 0.45);
+      const nightBias = clamp01(0.55 - dx * Math.cos(this.dayAngle) * 0.85);
       const a = flicker * (0.35 + nightBias * 0.65);
       g.fillStyle = `rgba(255,226,150,${a})`;
       g.fillRect(dot.x, dot.y + layerBob, 1, 1);
@@ -2802,12 +3094,12 @@ export class IsoDioramaRenderer {
     g.beginPath();
     g.ellipse(cx, cy, rx * 1.06, rx * 0.72, 0, Math.PI, Math.PI * 2);
     g.clip();
-    g.globalAlpha = 0.85;
+    g.globalAlpha = 1;
     for (let i = 0; i < 4; i++) {
       const y = cy - ry - i * rx * 0.14 - Math.sin(t * 0.5 + i) * 2;
       const grad = g.createLinearGradient(0, y, 0, y + rx * 0.2);
       grad.addColorStop(0, css(pal.halo, 0));
-      grad.addColorStop(0.5, css(pal.halo, 0.13 + 0.05 * Math.sin(t * 0.8 + i * 1.3)));
+      grad.addColorStop(0.5, css(pal.halo, 0.28 + 0.08 * Math.sin(t * 0.8 + i * 1.3)));
       grad.addColorStop(1, css(pal.halo, 0));
       g.fillStyle = grad;
       g.fillRect(cx - rx * 1.1, y, rx * 2.2, rx * 0.2);
@@ -2855,11 +3147,16 @@ function hsvToRGB(hDeg: number, s: number, v: number): RGB {
 
 function planetTypeRGB(type: string): RGB {
   switch (type) {
-    case 'lava':  return rgb(200, 70, 30);
-    case 'ice':   return rgb(150, 210, 240);
-    case 'gas':   return rgb(190, 160, 110);
-    case 'ocean': return rgb(70, 140, 210);
-    default:      return rgb(150, 130, 95);
+    case 'lava':    return rgb(200, 70, 30);
+    case 'ice':     return rgb(150, 210, 240);
+    case 'gas':     return rgb(190, 160, 110);
+    case 'ocean':   return rgb(70, 140, 210);
+    case 'toxic':   return rgb(90, 180, 50);
+    case 'crystal': return rgb(160, 80, 200);
+    case 'desert':  return rgb(210, 170, 90);
+    case 'storm':   return rgb(80, 70, 110);
+    case 'carbon':  return rgb(40, 42, 48);
+    default:        return rgb(150, 130, 95);
   }
 }
 

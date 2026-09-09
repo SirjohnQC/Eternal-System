@@ -36,7 +36,9 @@ import type { SeedRNG } from '../utils/SeedRNG';
 import type { BiologyPhase } from './GameState';
 import { BIO_PHASE_SEQUENCE } from './GameState';
 
-export type PlanetKind = 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava';
+export type PlanetKind =
+  | 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
 
 // ─── Biochemistry archetypes ──────────────────────────────────────────────────
 
@@ -69,31 +71,46 @@ export interface ArchetypeProfile {
 export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
   carbon_water: {
     label: 'carbon–water',
-    affinity: { ocean: 1.0, rocky: 0.85, ice: 0.20, lava: 0.05, gas: 0.10 },
+    affinity: {
+      ocean: 1.0, rocky: 0.85, ice: 0.20, lava: 0.05, gas: 0.10,
+      toxic: 0.70, crystal: 0.40, desert: 0.50, storm: 0.45, carbon: 0.30,
+    },
     tempo: 1.0, filter: 1.0, ceiling: 'intelligent', resilience: 1.0,
     flavour: 'Carbon chains in liquid water — the common solution.',
   },
   cryo_ammonia: {
     label: 'cryogenic ammonia',
-    affinity: { ocean: 0.20, rocky: 0.15, ice: 1.0, lava: 0.0, gas: 0.25 },
+    affinity: {
+      ocean: 0.20, rocky: 0.15, ice: 1.0, lava: 0.0, gas: 0.25,
+      toxic: 0.10, crystal: 0.20, desert: 0.05, storm: 0.15, carbon: 0.25,
+    },
     tempo: 0.42, filter: 1.25, ceiling: 'primitive', resilience: 1.35,
     flavour: 'Slow chemistry in sub-zero ammonia seas beneath the ice.',
   },
   silicate_thermo: {
     label: 'silicate thermophile',
-    affinity: { ocean: 0.05, rocky: 0.35, ice: 0.0, lava: 1.0, gas: 0.05 },
+    affinity: {
+      ocean: 0.05, rocky: 0.35, ice: 0.0, lava: 1.0, gas: 0.05,
+      toxic: 0.20, crystal: 0.30, desert: 0.40, storm: 0.20, carbon: 0.50,
+    },
     tempo: 0.30, filter: 1.45, ceiling: 'complex', resilience: 1.8,
     flavour: 'Mineral metabolism that treats molten rock as a solvent.',
   },
   aerial_float: {
     label: 'aerial',
-    affinity: { ocean: 0.10, rocky: 0.05, ice: 0.10, lava: 0.05, gas: 1.0 },
+    affinity: {
+      ocean: 0.10, rocky: 0.05, ice: 0.10, lava: 0.05, gas: 1.0,
+      toxic: 0.35, crystal: 0.10, desert: 0.15, storm: 0.70, carbon: 0.05,
+    },
     tempo: 0.75, filter: 1.30, ceiling: 'complex', resilience: 0.8,
     flavour: 'Buoyant colonies drifting in a bottomless atmosphere.',
   },
   lithic_endolith: {
     label: 'endolithic',
-    affinity: { ocean: 0.15, rocky: 0.55, ice: 0.35, lava: 0.30, gas: 0.0 },
+    affinity: {
+      ocean: 0.15, rocky: 0.55, ice: 0.35, lava: 0.30, gas: 0.0,
+      toxic: 0.25, crystal: 0.80, desert: 0.45, storm: 0.20, carbon: 0.90,
+    },
     tempo: 0.22, filter: 1.55, ceiling: 'multicellular', resilience: 2.4,
     flavour: 'Chemoautotrophs boring through rock, indifferent to the surface.',
   },
@@ -103,11 +120,16 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
 
 /** Baseline suitability of each planet type for any biochemistry at all. */
 const TYPE_BASE: Record<PlanetKind, number> = {
-  ocean: 1.00,
-  rocky: 0.86,
-  ice:   0.42,
-  gas:   0.34,
-  lava:  0.26,
+  ocean:   1.00,
+  rocky:   0.86,
+  ice:     0.42,
+  gas:     0.34,
+  lava:    0.26,
+  toxic:   0.72,
+  crystal: 0.55,
+  desert:  0.48,
+  storm:   0.40,
+  carbon:  0.38,
 };
 
 export interface HabitabilityInput {

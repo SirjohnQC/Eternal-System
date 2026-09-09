@@ -5,31 +5,24 @@
  * atmosphere) and `assets/mockups/ocean-cutaway-ref.jpg` (bare ocean slab).
  *
  * ── The geometry ──────────────────────────────────────────────────────────────
- * The body silhouette is a full CIRCLE of radius `R` — a whole planet, not a
- * torn-off chunk. The living surface is a foreshortened ellipse seated INTO that
- * circle (not flush with the crest), with a thick sheer wall under the front rim
- * — the `diorama_test.html` 3/4 "god over the world" read:
+ * The living surface is a foreshortened pancake ellipse. A sheer wall drops
+ * from the front rim, then a jagged keel of crust hangs beneath it — a torn-off
+ * chunk, not a filled sphere. Air is a faint ozone half-dome over the pancake,
+ * brightest as a limb against space, and it fades as the camera zooms in.
  *
- *        cyBody − rx              ─── top of the sphere (rock / sky behind)
+ *        cyTop − rx               ─── top of the ozone half-dome
  *        cyTop − ry               ─── far rim of the tabletop
- *        cyTop                    ─── ellipse centre
+ *        cyTop                    ─── ellipse centre / dome centre
  *        cyTop + ry               ─── front of the ellipse rim
- *        cyTop + ry + wallDepth   ─── bottom of the cake wall (water / cliff)
- *        cyBody + rx              ─── bottom of the circle
- *
- * with a deep, layered rock body beneath the board. Air above the board stays
- * empty aside from the thick atmospheric shell.
- *
- * Past |dx| > ~0.94·rx the ellipse rim would sit OUTSIDE the circle. Both passes
- * clamp to the circle, which blunts the last few percent of the tabletop's tips
- * and leaves bare rock at the limb — the reference's shoulder.
+ *        cyTop + ry + wall        ─── bottom of the cake wall (water / cliff)
+ *        wall + keel              ─── jagged hanging crust (varies per column)
  *
  * ── Why a separate file ───────────────────────────────────────────────────────
  * The legacy path in `IsoDioramaRenderer` renders a *floating disc* under a
  * glass dome: soft pulsing halo, specular sweep, jagged keel hanging in space.
  * That is a different object from the mockup, and the two looks cannot share a
- * bake without one of them being compromised. Ocean and rocky worlds bake here;
- * lava / ice / gas stay on the legacy path (Phase 2).
+ * bake without one of them being compromised. Every planet type now bakes here
+ * as a pancake cutaway; gas giants keep latitude bands + rings instead of a sphere.
  *
  * ── Art direction ─────────────────────────────────────────────────────────────
  * Limited palettes, hard edges, no soft gradients on anything that is supposed
@@ -112,7 +105,12 @@ const quantise = (f: number, step = SHADE_STEP) => Math.round(f / step) * step;
 
 // ─── Public geometry ──────────────────────────────────────────────────────────
 
-export type HabitableType = 'ocean' | 'rocky';
+export type HabitableType =
+  | 'ocean' | 'rocky' | 'ice' | 'lava' | 'gas'
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+
+/** Alias — every planet type uses the cutaway bake. */
+export type CutawayPlanetType = HabitableType;
 
 // ─── Pancake god-view geometry (source of truth for Task 7+ host) ─────────────
 
@@ -134,13 +132,13 @@ export interface HabitableGeom {
   T: number;
 }
 
-export function bobOf(elapsed: number, R: number): number {
-  const amp = Math.max(1, Math.round(R / 48));
-  return Math.sin(elapsed * 0.7) * amp;
+/** Whole-planet bounce. Disabled — the board stays planted. */
+export function bobOf(_elapsed: number, _R: number): number {
+  return 0;
 }
 
 export function habitableGeom(VW: number, VH: number): HabitableGeom {
-  let R = Math.round(Math.min(VW * 0.40, VH * 0.28));
+  let R = Math.round(Math.min(VW * 0.50, VH * 0.36));
   const T = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
   // If the shell would clip, shrink R — never shrink T below ATMO_MIN_PX.
   const maxR = Math.floor(Math.min(VW, VH) / 2 - T - 4);
@@ -202,6 +200,8 @@ export interface CutawayBakeOpts extends CutawayGeom {
   pick?: Int32Array | null;
   /** Length `w * h`, 1 = fluid on the ellipse. */
   occupancy?: Uint8Array | null;
+  /** Precomputed gas latitude bands (seeded once by the engine). */
+  gasBands?: RGB[] | null;
 }
 
 export interface CutawayBakeResult {
@@ -234,6 +234,8 @@ interface CutawayPalette {
   emberHot: RGB;
   /** Atmosphere shell colour. */
   atmo: RGB;
+  /** Multiplies ozone limb / face alpha (lava/gas denser, desert/carbon thinner). */
+  atmoDensity: number;
 }
 
 const OCEAN_PALETTE: CutawayPalette = {
@@ -254,11 +256,12 @@ const OCEAN_PALETTE: CutawayPalette = {
     volcanic:   rgb(96, 30, 12),
   },
   foam:      rgb(226, 244, 255),
+  // Shore shelf stays mid; open ocean drops to a darker navy body.
   waterSurf: {
-    deep:  rgb(18, 48, 88),
-    mid:   rgb(35, 95, 160),
-    light: rgb(70, 150, 220),
-    glint: rgb(170, 220, 255),
+    deep:  rgb(12, 52, 118),
+    mid:   rgb(42, 108, 178),
+    light: rgb(90, 168, 220),
+    glint: rgb(175, 220, 245),
   },
   waterLip:  rgb(42, 88, 142),
   waterDeep: rgb(22, 45, 80),
@@ -274,6 +277,7 @@ const OCEAN_PALETTE: CutawayPalette = {
   ember:    rgb(206, 84, 26),
   emberHot: rgb(255, 184, 74),
   atmo:     rgb(65, 165, 255),
+  atmoDensity: 1.0,
 };
 
 const ROCKY_PALETTE: CutawayPalette = {
@@ -313,16 +317,397 @@ const ROCKY_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(198, 78, 24),
   emberHot: rgb(255, 176, 70),
-  atmo:     rgb(100, 170, 230),
+  atmo:     rgb(158, 148, 128),
+  atmoDensity: 1.0,
+};
+
+const ICE_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(40, 90, 130),
+    ocean:      rgb(70, 140, 185),
+    shallow:    rgb(130, 190, 220),
+    beach:      rgb(200, 220, 230),
+    plains:     rgb(180, 210, 225),
+    grassland:  rgb(150, 185, 200),
+    forest:     rgb(120, 160, 180),
+    jungle:     rgb(100, 145, 170),
+    desert:     rgb(210, 225, 235),
+    savanna:    rgb(190, 210, 225),
+    tundra:     rgb(168, 200, 224),
+    snow:       rgb(240, 248, 255),
+    mountain:   rgb(140, 170, 195),
+    volcanic:   rgb(90, 110, 140),
+  },
+  foam:      rgb(245, 252, 255),
+  waterSurf: {
+    deep:  rgb(50, 100, 145),
+    mid:   rgb(90, 155, 195),
+    light: rgb(150, 205, 235),
+    glint: rgb(220, 245, 255),
+  },
+  waterLip:  rgb(70, 130, 175),
+  waterDeep: rgb(40, 80, 120),
+  facet:     rgb(200, 235, 255),
+  strata: [
+    rgb(214, 236, 248),
+    rgb(168, 200, 224),
+    rgb(126, 158, 190),
+    rgb(90, 118, 152),
+    rgb(62, 84, 116),
+    rgb(38, 54, 80),
+  ],
+  ember:    rgb(160, 200, 230),
+  emberHot: rgb(220, 240, 255),
+  atmo:     rgb(140, 200, 240),
+  atmoDensity: 1.05,
+};
+
+const LAVA_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(80, 20, 10),
+    ocean:      rgb(140, 35, 12),
+    shallow:    rgb(200, 60, 18),
+    beach:      rgb(90, 40, 28),
+    plains:     rgb(70, 32, 22),
+    grassland:  rgb(60, 28, 18),
+    forest:     rgb(50, 24, 16),
+    jungle:     rgb(45, 22, 14),
+    desert:     rgb(100, 45, 25),
+    savanna:    rgb(85, 38, 20),
+    tundra:     rgb(55, 30, 28),
+    snow:       rgb(120, 70, 50),
+    mountain:   rgb(48, 24, 18),
+    volcanic:   rgb(36, 16, 12),
+  },
+  foam:      rgb(255, 160, 60),
+  waterSurf: {
+    deep:  rgb(120, 30, 8),
+    mid:   rgb(190, 55, 14),
+    light: rgb(255, 110, 30),
+    glint: rgb(255, 200, 80),
+  },
+  waterLip:  rgb(180, 50, 14),
+  waterDeep: rgb(90, 22, 8),
+  facet:     rgb(255, 140, 50),
+  strata: [
+    rgb(96, 40, 26),
+    rgb(140, 52, 22),
+    rgb(72, 28, 20),
+    rgb(48, 20, 16),
+    rgb(30, 14, 12),
+    rgb(18, 8, 8),
+  ],
+  ember:    rgb(255, 120, 30),
+  emberHot: rgb(255, 210, 90),
+  atmo:     rgb(210, 70, 20),
+  atmoDensity: 1.55,
+};
+
+const GAS_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(120, 90, 60),
+    ocean:      rgb(180, 140, 90),
+    shallow:    rgb(210, 170, 110),
+    beach:      rgb(190, 155, 120),
+    plains:     rgb(170, 130, 85),
+    grassland:  rgb(150, 115, 75),
+    forest:     rgb(130, 100, 70),
+    jungle:     rgb(110, 85, 65),
+    desert:     rgb(200, 160, 100),
+    savanna:    rgb(175, 140, 95),
+    tundra:     rgb(160, 140, 150),
+    snow:       rgb(210, 200, 220),
+    mountain:   rgb(100, 80, 90),
+    volcanic:   rgb(90, 50, 40),
+  },
+  foam:      rgb(230, 210, 180),
+  waterSurf: {
+    deep:  rgb(100, 75, 55),
+    mid:   rgb(160, 120, 80),
+    light: rgb(200, 165, 110),
+    glint: rgb(240, 220, 180),
+  },
+  waterLip:  rgb(140, 105, 75),
+  waterDeep: rgb(80, 55, 40),
+  facet:     rgb(220, 190, 150),
+  strata: [
+    rgb(168, 132, 84),
+    rgb(120, 92, 62),
+    rgb(96, 68, 108),
+    rgb(70, 48, 84),
+    rgb(46, 32, 60),
+    rgb(28, 20, 40),
+  ],
+  ember:    rgb(200, 140, 80),
+  emberHot: rgb(255, 200, 120),
+  atmo:     rgb(170, 140, 190),
+  atmoDensity: 1.45,
+};
+
+const TOXIC_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(28, 72, 28),
+    ocean:      rgb(48, 130, 40),
+    shallow:    rgb(90, 180, 55),
+    beach:      rgb(160, 175, 70),
+    plains:     rgb(120, 150, 55),
+    grassland:  rgb(70, 140, 45),
+    forest:     rgb(45, 110, 38),
+    jungle:     rgb(35, 95, 32),
+    desert:     rgb(170, 165, 70),
+    savanna:    rgb(140, 150, 55),
+    tundra:     rgb(100, 130, 90),
+    snow:       rgb(200, 220, 170),
+    mountain:   rgb(80, 95, 55),
+    volcanic:   rgb(70, 50, 20),
+  },
+  foam:      rgb(200, 255, 140),
+  waterSurf: {
+    deep:  rgb(28, 72, 28),
+    mid:   rgb(48, 130, 40),
+    light: rgb(90, 180, 55),
+    glint: rgb(180, 255, 120),
+  },
+  waterLip:  rgb(55, 120, 45),
+  waterDeep: rgb(25, 60, 25),
+  facet:     rgb(160, 230, 100),
+  strata: [
+    rgb(50, 60, 40),
+    rgb(90, 85, 45),
+    rgb(120, 100, 50),
+    rgb(80, 70, 40),
+    rgb(45, 40, 28),
+    rgb(25, 22, 16),
+  ],
+  ember:    rgb(180, 200, 40),
+  emberHot: rgb(230, 255, 90),
+  atmo:     rgb(170, 210, 50),
+  atmoDensity: 1.25,
+};
+
+const CRYSTAL_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(40, 20, 80),
+    ocean:      rgb(70, 40, 130),
+    shallow:    rgb(120, 70, 180),
+    beach:      rgb(180, 140, 200),
+    plains:     rgb(150, 80, 170),
+    grassland:  rgb(130, 60, 160),
+    forest:     rgb(100, 45, 140),
+    jungle:     rgb(85, 35, 125),
+    desert:     rgb(190, 120, 200),
+    savanna:    rgb(160, 90, 175),
+    tundra:     rgb(160, 140, 200),
+    snow:       rgb(230, 210, 255),
+    mountain:   rgb(110, 60, 150),
+    volcanic:   rgb(80, 30, 90),
+  },
+  foam:      rgb(240, 200, 255),
+  waterSurf: {
+    deep:  rgb(40, 20, 80),
+    mid:   rgb(70, 40, 130),
+    light: rgb(130, 80, 200),
+    glint: rgb(220, 180, 255),
+  },
+  waterLip:  rgb(90, 50, 150),
+  waterDeep: rgb(35, 18, 70),
+  facet:     rgb(210, 160, 255),
+  strata: [
+    rgb(60, 40, 80),
+    rgb(100, 55, 120),
+    rgb(140, 70, 160),
+    rgb(90, 45, 110),
+    rgb(50, 30, 70),
+    rgb(28, 16, 40),
+  ],
+  ember:    rgb(200, 100, 255),
+  emberHot: rgb(255, 180, 255),
+  atmo:     rgb(150, 90, 220),
+  atmoDensity: 1.15,
+};
+
+const DESERT_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(50, 70, 90),
+    ocean:      rgb(70, 100, 120),
+    shallow:    rgb(110, 140, 150),
+    beach:      rgb(220, 195, 140),
+    plains:     rgb(210, 175, 110),
+    grassland:  rgb(190, 160, 95),
+    forest:     rgb(150, 125, 70),
+    jungle:     rgb(130, 110, 60),
+    desert:     rgb(230, 190, 120),
+    savanna:    rgb(200, 165, 100),
+    tundra:     rgb(180, 160, 130),
+    snow:       rgb(230, 220, 200),
+    mountain:   rgb(160, 130, 90),
+    volcanic:   rgb(100, 60, 40),
+  },
+  foam:      rgb(245, 230, 190),
+  waterSurf: {
+    deep:  rgb(50, 70, 90),
+    mid:   rgb(75, 105, 125),
+    light: rgb(120, 150, 160),
+    glint: rgb(200, 220, 220),
+  },
+  waterLip:  rgb(80, 110, 130),
+  waterDeep: rgb(40, 55, 70),
+  facet:     rgb(210, 200, 170),
+  strata: [
+    rgb(180, 140, 90),
+    rgb(200, 160, 100),
+    rgb(160, 120, 75),
+    rgb(120, 90, 55),
+    rgb(80, 55, 35),
+    rgb(45, 30, 20),
+  ],
+  ember:    rgb(220, 140, 60),
+  emberHot: rgb(255, 200, 100),
+  atmo:     rgb(210, 170, 90),
+  atmoDensity: 0.70,
+};
+
+const STORM_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(18, 22, 40),
+    ocean:      rgb(30, 38, 60),
+    shallow:    rgb(50, 55, 80),
+    beach:      rgb(70, 65, 75),
+    plains:     rgb(55, 50, 60),
+    grassland:  rgb(45, 55, 48),
+    forest:     rgb(35, 45, 40),
+    jungle:     rgb(28, 40, 35),
+    desert:     rgb(80, 70, 65),
+    savanna:    rgb(65, 58, 55),
+    tundra:     rgb(70, 75, 90),
+    snow:       rgb(140, 145, 160),
+    mountain:   rgb(50, 48, 58),
+    volcanic:   rgb(40, 30, 35),
+  },
+  foam:      rgb(160, 165, 185),
+  waterSurf: {
+    deep:  rgb(18, 22, 40),
+    mid:   rgb(35, 42, 65),
+    light: rgb(60, 68, 95),
+    glint: rgb(130, 140, 170),
+  },
+  waterLip:  rgb(40, 48, 70),
+  waterDeep: rgb(16, 18, 32),
+  facet:     rgb(120, 130, 160),
+  strata: [
+    rgb(40, 38, 48),
+    rgb(60, 50, 55),
+    rgb(45, 42, 55),
+    rgb(35, 30, 40),
+    rgb(25, 22, 30),
+    rgb(14, 12, 18),
+  ],
+  ember:    rgb(120, 80, 160),
+  emberHot: rgb(180, 140, 220),
+  atmo:     rgb(100, 90, 130),
+  atmoDensity: 1.60,
+};
+
+const CARBON_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(12, 18, 28),
+    ocean:      rgb(20, 28, 40),
+    shallow:    rgb(35, 45, 55),
+    beach:      rgb(50, 50, 52),
+    plains:     rgb(38, 38, 40),
+    grassland:  rgb(32, 36, 34),
+    forest:     rgb(26, 30, 28),
+    jungle:     rgb(22, 26, 24),
+    desert:     rgb(48, 46, 44),
+    savanna:    rgb(42, 40, 38),
+    tundra:     rgb(55, 58, 62),
+    snow:       rgb(90, 95, 105),
+    mountain:   rgb(28, 28, 30),
+    volcanic:   rgb(20, 16, 16),
+  },
+  foam:      rgb(100, 110, 130),
+  waterSurf: {
+    deep:  rgb(12, 18, 28),
+    mid:   rgb(25, 35, 50),
+    light: rgb(45, 60, 80),
+    glint: rgb(90, 120, 160),
+  },
+  waterLip:  rgb(30, 40, 55),
+  waterDeep: rgb(10, 14, 22),
+  facet:     rgb(80, 110, 150),
+  strata: [
+    rgb(30, 30, 32),
+    rgb(45, 42, 40),
+    rgb(35, 34, 36),
+    rgb(25, 24, 26),
+    rgb(16, 15, 16),
+    rgb(8, 8, 9),
+  ],
+  ember:    rgb(60, 100, 160),
+  emberHot: rgb(100, 160, 220),
+  atmo:     rgb(70, 120, 190),
+  atmoDensity: 0.65,
+};
+
+const PALETTE_BY_TYPE: Record<HabitableType, CutawayPalette> = {
+  ocean: OCEAN_PALETTE,
+  rocky: ROCKY_PALETTE,
+  ice: ICE_PALETTE,
+  lava: LAVA_PALETTE,
+  gas: GAS_PALETTE,
+  toxic: TOXIC_PALETTE,
+  crystal: CRYSTAL_PALETTE,
+  desert: DESERT_PALETTE,
+  storm: STORM_PALETTE,
+  carbon: CARBON_PALETTE,
 };
 
 function paletteFor(type: HabitableType): CutawayPalette {
-  return type === 'ocean' ? OCEAN_PALETTE : ROCKY_PALETTE;
+  return PALETTE_BY_TYPE[type] ?? ROCKY_PALETTE;
 }
 
 /** Atmosphere tint, exported so the consumer can match its own overlays to it. */
 export function cutawayAtmoColour(type: HabitableType): RGB {
   return paletteFor(type).atmo;
+}
+
+/** HSV → RGB for seed-driven gas bands. */
+function hsvToRGB(hDeg: number, s: number, v: number): RGB {
+  const h = ((hDeg % 360) + 360) % 360 / 60;
+  const c = v * s;
+  const x = c * (1 - Math.abs((h % 2) - 1));
+  const m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 1)      { r = c; g = x; }
+  else if (h < 2) { r = x; g = c; }
+  else if (h < 3) { g = c; b = x; }
+  else if (h < 4) { g = x; b = c; }
+  else if (h < 5) { r = x; b = c; }
+  else            { r = c; b = x; }
+  return rgb((r + m) * 255, (g + m) * 255, (b + m) * 255);
+}
+
+/** Seed a gas-giant latitude-band palette (shared by surface, rings, haze). */
+export function makeGasBands(seed: number): RGB[] {
+  const s = new Stream(seed ^ 0x6a09e667);
+  const hueBase = s.range(0, 360);
+  const bandCount = 8 + s.int(0, 4);
+  const bands: RGB[] = [];
+  for (let i = 0; i < bandCount; i++) {
+    const warm = s.next() > 0.38;
+    const hue = (hueBase + (warm ? s.range(-22, 22) : s.range(150, 220))) % 360;
+    const sat = warm ? s.range(0.48, 0.78) : s.range(0.32, 0.58);
+    const val = warm ? s.range(0.72, 0.96) : s.range(0.58, 0.82);
+    bands.push(hsvToRGB(hue, sat, val));
+  }
+  return bands;
+}
+
+function averageBands(bands: RGB[]): RGB {
+  let r = 0, g = 0, b = 0;
+  for (const c of bands) { r += c.r; g += c.g; b += c.b; }
+  const n = Math.max(1, bands.length);
+  return rgb(Math.round(r / n), Math.round(g / n), Math.round(b / n));
 }
 
 /**
@@ -341,6 +726,7 @@ const KEY_Y = -0.45;
  * Paint the cut face: an azimuthal projection of the grid as a flat living
  * board (diorama_test language) — tiered land with cliff faces. Water cells
  * leave the land canvas empty and stamp occupancy + pick for live fluids.
+ * Gas giants fill the whole disc with latitude bands (no water holes).
  */
 export function paintCutawaySurface(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
@@ -382,6 +768,51 @@ export function paintCutawaySurface(
     }
   };
 
+  // ── Gas giant: flat banded tabletop, no water holes ─────────────────────────
+  if (opts.planetType === 'gas') {
+    const bands = (opts.gasBands && opts.gasBands.length > 0)
+      ? opts.gasBands
+      : makeGasBands(seed);
+    const bandCount = bands.length;
+    for (let py = yFace0; py <= y1; py++) {
+      const dy = (py - cyTop) / ry;
+      for (let px = x0; px <= x1; px++) {
+        const dx = (px - cx) / rx;
+        const r = Math.hypot(dx, dy);
+        if (r > 1) continue;
+
+        const latN = dy; // −1 … 1 across the foreshortened disc
+        const turb = fbm1(latN * 7.5 + dx * 1.6, seed + 3, 4) * 0.28
+                   + fbm1(latN * 22 + dx * 4.0, seed + 91, 3) * 0.10;
+        const bandF = (latN * 0.5 + 0.5) * bandCount + (turb - 0.38) * 0.55;
+        const i0 = Math.max(0, Math.min(bandCount - 1, Math.floor(bandF)));
+        const i1 = Math.max(0, Math.min(bandCount - 1, i0 + 1));
+        const ft0 = bandF - Math.floor(bandF);
+        const ft = ft0 < 0.16 ? 0 : ft0 > 0.84 ? 1 : 0.5;
+        const c0 = bands[i0], c1 = bands[i1];
+        const curl = 0.96 + fbm1(latN * 60 + dx * 9, seed + 707, 2) * 0.10;
+        let cr = mix(c0.r, c1.r, ft) * curl;
+        let cg = mix(c0.g, c1.g, ft) * curl;
+        let cb = mix(c0.b, c1.b, ft) * curl;
+        if (ft0 < 0.08) { cr *= 0.72; cg *= 0.72; cb *= 0.72; }
+
+        const key = quantise(0.88 + 0.22 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
+        const ao = 1 - Math.pow(clamp01((r - 0.70) / 0.30), 2) * 0.22;
+        const f = key * ao;
+        cr *= f; cg *= f; cb *= f;
+
+        let cellId = 0;
+        if (grid) {
+          const gp = opts.discToGrid(dx, dy);
+          if (gp) cellId = gp.row * GRID_SIZE + gp.col + 1;
+        }
+        put(px, py, cr, cg, cb, cellId);
+      }
+    }
+    g.putImageData(img, x0, yTop);
+    return;
+  }
+
   const lush = clamp01(opts.lush ?? 0.3);
   // Cliff face under extruded land — same role as diorama_test's terrain.cliff.
   const cliff = pal.strata[1];
@@ -412,8 +843,9 @@ export function paintCutawaySurface(
           classifyBiome(elev, cell.moisture, cell.temperature, opts.planetType);
 
         // Snow caps: the mockup's peaks are white-tipped regardless of latitude,
-        // which is what altitude actually does to a mountain.
-        if (biome === 'mountain' && cell.elevation > 0.82) biome = 'snow';
+        // which is what altitude actually does to a mountain — except molten worlds.
+        if (opts.planetType !== 'lava'
+            && biome === 'mountain' && cell.elevation > 0.82) biome = 'snow';
 
         if (isWater(biome)) {
           const idx = py * VW + px;
@@ -514,81 +946,133 @@ export function paintCutawaySurface(
   }
 
   g.putImageData(img, x0, yTop);
+
+  if (opts.planetType === 'lava') {
+    paintVolcanoChimneys(g, planVolcanoChimneys(opts));
+  }
+}
+
+export interface VolcanoChimney {
+  x: number;
+  y: number;
+  /** Cone height in virtual pixels. */
+  h: number;
+  /** Base half-width. */
+  w: number;
+}
+
+/**
+ * Peak sites for lava chimney props. High basalt only, sparse, deterministic.
+ */
+export function planVolcanoChimneys(opts: CutawayBakeOpts): VolcanoChimney[] {
+  const { w: VW, h: VH, cx, cyTop, rx, ry, seed, grid } = opts;
+  if (!grid || opts.planetType !== 'lava') return [];
+  const sites: VolcanoChimney[] = [];
+  const x0 = Math.max(0, cx - rx), x1 = Math.min(VW - 1, cx + rx);
+  const yFace0 = cyTop - ry, yFace1 = Math.min(VH - 1, cyTop + ry);
+  for (let py = yFace0; py <= yFace1; py += 2) {
+    const dy = (py - cyTop) / ry;
+    for (let px = x0; px <= x1; px += 2) {
+      const dx = (px - cx) / rx;
+      const r = Math.hypot(dx, dy);
+      if (r > 0.88 || r < 0.12) continue;
+      const gp = opts.discToGrid(dx, dy);
+      if (!gp) continue;
+      const cell = grid[gp.row]?.[gp.col];
+      if (!cell) continue;
+      const elev = cell.elevation - opts.rimFalloff(r);
+      if (elev < 0.70) continue;
+      if (hash1(px * 733 + py * 197 + seed, seed ^ 0x71) < 0.955) continue;
+      // Keep chimneys from stacking on top of each other.
+      if (sites.some(s => Math.hypot(s.x - px, s.y - py) < rx * 0.14)) continue;
+      const lift = opts.liftOf(opts.smoothElevation(grid, gp.row, gp.col) - opts.rimFalloff(r));
+      const h = Math.max(6, 5 + Math.floor(lift * 0.7) + Math.floor(hash1(px + py, seed) * 4));
+      const w = 2 + Math.floor(hash1(px * 3 + py, seed + 9) * 2);
+      sites.push({ x: px, y: py - lift, h, w });
+      if (sites.length >= 10) return sites;
+    }
+  }
+  return sites;
+}
+
+/** Dark basalt cone + glowing crater mouth on the lava tabletop. */
+export function paintVolcanoChimneys(
+  g: CanvasRenderingContext2D, sites: VolcanoChimney[],
+): void {
+  for (const v of sites) {
+    const baseY = v.y;
+    const tipY = v.y - v.h;
+    // Cone body — dark basalt tapering upward.
+    for (let k = 0; k <= v.h; k++) {
+      const t = k / Math.max(1, v.h);
+      const half = Math.max(1, Math.round(v.w * (1 - t * 0.85)));
+      const y = baseY - k;
+      g.fillStyle = `rgb(${28 + Math.round(t * 18)},${12 + Math.round(t * 8)},${10 + Math.round(t * 6)})`;
+      g.fillRect(v.x - half, y, half * 2 + 1, 1);
+      // Lit right flank.
+      g.fillStyle = `rgba(90,40,25,${0.35 + t * 0.25})`;
+      g.fillRect(v.x + half - 1, y, 1, 1);
+    }
+    // Crater rim + magma throat.
+    g.fillStyle = 'rgb(22,10,8)';
+    g.fillRect(v.x - 2, tipY - 1, 5, 2);
+    g.fillStyle = 'rgb(255,140,40)';
+    g.fillRect(v.x - 1, tipY - 2, 3, 2);
+    g.fillStyle = 'rgb(255,220,120)';
+    g.fillRect(v.x, tipY - 3, 1, 2);
+    // Thin ash plume stub (static — live embers are host overlays).
+    g.fillStyle = 'rgba(90,80,75,0.55)';
+    g.fillRect(v.x, tipY - 6, 1, 3);
+    g.fillStyle = 'rgba(70,65,60,0.35)';
+    g.fillRect(v.x + 1, tipY - 8, 1, 2);
+  }
 }
 
 // ─── Underworld: spherical crust + sheer front wall ──────────────────────────
 
 /**
- * Paint the spherical crust beneath the living board.
- *
- * The tabletop ellipse stays transparent: surface and fluids own it. A short
- * front wall carries either ocean facets or land cliffs, while all remaining
- * body pixels are screen-depth-aligned geological strata.
+ * Paint the crust beneath the living board: a sheer front wall, then a jagged
+ * hanging keel. The tabletop ellipse stays transparent — surface and fluids
+ * own it. Rock is a torn chunk, not a filled sphere.
  */
 export function paintCutawayCrust(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed } = opts;
   const fallback = habitableGeom(VW, VH);
-  const R = opts.R ?? fallback.R;
   const wall = opts.wall ?? fallback.wall;
-  const cyBody = opts.cyBody ?? fallback.cyBody;
   const pal = paletteFor(opts.planetType);
   g.clearRect(0, 0, VW, VH);
-  if (R < 8) return;
+  if (rx < 8) return;
 
-  const x0 = Math.max(0, Math.floor(cx - R));
-  const x1 = Math.min(VW - 1, Math.ceil(cx + R));
-  const y0 = Math.max(0, Math.floor(cyBody - R));
-  const y1 = Math.min(VH - 1, Math.ceil(cyBody + R));
-
-  for (let y = y0; y <= y1; y++) {
-    const dyBody = y - cyBody;
-    for (let x = x0; x <= x1; x++) {
-      const dx = x - cx;
-      if (dx * dx + dyBody * dyBody > R * R) continue;
-      const faceX = dx / rx;
-      const faceY = (y - cyTop) / ry;
-      if (faceX * faceX + faceY * faceY <= 1) continue;
-      if (y < cyTop + ry * 0.28 && Math.abs(dx) <= rx) continue;
-
-      const depth = (y - (cyBody - R)) / (2 * R);
-      const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.60;
-      const band = Math.max(0, Math.min(
-        pal.strata.length - 1, Math.floor(depth * pal.strata.length + wave),
-      ));
-      const light = quantise(
-        0.34 + 0.78 * clamp01((dx / R) * KEY_X + (dyBody / R) * KEY_Y + 0.60),
-        0.10,
-      );
-      const grain = 0.92 + hash1(x * 733 + y * 13, seed) * 0.14;
-      const ember = depth > 0.78 && hash1(x * 179 + y * 991, seed + 19) > 0.986;
-      g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[band], light * grain));
-      g.fillRect(x, y, 1, 1);
-    }
-  }
-
-  // The front rim is a thin vertical cut, not a lower-hemisphere water bowl.
   const rimX0 = Math.max(0, Math.ceil(cx - rx));
   const rimX1 = Math.min(VW - 1, Math.floor(cx + rx));
+  const cols = rimX1 - rimX0 + 1;
+  const wallBottom = new Float32Array(cols);
+  const crustH = Math.max(8, Math.round(rx * 0.88));
+
+  // ── Sheer front wall ──────────────────────────────────────────────────────
   for (let x = rimX0; x <= rimX1; x++) {
+    const i = x - rimX0;
     const faceX = (x - cx) / rx;
     const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
     const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
     const bottomY = frontY + wall + ridge;
-    // `floor(frontY) - 1` is just outside the ellipse at the limb, making every
-    // tip look like water. Sample the nearest pixel still inside the face.
+    const waterBand = Math.max(6, Math.round(wall * 0.40));
+    wallBottom[i] = bottomY;
     const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
     const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
 
     for (let y = Math.ceil(frontY); y <= Math.floor(bottomY); y++) {
-      if (y < 0 || y >= VH || (x - cx) ** 2 + (y - cyBody) ** 2 > R * R) continue;
+      if (y < 0 || y >= VH) continue;
       const faceY = (y - cyTop) / ry;
       if (faceX * faceX + faceY * faceY <= 1) continue;
-      const t = clamp01((y - frontY) / Math.max(1, bottomY - frontY));
+      const depth = y - frontY;
       const light = quantise(0.70 + 0.30 * clamp01(faceX * KEY_X + 0.42), 0.08);
-      if (water) {
+      const fluidLayer = depth < waterBand || water;
+      if (fluidLayer) {
+        const t = clamp01(depth / Math.max(1, water ? (bottomY - frontY) : waterBand));
         const facet = x % 14 === 0 ? 0.20 : 0;
         g.fillStyle = css(shade(rgb(
           mix(pal.waterLip.r, pal.waterDeep.r, t),
@@ -596,51 +1080,210 @@ export function paintCutawayCrust(
           mix(pal.waterLip.b, pal.waterDeep.b, t),
         ), light + facet));
       } else {
+        const t = clamp01((depth - waterBand) / Math.max(1, bottomY - frontY - waterBand));
         const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
         g.fillStyle = css(shade(pal.strata[stripe], light));
       }
       g.fillRect(x, y, 1, 1);
     }
   }
+
+  // ── Jagged hanging keel ───────────────────────────────────────────────────
+  const raw = new Float32Array(cols);
+  for (let i = 0; i < cols; i++) {
+    const x = rimX0 + i;
+    const dxn = (x - cx) / rx;
+    // Flatter than a circle on purpose — a (1−x²)^0.78 bowl hugged the
+    // atmospheric shell and the underside read as a sphere again.
+    const keel = Math.pow(Math.max(0, 1 - dxn * dxn), 1.35);
+    const jag  = fbm1((x - cx) * 0.038, seed, 4) * 0.70
+               + fbm1((x - cx) * 0.14, seed + 77, 3) * 0.38
+               + fbm1((x - cx) * 0.48,  seed + 401, 2) * 0.22;
+    const spur = Math.sin(fbm1((x - cx) * 0.048, seed + 1234, 2) * Math.PI * 2.8) * 0.28;
+    const cleft = hash1(i * 17, seed + 5) > 0.82 ? -0.22 : 0;
+    raw[i] = Math.min(
+      crustH,
+      crustH * Math.max(0, 0.06 + keel * 0.52 + (jag - 0.5) * 0.78 + spur + cleft),
+    );
+  }
+
+  const prof = new Float32Array(cols);
+  for (let pass = 0; pass < 2; pass++) {
+    const src = pass === 0 ? raw : prof.slice();
+    for (let i = 0; i < cols; i++) {
+      const a = src[Math.max(0, i - 1)], b = src[i], c = src[Math.min(cols - 1, i + 1)];
+      prof[i] = (a + b * 2 + c) / 4;
+    }
+  }
+  for (let i = 0; i < cols; i++) {
+    const ledge = 2 + Math.round(fbm1(i * 0.035, seed + 909, 2) * 3);
+    prof[i] = Math.round(prof[i] / ledge) * ledge;
+  }
+  const terr = prof.slice();
+  for (let i = 1; i < cols - 1; i++) {
+    const a = terr[i - 1], b = terr[i], c = terr[i + 1];
+    prof[i] = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+  }
+
+  const bands = pal.strata.length;
+  const strataSpan = ry + wall + crustH;
+  for (let i = 0; i < cols; i++) {
+    const x = rimX0 + i;
+    const depth = prof[i];
+    if (depth < 2) continue;
+    const top = wallBottom[i];
+    const dxn = (x - cx) / rx;
+    const lit = 0.55 + 0.62 * clamp01(dxn * 0.9 + 0.45);
+
+    for (let y = 0; y < depth; y++) {
+      const absY = top + y;
+      if (absY < 0 || absY >= VH) continue;
+      const faceX = dxn;
+      const faceY = (absY - cyTop) / ry;
+      if (faceX * faceX + faceY * faceY <= 1) continue;
+
+      const t = y / depth;
+      const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.55
+                 + (fbm1(x * 0.075, seed + 733, 2) - 0.5) * 0.22;
+      const bandPos = clamp01((absY - cyTop) / strataSpan) * bands + wave;
+      const bi = Math.max(0, Math.min(bands - 1, Math.floor(bandPos)));
+      const ao = 1 - t * 0.26 - (y < 3 ? (3 - y) / 3 : 0) * 0.28;
+      const grain = 0.90 + hash1(x * 733 + y * 13, seed) * 0.20;
+      const streak = 0.94 + fbm1(x * 0.09 + y * 1.7, seed + 55, 2) * 0.14;
+      let f = lit * ao * grain * streak;
+      const frac = bandPos - Math.floor(bandPos);
+      if (frac < 0.07) f *= 0.68;
+      else if (frac < 0.16) f *= 1.12;
+      const ember = t > 0.78 && hash1(x * 179 + y * 991, seed + 19) > 0.986;
+      g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[bi], f));
+      g.fillRect(x, Math.round(absY), 1, 1);
+    }
+
+    if (dxn > 0.1) {
+      g.fillStyle = css(pal.ember, clamp01((dxn - 0.1) / 0.9) * 0.25);
+      g.fillRect(x, Math.round(top + depth) - 2, 1, 2);
+    }
+    g.fillStyle = 'rgba(2,2,6,0.55)';
+    g.fillRect(x, Math.round(top + depth) - 1, 1, 1);
+  }
 }
 
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
 
 /**
- * Live thick atmosphere: ring `R < dist <= R+T` with ^1.6 falloff, sun-side
- * 0.85 / shadow 0.28, plus a limb wrap on the last `max(5, round(0.08*R))`
- * of the sphere at alpha 0.22. Colour from `paletteFor(type).atmo`.
- *
- * Writes RGBA into an existing ImageData. Thickness is always `geom.T`.
+ * How much atmosphere to show at a given camera zoom.
+ * Full haze at 1×, gone by ~2.5× so a close look is just terrain.
+ */
+export function atmoHazeAmount(viewZoom = 1): number {
+  const t = Math.max(0, Math.min(1, (viewZoom - 1) / 1.5));
+  return (1 - t) * (1 - t);
+}
+
+/** How far the ozone limb feathers past the geometric rim, in native pixels. */
+const OZONE_FADE_PX = 8;
+
+/**
+ * Face² limit for a circle of radius `rx`. Wisps stay inside this so they
+ * cannot drift into the feathered limb.
+ */
+export function cakeAirLimit(rx: number, ry: number): number {
+  const inset = 1.25 / Math.max(1, Math.min(rx, ry));
+  const r = Math.max(0.5, 1 - inset);
+  return r * r;
+}
+
+/** True when (x,y) sits in the ozone half-dome (sky cap + thin tabletop air). */
+function ozoneAt(
+  x: number, y: number, geom: HabitableGeom, bob: number,
+  extraPx = 0,
+): { dome: number; face: number; dx: number; distPx: number } | null {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + bob;
+  const dx = (x - cx) / rx;
+  const distPx = Math.hypot(x - cx, y - cy);
+  if (distPx > rx + extraPx) return null;
+  if (y > cy + ry) return null;
+  const face = dx * dx + ((y - cy) / ry) * ((y - cy) / ry);
+  if (y > cy && face > 1) return null;
+  return { dome: (distPx / rx) * (distPx / rx), face, dx, distPx };
+}
+
+/**
+ * Ozone half-dome sitting on the pancake — thin when looking down, a limb
+ * against space that feathers out. `intensity` is usually {@link atmoHazeAmount}.
  */
 export function paintAtmosphere(
   img: ImageData, geom: HabitableGeom, planetType: HabitableType, bob: number,
+  sunAzimuth = 0,
+  intensity = 1,
+  tint?: RGB,
 ): void {
-  const { cx, R, T } = geom;
-  const cy = geom.cyBody + bob;
-  const atmo = paletteFor(planetType).atmo;
-  const atmoR = R + T;
+  if (intensity <= 0.01) return;
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + bob;
+  const pal = paletteFor(planetType);
+  const atmo = tint ?? pal.atmo;
+  const dens = pal.atmoDensity;
   const d = img.data;
   const w = img.width, h = img.height;
-  const limb = Math.max(5, Math.round(R * 0.08));
-  const y0 = Math.max(0, Math.floor(cy - atmoR));
-  const y1 = Math.min(h - 1, Math.ceil(cy + atmoR));
-  const x0 = Math.max(0, Math.floor(cx - atmoR));
-  const x1 = Math.min(w - 1, Math.ceil(cx + atmoR));
+  const sunX = Math.cos(sunAzimuth);
+  const fade = OZONE_FADE_PX;
+  const y0 = Math.max(0, Math.floor(cy - rx - fade));
+  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  const x0 = Math.max(0, Math.floor(cx - rx - fade));
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx + fade));
+  const sigma = fade * 1.15;
+  const twoSig = 2 * sigma * sigma;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      const dx = x - cx, dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      const hit = ozoneAt(x, y, geom, bob, fade);
+      if (!hit) continue;
+      const beyond = hit.distPx - rx;
+      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / fade);
+      if (edge < 0.02) continue;
+      const inside = Math.max(0, rx - hit.distPx);
+      const limb = Math.exp(-(inside * inside) / twoSig) * edge;
+      const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, 0.5 + hit.dx * sunX));
+      const glow = hit.face > 1
+        ? (0.07 + limb * 0.52) * lit * intensity * dens
+        : (0.03 + limb * 0.10) * lit * intensity * dens;
+      const a = Math.round(Math.min(255, glow * 255));
+      if (a < 3) continue;
       const o = (y * w + x) * 4;
-      if (dist > R && dist <= atmoR) {
-        const falloff = Math.pow(1 - (dist - R) / T, 1.6);
-        const glow = falloff * (dx / atmoR > -0.1 ? 0.85 : 0.28);
-        d[o] = atmo.r; d[o + 1] = atmo.g; d[o + 2] = atmo.b;
-        d[o + 3] = Math.round(glow * 255);
-      } else if (dist <= R && dist > R - limb) {
-        d[o] = atmo.r; d[o + 1] = atmo.g; d[o + 2] = atmo.b;
-        d[o + 3] = Math.round(0.22 * 255);
-      }
+      d[o] = atmo.r;
+      d[o + 1] = atmo.g;
+      d[o + 2] = atmo.b;
+      d[o + 3] = a;
+    }
+  }
+}
+
+/**
+ * Night veil on the pancake. `sunAzimuth` 0 lights the +x side; π flips it.
+ */
+export function paintDayNight(
+  img: ImageData, geom: HabitableGeom, sunAzimuth: number, layerBob: number,
+): void {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + layerBob;
+  const sunX = Math.cos(sunAzimuth);
+  const d = img.data;
+  const w = img.width, h = img.height;
+  const y0 = Math.max(0, Math.floor(cy - ry));
+  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  const x0 = Math.max(0, Math.floor(cx - rx));
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  for (let py = y0; py <= y1; py++) {
+    for (let px = x0; px <= x1; px++) {
+      const dx = (px - cx) / rx;
+      const dy = (py - cy) / ry;
+      if (dx * dx + dy * dy > 1) continue;
+      const day = clamp01(0.38 + dx * sunX * 0.90);
+      const night = 1 - day;
+      if (night < 0.06) continue;
+      const o = (py * w + px) * 4;
+      d[o] = 6; d[o + 1] = 8; d[o + 2] = 22;
+      d[o + 3] = Math.round(night * 0.58 * 255);
     }
   }
 }
@@ -653,12 +1296,131 @@ export function cutawayWaterSurf(type: HabitableType): {
 }
 
 /**
- * Live glitter water on occupancy pixels. Wave from diorama_test, sped up.
- * Only occupancy===1 inside the pancake at `cyTop + bob`. Opaque RGB, alpha 255.
+ * Distance from each water pixel to the nearest land on the pancake.
+ * Land seeds occupancy===0 inside the ellipse; BFS walks only water.
+ * Water that never meets land stays 0 (paintFluids falls back).
+ */
+export function bakeShoreDistance(
+  occupancy: Uint8Array, geom: HabitableGeom, w: number, h: number,
+): Float32Array {
+  const dist = new Float32Array(w * h);
+  const seen = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let head = 0, tail = 0;
+  const { cx, cyTop, rx, ry } = geom;
+  for (let y = 0; y < h; y++) {
+    const dy = (y - cyTop) / ry;
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (occupancy[i] !== 0) continue;
+      const dx = (x - cx) / rx;
+      if (dx * dx + dy * dy > 1) continue;
+      seen[i] = 1;
+      q[tail++] = i;
+    }
+  }
+  while (head < tail) {
+    const i = q[head++];
+    const x = i % w, y = (i / w) | 0;
+    for (let oy = -1; oy <= 1; oy++) {
+      const ny = y + oy;
+      if (ny < 0 || ny >= h) continue;
+      for (let ox = -1; ox <= 1; ox++) {
+        if (ox === 0 && oy === 0) continue;
+        const nx = x + ox;
+        if (nx < 0 || nx >= w) continue;
+        const ni = ny * w + nx;
+        if (occupancy[ni] !== 1 || seen[ni]) continue;
+        seen[ni] = 1;
+        dist[ni] = dist[i] + (ox !== 0 && oy !== 0 ? 1.414 : 1);
+        q[tail++] = ni;
+      }
+    }
+  }
+  // Two blur passes so wavefronts follow the coast instead of octagon rings.
+  const tmp = new Float32Array(dist);
+  for (let pass = 0; pass < 2; pass++) {
+    const src = pass === 0 ? dist : tmp;
+    const dst = pass === 0 ? tmp : dist;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        if (occupancy[i] !== 1) continue;
+        dst[i] = (
+          src[i] * 2
+          + src[i - 1] + src[i + 1] + src[i - w] + src[i + w]
+        ) / 6;
+      }
+    }
+  }
+  return dist;
+}
+
+/** 2-D smooth value noise → [0,1). */
+function noise2(x: number, y: number, seed: number): number {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const n = (ix: number, iy: number) => hash1(ix * 374761 + iy * 668265, seed);
+  const a = n(x0, y0), b = n(x0 + 1, y0);
+  const c = n(x0, y0 + 1), d = n(x0 + 1, y0 + 1);
+  return mix(mix(a, b, ux), mix(c, d, ux), uy);
+}
+
+/**
+ * Cheap Worley edge field — bright on cell boundaries, dark in pocket centres.
+ * Returns √F2 − √F1 style ridge strength in roughly [0, ~0.7].
+ */
+function cellRidge(x: number, y: number, seed: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  let f1 = 9, f2 = 9;
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      const jx = ix + ox, jy = iy + oy;
+      const px = jx + hash1(jx + jy * 113, seed);
+      const py = jy + hash1(jx * 57 + jy, seed + 19);
+      const ddx = x - px, ddy = y - py;
+      const d = ddx * ddx + ddy * ddy;
+      if (d < f1) { f2 = f1; f1 = d; }
+      else if (d < f2) f2 = d;
+    }
+  }
+  return Math.sqrt(f2) - Math.sqrt(f1);
+}
+
+/** Surface-wave tuning for the caustic (non-magma) fluid path. */
+const SWELL_K = 0.30;        // radians per px of shore distance → wavelength ≈ 21 px
+const SWELL_W = 1.6;         // radians per second at speed 1
+const SWELL_DISP_PX = 1.4;   // open-water texture displacement along the landward normal
+const SWELL_DISP_SHORE_PX = 2.8; // same, right at the coast (waves steepen as they shoal)
+const SWELL_BRIGHT_OPEN = 0.018;  // web-threshold swing per crest in open water
+const SWELL_BRIGHT_SHORE = 0.12;  // same at the coast
+const FOAM_REACH = 5.0;      // px of shore distance that gets the crash/foam band
+/** Beyond this shore distance, caustics fade toward a calm mid-blue body. */
+const CAUSTIC_FADE = 14;
+const WEB_GLINT = 0.028;     // √F2−√F1 below this → glint (thin line)
+const WEB_HALO = 0.055;      // base halo width; kept narrow so open water isn't busy
+
+/**
+ * Live water on occupancy pixels.
+ *
+ * Habitable oceans use cellular caustics — a sparse bright web with soft
+ * cyan halos over a mid-blue body. Open water stays mostly calm; detail and
+ * foam concentrate near coasts as the shore-bound swell crashes in.
+ *
+ * Motion is NOT a global drift: a swell travels along the baked shore-distance
+ * field toward smaller distance, so crests advance onto every coast from open
+ * water. Each crest displaces the web along the local landward normal (bounded
+ * travelling compression), and near land collapses into a foam band.
+ *
+ * Magma keeps its hotter travelling churn; ice/desert run the same caustic
+ * slower.
  */
 export function paintFluids(
   img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
   planetType: HabitableType, elapsed: number, layerBob: number,
+  shoreDist?: Float32Array | null,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
@@ -670,6 +1432,27 @@ export function paintFluids(
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
   const x0 = Math.max(0, Math.floor(cx - rx));
   const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  const hasShore = !!(shoreDist && shoreDist.length === w * h);
+  // Magma churns hotter/faster; ice melt is sluggish; desert oases barely breathe.
+  const speed =
+    planetType === 'lava' ? 2.35
+    : planetType === 'ice' ? 0.55
+    : planetType === 'desert' ? 0.35
+    : 1.0;
+  const useCaustic = planetType !== 'lava';
+  // Larger cells ⇒ sparser web (was ~0.078; smaller scale = bigger cells).
+  const cellScale = planetType === 'ice' ? 0.042 : planetType === 'desert' ? 0.055 : 0.048;
+  const seed = 0xca07 + (planetType.length * 97);
+  const omega = SWELL_W * speed;
+  // Slow bounded wobble of the web itself (refracted light shimmer). The warp
+  // fields orbit a fixed point instead of sliding, so nothing drifts globally:
+  // the only directed motion is the shore-bound swell below.
+  const wobT = t * 0.22 * speed;
+  const wobX = Math.sin(wobT) * 0.7, wobY = Math.cos(wobT * 0.77) * 0.7;
+  const wob2X = Math.cos(wobT * 0.61 + 1.3) * 0.5, wob2Y = Math.sin(wobT * 0.89) * 0.5;
+  const blobY = Math.sin(wobT * 0.5) * 0.9;
+  const invRx = 1 / rx, invRy = 1 / ry;
+
   for (let py = y0; py <= y1; py++) {
     for (let px = x0; px <= x1; px++) {
       const idx = py * w + px;
@@ -679,11 +1462,111 @@ export function paintFluids(
       const dy = (py - cy) / ry;
       const r2 = dx * dx + dy * dy;
       if (r2 > 1) continue;
-      const wave = Math.sin(r2 * 12 - t * 3.2) + Math.cos(px * 0.12 + py * 0.1 + t * 1.4) * 0.4;
+      const src = sourceY * w + px;
+      const shore = hasShore ? shoreDist![src] : 0;
+
       let c = pal.mid;
-      if (wave > 0.48) c = pal.glint;
-      else if (wave > 0.12) c = pal.light;
-      else if (wave < -0.55) c = pal.deep;
+      if (useCaustic) {
+        // Landward unit normal = −∇shoreDist. Neighbours outside the pancake
+        // carry no distance, so they fall back to our own value (one-sided
+        // difference) instead of dragging the normal toward the rim.
+        let nx = 0, ny = 0, toward = shore;
+        if (shore > 0) {
+          const sdy = (sourceY - geom.cyTop) * invRy;
+          const sE = px + 1 < w && (occupancy[src + 1] === 1 || (px + 1 - cx) * invRx * ((px + 1 - cx) * invRx) + sdy * sdy <= 1)
+            ? shoreDist![src + 1] : shore;
+          const sW = px - 1 >= 0 && (occupancy[src - 1] === 1 || (px - 1 - cx) * invRx * ((px - 1 - cx) * invRx) + sdy * sdy <= 1)
+            ? shoreDist![src - 1] : shore;
+          const sdyS = (sourceY + 1 - geom.cyTop) * invRy;
+          const sdyN = (sourceY - 1 - geom.cyTop) * invRy;
+          const sS = sourceY + 1 < h && (occupancy[src + w] === 1 || dx * dx + sdyS * sdyS <= 1)
+            ? shoreDist![src + w] : shore;
+          const sN = sourceY - 1 >= 0 && (occupancy[src - w] === 1 || dx * dx + sdyN * sdyN <= 1)
+            ? shoreDist![src - w] : shore;
+          const gx = sE - sW, gy = sS - sN;
+          const gl = Math.sqrt(gx * gx + gy * gy);
+          if (gl > 1e-4) { nx = -gx / gl; ny = -gy / gl; }
+        }
+        if (nx === 0 && ny === 0) {
+          // No coast information (or on the equidistant ridge between two
+          // coasts): run the swell toward the pancake centre instead.
+          const rl = Math.sqrt(r2) || 1;
+          nx = -dx / rl; ny = -dy / rl;
+          if (shore <= 0) toward = rl * rx;
+        }
+
+        // How loud the caustic is: 1 at the beach, ~0 in open water.
+        const detail = hasShore && shore > 0
+          ? clamp01(1 - Math.max(0, shore - FOAM_REACH * 0.35) / CAUSTIC_FADE)
+          : 0.35;
+        const detail2 = detail * detail;
+
+        // Travelling swell: constant phase moves to SMALLER shore distance.
+        const ph = toward * SWELL_K + t * omega;
+        const sw = Math.sin(ph);
+        const nearShore = hasShore && shore > 0 ? clamp01(1 - shore / FOAM_REACH) : 0;
+        const shoal = nearShore * nearShore;
+        const dispPx = (SWELL_DISP_PX + (SWELL_DISP_SHORE_PX - SWELL_DISP_PX) * shoal) * (0.45 + 0.55 * detail);
+        const disp = Math.cos(ph) * dispPx * cellScale;
+
+        // Web domain: pixel → cell space, pushed along the landward normal by
+        // the passing crest, then softly warped so walls curve like refracted light.
+        const bx = px * cellScale + nx * disp;
+        const by = py * cellScale + ny * disp;
+        const warp = noise2(bx * 0.45 + wobX, by * 0.45 + wobY, seed + 3);
+        const qx = bx + (warp - 0.5) * 1.5;
+        const qy = by + (warp - 0.5) * 1.5;
+        // Same cell lattice sampled through a second, differently-warped lens:
+        // the two walls coincide in most places and braid apart elsewhere.
+        const warp2 = noise2(bx * 0.9 + wob2X + 7.7, by * 0.9 + wob2Y, seed + 5);
+        const b1 = cellRidge(qx, qy, seed);
+        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02;
+        let b = b1 < b2 ? b1 : b2;
+        const grain = noise2(px * 0.23, py * 0.23, seed + 11);
+        b += (grain - 0.5) * 0.035;
+        const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
+        // Narrow halo; open water barely gets the pale patch treatment.
+        const blob = noise2(px * 0.07 + 3.1, py * 0.07 + blobY, seed + 23);
+        const halo = (WEB_HALO + Math.max(0, blob - 0.72) * 0.22 + swell * 0.9)
+                   * (0.35 + 0.65 * detail);
+
+        // Stricter glint in open water so the web thins out away from land.
+        const glintCut = WEB_GLINT + swell * 0.25 + (1 - detail) * 0.045;
+        if (b < glintCut && detail2 > 0.12) c = pal.glint;
+        else if (b < halo && detail > 0.25) c = pal.light;
+        else {
+          // Depth ramp: shelf stays mid-blue; far from land → deep navy.
+          const depth = hasShore && shore > 0
+            ? clamp01((shore - 2.5) / 16)
+            : clamp01(Math.sqrt(r2) * 1.15);
+          if (depth > 0.72) c = pal.deep;
+          else if (depth > 0.38) c = (grain * 0.55 + depth) > 0.72 ? pal.deep : pal.mid;
+          else c = pal.mid;
+
+          // Whisper web on deep water: rare pale crests only (never bright glint).
+          // Keeps the navy readable while still showing faint wave lines.
+          if (depth > 0.35 && b < WEB_GLINT + 0.012 + swell * 0.15) {
+            c = pal.light;
+          }
+        }
+
+        // Shore crash: the crest piles up on the coast as a dithered foam band.
+        if (nearShore > 0) {
+          const foam = sw * (0.35 + nearShore * 0.85) + nearShore * 1.05 - 0.9 + (grain - 0.5) * 0.55;
+          if (foam > 0.28) c = pal.glint;
+          else if (foam > -0.05 && c !== pal.glint) c = pal.light;
+        }
+      } else {
+        // Magma: keep travelling swell + hot glint.
+        const toward = shore > 0 ? shore : Math.sqrt(r2) * rx;
+        const drift = Math.sin(px * 0.055 - py * 0.04) * 2.4;
+        const wave = Math.sin((toward + drift) * 0.22 + t * 1.15 * speed)
+                   + Math.cos((toward + drift) * 0.09 + t * 0.42 * speed) * 0.35;
+        if (wave > 0.48) c = pal.glint;
+        else if (wave > 0.22) c = pal.light;
+        else if (wave < -0.55) c = pal.deep;
+      }
+
       let cr = c.r, cg = c.g, cb = c.b;
       if (r2 > 0.94) {
         cr = Math.min(255, cr + 45);
@@ -772,6 +1655,10 @@ export interface HabitableFrameInput {
   drawOverlays: (g: CanvasRenderingContext2D) => void;
   drawNearMoons: (g: CanvasRenderingContext2D) => void;
   weatherMix: Array<{ kind: string; weight: number }>;
+  /** Local day angle in radians; 0 lights the +x limb. */
+  sunAzimuth?: number;
+  /** CSS camera zoom; atmosphere dissolves as this rises. */
+  viewZoom?: number;
 }
 
 interface Wisp {
@@ -787,6 +1674,9 @@ const WISP_COLOURS: Record<string, { body: RGB; under: RGB }> = {
   storm: { body: rgb(132, 150, 178), under: rgb(55, 66, 88) },
   ash: { body: rgb(168, 150, 140), under: rgb(78, 62, 58) },
   smog: { body: rgb(174, 156, 118), under: rgb(90, 76, 54) },
+  pollution: { body: rgb(174, 156, 118), under: rgb(90, 76, 54) },
+  acid: { body: rgb(190, 210, 80), under: rgb(90, 110, 40) },
+  nebula: { body: rgb(180, 140, 220), under: rgb(90, 50, 140) },
   ice_haze: { body: rgb(225, 244, 255), under: rgb(138, 180, 208) },
 };
 
@@ -797,18 +1687,26 @@ const WISP_COLOURS: Record<string, { body: RGB; under: RGB }> = {
 export class HabitableCutawayEngine {
   geom: HabitableGeom = habitableGeom(1, 1);
   occupancy = new Uint8Array(1);
+  shoreDist = new Float32Array(1);
   pick = new Int32Array(1);
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
   private atmoScratch = document.createElement('canvas');
   private fluidScratch = document.createElement('canvas');
+  private wispScratch = document.createElement('canvas');
+  private airMask = document.createElement('canvas');
+  private atmoG: CanvasRenderingContext2D | null = null;
+  private wispG: CanvasRenderingContext2D | null = null;
   private atmoImage: ImageData | null = null;
   private fluidImage: ImageData | null = null;
   private surfaceBakeOpts: CutawayBakeOpts | null = null;
   private w = 1;
   private h = 1;
   private planetType: HabitableType = 'ocean';
+  private seed = 1;
+  private gasBands: RGB[] = [];
+  private hasRing = false;
   private elapsed = 0;
   private wisps: Wisp[] = [];
   private lastWispSig = '';
@@ -832,21 +1730,32 @@ export class HabitableCutawayEngine {
     this.h = Math.max(1, Math.round(opts.h));
     this.geom = habitableGeom(this.w, this.h);
     this.planetType = opts.planetType;
+    this.seed = opts.seed;
     this.elapsed = 0;
     this.occupancy = new Uint8Array(this.w * this.h);
+    this.shoreDist = new Float32Array(this.w * this.h);
     this.pick = new Int32Array(this.w * this.h);
     this.wisps = [];
     this.lastWispSig = '\0';
+    if (opts.planetType === 'gas') {
+      this.gasBands = makeGasBands(opts.seed);
+      this.hasRing = ((opts.seed >>> 5) & 3) !== 0; // ~75%
+    } else {
+      this.gasBands = [];
+      this.hasRing = false;
+    }
     this.resizeLayers(this.w, this.h);
     const bakeOpts: CutawayBakeOpts = {
       ...opts, ...this.geom, w: this.w, h: this.h,
       occupancy: this.occupancy, pick: this.pick,
+      gasBands: this.gasBands.length ? this.gasBands : null,
     };
     this.surfaceBakeOpts = bakeOpts;
     const crustG = this.crust.getContext('2d');
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, bakeOpts);
+    this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
     this.rebuildWisps(opts.weatherMix ?? []);
   }
 
@@ -854,6 +1763,7 @@ export class HabitableCutawayEngine {
   rebakeSurface(): void {
     const landG = this.land.getContext('2d');
     if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.surfaceBakeOpts);
+    this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
   }
 
   frame(input: HabitableFrameInput): void {
@@ -865,28 +1775,49 @@ export class HabitableCutawayEngine {
 
     g.drawImage(input.bg, 0, 0);
     input.drawFarSpace(g);
-    const atmo = this.atmoImage;
-    if (!atmo) return;
-    atmo.data.fill(0);
-    paintAtmosphere(atmo, this.geom, this.planetType, bob);
-    const atmoG = this.atmoScratch.getContext('2d');
-    if (atmoG) {
-      atmoG.putImageData(atmo, 0, 0);
-      g.drawImage(this.atmoScratch, 0, 0);
-    }
+    const sunAzimuth = input.sunAzimuth ?? 0;
+    if (this.planetType === 'gas') this.drawGasRings(g, true, bob);
     g.drawImage(this.crust, 0, layerBob);
     g.drawImage(this.land, 0, layerBob);
     const fluids = this.fluidImage;
-    if (!fluids) return;
-    fluids.data.fill(0);
-    paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, layerBob);
-    const fluidG = this.fluidScratch.getContext('2d');
-    if (fluidG) {
-      fluidG.putImageData(fluids, 0, 0);
-      g.drawImage(this.fluidScratch, 0, 0);
+    if (fluids) {
+      fluids.data.fill(0);
+      paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist);
+      const fluidG = this.fluidScratch.getContext('2d');
+      if (fluidG) {
+        fluidG.putImageData(fluids, 0, 0);
+        g.drawImage(this.fluidScratch, 0, 0);
+        fluids.data.fill(0);
+        paintDayNight(fluids, this.geom, sunAzimuth, layerBob);
+        fluidG.putImageData(fluids, 0, 0);
+        g.drawImage(this.fluidScratch, 0, 0);
+      }
     }
     input.drawOverlays(g);
-    this.drawWisps(g, elapsed, bob);
+    const haze = atmoHazeAmount(input.viewZoom ?? 1);
+    const atmo = this.atmoImage;
+    const atmoG = this.atmoG;
+    if (atmo && atmoG && haze > 0.01) {
+      // putImageData-only on this canvas — mixing drawImage here forces a
+      // software rasterizer and the preview drops to ~1 fps.
+      atmo.data.fill(0);
+      const gasTint = this.planetType === 'gas' && this.gasBands.length
+        ? averageBands(this.gasBands)
+        : undefined;
+      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint);
+      atmoG.putImageData(atmo, 0, 0);
+      g.drawImage(this.atmoScratch, 0, 0);
+    }
+    const wispG = this.wispG;
+    if (wispG && haze > 0.01 && this.wisps.length > 0) {
+      wispG.clearRect(0, 0, this.w, this.h);
+      this.drawWisps(wispG, elapsed, bob, sunAzimuth, haze);
+      wispG.globalCompositeOperation = 'destination-in';
+      wispG.drawImage(this.airMask, 0, 0);
+      wispG.globalCompositeOperation = 'source-over';
+      g.drawImage(this.wispScratch, 0, 0);
+    }
+    if (this.planetType === 'gas') this.drawGasRings(g, false, bob);
     input.drawNearMoons(g);
 
     const vig = g.createRadialGradient(
@@ -897,6 +1828,37 @@ export class HabitableCutawayEngine {
     vig.addColorStop(1, 'rgba(0,0,0,0.55)');
     g.fillStyle = vig;
     g.fillRect(0, 0, this.w, this.h);
+  }
+
+  /**
+   * Saturn-style rings around the pancake: back half behind the body, front
+   * half after atmosphere (same ellipse-clip logic as legacy bakeGasGiant).
+   */
+  private drawGasRings(g: CanvasRenderingContext2D, back: boolean, bob: number): void {
+    if (!this.hasRing || this.gasBands.length === 0) return;
+    const { cx, rx } = this.geom;
+    const cy = this.geom.cyTop + bob;
+    const VW = this.w, VH = this.h;
+    const ringInner = rx * 1.28, ringOuter = rx * 1.92, ringRy = 0.20;
+    const bands = this.gasBands;
+    const seed = this.seed;
+    g.save();
+    g.beginPath();
+    g.rect(0, back ? 0 : cy, VW, back ? cy : VH - cy);
+    g.clip();
+    for (let rr = ringInner; rr < ringOuter; rr += 1) {
+      const t = (rr - ringInner) / (ringOuter - ringInner);
+      const gap = fbm1(t * 9, seed + 21, 3);
+      const a = (0.14 + gap * 0.42) * (1 - Math.abs(t - 0.45) * 0.85);
+      if (a <= 0.01) continue;
+      const c = bands[Math.floor(t * bands.length) % bands.length];
+      g.strokeStyle = css(shade(c, 1.25), a);
+      g.lineWidth = 1;
+      g.beginPath();
+      g.ellipse(cx, cy, rr, rr * ringRy, -0.12, 0, Math.PI * 2);
+      g.stroke();
+    }
+    g.restore();
   }
 
   hitTest(px: number, py: number): { row: number; col: number } | null {
@@ -912,10 +1874,30 @@ export class HabitableCutawayEngine {
     this.land.width = w; this.land.height = h;
     this.atmoScratch.width = w; this.atmoScratch.height = h;
     this.fluidScratch.width = w; this.fluidScratch.height = h;
-    const atmoG = this.atmoScratch.getContext('2d');
+    this.wispScratch.width = w; this.wispScratch.height = h;
+    this.airMask.width = w; this.airMask.height = h;
+    this.atmoG = this.atmoScratch.getContext('2d');
+    this.wispG = this.wispScratch.getContext('2d');
     const fluidG = this.fluidScratch.getContext('2d');
-    this.atmoImage = atmoG?.createImageData(w, h) ?? null;
+    this.atmoImage = this.atmoG?.createImageData(w, h) ?? null;
     this.fluidImage = fluidG?.createImageData(w, h) ?? null;
+    this.bakeAirMask();
+  }
+
+  /** Hard pixel half-dome used to stamp wisps without a GPU readback. */
+  private bakeAirMask(): void {
+    const g = this.airMask.getContext('2d');
+    if (!g) return;
+    const img = g.createImageData(this.w, this.h);
+    const d = img.data;
+    for (let y = 0; y < this.h; y++) {
+      for (let x = 0; x < this.w; x++) {
+        if (!ozoneAt(x, y, this.geom, 0)) continue;
+        const o = (y * this.w + x) * 4;
+        d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
   }
 
   private rebuildWisps(weatherMix: Array<{ kind: string; weight: number }>): void {
@@ -941,8 +1923,8 @@ export class HabitableCutawayEngine {
       const width = stream.range(this.geom.rx * 0.22, this.geom.rx * 0.62);
       const height = width * stream.range(0.09, 0.17);
       return {
-        x: this.geom.cx + stream.range(-this.geom.R, this.geom.R),
-        y: this.geom.cyTop + stream.range(-this.geom.ry * 0.3, this.geom.R * 0.7),
+        x: this.geom.cx + stream.range(-this.geom.rx * 0.72, this.geom.rx * 0.72),
+        y: this.geom.cyTop + stream.range(-this.geom.rx * 0.78, this.geom.ry * 0.35),
         speed: stream.range(2.5, 7),
         alpha: stream.range(0.25, 0.58),
         sprite: makeWispSprite(width, height, stream.int(1, 1 << 20), colour.body, colour.under),
@@ -950,21 +1932,18 @@ export class HabitableCutawayEngine {
     });
   }
 
-  private drawWisps(g: CanvasRenderingContext2D, elapsed: number, bob: number): void {
-    const { cx, cyBody, R, T } = this.geom;
-    const radius = R + T;
-    g.save();
-    g.beginPath();
-    g.arc(cx, cyBody + bob, radius, 0, Math.PI * 2);
-    g.clip();
+  private drawWisps(
+    g: CanvasRenderingContext2D, elapsed: number, bob: number, sunAzimuth: number, intensity = 1,
+  ): void {
+    const { cx, rx } = this.geom;
     for (const wisp of this.wisps) {
-      const span = radius * 2;
-      const x = ((wisp.x + elapsed * wisp.speed - (cx - radius)) % span + span) % span + cx - radius;
-      g.globalAlpha = wisp.alpha;
+      const span = rx * 2;
+      const drift = elapsed * wisp.speed + sunAzimuth * rx * 0.35;
+      const x = ((wisp.x + drift - (cx - rx)) % span + span) % span + cx - rx;
+      g.globalAlpha = wisp.alpha * intensity;
       g.drawImage(wisp.sprite, Math.round(x - wisp.sprite.width / 2), Math.round(wisp.y + bob - wisp.sprite.height / 2));
     }
     g.globalAlpha = 1;
-    g.restore();
   }
 }
 

@@ -5,7 +5,7 @@
 import type { BiologyPhase } from './simulation/GameState';
 
 // ─── Universe / Rendering ──────────────────────────────────────────────────
-export const WORLD_SIZE       = 3200;   // world-space extent — the universe is centred in this square
+export const WORLD_SIZE       = 5600;   // world-space extent — larger disc so galaxies sit in real void
 export const INFLATION_TICKS  = 240;    // frames for Big Bang inflation phase
 export const MAX_SPEED        = 5.0;    // initial shrapnel spread speed
 

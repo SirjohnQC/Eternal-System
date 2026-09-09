@@ -3,62 +3,60 @@
 
 ---
 
-## ⟢ CURRENT STATUS — last updated 2026-09-04
+## ⟢ CURRENT STATUS — last updated 2026-09-06
 
-**Everything green:** `tools/smokeTest.ts` 51/51 · `tools/roadmapAudit.ts` 78/78
-consistent · `tsc --noEmit` clean · `npm run build` passes.
+**Everything green:** `tools/smokeTest.ts` · `tools/playerProgressCheck.ts` ·
+`tools/collisionCheck.ts` · `tools/galaxyZoomCheck.ts` ·
+`tools/cosmicSpacingCheck.ts` · `tools/framePacingCheck.ts` ·
+`tools/remnantCensusCheck.ts` · `tools/bigBangWarmCheck.ts` ·
+`tools/habitableDioramaCheck.ts` · `tsc --noEmit` clean.
 
 Run the game with `npm run dev`. Dev shortcuts: `?dev=1` (skip the D20 ritual),
-`?dev=1&view=home` (straight to the home world), `/diorama-preview.html`.
+`?dev=1&view=home` (straight to the home world), `?fps=1` / `?dev=1` (FPS chip),
+`/diorama-preview.html`. Measure frame rate in a real browser (Edge/Chrome), not
+the Cursor embed — that tab often caps ~45fps.
 
-### Done this session
-- **M20d** — fixed the Great Filter lock (`BUG.md`): the player's species could
-  sit at `primitive` permanently, and no amount of DNA spending changed it. Root
-  cause was `filterChance` reaching probability 1.0 — a genuinely absorbing
-  state, measured at 0 advances in 100,000 rolls.
-- **M22 — all eleven `IDEA.md` items**, each with a measuring tool. Terraced
-  terrain, a state-driven cloud engine, divine-power animations, a whole-planet
-  surface map with species interaction, an escalating one-branch-at-a-time DNA
-  economy, archetype-driven species placement, a pixel-art Evolution Lab, a
-  searchable Codex of species and flora, real moons, collision supernovae with
-  civilisation exodus, and galaxies with zoom tiers.
-- **M19 rewritten** — the home-world diorama was locking the browser tab (23k Pixi
-  draw calls per frame). Now Canvas 2D at 0.37 ms/frame, matching the reference art.
-- **M19b** — life across the universe is unpredictable (habitability, biochemistry
-  archetypes, per-world tempo, Great Filters).
-- **M19c** — the universe is a disc, not a square; stars now form as well as die.
-- **M20** — planet tiles are clickable, with local divine actions.
-- **M20b** — the biosphere is visible: creatures and settlements drawn from real
-  genomes. Building this exposed that life had never actually spread.
-- **M20c** — evolution engine rewritten; DNA branches are rolled per universe.
+### Done this session (2026-09-06 — habitable diorama cutaway, Phase 1)
+- **`src/rendering/HabitableCutawayEngine.ts`** — new bake pipeline for
+  earth-likes matching `assets/mockups/habitable-diorama-target.png`: circular
+  body silhouette, flat biome tabletop, water column with cylinder facets,
+  horizontal rock strata, ember core, thin atmosphere shell.
+- **Ocean + rocky worlds switched over.** `IsoDioramaRenderer` gates on
+  `habitable`; the soft pulsing halo and the glass dome are skipped for them.
+  Lava / ice / gas stay on the legacy floating-disc bake — **Phase 2**.
+- Guard: `tools/habitableDioramaCheck.ts` (layers non-empty, no crust outside
+  the silhouette or above the cut face, pick buffer populated).
+
+### Done this session (2026-09-06 — M25 follow-up / density + pace)
+- **Hard spacing** — `MIN_STAR_SEPARATION = 360`; inflation snaps to spaced
+  targets; `tools/cosmicSpacingCheck.ts` guards islands + readable orrery years.
+- **Orbit speed** — `PLANET_ORBIT_MU` slowed so 1× years are minutes, not seconds.
+- **120Hz+ pacing** — sim + `animTick` are wall-clock (1× ≈ 1 tick/s; anim ≈ 60/s
+  at any refresh). Settings → Frame Rate: 30 / 60 / 120 / Unlimited.
+- **Perf** — Pixi viewport cull, fog cache, DPR cap 1×, adaptive LOD when frame
+  budget is tight; Big Bang loading + texture/galaxy precache.
+- **Denser census + remnants** — `18 + life×2.1` → ~20–60 systems; morph-weighted
+  galaxy shares; primordial + post-supernova/merger remnants (white dwarf /
+  neutron / black hole) with husk planets. Guard: `tools/remnantCensusCheck.ts`.
 
 ### Where to pick up next
 Ordered by what unblocks the most:
 
-1. **A passive player's world often stalls at microbial** — 5 seeds in 10 leave
-   it. The control shows this is **pre-existing**, not introduced by M22: with
-   collision supernovae switched off entirely it was 1 in 6. Whether that is
-   correct is a design call. It is the Great Filter doing exactly what M20d
-   built it to do, and a player who actually spends DNA or nudges gets through
-   (4/6 and 6/6 respectively), so it may be working as intended. Measure with
-   `tools/playerProgressCheck.ts` before changing anything.
-2. **Universe liveliness is ~81% of its pre-M22 level for living worlds** (15.4
-   against ~19) and ~60% for intelligent ones (3.4 against ~5.7) — the cost of
-   galaxies clustering stars together. Recoverable further by loosening galaxy
-   radius, at the price of the clumping becoming illegible. See the table in
-   M22b for the measured trade.
-3. **Faith cards** (M24) — queued behind the pixel-art pass it depends on.
+1. **UI rework leftovers** — Codex modal restyle; optional polish on
+   Nyx / help overlays. Settings (CRT runtime config), view chrome, and
+   simulation boot console shipped 2026-09-06.
+2. **Deferred M25 bugs** — species pattern stuck; home-world vs planet view
+   (see `BUG.md`).
+3. **Faith cards** (M24) — gated on the pixel-art pass.
 4. **Reconcile the evolution phase count** (M21). `EVOLUTION_SYSTEM.md` specifies 7
-   phases; `BIO_PHASE_SEQUENCE` has 5. This touches `LifeSystem.BASE_FILTER`,
-   `BIO_PHASE_TICKS`, and every phase-indexed piece of UI. It is the prerequisite
-   for the LLM-driven civilisation work, so do it before that.
-5. **LLM-driven culture** (M21, `CIVILIZATION_SYSTEM.md`) — generate government,
-   ideology and mythology from the species' actual evolved DNA. Now viable because
-   species genuinely differ; it would have been meaningless before M20c.
+   phases; `BIO_PHASE_SEQUENCE` has 5.
+5. **M26** — player-facing clarity (exoplanets, multi-species DNA, vegetation,
+   map legend, persistent supernova dust…).
 6. **M20 leftovers** — subterranean data layer; BiosphereRenderer compositing.
-7. **M8b performance** — spatial index for the O(n²) gravity loop, texture-cache
-   eviction, frame-budget enforcement. Not yet a real problem: the sim runs at
-   ~0.14 ms/tick and the diorama at 0.37 ms/frame.
+7. **Diorama cutaway Phase 2** — bring ice, lava, gas and a barren-ocean variant
+   onto `HabitableCutawayEngine` (each needs its own strata / shell palette; gas
+   needs no cutaway at all). Then: authored prop sprites (ships, castles) and
+   craggier cliff silhouettes on the crust.
 
 ### Deliberate gaps, not bugs
 - `BiosphereRenderer` is still wired only to the old `PlanetRenderer`.
@@ -68,7 +66,9 @@ Ordered by what unblocks the most:
 ---
 
 
-> **Tech note**: Three.js was removed early due to blank-screen issues. All rendering is pure Canvas 2D API. No WebGL/shader-based milestones apply until a Canvas → WebGL migration is planned.
+> **Tech note**: Universe view is **Pixi.js v8 (WebGL)** + a transparent Canvas 2D
+> overlay for fog / beacons. Planet diorama stays Canvas 2D. Three.js is gone;
+> do not reintroduce it.
 
 ---
 
@@ -1600,32 +1600,80 @@ data behind it.
 
 ---
 
-## MILESTONE 25: Cosmic Spacing and Collision Tuning (Planned)
+## MILESTONE 25: Cosmic Spacing and Collision Tuning ✅
 Raised by Sirjohn 2026-09-05: *"Planets and galaxies are way too close, they
-all finish by collapsing to the same solar system."*
+all finish by collapsing to the same solar system."* Built 2026-09-05
+(cosmology only — side bugs deferred).
 
-**This is the same root cause as the one failing check in the suite.**
-`tools/playerProgressCheck.ts` asserts that a reasonable share of seeds see a
-passive player's world advance past microbial, and it fails at 3/12. An earlier
-measurement recorded ~1 in 6 seeds stalling with collision supernovae OFF
-against about half with them ON. Stars drift together, collide, and reset
-worlds to magma faster than biology can climb. The player sees a collapsing
-cosmos; the metric sees a stalled biosphere; it is one problem.
+**Same root cause as the failing `playerProgressCheck`.** Stars packed into
+galaxies drifted together under gravity, merged, and reset the player's world
+to magma faster than biology could climb. Baseline before this milestone:
+**3/12** seeds advanced past microbial, **87** player-world catastrophes.
+After: **7/12** advanced, **34** catastrophes. Galaxies still clump
+(72% tighter than random, `galaxyZoomCheck`). Collisions still fire
+(83 supernovae in `collisionCheck`). `COLLISION_SUPERNOVA_MASS` left at 19 —
+the drama was fine; the packing was not.
 
-- [ ] Star and galaxy placement — spacing that survives long runs
-- [ ] Revisit `COLLISION_SUPERNOVA_MASS` and the drift model
-- [ ] Planets that are genuinely too close SHOULD collide — keep the drama,
-      lose the universal collapse
-- [ ] Re-measure `playerProgressCheck` across 12 seeds, with a control run at
-      collisions disabled so the two numbers are comparable
+**Sparse-cosmos follow-up (same day):** Sirjohn still found galaxies/systems
+visually shoulder-to-shoulder after the Big Bang. Disc enlarged
+(`WORLD_SIZE` 3200→5600), galaxy envelopes shrunk to ~⅓ of neighbour spacing,
+star census cut (~20–68), min star separation raised, universe zoom pulled
+back. Measured voids between envelopes ~1600–3200; clustering 93% tighter
+than random. Progress check still healthy (6/6 on a probe).
 
-**Do not fix this in `LifeSystem.ts`.** The metric has been tuned against three
-times already as though it were a biology-tempo problem. It is a cosmology
-problem and the fix belongs in `BigBangEngine.ts`.
+**Orbital drift follow-up:** pairwise gravity made every system fall into the
+heaviest neighbour. Replaced with kinematic galactic orbits — stars swirl
+around their galaxy centre at a fixed mean radius (mild eccentricity), and
+only merge on near-contact. Damping removed (it killed orbital speed). Newborn
+systems from supernovae join the nearest galaxy on a proper orbit.
 
-### Also reported 2026-09-05
+- [x] Star placement — `MIN_STAR_SEPARATION` rejection sampling inside each galaxy
+- [x] Drift model — weaker gravity (`0.005`), shorter range (`140`), more damping
+      (`0.986`), slightly tighter merge radius (`1.08`)
+- [x] Collisions kept — mergers and supernovae still happen; the cosmos no longer
+      collapses into one system as the default end state
+- [x] Re-measure `playerProgressCheck` (12 seeds) + `collisionsEnabled` control
+      flag for collisions-off runs (`node …/pp.mjs 12 400000 off|both`).
+      Control (6 seeds, collisions off): **6/6** advanced, **0** catastrophes —
+      confirms the remaining stalls with collisions on are collision-driven, not
+      a biology lock.
+
+**Do not fix this in `LifeSystem.ts`.** Confirmed: the metric moved by changing
+only `BigBangEngine.ts` cosmology constants and placement.
+
+### Deferred from M25 (still open)
 - [ ] Evolving species get stuck on the same pattern
 - [ ] Home-world view not in sync with the planet view
+
+---
+
+## MILESTONE 25b: Density, Remnants, and High-Refresh Pace ✅
+Raised by Sirjohn 2026-09-06 after M25: systems still felt sparse / too fast at
+high Hz; dead stars vanished; 240Hz displays wanted ≥120fps without 4× sim speed.
+
+**Census + morphology**
+- [x] Star pool `18 + life×2.1` → ~20–60 systems (was ~11–37 after the sparse cut)
+- [x] Morph-weighted membership — elliptical/lenticular denser, irregular sparse
+      (`galaxyMorphWeight`)
+- [x] Wider envelopes so `MIN_STAR_SEPARATION` still holds at the higher count
+
+**Dead systems (spawn + events)**
+- [x] Primordial remnants (~8–15%, entropy-weighted) — never the player sun
+- [x] `remnantKind`: white dwarf / neutron / black hole; husk planets (`planet.isDead`)
+- [x] Supernova / merger leave a visible remnant + husks (Pixi + Canvas), not a void
+- [x] Remnants still ride galactic orbits; life/civ/collision logic skips them
+
+**Pacing + settings**
+- [x] Wall-clock sim (`1×` ≈ 1 tick/s) and `animTick` (~60/s) at any refresh
+- [x] Settings → Frame Rate: 30 / 60 / 120 / Unlimited (`localStorage`)
+- [x] Orrery years slowed (`PLANET_ORBIT_MU`) so 1× is watchable
+
+**Performance**
+- [x] Pixi frustum cull, fog rebuild cache, DPR capped at 1×, adaptive LOD
+- [x] Big Bang loading overlay + `warmStarTextures` / `warmVisualCaches`
+
+**Guards:** `tools/cosmicSpacingCheck.ts`, `tools/framePacingCheck.ts`,
+`tools/remnantCensusCheck.ts`, `tools/bigBangWarmCheck.ts`.
 
 ---
 
@@ -1642,6 +1690,7 @@ Ideas raised by Sirjohn 2026-09-05, grouped by what they actually change.
 - [ ] Solar systems should have exoplanets
 - [ ] A supernova should leave a star-dust cloud that persists for a very long
       time, rather than fading immediately
+      *(Remnant corpse + husk planets shipped in M25b; long-lived dust nebula still open.)*
 
 **Presentation**
 - [ ] Reshade planets, suns and stars, and allow closer zoom, so their scale

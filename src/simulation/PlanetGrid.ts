@@ -153,14 +153,92 @@ function fbmWrapX(
 
 export const SEA_LEVEL = 0.48;
 
+/** Soft cap on oceanCoverage per planet type (grid elevation bias). */
+const TYPE_OCEAN_COVERAGE: Record<string, number> = {
+  ocean:   0.88,
+  rocky:   0.55,
+  ice:     0.28,
+  lava:    0.42,
+  gas:     0.0,
+  desert:  0.12,
+  carbon:  0.18,
+  crystal: 0.22,
+  storm:   0.50,
+  toxic:   0.72,
+};
+
 export function classifyBiome(
   elev: number, moist: number, temp: number,
   planetType: string,
 ): BiomeType {
   // Planet-type overrides
-  if (planetType === 'lava') return 'volcanic';
-  if (planetType === 'ice')  return elev > 0.65 ? 'snow' : 'tundra';
-  if (planetType === 'gas')  return 'ocean'; // gas giants: treat as pure ocean
+  if (planetType === 'lava') {
+    // Magma lakes in the low basins; basalt/peaks elsewhere.
+    if (elev < SEA_LEVEL - 0.06) return 'ocean';
+    if (elev < SEA_LEVEL)        return 'shallow';
+    if (elev > 0.74) return 'mountain';
+    return 'volcanic';
+  }
+  if (planetType === 'ice') {
+    // Thin cold seas only in the deepest basins; ice sheet everywhere else.
+    if (elev < SEA_LEVEL - 0.22) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.16) return 'ocean';
+    if (elev < SEA_LEVEL - 0.12) return 'shallow';
+    if (elev > 0.65) return 'snow';
+    return 'tundra';
+  }
+  if (planetType === 'gas')  return 'ocean'; // gas giants: banded tabletop paints over this
+
+  if (planetType === 'desert') {
+    // Almost dry — only the deepest sinks become rare oases.
+    if (elev < SEA_LEVEL - 0.26) return 'ocean';
+    if (elev < SEA_LEVEL - 0.20) return moist > 0.78 ? 'shallow' : 'beach';
+    if (elev > 0.82) return 'mountain';
+    if (moist < 0.42) return 'desert';
+    return 'savanna';
+  }
+
+  if (planetType === 'carbon') {
+    if (elev < SEA_LEVEL - 0.28) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.22) return 'ocean';
+    if (elev > 0.78) return 'mountain';
+    return moist > 0.50 ? 'tundra' : 'desert';
+  }
+
+  if (planetType === 'storm') {
+    if (elev < SEA_LEVEL - 0.10) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.02) return 'ocean';
+    if (elev < SEA_LEVEL)        return 'shallow';
+    if (elev > 0.70) return temp < 0.3 ? 'snow' : 'mountain';
+    if (moist < 0.30) return 'plains';
+    if (moist < 0.55) return 'grassland';
+    return 'forest';
+  }
+
+  if (planetType === 'toxic') {
+    // Ocean-like hydrology; green seas come from the cutaway palette.
+    if (elev < SEA_LEVEL - 0.12) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.04) return 'ocean';
+    if (elev < SEA_LEVEL)        return 'shallow';
+    if (elev < SEA_LEVEL + 0.02) return 'beach';
+    if (elev > 0.85) return 'mountain';
+    if (elev > 0.75) return 'mountain';
+    if (moist < 0.25) return 'savanna';
+    if (moist < 0.50) return 'grassland';
+    return 'jungle';
+  }
+
+  if (planetType === 'crystal') {
+    // Sparse highland lakes; purple land from the palette.
+    if (elev < SEA_LEVEL - 0.24) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.18) return 'ocean';
+    if (elev < SEA_LEVEL - 0.14) return 'shallow';
+    if (elev > 0.80) return 'mountain';
+    if (elev > 0.68) return 'mountain';
+    if (moist < 0.28) return 'plains';
+    if (moist < 0.55) return 'grassland';
+    return 'forest';
+  }
 
   // Water bodies
   if (elev < SEA_LEVEL - 0.12) return 'deep_ocean';
@@ -197,7 +275,7 @@ export function classifyBiome(
  * Safe to call multiple times with the same arguments — always returns
  * the identical grid.
  *
- * @param planetType  'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
+ * @param planetType  'rocky' | 'ocean' | 'gas' | 'ice' | 'lava' | wild types
  * @param seed        Numeric seed derived from starId + planetIndex
  * @param dna         Planet DNA (ocean coverage, temperature, etc.)
  */
@@ -212,7 +290,13 @@ export function generatePlanetGrid(
   const tempSeed  = (seed * 3.1415926 + 7777) | 0;
 
   // DNA modifiers — convert string enums to numeric offsets
-  const params    = dna ? dnaToGridParams(dna) : { oceanCoverage: 0.6, tempBias: 0.0 };
+  const params = dna ? dnaToGridParams(dna) : { oceanCoverage: 0.6, tempBias: 0.0 };
+  // Planet type clamps how wet the elevation field is, so desert stays dry even
+  // when DNA is missing / mixed, and lava still gets magma basins.
+  const typeOcean = TYPE_OCEAN_COVERAGE[planetType];
+  if (typeOcean !== undefined) {
+    params.oceanCoverage = Math.min(params.oceanCoverage, typeOcean);
+  }
   const oceanBias = params.oceanCoverage - 0.6; // offset from default (±0.3)
   const tempBias  = params.tempBias;            // raw offset (-0.3 … +0.3)
 

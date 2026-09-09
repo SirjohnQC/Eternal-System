@@ -4,8 +4,8 @@
  * Guards three things the visual bake cannot tell you at a glance:
  *   1. every layer comes back with pixels in it (a silent throw or an off-by-one
  *      in the geometry produces a plausible-looking EMPTY canvas)
- *   2. no crust pixel lands outside the body silhouette, and none lands above
- *      the cut face — the two ways the wall math can go wrong and still draw
+ *   2. no crust pixel lands above the pancake or inside the living face, and
+ *      the hanging keel actually drops below the sheer wall
  *   3. the pick buffer is populated, so grid picking still works on the face
  *
  * Build + run:
@@ -28,8 +28,10 @@ class RecordingCtx {
   imagePixels = 0;
   putImageDataCalls = 0;
   createImageDataCalls = 0;
+  getImageDataCalls = 0;
   clippedOps = 0;
   pathOps = 0;
+  lastImage: { width: number; height: number; data: Uint8ClampedArray } | null = null;
   private clipDepth = 0;
   private stack: number[] = [];
 
@@ -60,6 +62,7 @@ class RecordingCtx {
   lineTo(): void {}
   arc(): void {}
   ellipse(): void {}
+  rect(): void {}
   fill(): void { this.pathOps++; }
   stroke(): void { this.pathOps++; }
 
@@ -93,6 +96,7 @@ class RecordingCtx {
     dx: number, dy: number,
   ): void {
     this.putImageDataCalls++;
+    this.lastImage = img;
     for (let y = 0; y < img.height; y++) {
       for (let x = 0; x < img.width; x++) {
         if (img.data[(y * img.width + x) * 4 + 3] === 0) continue;
@@ -100,6 +104,14 @@ class RecordingCtx {
         this.imagePixels++;
       }
     }
+  }
+
+  getImageData(x = 0, y = 0, w = this.W, h = this.H) {
+    this.getImageDataCalls++;
+    if (this.lastImage && x === 0 && y === 0 && w === this.lastImage.width && h === this.lastImage.height) {
+      return this.lastImage;
+    }
+    return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
   }
 
   drawImage(): void {}
@@ -128,7 +140,8 @@ const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
   paintCutawaySurface, paintCutawayCrust, paintAtmosphere, paintFluids,
-  habitableGeom, HabitableCutawayEngine,
+  bakeShoreDistance, habitableGeom, HabitableCutawayEngine, cutawayAtmoColour,
+  planVolcanoChimneys,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
 type CutawayBakeOpts = Parameters<typeof type.paintCutawaySurface>[1];
@@ -217,7 +230,7 @@ const crest = g480.cyBody - g480.R;
 const farRim = g480.cyTop - g480.ry;
 check('pancake overhangs crest', farRim < crest,
       `farRim=${farRim} crest=${crest}`);
-check('bob amplitude at least 1', Math.abs(bobOf(Math.PI / 1.4, g480.R)) >= 1,
+check('bob is disabled', bobOf(Math.PI / 1.4, g480.R) === 0,
       `bob=${bobOf(Math.PI / 1.4, g480.R)}`);
 
 console.log('');
@@ -285,6 +298,9 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   });
   check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
         `${frameCtx.putImageDataCalls} live putImageData calls`);
+  const liveGets = canvases.reduce((n, c) => n + c.ctx.getImageDataCalls, 0);
+  check('frame does not read back pixels', liveGets === 0,
+        `${liveGets} getImageData calls`);
   const imageAllocations = frameCtx.createImageDataCalls;
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
@@ -314,21 +330,48 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   paintAtmosphere(img, geom, planetType, bob);
   ag.putImageData(img, 0, 0);
 
-  let ringMin = Infinity, ringMax = 0, ringCount = 0;
+  let skyCap = 0, limbMax = 0, faceMax = 0, frontBleed = 0, farBleed = 0;
+  let fringe = 0, atmoBelow = 0;
+  const cy = geom.cyTop + bob;
+  const front = cy + geom.ry;
   for (let y = 0; y < VH; y++) {
     for (let x = 0; x < VW; x++) {
-      if (!ag.mask[y * VW + x]) continue;
-      const d = Math.hypot(x - geom.cx, y - (geom.cyBody + bob));
-      if (d > geom.R + 0.5) {
-        ringCount++;
-        const t = d - geom.R;
-        if (t < ringMin) ringMin = t;
-        if (t > ringMax) ringMax = t;
+      const a = img.data[(y * VW + x) * 4 + 3];
+      if (a < 3) continue;
+      if (y > front + 2) atmoBelow++;
+      const dx = x - geom.cx;
+      const dy = y - cy;
+      const r = Math.hypot(dx, dy) / geom.rx;
+      const face = (dx / geom.rx) ** 2 + (dy / geom.ry) ** 2;
+      if (y > cy && face > 1) frontBleed++;
+      if (r > 1.18) farBleed++;
+      else if (r > 1 && y <= cy) fringe++;
+      else if (face > 1) {
+        skyCap++;
+        if (r > 0.85) limbMax = Math.max(limbMax, a);
+      } else if (face < 0.45) {
+        faceMax = Math.max(faceMax, a);
       }
     }
   }
-  check('atmo ring exists', ringCount > 200, `${ringCount} ring px`);
-  check('atmo ring >= 12px', ringMax >= 12, `outer=${ringMax.toFixed(1)} T=${geom.T}`);
+  check('atmo fills the sky cap', skyCap > 200, `${skyCap} dome px`);
+  check('ozone limb reads as a shell', limbMax >= 90, `max limb alpha ${limbMax}`);
+  check('tabletop air is thinner than the limb', faceMax < limbMax * 0.55,
+        `face ${faceMax} vs limb ${limbMax}`);
+  check('ozone limb feathers into space', fringe > 40, `${fringe} fringe px`);
+  check('atmo does not bleed past the cake front', frontBleed === 0, `${frontBleed} front`);
+  check('atmo does not bleed far from the dome', farBleed === 0, `${farBleed} far`);
+  check('atmo stays above crust', atmoBelow === 0, `${atmoBelow} below pancake`);
+  const oceanC = cutawayAtmoColour('ocean');
+  const rockyC = cutawayAtmoColour('rocky');
+  check('ocean ozone is blue', oceanC.b > oceanC.r + 40, `rgb ${oceanC.r},${oceanC.g},${oceanC.b}`);
+  check('rocky ozone is dusty', rockyC.r > 120 && rockyC.r + 15 > rockyC.b,
+        `rocky ${rockyC.r},${rockyC.g},${rockyC.b}`);
+  const gone = ag.createImageData(VW, VH);
+  paintAtmosphere(gone, geom, planetType, bob, 0, 0);
+  let zoomedPx = 0;
+  for (let i = 3; i < gone.data.length; i += 4) if (gone.data[i] > 0) zoomedPx++;
+  check('atmo gone when zoomed', zoomedPx === 0, `${zoomedPx} px at intensity 0`);
 
   // 1 — land canvas paints land only; occupancy stamps the fluid ellipse.
   let waterPx = 0, landPx = 0, waterPainted = 0;
@@ -341,28 +384,45 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('occupancy has water', waterPx > faceArea * 0.15, `${waterPx} fluid px`);
   check('occupancy has land', landPx > 10, `${landPx} land px`);
   check('surface does not paint water', waterPainted === 0, `${waterPainted} water px on land canvas`);
+  const shore = bakeShoreDistance(occupancy, geom, VW, VH);
+  let coast = 0, deepWater = 0;
+  for (let i = 0; i < occupancy.length; i++) {
+    if (!occupancy[i]) continue;
+    if (shore[i] > 0 && shore[i] < 2.5) coast++;
+    if (shore[i] >= 8) deepWater++;
+  }
+  check('shore dist marks coast', coast > 20, `${coast} coast px`);
+  check('shore dist has open water', deepWater > 20, `${deepWater} deep px`);
+  let shoreMismatch = 0;
+  for (let i = 0; i < occupancy.length; i++) {
+    if (occupancy[i] && engine.shoreDist[i] !== shore[i]) shoreMismatch++;
+  }
+  check('engine baked shore dist', shoreMismatch === 0, `${shoreMismatch} mismatch`);
   const crustCovered = cCtx.mask.reduce((a, b) => a + b, 0);
   check('crust layer has pixels', crustCovered > rx * wall * 0.40,
         `${crustCovered}px covered`);
 
   // 2 — geometric containment of the crust.
-  // Back-hemisphere rock ABOVE the tabletop is intentional (3/4 seating).
-  // Forbid only: pixels outside the body, or crust stamped inside the face
-  // ellipse (the surface layer owns that).
-  let outsideBody = 0, insideFace = 0, wallPx = 0;
+  // Rock hangs under the board; it must not fill the atmospheric sphere, sit
+  // above the far rim, or stamp the living pancake (surface owns that).
+  let aboveBoard = 0, outsideWidth = 0, insideFace = 0, wallPx = 0, hanging = 0;
   for (let y = 0; y < VH; y++) {
     for (let x = 0; x < VW; x++) {
       if (cCtx.mask[y * VW + x] === 0) continue;
-      if (Math.hypot(x - cx, y - cyBody) > R + 1.5) outsideBody++;
+      if (y < cyTop - ry - 2) aboveBoard++;
+      if (Math.abs(x - cx) > rx + 2) outsideWidth++;
       const fdx = (x - cx) / rx, fdy = (y - cyTop) / ry;
       if (fdx * fdx + fdy * fdy <= 0.98) insideFace++;
       const front = cyTop + Math.sqrt(Math.max(0, 1 - fdx * fdx)) * ry;
       if (Math.abs(fdx) <= 1 && y >= front && y <= front + wall + 6) wallPx++;
+      if (y > front + wall + 8) hanging++;
     }
   }
-  check('no crust outside sphere R', outsideBody === 0, `${outsideBody} stray`);
+  check('no crust above pancake', aboveBoard === 0, `${aboveBoard} stray`);
+  check('no crust past board width', outsideWidth === 0, `${outsideWidth} stray`);
   check('no crust inside pancake', insideFace === 0, `${insideFace} stray`);
   check('sheer wall has coverage', wallPx > rx * wall * 0.4, `${wallPx} wall px`);
+  check('crust hangs below wall', hanging > rx * 4, `${hanging} keel px`);
 
   // The occupancy cell nearest the front rim controls the wall material. The
   // pixel immediately above it is outside the ellipse near the limb and must
@@ -382,6 +442,20 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     limbWaterWallPx += limbCtx.blueMask[y * VW + limbX];
   }
   check('limb wall reads in-ellipse occupancy', limbWaterWallPx > 0, `${limbWaterWallPx} water wall px`);
+
+  const dryOcc = new Uint8Array(VW * VH);
+  const dryCanvas = makeCanvas(VW, VH);
+  const dryCtx = dryCanvas.getContext() as RecordingCtx;
+  paintCutawayCrust(dryCtx as unknown as CanvasRenderingContext2D, {
+    ...opts, occupancy: dryOcc,
+  });
+  const midX = cx;
+  const midFront = cyTop + ry;
+  let lipWater = 0;
+  for (let y = Math.ceil(midFront); y < Math.ceil(midFront) + 6; y++) {
+    lipWater += dryCtx.blueMask[y * VW + midX];
+  }
+  check('crust lip is water under land', lipWater > 0, `${lipWater} water lip px`);
 
   // 3 — the pick buffer is usable.
   let picked = 0, pickOutside = 0;
@@ -434,16 +508,227 @@ for (const planetType of ['ocean', 'rocky'] as const) {
         fluidImg.data[shiftedWaterPixel * 4 + 3] === 255 && fluidImg.data[waterPixel * 4 + 3] === 0,
         `rest=${waterPixel} shifted=${shiftedWaterPixel}`);
 
-  const liveBob = Math.round(bobOf(Math.PI / 1.4, engine.geom.R));
+  // Quieter open water + coastal detail: deep open should stay mostly mid-blue;
+  // glint/foam concentrates near land. Classify by luminance band.
+  if (planetType === 'ocean') {
+    const caustic = ag.createImageData(VW, VH);
+    paintFluids(caustic, geom, occupancy, 'ocean', 2.7, 0, shore);
+    const cd = caustic.data;
+    const lumAt = (i: number) => cd[i * 4] + cd[i * 4 + 1] + cd[i * 4 + 2];
+    const GLINT_L = 620, LIGHT_L = 430;
+    let openN = 0, openGlint = 0, openLight = 0;
+    let coastN = 0, coastGlint = 0;
+    let thinWeb = 0, coastGlintPx = 0;
+    for (let y = 1; y < VH - 1; y++) {
+      for (let x = 1; x < VW - 1; x++) {
+        const i = y * VW + x;
+        if (!occupancy[i]) continue;
+        const rdx = (x - cx) / rx, rdy = (y - cyTop) / ry;
+        if (rdx * rdx + rdy * rdy > 0.94) continue;
+        const L = lumAt(i);
+        const isGlint = L >= GLINT_L;
+        const isLight = L >= LIGHT_L && L < GLINT_L;
+        if (shore[i] > 0 && shore[i] < 5) {
+          coastN++;
+          if (isGlint) {
+            coastGlint++;
+            coastGlintPx++;
+            let darker = 0;
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+              const ni = (y + dy) * VW + (x + dx);
+              if (occupancy[ni] && lumAt(ni) < L - 50) darker++;
+            }
+            if (darker >= 3) thinWeb++;
+          }
+        } else if (shore[i] >= 8) {
+          openN++;
+          if (isGlint) openGlint++;
+          if (isLight) openLight++;
+        }
+      }
+    }
+    const openGlintFrac = openGlint / Math.max(1, openN);
+    const openLightFrac = openLight / Math.max(1, openN);
+    const coastGlintFrac = coastGlint / Math.max(1, coastN);
+    const webFrac = thinWeb / Math.max(1, coastGlintPx);
+    check('ocean open water stays calm', openGlintFrac < 0.06 && openLightFrac > 0.015 && openLightFrac < 0.20,
+          `glint=${openGlintFrac.toFixed(3)} light=${openLightFrac.toFixed(3)}`);
+    check('ocean coast keeps caustic/foam', coastGlintFrac > 0.04 && coastGlintFrac < 0.45,
+          `coastGlint=${coastGlintFrac.toFixed(3)}`);
+    check('ocean caustic web is thin (cell edges)', coastGlintPx === 0 || webFrac > 0.45,
+          `web=${webFrac.toFixed(3)} thin=${thinWeb}/${coastGlintPx}`);
+
+    // Far from land the body should read deep navy, not flat mid-blue —
+    // but pale whisper lines may lift a minority of pixels above deep.
+    let deepOpen = 0, deepN = 0;
+    const DEEP_L = 12 + 52 + 118 + 55;
+    for (let i = 0; i < occupancy.length; i++) {
+      if (!occupancy[i] || shore[i] < 10) continue;
+      const y = Math.floor(i / VW), x = i - y * VW;
+      const rdx = (x - cx) / rx, rdy = (y - cyTop) / ry;
+      if (rdx * rdx + rdy * rdy > 0.94) continue;
+      deepN++;
+      const L = caustic.data[i * 4] + caustic.data[i * 4 + 1] + caustic.data[i * 4 + 2];
+      if (L <= DEEP_L) deepOpen++;
+    }
+    const deepFrac = deepOpen / Math.max(1, deepN);
+    check('ocean deepens far from land', deepFrac > 0.55,
+          `deep=${deepFrac.toFixed(3)}`);
+
+    // Shore-directed motion: the swell must travel toward land on every coast,
+    // not drift globally. Bin water luminance by shore distance, subtract the
+    // period-mean profile (static web), then cross-correlate two frames 0.4 s
+    // apart: the later frame must match the earlier one shifted to LARGER shore
+    // distance (the crest came from open water) better than the reverse.
+    const profileAt = (t: number): Float64Array => {
+      const f = ag.createImageData(VW, VH);
+      paintFluids(f, geom, occupancy, 'ocean', t, 0, shore);
+      const sum = new Float64Array(40), n = new Float64Array(40);
+      for (let i = 0; i < occupancy.length; i++) {
+        if (!occupancy[i] || f.data[i * 4 + 3] === 0) continue;
+        const b = Math.floor(shore[i]);
+        if (b < 0 || b >= 40) continue;
+        sum[b] += f.data[i * 4] + f.data[i * 4 + 1] + f.data[i * 4 + 2];
+        n[b]++;
+      }
+      return sum.map((s, i) => (n[i] > 0 ? s / n[i] : 0));
+    };
+    const SWELL_PERIOD = 2 * Math.PI / 1.6;
+    const NF = 8;
+    const meanP = new Float64Array(40);
+    for (let f = 0; f < NF; f++) {
+      const p = profileAt(20 + (f * SWELL_PERIOD) / NF);
+      for (let i = 0; i < 40; i++) meanP[i] += p[i] / NF;
+    }
+    const residAt = (t: number) => profileAt(t).map((v, i) => v - meanP[i]);
+    const corrAtShift = (p0: Float64Array, p1: Float64Array, s: number): number => {
+      const lo = 4, hi = 26; // lo ≥ |s| + 1 so p0[dd + s] stays in range
+      let m0 = 0, m1 = 0, k = 0;
+      for (let dd = lo; dd < hi; dd++) { m0 += p0[dd + s]; m1 += p1[dd]; k++; }
+      m0 /= k; m1 /= k;
+      let c = 0, v0 = 0, v1 = 0;
+      for (let dd = lo; dd < hi; dd++) {
+        const a = p0[dd + s] - m0, b = p1[dd] - m1;
+        c += a * b; v0 += a * a; v1 += b * b;
+      }
+      return c / (Math.sqrt(v0 * v1) || 1);
+    };
+    let landward = 0, seaward = 0;
+    for (const t0 of [0, 1.3, 5.1, 9.7]) {
+      const p0 = residAt(t0), p1 = residAt(t0 + 0.4);
+      for (let s = 1; s <= 3; s++) {
+        landward += corrAtShift(p0, p1, s);
+        seaward += corrAtShift(p0, p1, -s);
+      }
+    }
+    check('ocean swell travels toward shore', landward > seaward + 0.5,
+          `landward=${landward.toFixed(2)} seaward=${seaward.toFixed(2)}`);
+  }
+
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: Math.PI / 1.4, bg: makeCanvas(VW, VH),
     drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
     weatherMix: [],
   });
-  check('hitTest follows bobbed surface',
-        JSON.stringify(engine.hitTest(engine.geom.cx, engine.geom.cyTop + liveBob)) === JSON.stringify(classHit),
-        `bob=${liveBob} rest=${JSON.stringify(classHit)}`);
+  check('hitTest stays on planted surface',
+        JSON.stringify(engine.hitTest(engine.geom.cx, engine.geom.cyTop)) === JSON.stringify(classHit)
+        && engine.bob === 0,
+        `bob=${engine.bob} rest=${JSON.stringify(classHit)}`);
+
+  console.log('');
+}
+
+// ─── Smoke: ice / lava / gas (+ wild) cutaway bake ────────────────────────────
+
+const SMOKE_TYPES = [
+  'ice', 'lava', 'gas', 'toxic', 'crystal', 'desert', 'storm', 'carbon',
+] as const;
+
+for (const planetType of SMOKE_TYPES) {
+  console.log(`  ── smoke ${planetType} ──`);
+  const grid = generatePlanetGrid(planetType, 4242, null);
+  const discToGrid = makeProjection(0.1, 0.7);
+  const pick = new Int32Array(VW * VH);
+  const occupancy = new Uint8Array(VW * VH);
+  const opts = {
+    w: VW, h: VH, cx, cyTop, cyBody, R, rx, ry, wall,
+    seed: 0xcafe + planetType.length, grid, planetType,
+    discToGrid, rimFalloff, liftOf, smoothElevation,
+    maxLift: MAX_LIFT, lush: 0.4, pick, occupancy,
+  } as unknown as CutawayBakeOpts;
+
+  const engine = new HabitableCutawayEngine();
+  engine.bake({
+    w: VW, h: VH, seed: opts.seed, grid, planetType,
+    discToGrid, rimFalloff, liftOf, smoothElevation,
+    maxLift: MAX_LIFT, lush: 0.4,
+  });
+
+  const surfaceCanvas = makeCanvas(VW, VH);
+  const crustCanvas = makeCanvas(VW, VH);
+  const sCtx = surfaceCanvas.getContext() as RecordingCtx;
+  const cCtx = crustCanvas.getContext() as RecordingCtx;
+  paintCutawaySurface(sCtx as unknown as CanvasRenderingContext2D, opts);
+  paintCutawayCrust(cCtx as unknown as CanvasRenderingContext2D, opts);
+
+  const landPx = sCtx.mask.reduce((a, b) => a + b, 0);
+  const crustPx = cCtx.mask.reduce((a, b) => a + b, 0);
+  check(`${planetType} surface paints`, landPx > faceArea * 0.25, `${landPx} px`);
+  check(`${planetType} crust paints`, crustPx > rx * wall * 0.25, `${crustPx} px`);
+
+  const atmoCanvas = makeCanvas(VW, VH);
+  const ag = atmoCanvas.getContext() as RecordingCtx;
+  const img = ag.createImageData(VW, VH);
+  paintAtmosphere(img, geom, planetType, 0);
+  ag.putImageData(img, 0, 0);
+  let atmoPx = 0;
+  for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 0) atmoPx++;
+  check(`${planetType} ozone dome`, atmoPx > 200, `${atmoPx} atmo px`);
+
+  const tint = cutawayAtmoColour(planetType);
+  check(`${planetType} has atmo tint`, tint.r + tint.g + tint.b > 40,
+        `rgb ${tint.r},${tint.g},${tint.b}`);
+
+  const frameCanvas = makeCanvas(VW, VH);
+  const frameCtx = frameCanvas.getContext() as RecordingCtx;
+  engine.frame({
+    g: frameCtx as unknown as CanvasRenderingContext2D,
+    dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
+    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+    weatherMix: [],
+  });
+  check(`${planetType} frame composites`, frameCtx.putImageDataCalls === 0,
+        `${frameCtx.putImageDataCalls} live putImageData`);
+
+  if (planetType === 'gas') {
+    // Gas fills the whole disc — no fluid occupancy holes.
+    const waterPx = occupancy.reduce((a, b) => a + b, 0);
+    check('gas has no water holes', waterPx === 0, `${waterPx} fluid px`);
+    check('gas pick stamped', pick.some(v => v > 0), 'pick buffer');
+  }
+
+  if (planetType === 'lava' || planetType === 'desert' || planetType === 'ice'
+      || planetType === 'carbon' || planetType === 'crystal') {
+    const fluidPx = occupancy.reduce((a, b) => a + b, 0);
+    const frac = fluidPx / faceArea;
+    if (planetType === 'lava') {
+      check('lava has magma fluid', frac > 0.08 && frac < 0.55, `frac=${frac.toFixed(3)}`);
+    } else if (planetType === 'desert') {
+      check('desert has little fluid', frac < 0.08, `frac=${frac.toFixed(3)}`);
+    } else if (planetType === 'ice') {
+      check('ice has thin seas', frac > 0.04 && frac < 0.35, `frac=${frac.toFixed(3)}`);
+    } else if (planetType === 'carbon') {
+      check('carbon has sparse fluid', frac < 0.18, `frac=${frac.toFixed(3)}`);
+    } else if (planetType === 'crystal') {
+      check('crystal has sparse fluid', frac > 0.02 && frac < 0.28, `frac=${frac.toFixed(3)}`);
+    }
+  }
+
+  if (planetType === 'lava') {
+    const sites = planVolcanoChimneys(opts);
+    check('lava has volcano chimneys', sites.length >= 3, `${sites.length} chimneys`);
+  }
 
   console.log('');
 }

@@ -1039,7 +1039,7 @@ export class PlanetRenderer {
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.85 : 1.18;
-      this.camScale = Math.max(0.4, Math.min(4, this.camScale * factor));
+      this.camScale = Math.max(0.4, Math.min(6, this.camScale * factor));
     }, { passive: false });
 
     this.canvas.addEventListener('mousedown', (e) => {
@@ -1109,7 +1109,16 @@ function _heightToColor(h: number, type: string, dna: PlanetDNA): [number, numbe
     return [40, 100, 50];
   }
   if (type === 'gas') {
-    const bands: [number, number, number][] = [[200,160,80],[180,130,60],[220,180,100],[160,120,60],[240,200,120]];
+    // Several band families so gas giants aren't all Jupiter-tan
+    const families: [number, number, number][][] = [
+      [[200,160,80],[180,130,60],[220,180,100],[160,120,60],[240,200,120]], // warm
+      [[180,140,160],[140,100,130],[210,170,190],[120,90,110],[230,200,210]], // violet
+      [[120,160,190],[90,130,160],[160,190,210],[70,110,140],[190,210,230]],  // blue
+      [[160,170,100],[130,140,70],[190,195,120],[100,110,55],[210,215,150]], // olive
+      [[200,120,80],[170,90,55],[230,150,100],[140,70,40],[240,180,130]],   // rust
+    ];
+    const fi = dna.chaos === 'storm' ? 4 : dna.chaos === 'serene' ? 2 : dna.climate === 'frozen' ? 2 : dna.climate === 'desert' ? 0 : 1;
+    const bands = families[fi % families.length];
     return bands[Math.floor(h * bands.length) % bands.length];
   }
   // Rocky / temperate with DNA

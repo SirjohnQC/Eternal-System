@@ -25,6 +25,7 @@ let seed = Number(params.get('seed')) || 1;
 function makePlanet(): Planet {
   return {
     orbitalAngle: 0, orbitalRadius: 40, orbitalSpeed: 0.01,
+    eccentricity: 0, periapsisAngle: 0,
     radius: 6, type, hasLife: true, biosphere: 0.8,
     color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`,
     moons: [
@@ -44,11 +45,13 @@ function makeStar(): StarBody {
     temperature: 5800, age: 0, hasLife: true, civLevel: 4,
     civName: 'Preview', planets: [
       makePlanet(),
-      { ...makePlanet(), type: 'gas', name: 'B' },
-      { ...makePlanet(), type: 'ice', name: 'C' },
+      { ...makePlanet(), type: 'gas', name: 'B', orbitalRadius: 72, orbitalAngle: 1.2,
+        orbitalSpeed: 0.006, radius: 11 },
+      { ...makePlanet(), type: 'ice', name: 'C', orbitalRadius: 118, orbitalAngle: 4.0,
+        orbitalSpeed: 0.0035, radius: 4 },
     ],
     explorationRadius: 30, isPlayerStar: true, isDead: false,
-    asteroidBelt: false, lastEventTick: 0,
+    asteroidBelt: false, asteroidBeltDensity: 0, lastEventTick: 0,
     formationStage: null, formationTick: 0,
     terraformStage: null, terraformTick: 0, terraformTargetType: null,
     religionName: '', religionDevotion: 0,

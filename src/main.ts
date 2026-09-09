@@ -72,6 +72,7 @@ function showScreen(name: string): void {
   const el = document.getElementById(`screen-${name}`);
   if (el) el.classList.add('active');
   gameState.screen = name as typeof gameState.screen;
+  document.body.classList.toggle('hud-on', name === 'game' || name === 'bigbang');
 
   // Music transitions
   void AudioManager.init().then(() => {
@@ -109,6 +110,13 @@ function hashStr(s: string): number {
   return h;
 }
 
+function setSimBootStatus(state: 'standby' | 'calibrating' | 'configuring' | 'ready', label: string): void {
+  const el = document.getElementById('sim-boot-status');
+  const text = document.getElementById('sim-boot-status-text');
+  if (el) el.setAttribute('data-state', state);
+  if (text) text.textContent = label;
+}
+
 function initRollingScreen(): void {
   const container = document.getElementById('stat-cards')!;
   container.innerHTML = '';
@@ -118,6 +126,7 @@ function initRollingScreen(): void {
   delete answeredQuestions.climate;
   delete answeredQuestions.oceans;
   delete answeredQuestions.chaos;
+  setSimBootStatus('standby', 'STANDBY');
 
   // Hide planet questions section + reset choice buttons
   const pqSection = document.getElementById('planet-questions-section');
@@ -156,6 +165,35 @@ function initRollingScreen(): void {
   highlightCard(STAT_KEYS[0]);
 }
 
+function getHomeWorldName(): string {
+  return (document.getElementById('planet-name-input') as HTMLInputElement | null)?.value.trim() ?? '';
+}
+
+const PLANET_NAME_POOL = [
+  'Terra Nova', 'Aurelia', 'Kepleris', 'Nyxara', 'Velorum', 'Solara', 'Obsidia',
+  'Lunara', 'Elyndor', 'Vespera', 'Astraea', 'Thalassa', 'Caelora', 'Miridian',
+  'Zephyria', 'Nocturne', 'Helion', 'Arcturus Prime', 'Seraphel', 'Duskfall',
+  'Ivory Reach', 'Crimson Vale', 'Pale Harbor', 'Starfall', 'Emberholt',
+  'Whisperdeep', 'Glassmere', 'Ironwake', 'Skyreach', 'Umbravale',
+];
+
+function randomizePlanetName(): void {
+  const input = document.getElementById('planet-name-input') as HTMLInputElement | null;
+  if (!input) return;
+  const current = input.value.trim();
+  let pick = PLANET_NAME_POOL[Math.floor(Math.random() * PLANET_NAME_POOL.length)];
+  // Avoid repeating the same name on consecutive clicks when possible.
+  if (PLANET_NAME_POOL.length > 1) {
+    let guard = 0;
+    while (pick === current && guard++ < 8) {
+      pick = PLANET_NAME_POOL[Math.floor(Math.random() * PLANET_NAME_POOL.length)];
+    }
+  }
+  input.value = pick;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+}
+
 function highlightCard(key: keyof UniverseStats): void {
   STAT_KEYS.forEach(k => {
     document.getElementById(`stat-card-${k}`)?.classList.toggle('active', k === key);
@@ -166,16 +204,32 @@ function showRollButton(): void {
   const btn = document.getElementById('roll-btn') as HTMLButtonElement;
   const genBtn = document.getElementById('genesis-btn') as HTMLButtonElement;
   const hintEl = document.getElementById('roll-hint');
+  const named = getHomeWorldName().length > 0;
 
   if (currentStatIndex < STAT_KEYS.length) {
     btn.textContent = `⬡ ROLL: ${STAT_LABELS[STAT_KEYS[currentStatIndex]]}`;
     btn.style.display = '';
+    btn.disabled = !named;
     genBtn.style.display = 'none';
+    if (!named) {
+      if (hintEl) hintEl.textContent = 'Enter HOME_WORLD name to arm calibration.';
+      setSimBootStatus('standby', 'STANDBY');
+    } else {
+      if (hintEl) {
+        hintEl.textContent = currentStatIndex === 0
+          ? 'Calibrate each parameter in order. Higher is stronger. Fate is unforgiving.'
+          : `Next parameter: ${STAT_LABELS[STAT_KEYS[currentStatIndex]]}.`;
+      }
+      if (currentStatIndex > 0) setSimBootStatus('calibrating', 'CALIBRATING');
+      else setSimBootStatus('standby', 'STANDBY');
+    }
   } else {
     // All player stats locked — God rolls next, then naming
     btn.style.display = 'none';
+    btn.disabled = true;
     genBtn.style.display = 'none';
-    if (hintEl) hintEl.textContent = 'The God now claims its share of fate…';
+    if (hintEl) hintEl.textContent = 'Divine dominion parameter resolving…';
+    setSimBootStatus('configuring', 'CONFIGURING');
     if (!godRollTriggered) {
       godRollTriggered = true;
       setTimeout(() => triggerGodRoll(), 800);
@@ -218,8 +272,15 @@ function triggerGodRoll(): void {
 
 function checkGenesisReady(): void {
   const hintEl = document.getElementById('roll-hint');
-  const planet = (document.getElementById('planet-name-input') as HTMLInputElement | null)?.value.trim() ?? '';
+  const planet = getHomeWorldName();
   const genBtn = document.getElementById('genesis-btn') as HTMLButtonElement | null;
+
+  // While still rolling stats, name field only gates the roll button.
+  if (currentStatIndex < STAT_KEYS.length) {
+    showRollButton();
+    return;
+  }
+
   if (!genBtn) return;
   if (!godRollTriggered) return;
 
@@ -227,21 +288,28 @@ function checkGenesisReady(): void {
 
   if (planet && allQuestionsAnswered) {
     genBtn.style.display = '';
-    if (hintEl) hintEl.textContent = 'Your universe awaits. Speak the word.';
+    if (hintEl) hintEl.textContent = 'Seed locked. Press to initialize cosmos.';
+    setSimBootStatus('ready', 'READY');
   } else {
     genBtn.style.display = 'none';
+    setSimBootStatus('configuring', 'CONFIGURING');
     if (!planet) {
-      if (hintEl) hintEl.textContent = 'Name your home planet to begin genesis.';
+      if (hintEl) hintEl.textContent = 'Enter HOME_WORLD name to arm launch.';
     } else {
-      if (hintEl) hintEl.textContent = 'Define your world above to continue.';
+      if (hintEl) hintEl.textContent = 'Complete world DNA probe channels above.';
     }
   }
 }
 
 function rollCurrentStat(): void {
   if (currentStatIndex >= STAT_KEYS.length) return;
+  if (!getHomeWorldName()) {
+    showRollButton();
+    return;
+  }
   const key = STAT_KEYS[currentStatIndex];
 
+  setSimBootStatus('calibrating', 'CALIBRATING');
   AudioManager.playSfx('dice_roll');
 
   const numEl = document.getElementById(`stat-num-${key}`)!;
@@ -296,7 +364,30 @@ function getBarColor(v: number): string {
 }
 
 // ─── Big Bang ─────────────────────────────────────────────────────────────────
+function setBigBangLoadProgress(pct: number, status: string): void {
+  const fill = document.getElementById('bb-load-fill');
+  const label = document.getElementById('bb-load-status');
+  const panel = document.getElementById('bigbang-loading');
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  if (label) label.textContent = status;
+  if (panel) {
+    panel.classList.remove('bb-load-done');
+    panel.setAttribute('aria-busy', 'true');
+  }
+}
+
+function hideBigBangLoading(): void {
+  const panel = document.getElementById('bigbang-loading');
+  if (!panel) return;
+  panel.classList.add('bb-load-done');
+  panel.setAttribute('aria-busy', 'false');
+}
+
 function launchBigBang(): void {
+  void launchBigBangAsync();
+}
+
+async function launchBigBangAsync(): Promise<void> {
   const planetName = (document.getElementById('planet-name-input') as HTMLInputElement)?.value.trim() || 'Terra';
 
   // Store planet name + DNA now; species + religion emerge as in-game events
@@ -374,6 +465,7 @@ function launchBigBang(): void {
   };
 
   showScreen('bigbang');
+  setBigBangLoadProgress(4, 'Seeding the void');
 
   const canvas = document.getElementById('bigbang-canvas') as HTMLCanvasElement;
   canvas.width = window.innerWidth;
@@ -386,10 +478,28 @@ function launchBigBang(): void {
   // if geminiService were assigned after init(), that civilisation would be
   // permanently locked to its procedural culture even with a valid API key.
   engine.geminiService = _geminiService;
+
+  setBigBangLoadProgress(18, 'Rolling the master seed');
+  await new Promise<void>(r => setTimeout(r, 0));
   engine.init(stats, seed);
 
   wireEngineEvents(engine);
-  void attachPixiRenderer(engine, canvas);
+
+  setBigBangLoadProgress(40, 'Igniting the observatory');
+  await attachPixiRenderer(engine, canvas);
+  _pixiRenderer?.warmStarTextures();
+
+  setBigBangLoadProgress(62, 'Charting the galaxies');
+  await engine.warmVisualCaches((done, total, label) => {
+    const pct = 62 + Math.round((done / total) * 30);
+    setBigBangLoadProgress(pct, label);
+  });
+
+  setBigBangLoadProgress(100, 'Let there be light');
+  await new Promise<void>(r => setTimeout(r, 180));
+  hideBigBangLoading();
+
+  applyFrameRateCap(pendingFrameRateCap);
   engine.start();
 
   // Initial god greeting
@@ -605,12 +715,10 @@ function wireEngineEvents(eng: BigBangEngine): void {
   };
   eng.onDNAPointEarned = (total) => {
     updateDNAPanel();
-    const el = document.getElementById('dna-display');
-    if (el) { el.textContent = `🧬 ${total} DNA`; el.style.display = ''; }
+    setResourceChip('dna-display', 'dna-display-val', total);
   };
   eng.onTechPointEarned = (total) => {
-    const el = document.getElementById('tech-display');
-    if (el) { el.textContent = `⚙ ${total} TP`; el.style.display = ''; }
+    setResourceChip('tech-display', 'tech-display-val', total);
     // +5 DP every tech level advance
     awardDP(5, `tech level ${total} reached`);
   };
@@ -743,8 +851,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
     const dpGain = DP_REGEN_BASE + (devotion > DP_DEVOTION_THRESHOLD_MID ? 1 : 0) + (devotion > DP_DEVOTION_THRESHOLD_HIGH ? 1 : 0);
     gameState.divinePoints = Math.min(DP_CAP, gameState.divinePoints + dpGain);
     updateDivineActions();
-    const dpEl = document.getElementById('dp-display');
-    if (dpEl) dpEl.textContent = `✦ ${gameState.divinePoints} DP`;
+    setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
   }, 8000); // every 8 real seconds — devotion multiplies gain
   eng.onBigBangComplete = () => {
     const enterBtn = document.getElementById('enter-universe-btn');
@@ -865,6 +972,7 @@ function enterUniverse(): void {
   engine = newEngine;
   wireEngineEvents(engine);
   void attachPixiRenderer(engine, gameCanvas);
+  applyFrameRateCap(pendingFrameRateCap);
   engine.start();
   engine.focusPlayerStar();
   setSpeed(1);
@@ -1812,11 +1920,33 @@ function updateHUDTick(tick: number): void {
 
   const tickEl = document.getElementById('tick-display');
   if (tickEl) tickEl.textContent = `TICK: ${tick.toLocaleString()}  |  AGE: ${ageStr} YRS`;
+  const ageEl = document.getElementById('age-bar');
+  if (ageEl) ageEl.textContent = `${ageStr} YRS`;
 
-  const dpEl = document.getElementById('dp-display');
-  if (dpEl) dpEl.textContent = `✦ ${gameState.divinePoints} DP`;
+  setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
 
   updateDivineActions();
+}
+
+/** Top-bar resource chips keep label markup; only update the value node. */
+function setResourceChip(chipId: string, valId: string, value: number | string): void {
+  const chip = document.getElementById(chipId);
+  const val = document.getElementById(valId);
+  if (chip) chip.style.display = '';
+  if (val) val.textContent = String(value);
+}
+
+function renderSegmentBar(elId: string, filled: number, totalSegs = 20): void {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const on = Math.max(0, Math.min(totalSegs, Math.round(filled)));
+  if (el.childElementCount !== totalSegs) {
+    el.innerHTML = Array.from({ length: totalSegs }, (_, i) =>
+      `<span class="${i < on ? 'on' : ''}"></span>`
+    ).join('');
+  } else {
+    Array.from(el.children).forEach((child, i) => child.classList.toggle('on', i < on));
+  }
 }
 
 function updateBottomBar(star: { civName: string; civLevel: number; hasLife: boolean }): void {
@@ -1824,9 +1954,11 @@ function updateBottomBar(star: { civName: string; civLevel: number; hasLife: boo
   const el2 = document.getElementById('species-bar');
   const el3 = document.getElementById('civ-bar');
   const planetLabel = gameState.playerPlanetName !== '—' ? gameState.playerPlanetName : star.civName + ' Prime';
-  if (el1) el1.textContent = planetLabel;
-  const speciesLabel = gameState.playerSpeciesName || (star.hasLife ? 'Life Detected' : 'No life');
-  if (el2) el2.textContent = star.hasLife ? speciesLabel : 'No life';
+  if (el1) el1.textContent = planetLabel.toUpperCase();
+  const speciesLabel = gameState.playerSpeciesName
+    ? gameState.playerSpeciesName.toUpperCase()
+    : (star.hasLife ? 'DETECTED' : 'NONE');
+  if (el2) el2.textContent = speciesLabel;
   // Civ bar: show TECH_LEVELS only once intelligent
   const ps = engine?.getPlayerStar();
   const inBioPhase = ps && ps.biologyPhase !== 'intelligent';
@@ -2003,8 +2135,10 @@ function updatePhaseBar(): void {
   if (!ps) return;
 
   if (ps.biologyPhase !== 'intelligent') {
-    phaseEl.textContent = BIO_PHASE_LABELS[ps.biologyPhase];
+    phaseEl.textContent = BIO_PHASE_LABELS[ps.biologyPhase].toUpperCase();
     phaseEl.style.color = '#44cc88';
+    const phIdx = BIO_PHASE_SEQUENCE.indexOf(ps.biologyPhase);
+    renderSegmentBar('phase-segs', ((phIdx + 1) / BIO_PHASE_SEQUENCE.length) * 12, 12);
     // Show DNA panel if there are points to spend
     if (gameState.dnaPoints > 0) {
       document.getElementById('dna-panel')?.classList.add('visible');
@@ -2012,8 +2146,9 @@ function updatePhaseBar(): void {
     updateDNAPanel();
   } else {
     const phase = civLevelToPhase(ps.civLevel);
-    phaseEl.textContent = CIV_PHASE_LABELS[phase];
+    phaseEl.textContent = CIV_PHASE_LABELS[phase].toUpperCase();
     phaseEl.style.color = '';
+    renderSegmentBar('phase-segs', ((ps.civLevel + 1) / 10) * 12, 12);
   }
 }
 
@@ -2067,9 +2202,11 @@ function updateDNAPanel(): void {
     commitBtn.textContent = ready ? 'EVOLVE SPECIES ◈' : `Need ${10 - (points % 10 || 10)} more DNA`;
   }
 
-  // Top-bar DNA display
-  const dnaDisplay = document.getElementById('dna-display');
-  if (dnaDisplay) { dnaDisplay.textContent = `🧬 ${points} DNA`; dnaDisplay.style.display = ''; }
+  // Top-bar DNA display + bottom segmented bar
+  setResourceChip('dna-display', 'dna-display-val', points);
+  const statusDna = document.getElementById('status-dna-count');
+  if (statusDna) statusDna.textContent = `${points} / 100`;
+  renderSegmentBar('status-dna-segs', (points / 100) * 20, 20);
 
   // Branch rows — build once, update values on subsequent calls
   const container = document.getElementById('dna-branch-rows');
@@ -2498,6 +2635,8 @@ function addFeedEntry(text: string, type: 'milestone' | 'war' | 'cosmic' | 'disc
     badge.textContent = _unreadEventCount > 9 ? '9+' : String(_unreadEventCount);
     badge.classList.add('visible');
   }
+  const tabCount = document.getElementById('events-tab-count');
+  if (tabCount) tabCount.textContent = _unreadEventCount > 0 ? String(_unreadEventCount) : '';
 
   // Store in global event log
   eventLogEntries.unshift({ tick: gameState.tick, type, text });
@@ -2728,8 +2867,7 @@ function awardDP(amount: number, reason: string): void {
   const actual = gameState.divinePoints - before;
   if (actual <= 0) return;
   updateDivineActions();
-  const dpEl = document.getElementById('dp-display');
-  if (dpEl) dpEl.textContent = `✦ ${gameState.divinePoints} DP`;
+  setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
   addFeedEntry(`+${actual} Divine Power — ${reason}`, 'milestone');
 }
 
@@ -2901,21 +3039,28 @@ function updateDivineActions(): void {
     if (btn) {
       const canAfford = dp >= cost;
       btn.disabled = !canAfford;
-      btn.querySelector('.divine-action-cost')?.classList.toggle('affordable', canAfford);
+      btn.classList.toggle('affordable', canAfford);
     }
   }
 
-  // Prophet + Revelation require religion to have emerged
+  // Prophet + Revelation stay visible (mockup deck); disable until religion emerges
   const hasReligion = !!gameState.playerReligionName;
-  (document.getElementById('send-prophet-btn')     as HTMLButtonElement | null)?.toggleAttribute('hidden', !hasReligion);
-  (document.getElementById('trigger-revelation-btn') as HTMLButtonElement | null)?.toggleAttribute('hidden', !hasReligion);
+  for (const id of ['send-prophet-btn', 'trigger-revelation-btn'] as const) {
+    const btn = document.getElementById(id) as HTMLButtonElement | null;
+    if (!btn) continue;
+    btn.hidden = false;
+    if (!hasReligion) {
+      btn.disabled = true;
+      btn.classList.remove('affordable');
+    }
+  }
   updateSmiteButton();
 
-  // Send Meteor — visible only when a revealed lifeless star exists nearby
+  // Send Meteor — always in Faith deck (mockup); afford only with a valid target
   const meteorBtn = document.getElementById('send-meteor-btn') as HTMLButtonElement | null;
   if (meteorBtn) {
     const hasMeteorTarget = !!engine?.getMeteorTarget();
-    meteorBtn.style.display = hasMeteorTarget ? '' : 'none';
+    meteorBtn.style.display = '';
     meteorBtn.disabled = !hasMeteorTarget || dp < 20;
     meteorBtn.classList.toggle('affordable', hasMeteorTarget && dp >= 20);
   }
@@ -2942,7 +3087,7 @@ function updateDivineActions(): void {
       tfBtn.disabled = dp < TERRAFORM_COST;
       tfBtn.classList.toggle('affordable', dp >= TERRAFORM_COST);
       const costEl = document.getElementById('terraform-cost');
-      if (costEl) costEl.textContent = `${TERRAFORM_COST} DP`;
+      if (costEl) costEl.textContent = `✦ ${TERRAFORM_COST} DP`;
     } else {
       tfBtn.style.display = 'none';
     }
@@ -3552,6 +3697,7 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
 
   wireEngineEvents(engine);
   void attachPixiRenderer(engine, gameCanvas);
+  applyFrameRateCap(pendingFrameRateCap);
   engine.start();
   engine.focusPlayerStar();
   setSpeed(save.gameState.speed ?? 1);
@@ -3560,8 +3706,7 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
   document.getElementById('god-name-display')!.textContent = godName;
   document.getElementById('god-name-top')!.textContent = godName;
   updateHUDTick(save.gameState.tick);
-  const dpEl = document.getElementById('dp-display');
-  if (dpEl) dpEl.textContent = `✦ ${save.gameState.divinePoints} DP`;
+  setResourceChip('dp-display', 'dp-display-val', save.gameState.divinePoints);
 
   const ps = engine.getPlayerStar();
   if (ps) updateBottomBar(ps);
@@ -3586,6 +3731,30 @@ function loadFromLocalStorage(): boolean {
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
+const FRAME_RATE_KEY = 'eternal_frame_rate';
+/** 0 = unlimited (match display refresh). */
+type FrameRateCap = 0 | 30 | 60 | 120;
+
+function loadFrameRateCap(): FrameRateCap {
+  const raw = localStorage.getItem(FRAME_RATE_KEY);
+  if (raw === '30' || raw === '60' || raw === '120') return Number(raw) as FrameRateCap;
+  return 0;
+}
+
+let pendingFrameRateCap: FrameRateCap = loadFrameRateCap();
+
+function applyFrameRateCap(cap: FrameRateCap): void {
+  pendingFrameRateCap = cap;
+  engine?.setTargetFps(cap);
+}
+
+function syncFrameRateButtons(cap: FrameRateCap): void {
+  document.querySelectorAll<HTMLButtonElement>('.settings-fps-btn').forEach(btn => {
+    const v = Number(btn.dataset.fps);
+    btn.classList.toggle('active', v === cap);
+  });
+}
+
 function openSettings(): void {
   const overlay = document.getElementById('settings-overlay');
   const input = document.getElementById('gemini-key-input') as HTMLInputElement;
@@ -3604,6 +3773,7 @@ function openSettings(): void {
   setSlider('vol-master', 'vol-master-val', s.masterVolume);
   setSlider('vol-music',  'vol-music-val',  s.musicVolume);
   setSlider('vol-sfx',    'vol-sfx-val',    s.sfxVolume);
+  syncFrameRateButtons(pendingFrameRateCap);
 }
 
 function closeSettings(): void {
@@ -3649,8 +3819,77 @@ async function testGeminiConnection(key: string): Promise<void> {
 }
 
 // ─── DOM Ready ────────────────────────────────────────────────────────────────
+function setEvolveDrawer(open: boolean): void {
+  document.querySelector('.left-panel')?.classList.toggle('drawer-open', open);
+  document.getElementById('rail-evolve')?.classList.toggle('active', open);
+}
+
+function setEventsCollapsed(collapsed: boolean): void {
+  document.body.classList.toggle('events-collapsed', collapsed);
+}
+
+function initHudShell(): void {
+  document.getElementById('rail-evolve')?.addEventListener('click', () => {
+    const panel = document.querySelector('.left-panel');
+    setEvolveDrawer(!panel?.classList.contains('drawer-open'));
+  });
+  document.getElementById('evolve-drawer-close')?.addEventListener('click', () => setEvolveDrawer(false));
+  document.getElementById('rail-god')?.addEventListener('click', () => {
+    setEventsCollapsed(false);
+    document.getElementById('player-input')?.focus();
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-god')?.classList.add('active');
+  });
+  document.getElementById('rail-system')?.addEventListener('click', () => {
+    const ps = engine?.getPlayerStar();
+    if (ps) {
+      // Solar system inspector — same path as clicking the player star
+      closePlanetView();
+      engine?.focusPlayerStar();
+      openSystemPanel(ps);
+    }
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-system')?.classList.add('active');
+  });
+  document.getElementById('rail-codex')?.addEventListener('click', () => {
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-codex')?.classList.add('active');
+    openCodex();
+  });
+  document.getElementById('events-collapse-btn')?.addEventListener('click', () => setEventsCollapsed(true));
+  document.getElementById('events-tab')?.addEventListener('click', () => setEventsCollapsed(false));
+  document.getElementById('help-btn')?.addEventListener('click', () => {
+    document.getElementById('help-overlay')?.classList.add('open');
+  });
+  document.getElementById('help-close-btn')?.addEventListener('click', () => {
+    document.getElementById('help-overlay')?.classList.remove('open');
+  });
+  document.getElementById('help-overlay')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) document.getElementById('help-overlay')?.classList.remove('open');
+  });
+  document.querySelectorAll('.divine-action-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.divine-action-btn').forEach(b => b.classList.remove('selected'));
+      if (!(btn as HTMLButtonElement).disabled) btn.classList.add('selected');
+    });
+  });
+  // Faith deck page dots — visual only, scroll panel
+  const panel = document.getElementById('faith-panel');
+  const dots = document.querySelectorAll('.faith-dot');
+  panel?.addEventListener('scroll', () => {
+    if (!panel || dots.length === 0) return;
+    const max = panel.scrollWidth - panel.clientWidth;
+    const idx = max <= 0 ? 0 : Math.round((panel.scrollLeft / max) * (dots.length - 1));
+    dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+  });
+  renderSegmentBar('status-dna-segs', 0, 20);
+  renderSegmentBar('phase-segs', 0, 12);
+  if (window.innerWidth < 1600) setEventsCollapsed(true);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   logger.info('Eternal Systems initializing');
+  initHudShell();
 
   // Auto-validate stored Gemini key silently on startup
   if (geminiKey) void testGeminiConnection(geminiKey);
@@ -3669,8 +3908,9 @@ window.addEventListener('DOMContentLoaded', () => {
     showScreen('menu');
   });
 
-  // Planet name input updates genesis button availability
+  // Planet name input updates roll gate + genesis button availability
   document.getElementById('planet-name-input')?.addEventListener('input', checkGenesisReady);
+  document.getElementById('planet-name-randomize')?.addEventListener('click', randomizePlanetName);
 
   document.getElementById('continue-btn')?.addEventListener('click', () => {
     const loaded = loadFromLocalStorage();
@@ -3716,6 +3956,21 @@ window.addEventListener('DOMContentLoaded', () => {
     dbg['__runtimeState'] = runtimeState;
     dbg['__diorama'] = () => _dioramaRenderer;
     dbg['__pixi'] = () => _pixiRenderer;
+    // &fps=1 draws a live frame-rate chip (also on for bare ?dev=1).
+    if ((q.get('fps') === '1' || q.get('dev') === '1') && engine) {
+      let chip = document.getElementById('fps-chip');
+      if (!chip) {
+        chip = document.createElement('div');
+        chip.id = 'fps-chip';
+        chip.style.cssText = 'position:fixed;top:8px;left:8px;z-index:9999;font:11px/1.2 monospace;color:#c8a96e;background:rgba(0,0,8,.72);border:1px solid #443355;padding:4px 7px;pointer-events:none;';
+        document.body.appendChild(chip);
+      }
+      engine.onFpsSample = (fps, ms) => {
+        const ok = fps >= 110;
+        chip!.style.color = ok ? '#5dcc8a' : fps >= 55 ? '#ff9944' : '#ff6644';
+        chip!.textContent = `${fps.toFixed(0)} fps · ${ms.toFixed(1)} ms`;
+      };
+    }
     // &view=home also skips the Big Bang cinematic and opens the home world.
     if (q.get('view') === 'home') {
       enterUniverse();
@@ -3946,6 +4201,14 @@ window.addEventListener('DOMContentLoaded', () => {
   wireVol('vol-master', 'vol-master-val', v => AudioManager.setMasterVolume(v));
   wireVol('vol-music',  'vol-music-val',  v => AudioManager.setMusicVolume(v));
   wireVol('vol-sfx',    'vol-sfx-val',    v => AudioManager.setSfxVolume(v));
+  document.getElementById('settings-fps-row')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement | null)?.closest?.('.settings-fps-btn') as HTMLButtonElement | null;
+    if (!btn) return;
+    const v = Number(btn.dataset.fps);
+    const cap: FrameRateCap = (v === 30 || v === 60 || v === 120) ? v : 0;
+    syncFrameRateButtons(cap);
+  });
+  syncFrameRateButtons(pendingFrameRateCap);
   document.getElementById('settings-overlay')?.addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeSettings();
   });
@@ -3968,6 +4231,13 @@ window.addEventListener('DOMContentLoaded', () => {
     } else {
       localStorage.removeItem('eternal_gemini_key');
     }
+    // Frame rate: persist selected button and apply immediately
+    const activeFps = document.querySelector<HTMLButtonElement>('.settings-fps-btn.active');
+    const cap = (activeFps ? Number(activeFps.dataset.fps) : 0) as FrameRateCap;
+    const next: FrameRateCap = (cap === 30 || cap === 60 || cap === 120) ? cap : 0;
+    if (next === 0) localStorage.removeItem(FRAME_RATE_KEY);
+    else localStorage.setItem(FRAME_RATE_KEY, String(next));
+    applyFrameRateCap(next);
     // Recreate gemini service with new key
     if (_geminiService) _geminiService.destroy?.();
     _geminiService = key ? new GeminiService(key, gameState.masterSeed) : null;
