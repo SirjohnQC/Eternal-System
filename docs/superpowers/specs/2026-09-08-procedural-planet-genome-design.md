@@ -36,7 +36,8 @@ marks civilization leaves on the surface.
 **In:** the genome module and its data model; six terrain archetypes; the
 material/fluid channel system; the sphere composition and rebuilt atmosphere;
 civilization earthworks as a persisted works list; the discovery-tier fidelity
-ladder; performance budget and verification tooling.
+ladder; world scale; the gas-giant / sky-island composition; performance budget
+and verification tooling.
 
 **Out:** the species/life engine (its own cycle — this design only exposes the
 hooks it will need); LLM-generated culture; the Z-axis voxel planet (ROADMAP M21).
@@ -337,6 +338,92 @@ they had no earthworks.
 
 ---
 
+## 9 · World scale
+
+Every body in the diorama currently renders the same size. `planet.radius`
+reaches only `dayPeriod` (`IsoDioramaRenderer.ts:592`) and moon sizes — it never
+touches the body geometry, so a gas giant and a small moon are identical on
+screen.
+
+Body radius becomes a **compressive** function of planet radius:
+
+```
+bodyR = baseR × (planet.radius / 6) ^ 0.55
+```
+
+Compressive rather than linear so a gas giant clearly dwarfs a moon without
+overflowing the viewport. `worldScale` from the genome perturbs it slightly so
+two worlds of equal radius are not pixel-identical.
+
+A second, free cue reinforces it: **small worlds show tighter horizon
+curvature, large worlds read flatter.** This falls out of the sphere geometry
+once body radius varies, and it is the cue that actually sells scale — size
+alone is ambiguous without something to compare against.
+
+---
+
+## 10 · Non-solid worlds — gas giants and sky islands
+
+### The current state is a category error
+
+`planetType === 'gas'` (`HabitableCutawayEngine.ts:772`) swaps the **tabletop
+only**. Nothing gates the crust, so a gas giant is drawn with rock strata, a
+silt lip, stalactites and ember lights hanging beneath it. It has no surface to
+stand on and no crust to cut, and the renderer gives it both.
+
+The rings compound it. `drawGasRings` (`:1779` / `:1820`) draws an ellipse
+centred on `cyTop` with a fixed `ringRy = 0.20`, while the tabletop face is an
+ellipse on the *same* centre. Occlusion is faked by clipping above/below that
+line rather than by the body. The ring is therefore coplanar with the surface,
+which is why it reads as a hoop lying on a pancake — geometrically, it is one.
+
+### Decision: gas giants are a destination, not scenery
+
+Rather than fixing the physics, treat it as a game problem. A gas giant has a
+band where pressure and temperature are survivable, between the cloud decks
+above and the crush below. **Floating islands** occupy that band.
+
+**Composition:** an atmospheric cutaway — a **horizontal slice of the habitable
+band**, cloud deck as ceiling, darkening deep as floor, islands suspended
+between with keels hanging down.
+
+A radial-shell cut (exposing every layer to a glowing core) was prototyped and
+**rejected**: nested rings around a bright centre read as an eye, and islands
+oriented along the shell come out as inward-pointing spikes rather than land.
+The band slice keeps islands upright and preserves family resemblance with the
+solid worlds. The layer data is identical, so this is reversible if the call
+turns out wrong.
+
+**Density:** few great islands — four or five large floaters with rocky keels,
+each effectively its own world. Sky archipelago (dozens of small floaters) and
+one sky continent are held as alternative genome rolls, not as the default.
+
+### Layers, top to bottom
+
+upper haze · cloud deck · **habitable band (islands live here)** · lower cloud
+deck · deep atmosphere · metallic hydrogen · core.
+
+### What this costs — real dependencies, not just rendering
+
+- Sky worlds need their **own habitability and life rules**. Everything flies or
+  floats; there are no ground predators and no burrowers. This makes gas giants
+  a genuine dependency of the species-engine cycle, not a renderer change.
+- **No earthworks transfer.** No roads, no harbours, no reclaimed land. Sky
+  civilizations want anchors, bridges and docking masts — a separate works
+  vocabulary, sharing the works-list machinery but none of its operations.
+- A **third composition** to maintain alongside solid cutaway worlds and plain
+  spheres.
+- Islands at different latitudes should **drift apart over time** with
+  differential rotation. This is a strong and nearly free "alive" signal, and it
+  is the one piece of the alive layer worth building here rather than deferring.
+
+### Rings
+
+Rings become genuinely occluded: draw the far half, then the body, then the near
+half. Ring plane derives from the genome's `axialTilt`, not a fixed `ringRy`.
+
+---
+
 ## Deferred decisions
 
 Written down rather than guessed at. Each gets its own decision point.
@@ -365,6 +452,10 @@ signal, which lowers the urgency.
 5. Fluid channel; retire the two hardcoded paths and the global swell constants.
 6. Discovery-tier fidelity + the `survey` tier and its DP action.
 7. Earthworks: works list, replay, the six operations, road pathfinding.
+8. World scale — body radius from `planet.radius`, curvature cue.
+9. Gas giants: crust gate, band-slice composition, sky islands, occluded rings.
+   Depends on the species engine for sky habitability; ship the composition
+   first and the life rules with that cycle.
 
 Phases 1–2 are the load-bearing ones: everything else assumes the genome exists
 and that variety is measurable.
