@@ -1209,6 +1209,26 @@ function ozoneAt(
   return { dome: (distPx / rx) * (distPx / rx), face, dx, distPx };
 }
 
+/** HSL → RGB, h in degrees, s and l in 0–1. */
+function hslRGB(h: number, s: number, l: number): RGB {
+  const hh = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (hh < 60)       { r = c; g = x; }
+  else if (hh < 120) { r = x; g = c; }
+  else if (hh < 180) { g = c; b = x; }
+  else if (hh < 240) { g = x; b = c; }
+  else if (hh < 300) { r = x; b = c; }
+  else               { r = c; b = x; }
+  return rgb(
+    Math.round((r + m) * 255),
+    Math.round((g + m) * 255),
+    Math.round((b + m) * 255),
+  );
+}
+
 /**
  * Ozone half-dome sitting on the pancake — thin when looking down, a limb
  * against space that feathers out. `intensity` is usually {@link atmoHazeAmount}.
@@ -1222,10 +1242,13 @@ export function paintAtmosphere(
 ): void {
   if (intensity <= 0.01) return;
   const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
+  // Air scatters differently where it is lit. Warmer and paler toward the sun,
+  // cooler and deeper away from it. One flat colour is what made the shipped
+  // shell read as a drawn outline rather than a volume.
+  const warm = hslRGB(chan.hue - 26, chan.saturation * 0.72, 0.74);
+  const cool = hslRGB(chan.hue + 22, chan.saturation * 1.00, 0.46);
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + bob;
-  const pal = paletteFor(planetType);
-  const atmo = tint ?? pal.atmo;
   const dens = chan.density;
   const d = img.data;
   const w = img.width, h = img.height;
@@ -1256,9 +1279,11 @@ export function paintAtmosphere(
       const a = Math.round(Math.min(255, glow * 255));
       if (a < 3) continue;
       const o = (y * w + x) * 4;
-      d[o] = atmo.r;
-      d[o + 1] = atmo.g;
-      d[o + 2] = atmo.b;
+      const warmth = Math.max(0, Math.min(1, (lit - 0.55) / 0.45));
+      const base = tint ?? null;
+      d[o]     = base ? base.r : Math.round(cool.r + (warm.r - cool.r) * warmth);
+      d[o + 1] = base ? base.g : Math.round(cool.g + (warm.g - cool.g) * warmth);
+      d[o + 2] = base ? base.b : Math.round(cool.b + (warm.b - cool.b) * warmth);
       d[o + 3] = a;
     }
   }
