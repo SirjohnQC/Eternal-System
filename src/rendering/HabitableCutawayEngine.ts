@@ -1254,28 +1254,40 @@ export function paintAtmosphere(
   const w = img.width, h = img.height;
   const sunX = Math.cos(sunAzimuth);
   const fade = chan.thicknessPx;
-  const y0 = Math.max(0, Math.floor(cy - rx - fade));
+  // A constant-thickness ring reads as a geometric annulus — an outline rather
+  // than a volume. Perturb it slowly around the limb.
+  const wobbleSeed = (chan.hue * 7.13 + chan.thicknessPx * 31.7);
+  const fadeAt = (ang: number): number => {
+    const n = Math.sin(ang * 2.0 + wobbleSeed) * 0.5
+            + Math.sin(ang * 3.7 + wobbleSeed * 1.7) * 0.28;
+    return Math.max(3, fade * (1 + n * 0.45));
+  };
+  const fadeMax = fade * 1.34 + 2;
+  const y0 = Math.max(0, Math.floor(cy - rx - fadeMax));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
-  const x0 = Math.max(0, Math.floor(cx - rx - fade));
-  const x1 = Math.min(w - 1, Math.ceil(cx + rx + fade));
-  const sigma = fade * 1.15;
-  const twoSig = 2 * sigma * sigma;
+  const x0 = Math.max(0, Math.floor(cx - rx - fadeMax));
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx + fadeMax));
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      const hit = ozoneAt(x, y, geom, bob, fade);
+      const hit = ozoneAt(x, y, geom, bob, fadeMax);
       if (!hit) continue;
+      const ang = Math.atan2(y - cy, x - cx);
+      const localFade = fadeAt(ang);
       const beyond = hit.distPx - rx;
-      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / fade);
+      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / localFade);
       if (edge < 0.02) continue;
       const inside = Math.max(0, rx - hit.distPx);
-      const limb = Math.exp(-(inside * inside) / twoSig) * edge;
+      const sigmaL = localFade * 1.15;
+      const limb = Math.exp(-(inside * inside) / (2 * sigmaL * sigmaL)) * edge;
       const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, 0.5 + hit.dx * sunX));
-      // Dome and tabletop air used to be two branches, which put a ~4x alpha
-      // step exactly on the face-ellipse edge. Crossfade across it instead.
       const domeGlow  = (0.07 + limb * 0.52) * lit * intensity * dens;
       const faceGlow  = (0.03 + limb * 0.10) * lit * intensity * dens;
       const blend     = Math.max(0, Math.min(1, (hit.face - 0.82) / 0.36));
-      const glow      = faceGlow + (domeGlow - faceGlow) * blend;
+      // Aerial perspective: air keeps veiling the surface well inside the rim,
+      // falling off over ~35% of the radius rather than dying at the edge.
+      const aerial    = Math.pow(Math.max(0, 1 - inside / (rx * 0.35)), 1.7)
+                      * 0.16 * lit * intensity * dens;
+      const glow      = faceGlow + (domeGlow - faceGlow) * blend + aerial;
       const a = Math.round(Math.min(255, glow * 255));
       if (a < 3) continue;
       const o = (y * w + x) * 4;
