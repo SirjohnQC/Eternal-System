@@ -1180,9 +1180,6 @@ export function atmoHazeAmount(viewZoom = 1): number {
   return (1 - t) * (1 - t);
 }
 
-/** How far the ozone limb feathers past the geometric rim, in native pixels. */
-const OZONE_FADE_PX = 8;
-
 /**
  * Face² limit for a circle of radius `rx`. Wisps stay inside this so they
  * cannot drift into the feathered limb.
@@ -1234,6 +1231,38 @@ function hslRGB(h: number, s: number, l: number): RGB {
 }
 
 /**
+ * Air scatters warmer where it is lit and cooler where it is not — but a fixed
+ * hue ROTATION wraps warm-hued worlds into a foreign colour family (lava's 16deg
+ * minus 26 lands on magenta). Blend toward these fixed anchors instead: the
+ * planet keeps its own colour identity and nothing can wrap.
+ */
+const AIR_WARM: RGB = rgb(255, 236, 205);   // sunlit haze
+const AIR_COOL: RGB = rgb( 40,  62, 130);   // shadowed haze
+
+const mixRGB = (a: RGB, b: RGB, t: number): RGB => rgb(
+  Math.round(a.r + (b.r - a.r) * t),
+  Math.round(a.g + (b.g - a.g) * t),
+  Math.round(a.b + (b.b - a.b) * t),
+);
+
+/**
+ * Shell-thickness wobble around the limb, as two harmonics of the limb angle.
+ *
+ * The weights sum to 1, so the combined term is bounded to [-1, 1] by
+ * construction and WOBBLE_AMP alone states the swing: the shell breathes ±55%
+ * of its thickness. An earlier form spread that across three unlabelled
+ * multipliers (0.5, 0.8 and 0.45), so its real swing — ±58% — was written down
+ * nowhere and had been reached by walking the constants against a check
+ * sampled at six angles.
+ *
+ * The amplitude is set by how the limb reads, not by that check: at ±55% it is
+ * a gentle irregularity on ocean, lava and desert alike. tools/atmosphereCheck
+ * only has to tell this apart from a constant-thickness annulus, and does so
+ * with 4x margin.
+ */
+const WOBBLE_H2 = 0.6, WOBBLE_H3 = 0.4, WOBBLE_AMP = 0.55;
+
+/**
  * Ozone half-dome sitting on the pancake — thin when looking down, a limb
  * against space that feathers out. `intensity` is usually {@link atmoHazeAmount}.
  */
@@ -1246,18 +1275,7 @@ export function paintAtmosphere(
 ): void {
   if (intensity <= 0.01) return;
   const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
-  // Air scatters warmer where it is lit and cooler where it is not — but a fixed
-  // hue ROTATION wraps warm-hued worlds into a foreign colour family (lava's 16deg
-  // minus 26 lands on magenta). Blend toward fixed anchors instead: the planet
-  // keeps its own colour identity and nothing can wrap.
-  const AIR_WARM: RGB = rgb(255, 236, 205);   // sunlit haze
-  const AIR_COOL: RGB = rgb( 40,  62, 130);   // shadowed haze
   const airBase = hslRGB(chan.hue, chan.saturation, 0.58);
-  const mixRGB = (a: RGB, b: RGB, t: number): RGB => rgb(
-    Math.round(a.r + (b.r - a.r) * t),
-    Math.round(a.g + (b.g - a.g) * t),
-    Math.round(a.b + (b.b - a.b) * t),
-  );
   const warm = mixRGB(airBase, AIR_WARM, 0.45);
   const cool = mixRGB(airBase, AIR_COOL, 0.40);
   const { cx, rx, ry } = geom;
@@ -1268,7 +1286,7 @@ export function paintAtmosphere(
   const sunX = Math.cos(sunAzimuth);
   const fade = chan.thicknessPx;
   // A constant-thickness ring reads as a geometric annulus — an outline rather
-  // than a volume. Perturb it slowly around the limb.
+  // than a volume. Perturb it slowly around the limb; see WOBBLE_AMP.
   // Angular wobble without transcendentals in the inner loop. (dx/d, dy/d) is
   // (cos t, sin t) already, so harmonics come from multiple-angle identities and
   // the phase terms are loop-invariant. atan2 + 2x sin per pixel over ~280k
@@ -1290,8 +1308,8 @@ export function paintAtmosphere(
       const ct = (x - cx) * inv, st = (y - cy) * inv;   // cos t, sin t
       const s2 = 2 * st * ct,    c2 = ct * ct - st * st;
       const s3 = st * (3 - 4 * st * st), c3 = ct * (4 * ct * ct - 3);
-      const n = (s2 * p1c + c2 * p1s) * 0.5 + (s3 * p2c + c3 * p2s) * 0.8;
-      const localFade = Math.max(3, fade * (1 + n * 0.45));
+      const n = (s2 * p1c + c2 * p1s) * WOBBLE_H2 + (s3 * p2c + c3 * p2s) * WOBBLE_H3;
+      const localFade = Math.max(3, fade * (1 + n * WOBBLE_AMP));
       const beyond = hit.distPx - rx;
       const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / localFade);
       if (edge < 0.02) continue;
