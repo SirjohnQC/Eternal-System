@@ -1252,6 +1252,19 @@ git commit -m "feat(atmosphere): perturbed shell thickness and aerial perspectiv
 
 ## What this plan deliberately does not do
 
+- **The rolled genome never reaches the screen.** This is the one non-goal that
+  is easy to mistake for a bug, so state it plainly: `rollPlanetGenome` has no
+  production caller. `paintAtmosphere`'s `air` parameter is optional by design
+  (Task 5's Interfaces section: "no call site is forced to change at once"), its
+  single call site never passes it, and the fallback is
+  `genomeFromLegacy(planetType, 0)` — a hardcoded seed. `Planet.genomeSeed` is
+  assigned and saved and load-backfilled, but nothing READS it yet. So every
+  planet of a type still renders identical air, exactly as before.
+  That is the point of Phase 1: the identity system lands, provably stable
+  across terraform and saves, while the picture does not move an inch. Wiring
+  the call site to `rollPlanetGenome(planet.genomeSeed, planet.type, planet.dna)`
+  is a visible change to every world in the game and belongs to the phase that
+  can measure it — not smuggled in under "no visual change".
 - **No terrain archetypes.** `tools/planetVarietyCheck.ts` will keep failing in
   its default mode until they land. That failure is the point — it is the
   standing baseline for the next plan.

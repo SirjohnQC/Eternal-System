@@ -1300,6 +1300,9 @@ export function paintAtmosphere(
       // falling off over ~35% of the radius rather than dying at the edge.
       // Zero past that band already, so skip the pow() there instead of
       // computing Math.max(0, …)**1.7 down to 0 on most of the interior face.
+      // If frame budget ever gets tight, this pow is the next thing to go —
+      // x*x or x*x*x is a close enough curve. paintAtmosphere runs per frame
+      // and already costs ~1.4-1.6x what it did before the rebuild.
       const aerial    = inside < aerialReach
         ? Math.pow(1 - inside / aerialReach, 1.7) * 0.16 * lit * intensity * dens
         : 0;
