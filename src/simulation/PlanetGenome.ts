@@ -63,7 +63,11 @@ export function genomeSeedFor(starId: number, planetIndex: number): number {
  * Today's per-type atmosphere, held as RGB bytes lifted verbatim from
  * src/rendering/HabitableCutawayEngine.ts and converted to hue/saturation
  * in code. RGB bytes eliminate the error class of hand-converted HSL.
- * Densities are copied from `atmoDensity` per palette in that file.
+ * Densities came from `CutawayPalette.atmoDensity` in that file.
+ *
+ * This is now the ONLY copy of those numbers: `CutawayPalette.atmo` and
+ * `.atmoDensity` were deleted once nothing read them, rather than left behind
+ * as a second source of truth to drift against this one.
  *
  * This table exists so Phase 1 is invisible: `genomeFromLegacy` reproduces the
  * shipped look exactly. It is deleted once the rolled atmosphere lands.

@@ -233,10 +233,6 @@ interface CutawayPalette {
   strata: RGB[];
   ember: RGB;
   emberHot: RGB;
-  /** Atmosphere shell colour. */
-  atmo: RGB;
-  /** Multiplies ozone limb / face alpha (lava/gas denser, desert/carbon thinner). */
-  atmoDensity: number;
 }
 
 const OCEAN_PALETTE: CutawayPalette = {
@@ -277,8 +273,6 @@ const OCEAN_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(206, 84, 26),
   emberHot: rgb(255, 184, 74),
-  atmo:     rgb(65, 165, 255),
-  atmoDensity: 1.0,
 };
 
 const ROCKY_PALETTE: CutawayPalette = {
@@ -318,8 +312,6 @@ const ROCKY_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(198, 78, 24),
   emberHot: rgb(255, 176, 70),
-  atmo:     rgb(158, 148, 128),
-  atmoDensity: 1.0,
 };
 
 const ICE_PALETTE: CutawayPalette = {
@@ -359,8 +351,6 @@ const ICE_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(160, 200, 230),
   emberHot: rgb(220, 240, 255),
-  atmo:     rgb(140, 200, 240),
-  atmoDensity: 1.05,
 };
 
 const LAVA_PALETTE: CutawayPalette = {
@@ -400,8 +390,6 @@ const LAVA_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(255, 120, 30),
   emberHot: rgb(255, 210, 90),
-  atmo:     rgb(210, 70, 20),
-  atmoDensity: 1.55,
 };
 
 const GAS_PALETTE: CutawayPalette = {
@@ -441,8 +429,6 @@ const GAS_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(200, 140, 80),
   emberHot: rgb(255, 200, 120),
-  atmo:     rgb(170, 140, 190),
-  atmoDensity: 1.45,
 };
 
 const TOXIC_PALETTE: CutawayPalette = {
@@ -482,8 +468,6 @@ const TOXIC_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(180, 200, 40),
   emberHot: rgb(230, 255, 90),
-  atmo:     rgb(170, 210, 50),
-  atmoDensity: 1.25,
 };
 
 const CRYSTAL_PALETTE: CutawayPalette = {
@@ -523,8 +507,6 @@ const CRYSTAL_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(200, 100, 255),
   emberHot: rgb(255, 180, 255),
-  atmo:     rgb(150, 90, 220),
-  atmoDensity: 1.15,
 };
 
 const DESERT_PALETTE: CutawayPalette = {
@@ -564,8 +546,6 @@ const DESERT_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(220, 140, 60),
   emberHot: rgb(255, 200, 100),
-  atmo:     rgb(210, 170, 90),
-  atmoDensity: 0.70,
 };
 
 const STORM_PALETTE: CutawayPalette = {
@@ -605,8 +585,6 @@ const STORM_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(120, 80, 160),
   emberHot: rgb(180, 140, 220),
-  atmo:     rgb(100, 90, 130),
-  atmoDensity: 1.60,
 };
 
 const CARBON_PALETTE: CutawayPalette = {
@@ -646,8 +624,6 @@ const CARBON_PALETTE: CutawayPalette = {
   ],
   ember:    rgb(60, 100, 160),
   emberHot: rgb(100, 160, 220),
-  atmo:     rgb(70, 120, 190),
-  atmoDensity: 0.65,
 };
 
 const PALETTE_BY_TYPE: Record<HabitableType, CutawayPalette> = {
@@ -665,11 +641,6 @@ const PALETTE_BY_TYPE: Record<HabitableType, CutawayPalette> = {
 
 function paletteFor(type: HabitableType): CutawayPalette {
   return PALETTE_BY_TYPE[type] ?? ROCKY_PALETTE;
-}
-
-/** Atmosphere tint, exported so the consumer can match its own overlays to it. */
-export function cutawayAtmoColour(type: HabitableType): RGB {
-  return paletteFor(type).atmo;
 }
 
 /** HSV → RGB for seed-driven gas bands. */
@@ -1203,6 +1174,11 @@ function ozoneAt(
   // pixel magnitudes; it cost ~20% of this function's time in profiling.
   const distPx = Math.sqrt(ddx * ddx + ddy * ddy);
   if (distPx > rx + extraPx) return null;
+  // PANCAKE-ONLY. The body is a half-dome sitting on a disc, so there is no air
+  // below the tabletop. This line is correct for that geometry and WRONG the
+  // moment the body becomes a sphere — a sphere has a limb all the way round,
+  // and this would shear its lower half off. Delete it with the pancake, not
+  // before. (Called out in the 2026-09-08 genome plan's non-goals.)
   if (y > cy + ry) return null;
   const dyr = ddy / ry;
   const face = dx * dx + dyr * dyr;

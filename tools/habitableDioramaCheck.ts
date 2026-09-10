@@ -140,7 +140,7 @@ const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const {
   paintCutawaySurface, paintCutawayCrust, paintAtmosphere, paintFluids,
-  bakeShoreDistance, habitableGeom, HabitableCutawayEngine, cutawayAtmoColour,
+  bakeShoreDistance, habitableGeom, HabitableCutawayEngine,
   planVolcanoChimneys,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
@@ -362,11 +362,28 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('atmo does not bleed past the cake front', frontBleed === 0, `${frontBleed} front`);
   check('atmo does not bleed far from the dome', farBleed === 0, `${farBleed} far`);
   check('atmo stays above crust', atmoBelow === 0, `${atmoBelow} below pancake`);
-  const oceanC = cutawayAtmoColour('ocean');
-  const rockyC = cutawayAtmoColour('rocky');
-  check('ocean ozone is blue', oceanC.b > oceanC.r + 40, `rgb ${oceanC.r},${oceanC.g},${oceanC.b}`);
-  check('rocky ozone is dusty', rockyC.r > 120 && rockyC.r + 15 > rockyC.b,
-        `rocky ${rockyC.r},${rockyC.g},${rockyC.b}`);
+  // Colour is measured on RENDERED pixels, not on a palette struct. These two
+  // assertions used to read `cutawayAtmoColour(type)`, i.e. `CutawayPalette.atmo`
+  // — which paintAtmosphere stopped reading the moment the air moved onto the
+  // genome. They passed on hand-maintained data that nothing draws any more, so
+  // they would have stayed green no matter what colour the renderer produced.
+  // That is the exact shape of the lava-pink-sky bug this suite exists to catch.
+  const sunlitLimb = (type: HabitableType): [number, number, number] => {
+    const probe = ag.createImageData(VW, VH);
+    paintAtmosphere(probe, geom, type, bob, 0, 1);
+    const o = ((geom.cyTop + bob) * VW + (geom.cx + geom.rx - 2)) * 4;
+    return [probe.data[o], probe.data[o + 1], probe.data[o + 2]];
+  };
+  const oceanC = sunlitLimb('ocean');
+  const rockyC = sunlitLimb('rocky');
+  const lavaC = sunlitLimb('lava');
+  check('ocean air renders blue', oceanC[2] > oceanC[0] + 40, `rgb ${oceanC.join(',')}`);
+  check('rocky air renders dusty', rockyC[0] > 120 && rockyC[0] + 15 > rockyC[2],
+        `rgb ${rockyC.join(',')}`);
+  // Sampled on the SUNLIT limb, where the warm anchor pulls hardest: a hue that
+  // wraps out of the warm family shows up here first.
+  check('lava air stays warm, not magenta', lavaC[1] > lavaC[2] + 20,
+        `rgb ${lavaC.join(',')}`);
   const gone = ag.createImageData(VW, VH);
   paintAtmosphere(gone, geom, planetType, bob, 0, 0);
   let zoomedPx = 0;
@@ -686,9 +703,13 @@ for (const planetType of SMOKE_TYPES) {
   for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 0) atmoPx++;
   check(`${planetType} ozone dome`, atmoPx > 200, `${atmoPx} atmo px`);
 
-  const tint = cutawayAtmoColour(planetType);
-  check(`${planetType} has atmo tint`, tint.r + tint.g + tint.b > 40,
-        `rgb ${tint.r},${tint.g},${tint.b}`);
+  // Again on rendered pixels: the brightest thing this type's air actually paints.
+  let tintMax = 0;
+  for (let i = 0; i < img.data.length; i += 4) {
+    if (img.data[i + 3] < 3) continue;
+    tintMax = Math.max(tintMax, img.data[i] + img.data[i + 1] + img.data[i + 2]);
+  }
+  check(`${planetType} air has colour`, tintMax > 40, `brightest painted rgb sum ${tintMax}`);
 
   const frameCanvas = makeCanvas(VW, VH);
   const frameCtx = frameCanvas.getContext() as RecordingCtx;
