@@ -1246,11 +1246,20 @@ export function paintAtmosphere(
 ): void {
   if (intensity <= 0.01) return;
   const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
-  // Air scatters differently where it is lit. Warmer and paler toward the sun,
-  // cooler and deeper away from it. One flat colour is what made the shipped
-  // shell read as a drawn outline rather than a volume.
-  const warm = hslRGB(chan.hue - 26, chan.saturation * 0.72, 0.74);
-  const cool = hslRGB(chan.hue + 22, chan.saturation * 1.00, 0.46);
+  // Air scatters warmer where it is lit and cooler where it is not — but a fixed
+  // hue ROTATION wraps warm-hued worlds into a foreign colour family (lava's 16deg
+  // minus 26 lands on magenta). Blend toward fixed anchors instead: the planet
+  // keeps its own colour identity and nothing can wrap.
+  const AIR_WARM: RGB = rgb(255, 236, 205);   // sunlit haze
+  const AIR_COOL: RGB = rgb( 40,  62, 130);   // shadowed haze
+  const airBase = hslRGB(chan.hue, chan.saturation, 0.58);
+  const mixRGB = (a: RGB, b: RGB, t: number): RGB => rgb(
+    Math.round(a.r + (b.r - a.r) * t),
+    Math.round(a.g + (b.g - a.g) * t),
+    Math.round(a.b + (b.b - a.b) * t),
+  );
+  const warm = mixRGB(airBase, AIR_WARM, 0.45);
+  const cool = mixRGB(airBase, AIR_COOL, 0.40);
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + bob;
   const dens = chan.density;
