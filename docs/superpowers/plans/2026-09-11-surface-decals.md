@@ -406,6 +406,7 @@ Create `src/rendering/SurfaceDecals.ts`:
  * pattern for deterministic prop placement.
  */
 import type { CutawayBakeOpts } from './HabitableCutawayEngine';
+import { isWater } from '../simulation/PlanetGrid';
 
 export type DecalKind = 'conifer' | 'broadleaf' | 'scrub' | 'cactus' | 'rock';
 
@@ -491,14 +492,26 @@ export function planSurfaceDecals(
 
       const biome = cell.biome as string;
       if (biome === 'volcanic' || biome === 'snow' || biome === 'beach') continue;
+      if (isWater(cell.biome)) continue;                  // measured: see below
       if (cell.elevation > DECAL_SNOW_LINE) continue;     // see DECAL_SNOW_LINE
       const fert = cell.fertility ?? 0;
-      if (fert <= 0) continue;                            // water and dead rock
+      // NOT `if (fert <= 0) continue` as a water guard. Measured on a real
+      // grid: water cells carry fertility > 0 (shallow 4983/4983, ocean
+      // 1701/1701), contradicting the field's own doc comment, while EVERY
+      // mountain cell has fertility 0 (3309/3309). A fertility guard here
+      // would let water through and silently delete the mountain branch below.
 
       // Carrying capacity. A world with no life has no decals however fertile
       // its rock is — this is what makes the surface a readout.
+      // MEASURED (Task 1): on a world that has not passed the microbial phase —
+      // per this project's own multi-seed check, the common case — land cells
+      // carry lifeDensity EXACTLY 0; only shallow/ocean cells are ever written.
+      // So `fert * lush` is what actually drives land placement, and the
+      // lifeDensity term enriches the picture later rather than carrying it.
+      // The prototype's dead/mid/lush progression was produced with
+      // lifeDensity 0 everywhere, so this is the proven path, not a fallback.
       const life = clamp01((cell.lifeDensity ?? 0) * 0.55 + fert * lush * 0.85);
-      if (life < 0.12) continue;
+      if (biome !== 'mountain' && life < 0.12) continue;
 
       // Woodland and ground cover clump on DIFFERENT scales. Sharing one field
       // made scrub carpet wherever trees thinned, the opposite of the intent.
@@ -510,7 +523,11 @@ export function planSurfaceDecals(
 
       let kind: DecalKind;
       if (biome === 'mountain') {
+        // Bare rock: no fertility, and none needed — this is the one kind that
+        // is not life. Gate it on lushness only so a dead world still has crags.
         kind = hash1(px * 31 + py, seed) < 0.62 ? 'rock' : 'scrub';
+      } else if (fert <= 0) {
+        continue;                                        // dead ground, not rock
       } else if (biome === 'desert') {
         if (fert < 0.22) continue;                  // dry land stays visibly dry
         kind = hash1(px * 7 + py, seed) < 0.45 ? 'cactus' : 'rock';
