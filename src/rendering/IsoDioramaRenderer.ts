@@ -39,6 +39,8 @@ import {
   HabitableCutawayEngine,
   type HabitableType,
 } from './HabitableCutawayEngine';
+import type { DecalAtlas } from './SurfaceDecals';
+import { loadDecalAtlas } from './DecalAtlasLoader';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -472,6 +474,7 @@ export class IsoDioramaRenderer {
   private gasHalo:     RGB = PALETTES.gas.halo;
   private star:        StarBody | null = null;
   private planetIndex  = 0;
+  private decalAtlas: DecalAtlas | null = null;
 
   // Projection focus — lat/lon of the continent the disc is centred on
   private focusLat = 0;
@@ -522,6 +525,13 @@ export class IsoDioramaRenderer {
   private static readonly SURFACE_REBAKE_INTERVAL = 4; // seconds
 
   private resizeObserver: ResizeObserver | null = null;
+
+  constructor() {
+    void loadDecalAtlas().then(a => {
+      this.decalAtlas = a;
+      if (a) this.markSurfaceDirty();
+    });
+  }
 
   get canvas(): HTMLCanvasElement { return this.display; }
 
@@ -1108,6 +1118,8 @@ export class IsoDioramaRenderer {
       maxLift: this.maxLift,
       lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
       weatherMix: this.cloudMixFor(),
+      decalSeed: this.planet?.genomeSeed ?? 0,
+      decalAtlas: this.decalAtlas,
     });
     this.pickBuf = this.cutaway.pick;
     this.lastSurfaceBake = this.elapsed;
