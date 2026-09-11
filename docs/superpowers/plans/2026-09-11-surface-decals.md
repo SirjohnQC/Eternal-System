@@ -1046,8 +1046,21 @@ git commit -m "feat(decals): load the atlas and enable decals on the home world"
 ### Task 7: Re-bake threshold, so the biosphere does not thrash the bake
 
 **Files:**
-- Modify: `src/rendering/IsoDioramaRenderer.ts` — `setLiveData` (`:794-797`) and class fields near `:468`
+- Modify: `src/rendering/HabitableCutawayEngine.ts` — add `updateSurfaceOpts`, near `rebakeSurface` (`:1836-1841`)
+- Modify: `src/rendering/IsoDioramaRenderer.ts` — `setLiveData` (`:794-797`), `rebakeHabitableSurface` (`:1130-1135`), class fields near `:468`
 - Modify: `tools/surfaceDecalCheck.ts`
+
+**Why this task is bigger than a threshold.** MEASURED during Task 6's review:
+the throttled re-bake path replays a FROZEN options snapshot.
+`surfaceDirty` -> `bakeSurface()` (`:1498`) -> `rebakeHabitableSurface()`
+(`:1500`) -> `HabitableCutawayEngine.rebakeSurface()` (`:1837`), and that last
+one repaints from `this.surfaceBakeOpts`, captured at the last FULL `bake()`
+(`:1827`). It therefore replays the old `lush`, the old `decalSeed` and the old
+`decalAtlas`. A threshold added on top of that would gate a repaint that cannot
+change anything — the decals would never track the biosphere, which is the
+entire feature. This also explains a pre-existing symptom: the vegetation tint
+already keyed off `opts.lush` and already could not update on a partial re-bake.
+Fix the cause here, then add the threshold.
 
 **Interfaces:**
 - Consumes: `PlanetBiosphere`.
@@ -1093,7 +1106,74 @@ export function decalRebakeNeeded(
 }
 ```
 
-- [ ] **Step 4: Wire it into the host**
+- [ ] **Step 4: Let a partial re-bake see live values**
+
+In `src/rendering/HabitableCutawayEngine.ts`, beside `rebakeSurface`:
+
+```ts
+  /**
+   * Merge live values into the stored bake options.
+   *
+   * `rebakeSurface` repaints from `surfaceBakeOpts`, a snapshot taken at the
+   * last full `bake()`. Anything that changes between full bakes — lushness as
+   * the biosphere advances, the decal atlas once it finishes loading — has to
+   * be merged in here first, or the repaint faithfully reproduces the old
+   * world and nothing the player did appears to matter.
+   */
+  updateSurfaceOpts(patch: Partial<CutawayBakeOpts>): void {
+    if (!this.surfaceBakeOpts) return;
+    this.surfaceBakeOpts = { ...this.surfaceBakeOpts, ...patch };
+  }
+```
+
+Then in `src/rendering/IsoDioramaRenderer.ts`, in `rebakeHabitableSurface`
+(`:1130`), refresh before repainting:
+
+```ts
+  private rebakeHabitableSurface(): void {
+    const bio = this.biosphere;
+    this.cutaway.updateSurfaceOpts({
+      lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
+      decalSeed: this.planet?.genomeSeed ?? 0,
+      decalAtlas: this.decalAtlas,
+    });
+    this.cutaway.rebakeSurface();
+    this.pickBuf = this.cutaway.pick;
+    this.lastSurfaceBake = this.elapsed;
+    this.surfaceDirty = false;
+  }
+```
+
+- [ ] **Step 5: Prove a re-bake actually reflects a changed biosphere**
+
+Append to `tools/surfaceDecalCheck.ts`, BEFORE the final summary block:
+
+```ts
+// A partial re-bake must see the CURRENT lushness, not the one frozen into the
+// options at the last full bake. Without updateSurfaceOpts this check fails:
+// the second paint reproduces the first exactly.
+const engine: any = new (await import('../src/rendering/HabitableCutawayEngine')).HabitableCutawayEngine();
+engine.bake({
+  w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
+  discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
+  lush: 0.05, decalSeed: 0xC0FFEE,
+});
+const countPainted = (): number => {
+  const g2: any = engine.land.getContext('2d');
+  const img = g2.getImageData(0, 0, engine.w, engine.h);
+  let n = 0;
+  for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 0) n++;
+  return n;
+};
+const bare = countPainted();
+engine.updateSurfaceOpts({ lush: 0.95 });
+engine.rebakeSurface();
+const lushly = countPainted();
+check('a re-bake reflects the new biosphere', lushly > bare,
+      `painted px ${bare} -> ${lushly}`);
+```
+
+- [ ] **Step 6: Wire the threshold into the host**
 
 In `IsoDioramaRenderer.ts`, add a field near `:468`:
 
@@ -1114,7 +1194,7 @@ and in `setLiveData` (`:794`), after `this.biosphere = biosphere;`:
 
 with `decalRebakeNeeded` added to the `SurfaceDecals` import.
 
-- [ ] **Step 5: Run the check and typecheck**
+- [ ] **Step 7: Run the check and typecheck**
 
 ```bash
 node_modules/.bin/esbuild tools/surfaceDecalCheck.ts --bundle --platform=node --format=esm --outfile=$TEMP/decal.mjs && node $TEMP/decal.mjs
@@ -1123,11 +1203,11 @@ npx tsc --noEmit 2>&1 | grep -v "Float32Array"
 
 Expected: all PASS; no new type errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/rendering/SurfaceDecals.ts src/rendering/IsoDioramaRenderer.ts tools/surfaceDecalCheck.ts
-git commit -m "feat(decals): re-bake only on material biosphere change"
+git add src/rendering/SurfaceDecals.ts src/rendering/HabitableCutawayEngine.ts src/rendering/IsoDioramaRenderer.ts tools/surfaceDecalCheck.ts
+git commit -m "fix(decals): let a partial re-bake see live lushness, then throttle it"
 ```
 
 ---
