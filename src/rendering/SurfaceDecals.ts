@@ -122,13 +122,18 @@ export function planSurfaceDecals(
       const sward = vnoise(px, py, 88, seed ^ 0x5bd1) * 0.75
                   + vnoise(px, py, 27, seed ^ 0x31af) * 0.25;
       const canopy = biome === 'forest' || biome === 'jungle';
-      if (grove < (canopy ? 0.34 : 0.52) - life * 0.12 && sward < 0.62 - life * 0.10) continue;
+      if (grove < (canopy ? 0.58 : 0.74) - life * 0.04 && sward < 0.80 - life * 0.04) continue;
 
       let kind: DecalKind;
       if (biome === 'mountain') {
         // Bare rock: no fertility, and none needed — this is the one kind that
-        // is not life. Gate it on lushness only so a dead world still has crags.
-        kind = hash1(px * 31 + py, seed) < 0.62 ? 'rock' : 'scrub';
+        // is not life, so it alone is exempt from the life floor above. Scrub
+        // IS life, though, so a dead world must not grow it on crags either —
+        // fall back to rock when the life floor isn't met. (Falling back to
+        // rock rather than skipping the site keeps mountain terrain reading
+        // as rocky at every lushness; only the vegetated kind is gated.)
+        const wantsScrub = hash1(px * 31 + py, seed) >= 0.62;
+        kind = (wantsScrub && life >= 0.12) ? 'scrub' : 'rock';
       } else if (fert <= 0) {
         continue;                                        // dead ground, not rock
       } else if (biome === 'desert') {

@@ -74,7 +74,7 @@ check('metric separates them', cClump > cEven * 1.8,
       `${cClump.toFixed(3)} > ${(cEven * 1.8).toFixed(3)}`);
 
 // ─── placement invariants, against the real engine ───────────────────────────
-const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE } =
+const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const { habitableGeom } = await import('../src/rendering/HabitableCutawayEngine');
 const { planSurfaceDecals, DECAL_SNOW_LINE, DECAL_BUDGET } =
@@ -121,11 +121,34 @@ function makeProjection(focusLat: number, focusLon: number) {
     };
   };
 }
+// Land-finding focus: same search as tools/habitableDioramaCheck.ts:250-270.
+// An arbitrary camera focus (e.g. (0.2, 1.1)) can land mostly over ocean, so a
+// "dead world has no decals" check against it proves nothing about placement
+// under the focus the game actually uses (IsoDioramaRenderer's computeFocus
+// centres on land the same way).
+let bestScore = -1, bestRow = GRID_SIZE >> 1, bestCol = 0;
+const STRIDE = 8, RAD = 3;
+for (let row = STRIDE * RAD; row < GRID_SIZE - STRIDE * RAD; row += STRIDE) {
+  const latW = 1 - Math.abs(row / (GRID_SIZE - 1) - 0.5) * 1.4;
+  if (latW <= 0) continue;
+  for (let col = 0; col < GRID_SIZE; col += STRIDE) {
+    let score = 0;
+    for (let dr = -RAD; dr <= RAD; dr++) for (let dc = -RAD; dc <= RAD; dc++) {
+      const cell = grid[row + dr * STRIDE]?.[(col + dc * STRIDE + GRID_SIZE) % GRID_SIZE];
+      if (cell && !isWater(cell.biome)) score += 1 + cell.fertility;
+    }
+    score *= latW;
+    if (score > bestScore) { bestScore = score; bestRow = row; bestCol = col; }
+  }
+}
+const discToGrid = makeProjection(
+  (0.5 - bestRow / (GRID_SIZE - 1)) * Math.PI, (bestCol / GRID_SIZE) * Math.PI * 2);
+
 const opts: any = {
   w: VW, h: VH, cx: geom.cx, cyTop: geom.cyTop, cyBody: geom.cyBody,
   R: geom.R, rx: geom.rx, ry: geom.ry, wall: geom.wall,
   seed: 0xbeef, grid, planetType: 'ocean',
-  discToGrid: makeProjection(0.2, 1.1), rimFalloff, liftOf, smoothElevation,
+  discToGrid, rimFalloff, liftOf, smoothElevation,
   maxLift: 9,
 };
 
@@ -134,7 +157,12 @@ const mid  = planSurfaceDecals(opts, 0.45, 0xC0FFEE);
 const lush = planSurfaceDecals(opts, 0.92, 0xC0FFEE);
 console.log(`\n  sites: dead ${dead.length}  mid ${mid.length}  lush ${lush.length}\n`);
 
-check('dead world has no decals', dead.length === 0, `${dead.length}`);
+// Rock is not life and is exempt from the life floor by design (bare crags
+// belong on a lifeless world); every other kind IS vegetation and must not
+// appear at all when lush is near zero.
+const livingDead = dead.filter(s => s.kind !== 'rock').length;
+check('dead world grows nothing living', livingDead === 0,
+      `${livingDead} (rock ${dead.length - livingDead})`);
 check('readout is monotonic', mid.length > 0 && lush.length > mid.length,
       `${dead.length} < ${mid.length} < ${lush.length}`);
 
