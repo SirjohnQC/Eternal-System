@@ -213,12 +213,20 @@ export function stampDecals(
   let drawn = 0;
   for (const s of sites) {
     const bx = Math.round(s.x) - x0, by = Math.round(s.y) - yTop;
-    if (bx < 1 || by < 1 || bx >= bw - 1 || by >= bh) continue;
+    // bx needs room for the bx-1/bx+1 reads below; by only needs to be a valid
+    // row (by-1 is never read — see the note at the vertical guard).
+    if (bx < 1 || bx >= bw - 1 || by < 0 || by >= bh) continue;
     const foot = (by * bw + bx) * 4;
     // Its own footprint must stand on painted land, or decals hang off coasts.
     if (d[foot + 3] === 0) continue;
     if (d[((by * bw) + bx - 1) * 4 + 3] === 0) continue;
     if (d[((by * bw) + bx + 1) * 4 + 3] === 0) continue;
+    // The footprint is the decal's BASE, so the pixel it rests on must be
+    // painted too, or the decal reads as floating on nothing. Deliberately
+    // NOT checking the pixel above: decals draw upward from their base, and
+    // at the top rim the terrain silhouette ends with space above it — trees
+    // breaking the skyline there are the correct look, not a bug.
+    if (by + 1 < bh && d[((by + 1) * bw + bx) * 4 + 3] === 0) continue;
     const ur = d[foot], ug = d[foot + 1], ub = d[foot + 2];
 
     // lit 0..255 from the atlas mask -> a multiplier plus a small hue push, so
@@ -239,10 +247,15 @@ export function stampDecals(
       d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
     };
 
-    if (atlas) {
-      const row = atlas.rows[s.kind] ?? 0;
-      const variant = Math.abs((s.row * 31 + s.col * 17)) % Math.max(1, atlas.variants);
-      const sx0 = variant * atlas.cell, sy0 = row * atlas.cell;
+    const row = atlas ? atlas.rows[s.kind] ?? 0 : 0;
+    const variant = atlas ? Math.abs((s.row * 31 + s.col * 17)) % Math.max(1, atlas.variants) : 0;
+    const sx0 = variant * (atlas?.cell ?? 0), sy0 = row * (atlas?.cell ?? 0);
+    // A malformed atlas (rows/variants/width/height inconsistent with cell)
+    // would otherwise read past the buffer: `atlas.data[...]` returns
+    // `undefined`, which slips past the `=== 0` skip check and feeds NaN into
+    // shading. Confirm the source rect actually lies inside the atlas first.
+    const atlasRectOk = !!atlas && sx0 + atlas.cell <= atlas.width && sy0 + atlas.cell <= atlas.height;
+    if (atlas && atlasRectOk) {
       for (let ay = 0; ay < atlas.cell; ay++) {
         for (let ax = 0; ax < atlas.cell; ax++) {
           const ao = ((sy0 + ay) * atlas.width + (sx0 + ax)) * 4;

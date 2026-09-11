@@ -219,5 +219,41 @@ const hole = new Uint8ClampedArray(bw * bh * 4);
 const drawnHole = stampDecals(hole, bw, bh, 0, 0, fakeSites, null);
 check('never draws on unpainted pixels', drawnHole === 0, `${drawnHole} drawn on a hole`);
 
+// The neighbour guard itself, not just the fully-transparent case above: that
+// case is already caught by the footprint-alpha check alone and proves
+// nothing about the neighbour reads, which is the part the guard's own
+// comment claims to protect ("or decals hang off coasts").
+const paintedBuf = () => {
+  const b = new Uint8ClampedArray(bw * bh * 4);
+  for (let i = 0; i < bw * bh; i++) {
+    b[i * 4] = 60; b[i * 4 + 1] = 120; b[i * 4 + 2] = 55; b[i * 4 + 3] = 255;
+  }
+  return b;
+};
+const guardSite: any = { x: 100, y: 60, kind: 'rock', scale: 1, row: 0, col: 0 };
+
+// Right-neighbour hole (bx+1): the horizontal half of the guard.
+const rightHole = paintedBuf();
+rightHole[(60 * bw + 101) * 4 + 3] = 0;
+const drawnRightHole = stampDecals(rightHole, bw, bh, 0, 0, [guardSite], null);
+check('hole beside the footprint skips the site', drawnRightHole === 0,
+      `${drawnRightHole} drawn with a punched neighbour`);
+
+// Below-neighbour hole (by+1): the vertical half of the guard — the decal's
+// base must stand on paint or it reads as floating.
+const belowHole = paintedBuf();
+belowHole[(61 * bw + 100) * 4 + 3] = 0;
+const drawnBelowHole = stampDecals(belowHole, bw, bh, 0, 0, [guardSite], null);
+check('hole below the footprint skips the site', drawnBelowHole === 0,
+      `${drawnBelowHole} drawn with a hole underfoot`);
+
+// Mirror: footprint and every guarded neighbour painted -> the site IS drawn.
+// A guard that always skips (or was deleted and always draws) would pass the
+// two checks above in one direction or the other and hide here.
+const intact = paintedBuf();
+const drawnIntact = stampDecals(intact, bw, bh, 0, 0, [guardSite], null);
+check('fully painted neighbourhood draws', drawnIntact === 1,
+      `${drawnIntact} drawn with neighbours intact`);
+
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
