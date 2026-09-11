@@ -195,5 +195,29 @@ check('a different genome is a different forest',
 const cl = clumpiness(lush.map(s => ({ x: s.x, y: s.y })));
 check('real placement clumps', cl >= CLUMP_MIN, `${cl.toFixed(3)} >= ${CLUMP_MIN}`);
 
+const { stampDecals } = await import('../src/rendering/SurfaceDecals');
+
+// A fake land buffer: fully painted, mid-green, so every site has ground.
+const bw = 200, bh = 120;
+const buf = new Uint8ClampedArray(bw * bh * 4);
+for (let i = 0; i < bw * bh; i++) {
+  buf[i * 4] = 60; buf[i * 4 + 1] = 120; buf[i * 4 + 2] = 55; buf[i * 4 + 3] = 255;
+}
+const before = buf.slice();
+const fakeSites: any[] = [
+  { x: 50, y: 60, kind: 'conifer', scale: 1, row: 0, col: 0 },
+  { x: 90, y: 70, kind: 'scrub',   scale: 1, row: 0, col: 0 },
+];
+const drawn = stampDecals(buf, bw, bh, 0, 0, fakeSites, null);
+check('stamps without an atlas (procedural fallback)', drawn === 2, `${drawn} drawn`);
+let changed = 0;
+for (let i = 0; i < buf.length; i += 4) if (buf[i] !== before[i]) changed++;
+check('stamping changes pixels', changed > 20, `${changed} px changed`);
+
+// Transparent ground must be left alone: no decal may invent land.
+const hole = new Uint8ClampedArray(bw * bh * 4);
+const drawnHole = stampDecals(hole, bw, bh, 0, 0, fakeSites, null);
+check('never draws on unpainted pixels', drawnHole === 0, `${drawnHole} drawn on a hole`);
+
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

@@ -35,6 +35,7 @@
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
 import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGenome';
+import { planSurfaceDecals, stampDecals, type DecalAtlas } from './SurfaceDecals';
 
 // ─── Small colour + noise helpers ─────────────────────────────────────────────
 //
@@ -192,6 +193,10 @@ export interface CutawayBakeOpts extends CutawayGeom {
 
   /** How lush the biosphere is, 0–1. Greens up vegetated land. */
   lush?: number;
+  /** `planet.genomeSeed`. Decals are stable across saves and re-bakes. */
+  decalSeed?: number;
+  /** Loaded decal atlas, or null to use the procedural fallback. */
+  decalAtlas?: DecalAtlas | null;
   /**
    * Written with `row * GRID_SIZE + col + 1` for every surface pixel painted,
    * so picking hits the cell that was actually DRAWN at a pixel rather than the
@@ -915,6 +920,13 @@ export function paintCutawaySurface(
         d[((py - yTop) * bw + (px - x0)) * 4 + 3] = 0;
       }
     }
+  }
+
+  // Decals last: they must stand on finished terrain, and the cliff-punch above
+  // has already cleared water pixels back to alpha 0 so nothing lands in the sea.
+  if (opts.decalSeed !== undefined) {
+    const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
+    stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
   }
 
   g.putImageData(img, x0, yTop);

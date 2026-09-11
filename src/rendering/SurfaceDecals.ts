@@ -181,3 +181,87 @@ export function planSurfaceDecals(
   sites.sort((a, b) => a.y - b.y);        // back to front, for correct overlap
   return sites;
 }
+
+export interface DecalAtlas {
+  cell: number;
+  rows: Record<DecalKind, number>;
+  variants: number;
+  /** RGBA, R = shading mask, A = coverage. */
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}
+
+/**
+ * Stamp decals into the surface bake's ImageData.
+ *
+ * Colour is NEVER taken from the atlas. Each decal samples the terrain pixel
+ * it stands on and shades relative to it, which is what keeps decals inside the
+ * planet's own palette on every planet type and under any terrain tint. The
+ * atlas supplies shape (alpha) and a lit/shadow mask (red channel) only.
+ *
+ * `d` is the sub-rect buffer the surface painter builds; `x0`/`yTop` are its
+ * offset on screen, so site coordinates convert with `x - x0`, `y - yTop`.
+ *
+ * Returns the number of decals actually drawn.
+ */
+export function stampDecals(
+  d: Uint8ClampedArray, bw: number, bh: number,
+  x0: number, yTop: number,
+  sites: DecalSite[], atlas: DecalAtlas | null,
+): number {
+  let drawn = 0;
+  for (const s of sites) {
+    const bx = Math.round(s.x) - x0, by = Math.round(s.y) - yTop;
+    if (bx < 1 || by < 1 || bx >= bw - 1 || by >= bh) continue;
+    const foot = (by * bw + bx) * 4;
+    // Its own footprint must stand on painted land, or decals hang off coasts.
+    if (d[foot + 3] === 0) continue;
+    if (d[((by * bw) + bx - 1) * 4 + 3] === 0) continue;
+    if (d[((by * bw) + bx + 1) * 4 + 3] === 0) continue;
+    const ur = d[foot], ug = d[foot + 1], ub = d[foot + 2];
+
+    // lit 0..255 from the atlas mask -> a multiplier plus a small hue push, so
+    // foliage reads greener than the ground without leaving its family.
+    const shade = (lit: number): [number, number, number] => {
+      const t = lit / 255;
+      const m = 0.45 + t * 0.42;
+      const push = s.kind === 'rock' ? 0 : 1;
+      return [
+        Math.max(0, Math.min(255, ur * m + (push ? -12 : 8))),
+        Math.max(0, Math.min(255, ug * m + (push ? 34 : 8))),
+        Math.max(0, Math.min(255, ub * m + (push ? -10 : 10))),
+      ];
+    };
+    const px = (x: number, y: number, c: [number, number, number]) => {
+      if (x < 0 || y < 0 || x >= bw || y >= bh) return;
+      const o = (y * bw + x) * 4;
+      d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+    };
+
+    if (atlas) {
+      const row = atlas.rows[s.kind] ?? 0;
+      const variant = Math.abs((s.row * 31 + s.col * 17)) % Math.max(1, atlas.variants);
+      const sx0 = variant * atlas.cell, sy0 = row * atlas.cell;
+      for (let ay = 0; ay < atlas.cell; ay++) {
+        for (let ax = 0; ax < atlas.cell; ax++) {
+          const ao = ((sy0 + ay) * atlas.width + (sx0 + ax)) * 4;
+          if (atlas.data[ao + 3] === 0) continue;
+          const tx = bx + ax - (atlas.cell >> 1);
+          const ty = by + ay - (atlas.cell - 2);
+          px(tx, ty, shade(atlas.data[ao]));
+        }
+      }
+    } else {
+      // Procedural fallback so the renderer degrades gracefully if the atlas
+      // has not loaded yet. Deliberately crude: a marker, not art.
+      const h = Math.round((s.kind === 'scrub' || s.kind === 'rock' ? 4 : 10) * s.scale);
+      for (let i = 0; i < h; i++) {
+        const half = Math.max(0, Math.round((1 - i / h) * h * 0.4));
+        for (let dx = -half; dx <= half; dx++) px(bx + dx, by - i, shade(dx < 0 ? 210 : 70));
+      }
+    }
+    drawn++;
+  }
+  return drawn;
+}
