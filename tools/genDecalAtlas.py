@@ -29,56 +29,150 @@ def put(px, x: int, y: int, lit: int, a: int = 255) -> None:
 
 
 def conifer(px, ox: int, oy: int, v: int) -> None:
-    h = 12 + v
+    if v == 0:
+        # Narrow spire
+        h = 15
+        width_mult = 0.22
+        taper_curve = lambda t: (1 - t)
+    elif v == 1:
+        # Broad squat
+        h = 10
+        width_mult = 0.50
+        taper_curve = lambda t: (1 - t)
+    else:  # v == 2
+        # Medium with fast taper (double-taper)
+        h = 13
+        width_mult = 0.38
+        taper_curve = lambda t: (1 - t * t)
+
     for i in range(h):
         t = i / h
-        half = max(0, int((1 - t) * h * 0.42))
+        half = max(0, int(taper_curve(t) * h * width_mult))
         for dx in range(-half, half + 1):
             put(px, ox + dx, oy - 3 - i, 70 if dx >= 0 else 210)
-    for i in range(3):
+
+    trunk_len = 2 if v == 1 else 3
+    for i in range(trunk_len):
         put(px, ox, oy - i, 110)
 
 
 def broadleaf(px, ox: int, oy: int, v: int) -> None:
     import math
-    h = 11 + v
+    if v == 0:
+        # Round canopy - symmetric
+        h = 11
+        phase_start = 0.25
+        phase_range = 0.75
+    elif v == 1:
+        # Tall narrow - peak higher
+        h = 13
+        phase_start = 0.10
+        phase_range = 0.90
+    else:  # v == 2
+        # Short wide - peak lower
+        h = 10
+        phase_start = 0.35
+        phase_range = 0.65
+
     for i in range(h):
         t = i / h
-        half = int(math.sin((0.25 + t * 0.75) * math.pi) * h * 0.38)
+        half = int(math.sin((phase_start + t * phase_range) * math.pi) * h * 0.38)
+        half = max(0, half)
         for dx in range(-half, half + 1):
             put(px, ox + dx, oy - 3 - i, 70 if dx >= 0 else 210)
-    for i in range(3):
+
+    trunk_len = 2 if v == 1 else 3
+    for i in range(trunk_len):
         put(px, ox, oy - i, 110)
 
 
 def scrub(px, ox: int, oy: int, v: int) -> None:
-    h = 4 + (v % 2)
-    for i in range(h):
-        w = max(0, 2 - abs(i - h // 2))
-        for dx in range(-w, w + 1):
-            put(px, ox + dx, oy - i, 90 if dx >= 0 else 190)
+    if v == 0:
+        # Low and wide
+        h = 4
+        for i in range(h):
+            w = 2
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i, 90 if dx >= 0 else 190)
+    elif v == 1:
+        # Two separated clumps
+        # Lower clump
+        for i in range(3):
+            w = 2
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i, 90 if dx >= 0 else 190)
+        # Upper clump (gap in between)
+        for i in range(1, 3):
+            w = 1
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i - 3, 90 if dx >= 0 else 190)
+    else:  # v == 2
+        # Tall and sparse
+        h = 5
+        for i in range(h):
+            w = max(0, 1 - abs(i - h // 2) // 2)
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i, 90 if dx >= 0 else 190)
 
 
 def cactus(px, ox: int, oy: int, v: int) -> None:
-    h = 8 + v
+    if v == 0:
+        h = 8
+        trunk_offset = 0
+    elif v == 1:
+        h = 9
+        trunk_offset = 0
+    else:  # v == 2
+        h = 10
+        trunk_offset = 1  # Offset trunk for asymmetry
+
     for i in range(h):
-        put(px, ox, oy - i, 200 if i % 3 else 120)
-        put(px, ox - 1, oy - i, 200)
+        put(px, ox + trunk_offset, oy - i, 200 if i % 3 else 120)
+        # Left ribbing
+        if v != 2:
+            put(px, ox - 1 + trunk_offset, oy - i, 200)
+
     arm = int(h * 0.45)
     if v != 1:
+        # Right arm (shorter on v=1)
         for i in range(3):
             put(px, ox + 1 + i, oy - arm, 150)
     if v != 2:
+        # Left arm (shorter on v=2)
         for i in range(3):
-            put(px, ox - 2 - i, oy - arm + 1, 150)
+            put(px, ox - 2 - i + trunk_offset, oy - arm + 1, 150)
 
 
 def rock(px, ox: int, oy: int, v: int) -> None:
-    h = 4 + v
-    for i in range(h):
-        w = max(0, int((1 - i / h) * h * 0.7))
-        for dx in range(-w, w + 1):
-            put(px, ox + dx, oy - i, 60 if dx >= 0 else 235)
+    if v == 0:
+        # Squat and wide
+        h = 4
+        for i in range(h):
+            w = max(0, int((1 - i / h) * h * 0.8))
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i, 60 if dx >= 0 else 235)
+    elif v == 1:
+        # Taller with notch
+        h = 6
+        for i in range(h):
+            if i == 3:
+                # Notch in the middle
+                w = 1
+            else:
+                w = max(0, int((1 - i / h) * h * 0.65))
+            for dx in range(-w, w + 1):
+                put(px, ox + dx, oy - i, 60 if dx >= 0 else 235)
+    else:  # v == 2
+        # Angular/asymmetric - faster taper, lean right
+        h = 5
+        for i in range(h):
+            t = i / h
+            w = max(0, int((1 - t * t) * h * 0.7))
+            x_offset = 0 if i < 2 else 1  # Lean right on upper half
+            for dx in range(-w, w + 1):
+                # Stronger shadow on left
+                lit = 70 if (dx + x_offset) >= 1 else 180
+                put(px, ox + dx + x_offset, oy - i, lit)
 
 
 DRAW = {"conifer": conifer, "broadleaf": broadleaf, "scrub": scrub,
