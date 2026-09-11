@@ -210,3 +210,34 @@ Cost: planning 4.7ms, stamping 1.0ms, both bake-time only. Per-frame cost zero.
   `lifeDensity` across a real engine run before any placement work depends on
   it. If it is near-zero in practice, the readout collapses to `fertility *
   lush` — still workable, but a different design, and better known up front.
+
+  **Measured (Task 1, `tools/lifeDensityCensus.ts`, 400,000 ticks, seed
+  `census_seed`):** 62,227 fertile cells; 6,684 (10.7%) have `lifeDensity >
+  0.02`; mean 0.107, max 1.000; histogram `55543 0 0 0 0 0 0 0 0 6684` — i.e.
+  fully bimodal, exactly 0 or 1.0, nothing in between. Verdict by the tool's
+  own threshold (`withLife/land > 0.05 && max > 0.15`): **USABLE**.
+
+  Caveat the raw numbers hide: this run never advanced past the `microbial`
+  biology phase in 400k ticks, so `stepLifeSpread` only ever touched water
+  cells (microbial spreads in water only) — the 6,684 lit cells are exactly
+  the water fraction of the grid, saturated to 1.0, and the other 55,543
+  fertile (land) cells never received a single write. The variation the
+  threshold detected is water-vs-land, not a graded density on land. This
+  project has previously documented that a single seed cannot distinguish
+  "broken" from "unlucky" for phase advancement (`tools/playerProgressCheck.ts`
+  found only ~2/12 seeds pass microbial in a comparable window), and this is
+  one seed. Also note: `runtimeState.playerPlanetGrid` is not populated by the
+  engine's tick loop at all in production — it is lazily created only when the
+  UI opens the planet view (`main.ts:1011-1018`, `openPlanetView`). The census
+  tool reproduces that lazy-init at start-of-run (mirroring the same seed
+  formula) so the grid exists to measure; without that addition the field is
+  provably never written in a headless run, at any tick count.
+
+  Net for Task 3: land-decal density keyed on `lifeDensity` alone will read as
+  uniformly zero for any world stuck in microbial phase (plausibly a large
+  fraction of seeds, per the note above) — `fertility * lush` should still
+  drive land decal placement, with `lifeDensity` layered on top for the
+  post-microbial cases where it does carry information. This was not
+  established with enough seeds to say how common the stuck-in-microbial case
+  is; that would need `tools/playerProgressCheck.ts`-style multi-seed
+  measurement if Task 3 wants a firmer number.
