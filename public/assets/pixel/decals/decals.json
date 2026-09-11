@@ -1,0 +1,26 @@
+{
+  "atlas": "decals.png",
+  "cell": 16,
+  "kinds": {
+    "conifer": {
+      "row": 0,
+      "variants": 3
+    },
+    "broadleaf": {
+      "row": 1,
+      "variants": 3
+    },
+    "scrub": {
+      "row": 2,
+      "variants": 3
+    },
+    "cactus": {
+      "row": 3,
+      "variants": 3
+    },
+    "rock": {
+      "row": 4,
+      "variants": 3
+    }
+  }
+}
