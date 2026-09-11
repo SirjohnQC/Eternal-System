@@ -255,5 +255,123 @@ const drawnIntact = stampDecals(intact, bw, bh, 0, 0, [guardSite], null);
 check('fully painted neighbourhood draws', drawnIntact === 1,
       `${drawnIntact} drawn with neighbours intact`);
 
+// ─── re-bake threshold ────────────────────────────────────────────────────────
+const { decalRebakeNeeded } = await import('../src/rendering/SurfaceDecals');
+check('first bake always needed', decalRebakeNeeded(null, { lush: 0.2, biodiversity: 1 }), 'null prev');
+check('tiny lush drift does not re-bake',
+      !decalRebakeNeeded({ lush: 0.400, biodiversity: 3 }, { lush: 0.430, biodiversity: 3 }), '0.03');
+check('material lush change re-bakes',
+      decalRebakeNeeded({ lush: 0.40, biodiversity: 3 }, { lush: 0.48, biodiversity: 3 }), '0.08');
+check('a new species re-bakes',
+      decalRebakeNeeded({ lush: 0.40, biodiversity: 3 }, { lush: 0.405, biodiversity: 4 }), 'biodiversity 3->4');
+
+// ─── minimal canvas 2D stub, so a real HabitableCutawayEngine can be built ────
+//
+// Only the operations paintCutawayCrust / paintCutawaySurface / makeWispSprite
+// actually call. putImageData/getImageData are backed by a real per-canvas
+// pixel buffer (not just a coverage mask) so the check below can read back
+// exactly what was painted, at whatever offset the paint functions used.
+class StubCtx {
+  buf: Uint8ClampedArray;
+  fillStyle: unknown = '';
+  strokeStyle: unknown = '';
+  globalAlpha = 1;
+  globalCompositeOperation = 'source-over';
+  constructor(public w: number, public h: number) {
+    this.buf = new Uint8ClampedArray(Math.max(1, w) * Math.max(1, h) * 4);
+  }
+  clearRect(x = 0, y = 0, w = this.w, h = this.h): void {
+    const x0 = Math.max(0, Math.round(x)), y0 = Math.max(0, Math.round(y));
+    const x1 = Math.min(this.w, Math.round(x + w)), y1 = Math.min(this.h, Math.round(y + h));
+    for (let py = y0; py < y1; py++) for (let px = x0; px < x1; px++) {
+      const o = (py * this.w + px) * 4;
+      this.buf[o] = this.buf[o + 1] = this.buf[o + 2] = this.buf[o + 3] = 0;
+    }
+  }
+  fillRect(): void {}
+  beginPath(): void {}
+  closePath(): void {}
+  moveTo(): void {}
+  lineTo(): void {}
+  arc(): void {}
+  ellipse(): void {}
+  rect(): void {}
+  fill(): void {}
+  stroke(): void {}
+  save(): void {}
+  restore(): void {}
+  clip(): void {}
+  drawImage(): void {}
+  createLinearGradient() { return { addColorStop() {} }; }
+  createRadialGradient() { return { addColorStop() {} }; }
+  createImageData(w: number, h: number) {
+    return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
+  }
+  putImageData(
+    img: { width: number; height: number; data: Uint8ClampedArray }, dx: number, dy: number,
+  ): void {
+    for (let y = 0; y < img.height; y++) {
+      const py = dy + y;
+      if (py < 0 || py >= this.h) continue;
+      for (let x = 0; x < img.width; x++) {
+        const px = dx + x;
+        if (px < 0 || px >= this.w) continue;
+        const so = (y * img.width + x) * 4, o = (py * this.w + px) * 4;
+        this.buf[o] = img.data[so]; this.buf[o + 1] = img.data[so + 1];
+        this.buf[o + 2] = img.data[so + 2]; this.buf[o + 3] = img.data[so + 3];
+      }
+    }
+  }
+  getImageData(x = 0, y = 0, w = this.w, h = this.h) {
+    const out = new Uint8ClampedArray(w * h * 4);
+    for (let py = 0; py < h; py++) {
+      const sy = y + py;
+      if (sy < 0 || sy >= this.h) continue;
+      for (let px = 0; px < w; px++) {
+        const sx = x + px;
+        if (sx < 0 || sx >= this.w) continue;
+        const so = (sy * this.w + sx) * 4, o = (py * w + px) * 4;
+        out[o] = this.buf[so]; out[o + 1] = this.buf[so + 1];
+        out[o + 2] = this.buf[so + 2]; out[o + 3] = this.buf[so + 3];
+      }
+    }
+    return { width: w, height: h, data: out };
+  }
+}
+function makeStubCanvas(): any {
+  const c: any = { width: 1, height: 1, style: {} };
+  c.getContext = () => {
+    if (!c._ctx || c._ctx.w !== c.width || c._ctx.h !== c.height) {
+      c._ctx = new StubCtx(c.width, c.height);
+    }
+    return c._ctx;
+  };
+  return c;
+}
+(globalThis as any).document = { createElement: () => makeStubCanvas() };
+
+// A partial re-bake must see the CURRENT lushness, not the one frozen into the
+// options at the last full bake. Without updateSurfaceOpts this check fails:
+// the second paint reproduces the first exactly.
+const engine: any = new (await import('../src/rendering/HabitableCutawayEngine')).HabitableCutawayEngine();
+engine.bake({
+  w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
+  discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
+  lush: 0.05, decalSeed: 0xC0FFEE,
+});
+const countPainted = (): number => {
+  const g2: any = engine.land.getContext('2d');
+  const img = g2.getImageData(0, 0, engine.w, engine.h);
+  let n = 0;
+  for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 0) n++;
+  return n;
+};
+const bare = countPainted();
+engine.updateSurfaceOpts({ lush: 0.95 });
+engine.rebakeSurface();
+const lushly = countPainted();
+check('a re-bake reflects the new biosphere', lushly > bare,
+      `painted px ${bare} -> ${lushly}`);
+
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

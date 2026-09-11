@@ -40,6 +40,7 @@ import {
   type HabitableType,
 } from './HabitableCutawayEngine';
 import type { DecalAtlas } from './SurfaceDecals';
+import { decalRebakeNeeded } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
@@ -464,6 +465,7 @@ export class IsoDioramaRenderer {
   private unbindView: Array<() => void> = [];
   private static readonly MIN_ZOOM = 1;
   private static readonly MAX_ZOOM = 4;
+  private lastDecalState: { lush: number; biodiversity: number } | null = null;
 
   // Data
   private grid:        PlanetGrid | null = null;
@@ -805,6 +807,13 @@ export class IsoDioramaRenderer {
   setLiveData(species: SpeciesGenome[], biosphere: PlanetBiosphere): void {
     this.species = species;
     this.biosphere = biosphere;
+    const bio = biosphere;
+    const lush = bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3;
+    const nextState = { lush, biodiversity: bio?.biodiversity ?? 0 };
+    if (decalRebakeNeeded(this.lastDecalState, nextState)) {
+      this.lastDecalState = nextState;
+      this.markSurfaceDirty();
+    }
   }
 
   /**
@@ -1128,6 +1137,12 @@ export class IsoDioramaRenderer {
 
   /** Repaint only habitable terrain; animation-owned cutaway state remains live. */
   private rebakeHabitableSurface(): void {
+    const bio = this.biosphere;
+    this.cutaway.updateSurfaceOpts({
+      lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
+      decalSeed: this.planet?.genomeSeed ?? 0,
+      decalAtlas: this.decalAtlas,
+    });
     this.cutaway.rebakeSurface();
     this.pickBuf = this.cutaway.pick;
     this.lastSurfaceBake = this.elapsed;

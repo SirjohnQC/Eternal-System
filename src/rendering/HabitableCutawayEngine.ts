@@ -1840,6 +1840,20 @@ export class HabitableCutawayEngine {
     this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
   }
 
+  /**
+   * Merge live values into the stored bake options.
+   *
+   * `rebakeSurface` repaints from `surfaceBakeOpts`, a snapshot taken at the
+   * last full `bake()`. Anything that changes between full bakes — lushness as
+   * the biosphere advances, the decal atlas once it finishes loading — has to
+   * be merged in here first, or the repaint faithfully reproduces the old
+   * world and nothing the player did appears to matter.
+   */
+  updateSurfaceOpts(patch: Partial<CutawayBakeOpts>): void {
+    if (!this.surfaceBakeOpts) return;
+    this.surfaceBakeOpts = { ...this.surfaceBakeOpts, ...patch };
+  }
+
   frame(input: HabitableFrameInput): void {
     const { g, elapsed } = input;
     this.elapsed = elapsed;

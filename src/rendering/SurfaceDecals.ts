@@ -278,3 +278,20 @@ export function stampDecals(
   }
   return drawn;
 }
+
+/**
+ * Should the surface re-bake for decals?
+ *
+ * The biosphere nudges every tick; re-baking on each would repaint the world
+ * continuously for changes nobody can see. Re-bake on a material move in
+ * lushness, or whenever the species count crosses an integer — that is the
+ * event a player actually notices, because it is when new decal kinds unlock.
+ */
+export function decalRebakeNeeded(
+  prev: { lush: number; biodiversity: number } | null,
+  next: { lush: number; biodiversity: number },
+): boolean {
+  if (!prev) return true;
+  if (Math.abs(next.lush - prev.lush) > 0.05) return true;
+  return Math.floor(next.biodiversity) !== Math.floor(prev.biodiversity);
+}
