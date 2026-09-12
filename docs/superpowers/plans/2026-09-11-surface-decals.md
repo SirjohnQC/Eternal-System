@@ -1212,6 +1212,135 @@ git commit -m "fix(decals): let a partial re-bake see live lushness, then thrott
 
 ---
 
+### Task 7b: A desert world must not grow a pine forest
+
+FOUND BY LOOKING, not by a check. Rendering planet types nobody had exercised
+showed a desert world at full lushness carrying **194 conifers** scattered over
+sand, with every assertion green. Lava was correctly barren; ocean was correct.
+
+The cause: decal kind is chosen from each CELL's biome, and
+`generatePlanetGrid('desert', ...)` still classifies many cells as `plains` or
+`grassland`. The fallback branch gives those a conifer chance that RISES with
+lushness, and the planet's own type never enters the decision. So an arid world
+with a damp-ish cell reads as temperate forest.
+
+This is the same shape as a defect this project already shipped once: an
+atmosphere gate that only ever rendered `ocean` while guarding a bug that
+appeared on `lava`. A rule validated on one planet type is not validated.
+
+**Files:**
+- Modify: `src/rendering/SurfaceDecals.ts` — `planSurfaceDecals` kind selection
+- Modify: `tools/surfaceDecalCheck.ts`
+
+**Interfaces:**
+- Consumes: `CutawayBakeOpts.planetType`, already present on the options object.
+- Produces: no new exports. Behaviour change only.
+
+- [ ] **Step 1: Write the failing check**
+
+Append to `tools/surfaceDecalCheck.ts`, BEFORE the final summary block:
+
+```ts
+// A rule validated on one planet type is not validated. Desert and lava worlds
+// must not grow temperate forest however wet an individual cell classifies.
+const typeOpts = (planetType: string, g2: any) => ({
+  ...opts, planetType, grid: g2,
+});
+const desertGrid = generatePlanetGrid('desert', 7777, null);
+const lavaGrid = generatePlanetGrid('lava', 7777, null);
+const desertSites = planSurfaceDecals(typeOpts('desert', desertGrid) as any, 0.92, 0xC0FFEE);
+const lavaSites = planSurfaceDecals(typeOpts('lava', lavaGrid) as any, 0.92, 0xC0FFEE);
+const woodyOf = (a: any[]) =>
+  a.filter(s => s.kind === 'conifer' || s.kind === 'broadleaf').length;
+
+check('a desert world grows no forest', woodyOf(desertSites) === 0,
+      `${woodyOf(desertSites)} trees of ${desertSites.length} decals`);
+check('a desert world is not bare either', desertSites.length > 20,
+      `${desertSites.length} decals`);
+check('a lava world grows nothing but rock',
+      lavaSites.every(s => s.kind === 'rock'),
+      `${lavaSites.length} decals, kinds ${[...new Set(lavaSites.map(s => s.kind))].join(',')}`);
+// The temperate case must NOT regress: ocean keeps its forest.
+check('an ocean world still grows forest', woody(lush) > 0.50,
+      `lush woody ${woody(lush).toFixed(2)}`);
+```
+
+- [ ] **Step 2: Run it — the desert assertion must FAIL**
+
+```bash
+node_modules/.bin/esbuild tools/surfaceDecalCheck.ts --bundle --platform=node --format=esm --outfile=$TEMP/decal.mjs && node $TEMP/decal.mjs
+```
+
+Expected: `FAIL a desert world grows no forest` with a three-figure tree count.
+That failure is the bug, reproduced.
+
+- [ ] **Step 3: Make the planet's own nature bound what can grow on it**
+
+In `src/rendering/SurfaceDecals.ts`, above `planSurfaceDecals`:
+
+```ts
+/**
+ * What a world can carry, regardless of how a single cell classifies.
+ *
+ * Cell biome comes from elevation/moisture/temperature and happily returns
+ * `grassland` on a desert planet. Without this bound, a desert world at high
+ * lushness grew 194 conifers — every assertion green, because every assertion
+ * ran on `ocean`. The planet's own type is the outer bound; the cell's biome
+ * chooses within it.
+ */
+function woodyBound(planetType: string): 'forest' | 'arid' | 'barren' {
+  switch (planetType) {
+    case 'ocean': case 'rocky': case 'ice': return 'forest';
+    case 'desert': case 'toxic': case 'carbon': return 'arid';
+    default: return 'barren';   // lava, storm, gas, crystal and anything new
+  }
+}
+```
+
+and apply it immediately after the existing kind selection, before the
+`life < 0.30` downgrade:
+
+```ts
+      // Bound by what this WORLD can carry, not just what this cell says.
+      const bound = woodyBound(opts.planetType as string);
+      if (bound !== 'forest' && (kind === 'conifer' || kind === 'broadleaf')) {
+        kind = bound === 'arid'
+          ? (hash1(px * 17 + py * 3, seed) < 0.40 ? 'cactus' : 'scrub')
+          : 'scrub';
+      }
+```
+
+- [ ] **Step 4: Re-run — all four must pass**
+
+Expected: desert grows no forest but is not bare; lava is rock-only; ocean's
+woody fraction is unchanged from before this task. If ocean's fraction moved,
+the bound is leaking into the temperate path — fix that rather than relaxing
+the assertion.
+
+- [ ] **Step 5: Confirm the bound is load-bearing**
+
+Delete the `if (bound !== 'forest' …)` block, re-run, and confirm the desert
+assertion goes red again. Restore it. Report both results — a rule whose
+removal changes nothing is not a rule.
+
+- [ ] **Step 6: Typecheck and neighbouring guards**
+
+```bash
+npx tsc --noEmit
+node_modules/.bin/esbuild tools/habitableDioramaCheck.ts --bundle --platform=node --format=esm --outfile=$TEMP/hab.mjs && node $TEMP/hab.mjs
+```
+
+Expected: only the 2 known `Float32Array` errors; diorama check byte-identical.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/rendering/SurfaceDecals.ts tools/surfaceDecalCheck.ts
+git commit -m "fix(decals): bound decal kinds by planet type, not cell biome alone"
+```
+
+---
+
 ### Task 8: Prove the per-frame cost did not move, and look at it
 
 The spec's headline constraint is that baked decals cost nothing per frame. Assert it rather than assume it, then look at the pixels — this project has shipped four green atmosphere metrics over a lava world with a pink sky.
