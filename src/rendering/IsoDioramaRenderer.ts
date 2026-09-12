@@ -811,6 +811,17 @@ export class IsoDioramaRenderer {
   setLiveData(species: SpeciesGenome[], biosphere: PlanetBiosphere): void {
     this.species = species;
     this.biosphere = biosphere;
+    // NOTE: `decalRebakeNeeded` only decides whether THIS call should mark the
+    // surface dirty on its own — it must never be the sole passive trigger for
+    // a re-bake. `surfaceDirty` also drives buildCityDots() and
+    // buildInhabitants() (settlements, creatures), which read cell.civId,
+    // cell.dominantSpeciesId and star.biologyPhase — none of which are in the
+    // (lush, biodiversity) tuple below, and that tuple saturates (biodiversity
+    // caps at 10, so lushFor pins at 1.0 on a thriving world and this gate
+    // would return false forever). Callers that want passive settlement/
+    // creature refresh must call markSurfaceDirty() themselves regardless of
+    // what this method decides; see the tick%250 and onBioPhaseAdvance sites
+    // in main.ts.
     const nextState = { lush: this.lushFor(biosphere), biodiversity: biosphere?.biodiversity ?? 0 };
     if (decalRebakeNeeded(this.lastDecalState, nextState)) {
       this.lastDecalState = nextState;
