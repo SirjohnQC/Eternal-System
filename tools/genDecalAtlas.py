@@ -129,8 +129,10 @@ def cactus(px, ox: int, oy: int, v: int) -> None:
     for i in range(h):
         put(px, ox + trunk_offset, oy - i, 200 if i % 3 else 120)
         # Left ribbing
+        # trunk_offset is 0 in every branch this guard admits (it is 1 only
+        # for v == 2), so it is deliberately not applied here.
         if v != 2:
-            put(px, ox - 1 + trunk_offset, oy - i, 200)
+            put(px, ox - 1, oy - i, 200)
 
     arm = int(h * 0.45)
     if v != 1:
@@ -140,7 +142,7 @@ def cactus(px, ox: int, oy: int, v: int) -> None:
     if v != 2:
         # Left arm (shorter on v=2)
         for i in range(3):
-            put(px, ox - 2 - i + trunk_offset, oy - arm + 1, 150)
+            put(px, ox - 2 - i, oy - arm + 1, 150)
 
 
 def rock(px, ox: int, oy: int, v: int) -> None:
