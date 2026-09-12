@@ -464,5 +464,15 @@ check('a lava world grows nothing but rock',
 check('an ocean world still grows forest', woody(lush) > 0.50,
       `lush woody ${woody(lush).toFixed(2)}`);
 
+// ─── per-frame cost bound ──────────────────────────────────────────────────────
+//
+// Bake cost may rise; per-frame cost may not. Decals live in the baked land
+// canvas, so `frame()` must not know they exist.
+const t0 = performance.now();
+for (let i = 0; i < 30; i++) planSurfaceDecals(opts, 0.92, 0xC0FFEE);
+const planMs = (performance.now() - t0) / 30;
+console.log(`\n  planning cost ${planMs.toFixed(1)}ms (bake-time only)`);
+check('planning stays off the frame budget', planMs < 25, `${planMs.toFixed(1)}ms < 25ms`);
+
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
