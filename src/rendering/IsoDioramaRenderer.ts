@@ -39,8 +39,7 @@ import {
   HabitableCutawayEngine,
   type HabitableType,
 } from './HabitableCutawayEngine';
-import type { DecalAtlas } from './SurfaceDecals';
-import { decalRebakeNeeded } from './SurfaceDecals';
+import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
@@ -792,6 +791,11 @@ export class IsoDioramaRenderer {
     this.planetType  = (planet.type ?? 'rocky') as PlanetType;
     this.star        = star ?? null;
     this.planetIndex = planetIndex;
+    // A renderer instance can be reused across planets / a new game. Without
+    // this reset, the next passive setLiveData() call would compare the NEW
+    // planet's lushness against the PREVIOUS planet's, possibly suppressing
+    // a re-bake this world has never actually painted.
+    this.lastDecalState = null;
     this.computeFocus();
     this.bakeAll();
   }
@@ -807,9 +811,7 @@ export class IsoDioramaRenderer {
   setLiveData(species: SpeciesGenome[], biosphere: PlanetBiosphere): void {
     this.species = species;
     this.biosphere = biosphere;
-    const bio = biosphere;
-    const lush = bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3;
-    const nextState = { lush, biodiversity: bio?.biodiversity ?? 0 };
+    const nextState = { lush: this.lushFor(biosphere), biodiversity: biosphere?.biodiversity ?? 0 };
     if (decalRebakeNeeded(this.lastDecalState, nextState)) {
       this.lastDecalState = nextState;
       this.markSurfaceDirty();
@@ -1105,6 +1107,19 @@ export class IsoDioramaRenderer {
   // ─── Baking ────────────────────────────────────────────────────────────────
 
   /**
+   * Lushness driving vegetation tint and decal density: 0-1.
+   *
+   * biodiversity is a SPECIES COUNT on a 0-10 scale, not a 0-1 fraction;
+   * treating it as a fraction saturated `lush` as soon as a second species
+   * appeared and flattened every continent to the same green. ONE formula,
+   * called from every site that needs it, so this scale/fraction distinction
+   * cannot drift apart across call sites again.
+   */
+  private lushFor(bio: PlanetBiosphere | null): number {
+    return bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3;
+  }
+
+  /**
    * Arguments for the habitable cutaway bake.
    *
    * The engine does not know about `PlanetGrid` focus, elevation terracing or
@@ -1125,7 +1140,7 @@ export class IsoDioramaRenderer {
       liftOf: (elev) => this.liftOf(elev),
       smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
       maxLift: this.maxLift,
-      lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
+      lush: this.lushFor(bio),
       weatherMix: this.cloudMixFor(),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
@@ -1139,7 +1154,7 @@ export class IsoDioramaRenderer {
   private rebakeHabitableSurface(): void {
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
-      lush: bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3,
+      lush: this.lushFor(bio),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
     });
@@ -1566,14 +1581,8 @@ export class IsoDioramaRenderer {
     // Hoisted: the cliff-face blend target is constant for the whole bake, and
     // the fill runs up to `maxLift` times per pixel.
     const strataTop = pal.strata[0];
-    const bio = this.biosphere;
-    // Higher biodiversity / land colonisation → greener, lusher land.
-    // biodiversity is a SPECIES COUNT on a 0–10 scale, not a 0–1 fraction;
-    // treating it as a fraction saturated `lush` as soon as a second species
-    // appeared and flattened every continent to the same green.
-    const lush = bio
-      ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45)
-      : 0.3;
+    // See lushFor() for the biodiversity-scale caveat this formula guards against.
+    const lush = this.lushFor(this.biosphere);
 
     for (let py = y0; py <= y1; py++) {
       const dy = (py - cy) / ry;

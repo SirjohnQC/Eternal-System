@@ -668,8 +668,10 @@ function wireEngineEvents(eng: BigBangEngine): void {
     addFeedEntry(`Evolution: ${label} on ${gameState.playerPlanetName}`, 'milestone');
     updatePhaseBar();
     eng.clearPlanetTextureCache();
+    // setLiveData's own decalRebakeNeeded gate decides whether this warrants a
+    // re-bake (a phase advance is exactly the kind of material biosphere move
+    // that gate is meant to catch) — do not force one unconditionally here.
     _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
-    _dioramaRenderer?.markSurfaceDirty();
     if (phase === 'intelligent') {
       // Keep DNA panel open — player now accumulates DNA points via Nudge to trigger species evolution
       document.getElementById('dna-panel')?.classList.add('visible');
@@ -833,12 +835,14 @@ function wireEngineEvents(eng: BigBangEngine): void {
       showSaveIndicator();
     }
     // Let the home-world diorama pick up life spread and new settlements while
-    // the player is watching it. The renderer throttles the actual rebake.
+    // the player is watching it. setLiveData's decalRebakeNeeded gate decides
+    // whether this passive nudge actually warrants a re-bake — do not force
+    // one unconditionally here, or every one of these ticks repaints the
+    // world regardless of whether anything visible changed.
     if (tick % 250 === 0) {
       // playerSpecies is reassigned by each evolution step, so the renderer's
       // captured array must be refreshed or every species lookup goes stale.
       _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
-      _dioramaRenderer?.markSurfaceDirty();
     }
   };
 

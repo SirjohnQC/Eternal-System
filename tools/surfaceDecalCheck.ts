@@ -256,6 +256,16 @@ check('fully painted neighbourhood draws', drawnIntact === 1,
       `${drawnIntact} drawn with neighbours intact`);
 
 // ─── re-bake threshold ────────────────────────────────────────────────────────
+//
+// This is also the sub-threshold / supra-threshold proof for the passive gate
+// wired into IsoDioramaRenderer.setLiveData(): a sub-threshold nudge must NOT
+// ask for a re-bake, a supra-threshold one must. Asserted directly on
+// decalRebakeNeeded rather than through a live setLiveData() call, because
+// IsoDioramaRenderer itself pulls in a much larger canvas surface (background
+// starfield, atmosphere, wisps) than this file's minimal stub supports — the
+// call-site WIRING in setLiveData()/main.ts (which lines call setLiveData
+// unconditionally vs. behind the gate) is therefore NOT exercised by
+// automation and was verified by direct code reading instead.
 const { decalRebakeNeeded } = await import('../src/rendering/SurfaceDecals');
 check('first bake always needed', decalRebakeNeeded(null, { lush: 0.2, biodiversity: 1 }), 'null prev');
 check('tiny lush drift does not re-bake',
@@ -288,6 +298,11 @@ class StubCtx {
       this.buf[o] = this.buf[o + 1] = this.buf[o + 2] = this.buf[o + 3] = 0;
     }
   }
+  // No-op: this assumes the land canvas (the one this check inspects) is
+  // written only via putImageData, never via fillRect/path fills/drawImage.
+  // paintCutawaySurface confirms that today (createImageData + putImageData
+  // only) — if that changes, these no-ops would silently under-count what
+  // was actually painted, since they never touch `buf`.
   fillRect(): void {}
   beginPath(): void {}
   closePath(): void {}
@@ -353,25 +368,76 @@ function makeStubCanvas(): any {
 // A partial re-bake must see the CURRENT lushness, not the one frozen into the
 // options at the last full bake. Without updateSurfaceOpts this check fails:
 // the second paint reproduces the first exactly.
-const engine: any = new (await import('../src/rendering/HabitableCutawayEngine')).HabitableCutawayEngine();
+//
+// The 0.05 / 0.95 endpoints are LOAD-BEARING: narrowing them silently breaks
+// assertion (C) below, whose floor was measured at exactly these values. Do
+// not "tidy" them toward the middle of the range without re-measuring.
+const { HabitableCutawayEngine } = await import('../src/rendering/HabitableCutawayEngine');
+const engine: any = new HabitableCutawayEngine();
 engine.bake({
   w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
   discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
   lush: 0.05, decalSeed: 0xC0FFEE,
 });
-const countPainted = (): number => {
+const snapshot = (): { width: number; height: number; data: Uint8ClampedArray } => {
   const g2: any = engine.land.getContext('2d');
-  const img = g2.getImageData(0, 0, engine.w, engine.h);
+  return g2.getImageData(0, 0, engine.w, engine.h);
+};
+const countPainted = (img: { data: Uint8ClampedArray }): number => {
   let n = 0;
   for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 0) n++;
   return n;
 };
-const bare = countPainted();
+// Pixels whose colour differs, ignoring alpha — this is what a naive "did the
+// paint change" check would use, and it is a TRAP on its own: the vegetation
+// tint recolours already-painted ground every time lush changes, regardless
+// of whether a single decal was ever placed. A regression that deleted decal
+// placement entirely would still pass a bare RGB-diff check. It is kept below
+// only as assertion (A), proving live lushness reached the painter at all;
+// assertion (B) is the one that actually defends the decal feature.
+const diffRGB = (a: { data: Uint8ClampedArray }, b: { data: Uint8ClampedArray }): number => {
+  let n = 0;
+  for (let i = 0; i < a.data.length; i += 4) {
+    if (a.data[i] !== b.data[i] || a.data[i + 1] !== b.data[i + 1] || a.data[i + 2] !== b.data[i + 2]) n++;
+  }
+  return n;
+};
+
+const beforeImg = snapshot();
+const bare = countPainted(beforeImg);
 engine.updateSurfaceOpts({ lush: 0.95 });
 engine.rebakeSurface();
-const lushly = countPainted();
-check('a re-bake reflects the new biosphere', lushly > bare,
-      `painted px ${bare} -> ${lushly}`);
+const afterImg = snapshot();
+const lushly = countPainted(afterImg);
+
+// (A) propagation — live lushness reached the painter, and moved it a lot,
+// not by some rounding-error sliver.
+const tintDelta = diffRGB(beforeImg, afterImg);
+check('lushness change propagates into the paint', tintDelta > 2000, `${tintDelta} px recoloured`);
+
+// (B) decal-specific — hold lushness fixed and vary ONLY decalSeed (terrain
+// tint depends solely on lush, not on decalSeed, so every differing pixel
+// here is attributable to decal placement, not to the tint). This is what
+// actually proves decals — not just the tint — track the live bake.
+const engineAltSeed: any = new HabitableCutawayEngine();
+engineAltSeed.bake({
+  w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
+  discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
+  lush: 0.95, // decalSeed intentionally omitted -> a different decal layout
+});
+const altImg = (() => {
+  const g2: any = engineAltSeed.land.getContext('2d');
+  return g2.getImageData(0, 0, engineAltSeed.w, engineAltSeed.h);
+})();
+const decalDelta = diffRGB(afterImg, altImg);
+check('decal placement is decal-seed-specific, not just tint', decalDelta > 50,
+      `${decalDelta} px differ by decal seed alone`);
+
+// (C) silhouette — a measured floor, not just "> 0": at ~1.3 new-alpha px per
+// site, a regression that cut decal placement by 75% could still slip past a
+// bare `>` at these endpoints. Re-measure this floor if 0.05/0.95 ever change.
+check('a re-bake reflects the new biosphere', lushly - bare >= 10,
+      `painted px ${bare} -> ${lushly} (+${lushly - bare})`);
 
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
