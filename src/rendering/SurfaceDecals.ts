@@ -8,7 +8,7 @@
  * Mirrors `planVolcanoChimneys` in HabitableCutawayEngine.ts, the established
  * pattern for deterministic prop placement.
  */
-import type { CutawayBakeOpts } from './HabitableCutawayEngine';
+import type { CutawayBakeOpts, HabitableType } from './HabitableCutawayEngine';
 import { isWater } from '../simulation/PlanetGrid';
 
 export type DecalKind = 'conifer' | 'broadleaf' | 'scrub' | 'cactus' | 'rock';
@@ -26,15 +26,29 @@ export interface DecalSite {
 }
 
 /**
+ * Elevation above which `paintCutawaySurface` re-classifies a `mountain` cell
+ * as snow — LOCALLY, inside its own paint loop, without ever touching
+ * `cell.biome` (`HabitableCutawayEngine.ts`, at the snow-cap site). A decal
+ * planner reading `cell.biome` alone therefore cannot see the white cap, and
+ * would stamp scrub across it.
+ *
+ * WHY IT LIVES HERE AND NOT IN THE PAINTER: `HabitableCutawayEngine.ts`
+ * value-imports `planSurfaceDecals`/`stampDecals` from this module, while this
+ * module only TYPE-imports from it (erased at compile). Declaring this in the
+ * painter and importing it here would close that into a real runtime import
+ * cycle. The painter imports it from here instead, following the direction
+ * that already exists.
+ */
+export const PAINTER_SNOW_ELEVATION = 0.82;
+
+/**
  * Decals stop below this elevation.
  *
- * COUPLED CONSTANT: `paintCutawaySurface` re-classifies `mountain` cells above
- * elevation 0.82 as snow LOCALLY, without touching `cell.biome`
- * (HabitableCutawayEngine.ts:817-820). A planner reading `cell.biome` alone
- * therefore stamps scrub across the white cap. This sits a little below that
- * line so nothing creeps onto snow. If either constant moves, both move.
+ * COUPLED CONSTANT, compile-time rather than comment-time: a deliberate margin
+ * below `PAINTER_SNOW_ELEVATION` so nothing creeps onto the painter's snow. If
+ * that constant moves, this moves with it automatically.
  */
-export const DECAL_SNOW_LINE = 0.78;
+export const DECAL_SNOW_LINE = PAINTER_SNOW_ELEVATION - 0.04;
 
 /** Target site count at full lushness. A COUNT, not a per-cell probability. */
 export const DECAL_BUDGET = 900;
@@ -72,7 +86,7 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
  * ran on `ocean`. The planet's own type is the outer bound; the cell's biome
  * chooses within it.
  */
-function woodyBound(planetType: string): 'forest' | 'arid' | 'barren' {
+function woodyBound(planetType: HabitableType): 'forest' | 'arid' | 'barren' {
   switch (planetType) {
     case 'ocean': case 'rocky': case 'ice': return 'forest';
     case 'desert': case 'toxic': case 'carbon': return 'arid';
@@ -98,6 +112,9 @@ export function planSurfaceDecals(
   if (!grid) return [];
   const seed = decalSeed | 0;
   const cand: Array<DecalSite & { w: number }> = [];
+  // Loop-invariant: the world's bound depends only on planetType. Hoisted out
+  // of the per-candidate loop below, where it was re-derived ~200k times.
+  const bound = woodyBound(opts.planetType);
 
   for (let py = cyTop - ry; py <= cyTop + ry; py += 2) {
     const dy = (py - cyTop) / ry;
@@ -166,7 +183,11 @@ export function planSurfaceDecals(
         kind = hash1(px * 5 + py * 11, seed) < 0.18 + life * 0.22 ? 'conifer' : 'scrub';
       }
       // Bound by what this WORLD can carry, not just what this cell says.
-      const bound = woodyBound(opts.planetType as string);
+      // NOTE: rewriting `kind` here also changes the TOTAL site count, not just
+      // the mix. `woody` is derived from `kind` immediately below and feeds both
+      // the `!woody` sward cutoff (which skips sites outright) and the spacing
+      // weight `w`, which decides who survives the bucket sort. Changing this
+      // branch is never a pure re-labelling.
       if (bound !== 'forest' && (kind === 'conifer' || kind === 'broadleaf')) {
         kind = bound === 'arid'
           ? (hash1(px * 17 + py * 3, seed) < 0.40 ? 'cactus' : 'scrub')

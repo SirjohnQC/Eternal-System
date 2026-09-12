@@ -35,7 +35,17 @@
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
 import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGenome';
-import { planSurfaceDecals, stampDecals, type DecalAtlas } from './SurfaceDecals';
+import {
+  planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
+} from './SurfaceDecals';
+//
+// COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
+// threshold (used at the reclassification site below), but it LIVES in
+// `SurfaceDecals.ts` on purpose. This module value-imports that one; that one
+// only TYPE-imports this (erased at compile), so the dependency runs one way
+// at runtime. Declaring the constant here and importing it there would close
+// that into a real runtime import cycle. `DECAL_SNOW_LINE` is derived from it
+// so the decal planner can never stamp onto a cap this painter renders white.
 
 // ─── Small colour + noise helpers ─────────────────────────────────────────────
 //
@@ -821,8 +831,13 @@ export function paintCutawaySurface(
 
         // Snow caps: the mockup's peaks are white-tipped regardless of latitude,
         // which is what altitude actually does to a mountain — except molten worlds.
+        // THIS is the reclassification the decal planner cannot see: it is local
+        // to this loop and never written back to `cell.biome`, so a planner
+        // reading `cell.biome` alone would happily stamp scrub across the white
+        // cap. `DECAL_SNOW_LINE` is derived from `PAINTER_SNOW_ELEVATION` to
+        // keep decals below this line; see SurfaceDecals.ts.
         if (opts.planetType !== 'lava'
-            && biome === 'mountain' && cell.elevation > 0.82) biome = 'snow';
+            && biome === 'mountain' && cell.elevation > PAINTER_SNOW_ELEVATION) biome = 'snow';
 
         if (isWater(biome)) {
           const idx = py * VW + px;
