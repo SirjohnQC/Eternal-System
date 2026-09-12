@@ -439,5 +439,30 @@ check('decal placement is decal-seed-specific, not just tint', decalDelta > 50,
 check('a re-bake reflects the new biosphere', lushly - bare >= 10,
       `painted px ${bare} -> ${lushly} (+${lushly - bare})`);
 
+// ─── planet-type bound on decal kind ──────────────────────────────────────────
+//
+// A rule validated on one planet type is not validated. Desert and lava worlds
+// must not grow temperate forest however wet an individual cell classifies.
+const typeOpts = (planetType: string, g2: any) => ({
+  ...opts, planetType, grid: g2,
+});
+const desertGrid = generatePlanetGrid('desert', 7777, null);
+const lavaGrid = generatePlanetGrid('lava', 7777, null);
+const desertSites = planSurfaceDecals(typeOpts('desert', desertGrid) as any, 0.92, 0xC0FFEE);
+const lavaSites = planSurfaceDecals(typeOpts('lava', lavaGrid) as any, 0.92, 0xC0FFEE);
+const woodyOf = (a: any[]) =>
+  a.filter(s => s.kind === 'conifer' || s.kind === 'broadleaf').length;
+
+check('a desert world grows no forest', woodyOf(desertSites) === 0,
+      `${woodyOf(desertSites)} trees of ${desertSites.length} decals`);
+check('a desert world is not bare either', desertSites.length > 20,
+      `${desertSites.length} decals`);
+check('a lava world grows nothing but rock',
+      lavaSites.every(s => s.kind === 'rock'),
+      `${lavaSites.length} decals, kinds ${[...new Set(lavaSites.map(s => s.kind))].join(',')}`);
+// The temperate case must NOT regress: ocean keeps its forest.
+check('an ocean world still grows forest', woody(lush) > 0.50,
+      `lush woody ${woody(lush).toFixed(2)}`);
+
 console.log(failed === 0 ? '\n  all decal checks passed' : `\n  ${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

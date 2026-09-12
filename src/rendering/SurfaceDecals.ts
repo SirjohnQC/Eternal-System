@@ -64,6 +64,23 @@ function vnoise(x: number, y: number, cellPx: number, seed: number): number {
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /**
+ * What a world can carry, regardless of how a single cell classifies.
+ *
+ * Cell biome comes from elevation/moisture/temperature and happily returns
+ * `grassland` on a desert planet. Without this bound, a desert world at high
+ * lushness grew 194 conifers — every assertion green, because every assertion
+ * ran on `ocean`. The planet's own type is the outer bound; the cell's biome
+ * chooses within it.
+ */
+function woodyBound(planetType: string): 'forest' | 'arid' | 'barren' {
+  switch (planetType) {
+    case 'ocean': case 'rocky': case 'ice': return 'forest';
+    case 'desert': case 'toxic': case 'carbon': return 'arid';
+    default: return 'barren';   // lava, storm, gas, crystal and anything new
+  }
+}
+
+/**
  * Plan every decal on the face.
  *
  * `lush` is the planet-wide biosphere term already computed by the host
@@ -148,6 +165,14 @@ export function planSurfaceDecals(
       } else {
         kind = hash1(px * 5 + py * 11, seed) < 0.18 + life * 0.22 ? 'conifer' : 'scrub';
       }
+      // Bound by what this WORLD can carry, not just what this cell says.
+      const bound = woodyBound(opts.planetType as string);
+      if (bound !== 'forest' && (kind === 'conifer' || kind === 'broadleaf')) {
+        kind = bound === 'arid'
+          ? (hash1(px * 17 + py * 3, seed) < 0.40 ? 'cactus' : 'scrub')
+          : 'scrub';
+      }
+
       // Ground cover spreads before woodland. This is the evolutionary read and
       // it falls out of the rule rather than being scripted.
       if ((kind === 'conifer' || kind === 'broadleaf') && life < 0.30) kind = 'scrub';
