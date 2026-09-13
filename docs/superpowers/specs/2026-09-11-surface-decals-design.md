@@ -102,6 +102,27 @@ ground cover spreads first, woodland follows. It was not scripted — it fell ou
 of the rule, and the prototype's counts confirm it (mid: 179 scrub, 3 trees;
 lush: 159 scrub, 319 trees).
 
+**MEASURED across 24 worlds (8 grid seeds x 3 genome seeds), 2026-09-12 — read
+this before trusting the paragraph above.** "Ground cover precedes woodland" is
+a TENDENCY, not a rule:
+
+| property | measured | median |
+|---|---|---|
+| mid-lushness woody fraction < 0.15 | 83% of worlds | 0.058 |
+| lush woody fraction > 0.50 | 100% of worlds | 0.773 |
+| placement clumps (CV >= 0.45) | 75% of worlds | 0.478 |
+| dead world grows nothing living | 100% of worlds | — |
+| readout monotonic (dead < mid < lush) | 100% of worlds | — |
+
+Mid-lushness woody fraction ranges 0.000 to 0.258 by grid seed, so on roughly
+one world in six a mid-life planet already reads as partly wooded. The readout
+still works — dead, mid and lush are always distinguishable, on every seed
+tested — but the *ordering* of ground cover before woodland is statistical.
+Clumping is the weakest property and wants a visual retune pass: its median sits
+barely above the threshold and 6 of 24 worlds fall below it. `tools/
+surfaceDecalCheck.ts` asserts on this distribution rather than on one world,
+which is why these numbers are known at all.
+
 **Clumping needs two noise fields, not one.** Woodland clumps at ~50px, ground
 cover in broader ~88px swathes. The prototype originally shared one field and
 scrub carpeted wherever trees thinned — the opposite of how it should read.
