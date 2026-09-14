@@ -1048,9 +1048,11 @@ export class IsoDioramaRenderer {
    * silhouette ceasing to look like a disc.
    */
   private get maxLift(): number {
-    // Habitable: diorama_test tiers scaled up (1/3/6 → 2/5/9) so height, species
-    // and settlements read on the flat board. Legacy keeps its taller disc lift.
-    if (this.habitable) return 9;
+    // Habitable: five tiers to 18px. The previous 2/5/9 was measured to leave
+    // the common step at 3px on a board only 210px wide — about 1.4% of the
+    // width — so the relief was present in the data and invisible on screen.
+    // Legacy keeps its taller disc lift.
+    if (this.habitable) return 18;
     return Math.max(LIFT_STEP, Math.round(this.rx * 0.11));
   }
 
@@ -1070,9 +1072,14 @@ export class IsoDioramaRenderer {
     // Habitable: same three-tier language as diorama_test (all land lifts, so
     // coasts shelf above water and peaks stand clear for life/settlements).
     if (this.habitable) {
-      if (elev > 0.72) return 9;
-      if (elev > 0.58) return 5;
-      return 2;
+      // Five tiers rather than three: with three, ~80% of the visible face sat
+      // on one tier and the surface read as a painted disc. Measured inside the
+      // rendered disc at 480x320: lift2 16%, lift5 14%, lift9 1.5%.
+      if (elev > 0.80) return 18;
+      if (elev > 0.70) return 13;
+      if (elev > 0.62) return 9;
+      if (elev > 0.54) return 6;
+      return 3;
     }
     const t = clamp01((elev - SEA_LEVEL) / (1 - SEA_LEVEL));
     // QUANTISED into a few chunky terraces rather than a continuous ramp.
