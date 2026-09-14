@@ -53,8 +53,26 @@ export const DECAL_SNOW_LINE = PAINTER_SNOW_ELEVATION - 0.04;
 /** Target site count at full lushness. A COUNT, not a per-cell probability. */
 export const DECAL_BUDGET = 900;
 
-/** Spacing bucket in virtual pixels — see the note on rejection cost below. */
+/**
+ * Spacing bucket, in virtual pixels AT THE REFERENCE RADIUS below.
+ *
+ * Scaled with the body at plan time — see REF_RX. A fixed pixel value would make
+ * decals crowd on a small render and scatter on a large one.
+ */
 const BUCKET = 11;
+
+/**
+ * The body radius these spatial constants were calibrated at (1200x800).
+ *
+ * MEASURED BUG this exists to fix: the grove/sward wavelengths and the spacing
+ * bucket were absolute screen pixels, so when the diorama rendered smaller the
+ * noise cells stayed the same size while the planet shrank. Proportionally more
+ * of the surface fell inside a "clearing" and was rejected, and a fully lush
+ * world placed 12 decals at rx=105 against 285 at rx=262 — decal density was a
+ * property of the VIEWPORT rather than of the world. Everything spatial is now
+ * scaled by `rx / REF_RX`.
+ */
+const REF_RX = 262;
 
 function hash1(n: number, seed: number): number {
   let h = (n | 0) ^ (seed | 0);
@@ -111,6 +129,10 @@ export function planSurfaceDecals(
   const { cx, cyTop, rx, ry, grid } = opts;
   if (!grid) return [];
   const seed = decalSeed | 0;
+  // Everything spatial scales with the body, so density is a property of the
+  // world and not of the window. See REF_RX.
+  const sc = Math.max(0.25, rx / REF_RX);
+  const bucket = Math.max(3, Math.round(BUCKET * sc));
   const cand: Array<DecalSite & { w: number }> = [];
   // Loop-invariant: the world's bound depends only on planetType. Hoisted out
   // of the per-candidate loop below, where it was re-derived ~200k times.
@@ -152,9 +174,12 @@ export function planSurfaceDecals(
 
       // Woodland and ground cover clump on DIFFERENT scales. Sharing one field
       // made scrub carpet wherever trees thinned, the opposite of the intent.
-      const grove = vnoise(px, py, 52, seed) * 0.7 + vnoise(px, py, 19, seed ^ 0x9e) * 0.3;
-      const sward = vnoise(px, py, 88, seed ^ 0x5bd1) * 0.75
-                  + vnoise(px, py, 27, seed ^ 0x31af) * 0.25;
+      // Wavelengths scale with the body (see REF_RX) so a grove covers the same
+      // FRACTION of the world at every render size.
+      const grove = vnoise(px, py, 52 * sc, seed) * 0.7
+                  + vnoise(px, py, 19 * sc, seed ^ 0x9e) * 0.3;
+      const sward = vnoise(px, py, 88 * sc, seed ^ 0x5bd1) * 0.75
+                  + vnoise(px, py, 27 * sc, seed ^ 0x31af) * 0.25;
       const canopy = biome === 'forest' || biome === 'jungle';
       if (grove < (canopy ? 0.58 : 0.74) - life * 0.04 && sward < 0.80 - life * 0.04) continue;
 
@@ -219,7 +244,7 @@ export function planSurfaceDecals(
   const sites: DecalSite[] = [];
   for (const c of cand) {
     if (sites.length >= budget) break;
-    const key = ((c.x / BUCKET) | 0) * 4096 + ((c.y / BUCKET) | 0);
+    const key = ((c.x / bucket) | 0) * 4096 + ((c.y / bucket) | 0);
     if (taken.has(key)) continue;
     taken.add(key);
     sites.push({ x: c.x, y: c.y, kind: c.kind, scale: c.scale, row: c.row, col: c.col });
