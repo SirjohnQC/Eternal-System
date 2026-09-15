@@ -60,13 +60,6 @@ function fbmWrapX(x: number, y: number, seed: number, octaves: number, nx: numbe
   return a * (1 - nx) + b * nx;
 }
 
-/** Ridged noise: peaks where the field crosses zero, valleys elsewhere. */
-function ridge(x: number, y: number, seed: number, octaves: number, nx: number,
-               period: number): number {
-  const v = fbmWrapX(x, y, seed, octaves, nx, period);
-  return 1 - Math.abs(v * 2 - 1);
-}
-
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 // ─── The generators ──────────────────────────────────────────────────────────
@@ -81,16 +74,36 @@ export function elevationFor(
 ): number {
   switch (archetype) {
     case 'archipelago': {
-      // Ridged high-frequency noise: only the ridge crests clear sea level, so
-      // the world is hundreds of islets with no continental term at all.
-      const r = ridge(nx * 9, ny * 9, seed, 4, nx, 9);
-      const fine = ridge(nx * 19 + 7, ny * 19, seed ^ 0x51, 3, nx, 19);
-      // Only the sharpest crests clear the water. Raising the ridge to a power
-      // keeps the field low almost everywhere: a gentle version of this made a
-      // continuous mountainous landmass with lakes, which is the opposite of
-      // an archipelago.
-      const crest = Math.pow(clamp01(r * 0.7 + fine * 0.3), 4.5);
-      return clamp01(crest * 1.35);
+      // Island ARCS in open sea. A plain ridge field does not work here and a
+      // power curve does not save it: four-octave fbm piles up around 0.5, so
+      // `1 - |2v-1|` sits near 1 over most of the world and the "ridges" merge
+      // into one mountainous continent with lakes. Measured: 68% land, biggest
+      // mass 0.998 — the opposite of the archetype.
+      //
+      // So the crest band is cut narrow instead of being raised to a power, and
+      // a low-frequency mask decides which stretches of arc surface at all.
+      // Between the arcs there is nothing to clear sea level.
+      const v = fbmWrapX(nx * 6, ny * 6, seed, 5, nx, 6);
+      const crest = clamp01(1 - Math.abs(v * 2 - 1) * 8);
+      // The arcs fade toward the poles. Without this the densest island cluster
+      // can be polar, and IsoDioramaRenderer centres its disc on the densest
+      // land — so the player got a white pinwheel of snow islets where the
+      // grid's columns converge, on a world the metrics called a fine
+      // archipelago. Structure metrics cannot see that; looking at it can.
+      const latBand = clamp01(1.6 - Math.abs(ny - 0.5) * 3.2);
+      const mask = clamp01(
+        (fbmWrapX(nx * 2.5, ny * 2.5, seed ^ 0xa7, 3, nx, 2.5) - 0.20) * 5.0) * latBand;
+      // High-frequency noise breaks each arc into separate islands. fbm clusters
+      // hard around 0.5, so it is stretched first — undiluted it barely varies
+      // and the arcs come out as one unbroken reef.
+      const fine = clamp01(
+        (fbmWrapX(nx * 21 + 3, ny * 21, seed ^ 0x51, 3, nx, 21) - 0.5) * 2.4 + 0.5);
+      const isle = clamp01(crest * mask * (0.05 + fine * 1.55));
+      // Sea floor deliberately low: generatePlanetGrid adds up to +0.3 of pole
+      // fade, and a higher floor would grow a land cap at each pole. The ceiling
+      // is capped under the 0.75 mountain threshold for the opposite reason —
+      // uncapped, the crests ran to 1.0 and every island came out bare rock.
+      return clamp01(0.14 + isle * 0.62);
     }
 
     case 'hemispheric': {
@@ -119,11 +132,13 @@ export function elevationFor(
       const cx = hash2(3, 5, seed), cy = 0.32 + hash2(5, 3, seed) * 0.36;
       const dx = Math.min(Math.abs(nx - cx), 1 - Math.abs(nx - cx)) * 2; // wraps
       const dy = (ny - cy) * 1.6;
-      // Peak kept modest for the same reason as hemispheric: a dome running to
-      // 1.0 turns its own interior into snowfields.
-      const dome = clamp01(1 - Math.hypot(dx * 1.15, dy) * 1.25) * 0.62;
+      // The dome is shallow and the shelf it sits on is high, rather than the
+      // other way round: a dome running to 1.0 turns its own interior into bare
+      // rock — measured at 0.62 it put a grey massif across the whole continent.
+      // Interior lands at ~0.68, under the 0.75 mountain threshold.
+      const dome = clamp01(1 - Math.hypot(dx * 1.15, dy) * 1.25) * 0.34;
       const warp = (fbmWrapX(nx * 3.5, ny * 3.5, seed, 5, nx, 3.5) - 0.5) * 0.55;
-      let e = clamp01(0.30 + dome + warp * 0.6);
+      let e = clamp01(0.34 + dome + warp * 0.6);
       // Inland sea: a second lobe, only where the dome is already high.
       const sx = hash2(17, 2, seed), sy = 0.35 + hash2(2, 17, seed) * 0.3;
       const sdx = Math.min(Math.abs(nx - sx), 1 - Math.abs(nx - sx)) * 2;

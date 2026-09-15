@@ -38,7 +38,9 @@ const idx = (r: number, c: number) => r * N + c;
 
 /** One world's shape, reduced to the numbers the archetypes make claims about. */
 interface Signature {
-  /** Fraction of the surface above sea level. */
+  /** Fraction of the surface above sea level, weighted by real cell area. The
+   *  grid is equirectangular, so counting cells would let the polar rows — a
+   *  fifth of the grid, a sliver of the sphere — decide the answer. */
   land: number;
   /** Connected landmasses of at least 30 cells. Specks are noise, not islands. */
   masses: number;
@@ -55,6 +57,23 @@ interface Signature {
   coastWobble: number;
   /** Coast cells / sqrt(land cells). Diagnostic and a separation dimension. */
   coastIndex: number;
+  /** Share of land classified mountain, snow or volcanic — the rock-and-ice
+   *  fraction. Structure metrics cannot see this: a white mountain continent
+   *  and a green plains continent have identical landmass counts, and the spike
+   *  was caught rendering both a white world and a grey one by eye alone. */
+  barren: number;
+}
+
+/** Share of land that reads as bare rock or ice rather than living ground. */
+function barrenShare(grid: any): number {
+  let land = 0, bare = 0;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const b = grid[r][c].biome;
+    if (isWater(b)) continue;
+    land++;
+    if (b === 'mountain' || b === 'snow' || b === 'volcanic') bare++;
+  }
+  return land > 0 ? bare / land : 0;
 }
 
 function waterMask(grid: any): Uint8Array {
@@ -134,6 +153,17 @@ function coastCells(w: Uint8Array): { coast: number; land: number } {
   return { coast, land };
 }
 
+/** Share of the sphere's AREA above sea level. */
+function landArea(w: Uint8Array): number {
+  let land = 0, tot = 0;
+  for (let r = 0; r < N; r++) {
+    const a = Math.cos((0.5 - (r + 0.5) / N) * Math.PI);
+    if (a <= 0) continue;
+    for (let c = 0; c < N; c++) { tot += a; if (!w[idx(r, c)]) land += a; }
+  }
+  return tot > 0 ? land / tot : 0;
+}
+
 /** Is this land cell on the coast? Poles count as an edge. */
 function onCoast(w: Uint8Array, r: number, c: number): boolean {
   const up = r > 0 ? w[idx(r - 1, c)] : 1;
@@ -195,13 +225,14 @@ function signature(grid: any): Signature {
   const { coast, land } = coastCells(w);
   const h = hemisphereStats(w);
   return {
-    land: f.land / (N * N),
+    land: landArea(w),
     masses: f.count,
     bigShare: f.share,
     dtw: maxDistToWater(w) / N,
     hemi: h.share,
     coastWobble: h.wobble,
     coastIndex: land > 0 ? coast / Math.sqrt(land) : 0,
+    barren: barrenShare(grid),
   };
 }
 
@@ -241,6 +272,7 @@ const CLAIMS: Record<string, Claim[]> = {
     { name: 'many landmasses',   get: s => s.masses,   ok: v => v >= 10,   want: '>= 10' },
     { name: 'no dominant mass',  get: s => s.bigShare, ok: v => v <= 0.35, want: '<= 0.35' },
     { name: 'nowhere is inland', get: s => s.dtw,      ok: v => v <= 0.08, want: '<= 0.08' },
+    { name: 'land is not bare rock', get: s => s.barren, ok: v => v <= 0.35, want: '<= 0.35' },
   ],
   // "One dominant mass running off the rim, with a genuine interior."
   supercontinent: [
@@ -248,12 +280,14 @@ const CLAIMS: Record<string, Claim[]> = {
     { name: 'few landmasses',        get: s => s.masses,   ok: v => v <= 4,    want: '<= 4' },
     { name: 'one mass dominates',    get: s => s.bigShare, ok: v => v >= 0.70, want: '>= 0.70' },
     { name: 'the interior is deep',  get: s => s.dtw,      ok: v => v >= 0.12, want: '>= 0.12' },
+    { name: 'land is not bare rock',  get: s => s.barren,  ok: v => v <= 0.35, want: '<= 0.35' },
   ],
   // "One half land, one half ocean, divided by one long ragged coast."
   hemispheric: [
     { name: 'about half is land',  get: s => s.land,       ok: v => v >= 0.28 && v <= 0.60, want: '0.28-0.60' },
     { name: 'land is one-sided',   get: s => s.hemi,        ok: v => v >= 0.85, want: '>= 0.85' },
     { name: 'the coast is ragged', get: s => s.coastWobble, ok: v => v >= 0.10, want: '>= 0.10' },
+    { name: 'land is not bare rock', get: s => s.barren,    ok: v => v <= 0.35, want: '<= 0.35' },
   ],
 };
 
@@ -281,20 +315,21 @@ function runClaims(archetype: string, rows: Signature[], counts = true): boolean
 }
 
 const VECTOR = (s: Signature) => [
-  Math.log1p(s.masses), s.bigShare, s.dtw, s.hemi, s.coastWobble, s.coastIndex, s.land,
+  Math.log1p(s.masses), s.bigShare, s.dtw, s.hemi, s.coastWobble, s.coastIndex,
+  s.land, s.barren,
 ];
 
 // ─── Modes ───────────────────────────────────────────────────────────────────
 
 if (MEASURE) {
   console.log(`\n  type='${TYPE}', ${SEEDS} grid seeds per config — medians\n`);
-  console.log('  config           land    masses  bigShare  dtw     hemi    wobble  coastIdx');
+  console.log('  config           land    masses  bigShare  dtw     hemi    wobble  coastIdx  barren');
   for (const a of [null, 'supercontinent', 'archipelago', 'hemispheric']) {
     const rows = sweep(a);
     const m = (g: (s: Signature) => number) => median(rows.map(g)).toFixed(3).padEnd(7);
     console.log(`  ${(a ?? 'legacy').padEnd(15)} ${m(s => s.land)} ${m(s => s.masses)} ` +
                 `${m(s => s.bigShare)}   ${m(s => s.dtw)} ${m(s => s.hemi)} ` +
-                `${m(s => s.coastWobble)} ${m(s => s.coastIndex)}`);
+                `${m(s => s.coastWobble)} ${m(s => s.coastIndex)}  ${m(s => s.barren)}`);
   }
   console.log('');
   process.exit(0);

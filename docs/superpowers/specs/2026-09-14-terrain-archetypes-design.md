@@ -112,10 +112,27 @@ Each measures the claim that archetype actually makes:
 |---|---|
 | archipelago | many landmasses; small biggest-mass share; **no land cell far from water** (its promise is "every settlement is coastal") |
 | supercontinent | few landmasses; large biggest-mass share; **max distance-to-water is high** (its promise is "the interior is genuinely far from water") |
-| hemispheric | land concentrated in one half of the disc; **high coastline length relative to land area** (one long ragged coast) |
+| hemispheric | land concentrated in one half of the disc; **a coast that wanders off the dividing plane** (one long ragged coast) |
 
 Distance-to-water is the discriminator that matters most: it is the one
 property today's centred blob cannot fake in either direction.
+
+**Corrected 2026-09-15, by measurement.** This section originally asked
+hemispheric for "high coastline length relative to land area". That is the wrong
+dimension: a clean hemisphere is the most COMPACT arrangement of land available,
+so it scores LOW (coast/sqrt(land) = 5.3) and the old lake-riddled blob beats it
+(8.5). Satisfying it would have meant making the hemisphere ragged in the wrong
+way. What the claim actually promises is a boundary that wanders rather than one
+drawn with a ruler, so the implemented metric is the spread of the coast about
+the dividing plane — ~0 for a straight split, 0.13 measured. Same class of error
+as the variety check that measured land AREA when the defect was land SHAPE.
+
+**Added 2026-09-15:** a fourth claim on every archetype — the share of land that
+classifies as mountain, snow or volcanic must stay under 0.35. The spec argued
+for this ("a white mountain continent and a green plains continent have
+identical landmass counts") without putting it in the table. It caught the
+supercontinent dome, which was building a grey massif across its own interior
+while passing all four structural claims.
 
 ### Cross-archetype distinguishability
 
