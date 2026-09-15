@@ -12,6 +12,7 @@
  */
 
 import type { PlanetDNA } from './GameState';
+import { elevationFor, type TerrainArchetype } from './TerrainArchetypes';
 
 /** Convert PlanetDNA string enums to numeric values used by grid generation */
 export function dnaToGridParams(dna: PlanetDNA): { oceanCoverage: number; tempBias: number } {
@@ -283,6 +284,8 @@ export function generatePlanetGrid(
   planetType: string,
   seed: number,
   dna?: PlanetDNA | null,
+  /** Structural recipe for the elevation field. Absent = the legacy generator. */
+  archetype?: TerrainArchetype | null,
 ): PlanetGrid {
   // Seeds for each noise layer (all derived, never conflict)
   const elevSeed  = (seed * 1.4142135) | 0;
@@ -313,7 +316,9 @@ export function generatePlanetGrid(
       const nx = col / GRID_SIZE;               // wraps (0 == 1)
 
       // Elevation: FBM + ocean bias shifts effective sea level
-      let elev = fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
+      let elev = archetype
+        ? elevationFor(archetype, nx, ny, elevSeed)
+        : fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
       // Coastal fade at poles (makes ice caps at very high latitudes)
       const poleFade = Math.pow(1 - latTemp, 3) * 0.3;
       elev = Math.max(0, Math.min(1, elev - oceanBias * 0.3 + poleFade));

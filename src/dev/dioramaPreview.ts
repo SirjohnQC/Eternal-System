@@ -65,7 +65,9 @@ function makeStar(): StarBody {
 
 function rebuild(): void {
   const planet = makePlanet();
-  const grid = generatePlanetGrid(type, seed * 7777, null);
+  // ?archetype=supercontinent|archipelago|hemispheric — omit for the legacy field
+  const archetype = (params.get('archetype') as any) || null;
+  const grid = generatePlanetGrid(type, seed * 7777, null, archetype);
 
   // Fake some life + civilisation coverage so lights and vegetation show.
   const wantCiv = (document.getElementById('civ') as HTMLInputElement).checked;

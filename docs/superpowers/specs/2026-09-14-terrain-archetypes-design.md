@@ -147,6 +147,29 @@ and asserts on the distribution — median plus a pass rate — with thresholds
 derived from measurement. A single-seed assertion cannot tell "broken" from
 "unlucky"; this codebase has that lesson written down twice already.
 
+## What a throwaway spike already established (2026-09-14)
+
+Three generators were prototyped and viewed in the browser at the real render
+size before this spec was planned. Two findings are design constraints, not
+tuning trivia, and the plan should carry them as requirements:
+
+1. **Ridged noise must be raised to a power, or archipelago is not an
+   archipelago.** A straightforward `1 - |2v-1|` ridge field averages around
+   0.5, clears `SEA_LEVEL` (0.48) over most of the world, and the ridges
+   connect — producing a continuous mountainous landmass with lakes, which is
+   the exact opposite of the archetype. Raising the crest to ~4.5 gives
+   scattered islands.
+2. **Land must sit just above sea level, not near the top of the range.** Both
+   land generators first ran to ~0.85, which pushed nearly every land cell into
+   the mountain and snow classifications — a temperate world rendered white.
+   Land wants to sit mostly in roughly 0.50-0.70 with highlands as the
+   exception.
+
+Both were found by looking, not by measurement, and neither would have been
+caught by a landmass-count metric: a white mountain continent and a green
+plains continent have identical landmass counts. This is the argument for the
+legibility assertion below rather than only structural ones.
+
 ## Risks
 
 - **The archetypes may not be visually distinct at the size the game renders.**
