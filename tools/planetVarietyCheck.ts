@@ -30,7 +30,11 @@ const { generatePlanetGrid, isWater, GRID_SIZE } =
 const MEASURE = process.argv.includes('--measure');
 const CONTROL = process.argv.includes('--control');
 const SEEDS   = 12;                 // a stochastic system needs a distribution
-const TYPE    = 'ocean';            // neutral: null DNA leaves sea level unshifted
+// 'ocean' is neutral: its cap is above the default, so null DNA leaves sea
+// level unshifted. `--type=rocky` etc. measures a type whose cap moves it —
+// the spec's open question about whether archetype and sea level stay
+// orthogonal once TYPE_OCEAN_COVERAGE has clamped the DNA.
+const TYPE = process.argv.find(a => a.startsWith('--type='))?.slice(7) ?? 'ocean';
 const N       = GRID_SIZE;
 const idx = (r: number, c: number) => r * N + c;
 

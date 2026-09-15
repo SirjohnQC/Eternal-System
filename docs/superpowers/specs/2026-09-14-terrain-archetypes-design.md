@@ -201,6 +201,30 @@ legibility assertion below rather than only structural ones.
   archipelago on a type whose cap forces low ocean coverage may drown or emerge
   entirely. Measure the interaction across types before assuming orthogonality
   holds in practice.
+
+  **Measured 2026-09-15** (`planetVarietyCheck --measure --type=X`, medians over
+  12 seeds). It does not hold on dry types, and that is pre-existing rather than
+  caused by the archetypes:
+
+  | type | legacy land | supercontinent | archipelago | hemispheric |
+  |---|---|---|---|---|
+  | ocean | 0.72 | 0.35 | 0.10 | 0.55 |
+  | rocky | 0.77 | 0.40 | 0.11 | 0.57 |
+  | lava | 0.88 | 0.52 | 0.14 | 0.63 |
+  | ice | **1.00** | **1.00** | 0.34 | **1.00** |
+  | desert | **1.00** | **1.00** | **1.00** | **1.00** |
+
+  On `ice` and `desert` the type's ocean cap lifts the whole field above sea
+  level, so those worlds have no water at all — today, with the legacy
+  generator, as well. Every archetype washes out into the same all-land world;
+  only archipelago survives on ice, because its sea floor sits low enough to
+  stay under the cut. Archetype and sea level are orthogonal only where the
+  type leaves some sea to cut with.
+
+  Open decision, not taken here: whether dry types should keep a little water
+  (which would make archetypes visible on them and change every existing desert
+  and ice world), or whether those types get structural archetypes — crater,
+  rift — instead of the noise-shaped three.
 - **Settlement placement assumes reachable land.** `tools/settlementInlandCheck.ts`
   exists and should be run: an archipelago world has no inland, so any rule
   that wants settlements away from coast has nothing to choose.
