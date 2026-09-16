@@ -62,6 +62,10 @@ function fbmWrapX(x: number, y: number, seed: number, octaves: number, nx: numbe
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/** PlanetGrid's SEA_LEVEL, duplicated rather than imported: PlanetGrid imports
+ *  this module, so importing back would make a runtime cycle. */
+const SEA = 0.48;
+
 // ─── The generators ──────────────────────────────────────────────────────────
 
 /**
@@ -100,10 +104,23 @@ export function elevationFor(
         (fbmWrapX(nx * 21 + 3, ny * 21, seed ^ 0x51, 3, nx, 21) - 0.5) * 2.4 + 0.5);
       const isle = clamp01(crest * mask * (0.05 + fine * 1.55));
       // Sea floor deliberately low: generatePlanetGrid adds up to +0.3 of pole
-      // fade, and a higher floor would grow a land cap at each pole. The ceiling
-      // is capped under the 0.75 mountain threshold for the opposite reason —
-      // uncapped, the crests ran to 1.0 and every island came out bare rock.
-      return clamp01(0.14 + isle * 0.62);
+      // fade, and a higher floor would grow a land cap at each pole.
+      const raw = 0.14 + isle * 0.62;
+      // Islands are PLATEAUS, not cones. Two measured reasons, both invisible to
+      // the structure metrics and both found by reading the rendered pixels:
+      //
+      //  - Hugging the waterline puts nearly every island cell inside the 0.02
+      //    band that IsoDioramaRenderer re-classifies as `beach`, so islands
+      //    rendered tan. The grid said 59% of this world's land was grassland,
+      //    forest, jungle or plains; 0.8% of its land pixels came out green.
+      //  - Running to 0.76 puts them on the 9px and 13px lift tiers, and an
+      //    island ~30px across at the diorama's real size is then mostly
+      //    extruded cliff face.
+      //
+      // So land steps straight up past the beach band and stays in the low
+      // tiers: 0.52-0.63, where grassland and forest live. The step is at sea
+      // level, so the coastline itself does not move.
+      return clamp01(raw < SEA ? raw : 0.52 + (raw - SEA) * 0.40);
     }
 
     case 'hemispheric': {
