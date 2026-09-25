@@ -1,0 +1,315 @@
+diff --git a/src/dev/dioramaPreview.ts b/src/dev/dioramaPreview.ts
+index fcb3ed7..031a579 100644
+--- a/src/dev/dioramaPreview.ts
++++ b/src/dev/dioramaPreview.ts
+@@ -12,6 +12,8 @@ import { assignDominantSpecies } from '../simulation/SpeciesDistribution';
+ import { generateBranchSet, emptyInvestment } from '../simulation/DnaBranches';
+ import { bakeCreatureSprite, bakeSettlementSprite } from '../rendering/SpeciesSprite';
+ import { SeedRNG } from '../utils/SeedRNG';
++import { rollUnderCrust } from '../rendering/UnderCrust';
++import { genomeSeedFor } from '../simulation/PlanetGenome';
+ import type { Planet, StarBody } from '../simulation/BigBangEngine';
+ import type { BiologyPhase } from '../simulation/GameState';
+ 
+@@ -22,12 +24,30 @@ const params = new URLSearchParams(location.search);
+ let type: Planet['type'] = (params.get('type') as Planet['type']) || 'ocean';
+ let seed = Number(params.get('seed')) || 1;
+ 
++/**
++ * The planet's genome seed. `?hero=coreLit|geode|circulatory|none` (or two,
++ * comma-separated) searches for the first genome seed near this preview seed
++ * that rolls exactly that under-crust — so a hero can be looked at without
++ * adding a force switch to the renderer.
++ */
++function genomeSeedForPreview(): number {
++  const want = params.get('hero');
++  const base = genomeSeedFor(seed, 0);
++  if (!want) return base;
++  const target = want === 'none' ? '' : want.split(',').sort().join(',');
++  for (let k = 0; k < 5000; k++) {
++    const g = genomeSeedFor(seed, k);
++    if ([...rollUnderCrust(g).heroes].sort().join(',') === target) return g;
++  }
++  return base;
++}
++
+ function makePlanet(): Planet {
+   return {
+     orbitalAngle: 0, orbitalRadius: 40, orbitalSpeed: 0.01,
+     eccentricity: 0, periapsisAngle: 0,
+     radius: 6, type, hasLife: true, biosphere: 0.8,
+-    color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`,
++    color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`, genomeSeed: genomeSeedForPreview(),
+     moons: [
+       { name: 'I-a', radius: 1.6, orbitalRadius: 14, orbitalAngle: 0.6,
+         orbitalSpeed: 0.09, color: '#d6ecf8', kind: 'ice',
+diff --git a/src/rendering/HabitableCutawayEngine.ts b/src/rendering/HabitableCutawayEngine.ts
+index 6f86ac9..f5bcf5d 100644
+--- a/src/rendering/HabitableCutawayEngine.ts
++++ b/src/rendering/HabitableCutawayEngine.ts
+@@ -38,6 +38,9 @@ import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGe
+ import {
+   planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
+ } from './SurfaceDecals';
++import {
++  fillKeel, rollUnderCrust, forcedRoll, type UnderCrustHero, type UnderCrustRoll,
++} from './UnderCrust';
+ //
+ // COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
+ // threshold (used at the reclassification site below), but it LIVES in
+@@ -207,6 +210,19 @@ export interface CutawayBakeOpts extends CutawayGeom {
+   decalSeed?: number;
+   /** Loaded decal atlas, or null to use the procedural fallback. */
+   decalAtlas?: DecalAtlas | null;
++  /**
++   * `planet.genomeSeed`, for the under-crust hero roll. Falls back to
++   * `decalSeed` (which hosts already set to the genome seed); absent both, the
++   * keel gets no hero.
++   */
++  genomeSeed?: number;
++  /** Pin the under-crust heroes (preview harness and metric only). */
++  underCrustForce?: UnderCrustHero[];
++  /** Metric hook: filled with the roll, emitter mask and cavern plan. */
++  underCrustDebug?: {
++    roll?: UnderCrustRoll; emitters?: Uint8Array;
++    caverns?: Array<{ cx: number; cy: number; rx: number; ry: number }>;
++  };
+   /**
+    * Written with `row * GRID_SIZE + col + 1` for every surface pixel painted,
+    * so picking hits the cell that was actually DRAWN at a pixel rather than the
+@@ -1050,41 +1066,12 @@ export function paintCutawayCrust(
+   const wallBottom = new Float32Array(cols);
+   const crustH = Math.max(8, Math.round(rx * 0.88));
+ 
+-  // ── Sheer front wall ──────────────────────────────────────────────────────
++  // Wall bottom per column, computed up front so the keel can be filled
++  // before the wall is painted. Same formula as the wall pass below.
+   for (let x = rimX0; x <= rimX1; x++) {
+-    const i = x - rimX0;
+     const faceX = (x - cx) / rx;
+     const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
+-    const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
+-    const bottomY = frontY + wall + ridge;
+-    const waterBand = Math.max(6, Math.round(wall * 0.40));
+-    wallBottom[i] = bottomY;
+-    const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
+-    const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
+-    const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
+-
+-    for (let y = Math.ceil(frontY); y <= Math.floor(bottomY); y++) {
+-      if (y < 0 || y >= VH) continue;
+-      const faceY = (y - cyTop) / ry;
+-      if (faceX * faceX + faceY * faceY <= 1) continue;
+-      const depth = y - frontY;
+-      const light = quantise(0.70 + 0.30 * clamp01(faceX * KEY_X + 0.42), 0.08);
+-      const fluidLayer = depth < waterBand || water;
+-      if (fluidLayer) {
+-        const t = clamp01(depth / Math.max(1, water ? (bottomY - frontY) : waterBand));
+-        const facet = x % 14 === 0 ? 0.20 : 0;
+-        g.fillStyle = css(shade(rgb(
+-          mix(pal.waterLip.r, pal.waterDeep.r, t),
+-          mix(pal.waterLip.g, pal.waterDeep.g, t),
+-          mix(pal.waterLip.b, pal.waterDeep.b, t),
+-        ), light + facet));
+-      } else {
+-        const t = clamp01((depth - waterBand) / Math.max(1, bottomY - frontY - waterBand));
+-        const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
+-        g.fillStyle = css(shade(pal.strata[stripe], light));
+-      }
+-      g.fillRect(x, y, 1, 1);
+-    }
++    wallBottom[x - rimX0] = frontY + wall + (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
+   }
+ 
+   // ── Jagged hanging keel ───────────────────────────────────────────────────
+@@ -1126,45 +1113,81 @@ export function paintCutawayCrust(
+ 
+   const bands = pal.strata.length;
+   const strataSpan = ry + wall + crustH;
+-  for (let i = 0; i < cols; i++) {
+-    const x = rimX0 + i;
+-    const depth = prof[i];
+-    if (depth < 2) continue;
+-    const top = wallBottom[i];
+-    const dxn = (x - cx) / rx;
+-    const lit = 0.55 + 0.62 * clamp01(dxn * 0.9 + 0.45);
++  // Strata band on ABSOLUTE screen Y (plus a gentle per-x wave), exactly as
++  // before — per-column depth banding follows the silhouette and reads as mud.
++  const bandAt = (x: number, absY: number) => {
++    const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.55
++               + (fbm1(x * 0.075, seed + 733, 2) - 0.5) * 0.22;
++    const bandPos = clamp01((absY - cyTop) / strataSpan) * bands + wave;
++    const bi = Math.max(0, Math.min(bands - 1, Math.floor(bandPos)));
++    return { band: bi, frac: bandPos - Math.floor(bandPos) };
++  };
+ 
+-    for (let y = 0; y < depth; y++) {
+-      const absY = top + y;
+-      if (absY < 0 || absY >= VH) continue;
+-      const faceX = dxn;
+-      const faceY = (absY - cyTop) / ry;
+-      if (faceX * faceX + faceY * faceY <= 1) continue;
++  // ── Keel fill: ramp, dither, facets and the rolled hero (UnderCrust.ts) ──
++  let ky0 = Infinity, ky1 = -Infinity;
++  for (let i = 0; i < cols; i++) {
++    if (prof[i] < 2) continue;
++    ky0 = Math.min(ky0, Math.round(wallBottom[i]));
++    ky1 = Math.max(ky1, Math.round(wallBottom[i] + prof[i]));
++  }
++  ky0 = Math.max(0, ky0); ky1 = Math.min(VH - 1, ky1);
++  if (ky1 >= ky0) {
++    const gs = opts.genomeSeed ?? opts.decalSeed;
++    const roll = opts.planetType === 'gas' || gs === undefined
++      ? { heroes: [], hue: {}, glitch: false }
++      : opts.underCrustForce ? forcedRoll(gs, opts.underCrustForce) : rollUnderCrust(gs);
++    const dbg = opts.underCrustDebug;
++    if (dbg) { dbg.roll = roll; dbg.emitters = new Uint8Array(VW * VH); dbg.caverns = []; }
++    // Fresh ImageData, no read-back: the region is still clear here because
++    // the keel is painted before the wall (the wall then draws over the one
++    // row they can share). tools/habitableDioramaCheck.ts forbids getImageData.
++    const img = g.createImageData(cols, ky1 - ky0 + 1);
++    fillKeel({
++      img, ox: rimX0, oy: ky0, x0: rimX0, top: wallBottom, depth: prof,
++      cx, rx, cyTop, ry, bandAt, strata: pal.strata, ember: pal.ember, emberHot: pal.emberHot,
++      seed, roll, emitOut: dbg?.emitters ?? null, screenW: VW, cavernsOut: dbg?.caverns,
++    });
++    g.putImageData(img, rimX0, ky0);
++  }
+ 
+-      const t = y / depth;
+-      const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.55
+-                 + (fbm1(x * 0.075, seed + 733, 2) - 0.5) * 0.22;
+-      const bandPos = clamp01((absY - cyTop) / strataSpan) * bands + wave;
+-      const bi = Math.max(0, Math.min(bands - 1, Math.floor(bandPos)));
+-      const ao = 1 - t * 0.26 - (y < 3 ? (3 - y) / 3 : 0) * 0.28;
+-      const grain = 0.90 + hash1(x * 733 + y * 13, seed) * 0.20;
+-      const streak = 0.94 + fbm1(x * 0.09 + y * 1.7, seed + 55, 2) * 0.14;
+-      let f = lit * ao * grain * streak;
+-      const frac = bandPos - Math.floor(bandPos);
+-      if (frac < 0.07) f *= 0.68;
+-      else if (frac < 0.16) f *= 1.12;
+-      const ember = t > 0.78 && hash1(x * 179 + y * 991, seed + 19) > 0.986;
+-      g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[bi], f));
+-      g.fillRect(x, Math.round(absY), 1, 1);
+-    }
++  // ── Sheer front wall ──────────────────────────────────────────────────────
++  for (let x = rimX0; x <= rimX1; x++) {
++    const i = x - rimX0;
++    const faceX = (x - cx) / rx;
++    const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
++    const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
++    const bottomY = frontY + wall + ridge;
++    const waterBand = Math.max(6, Math.round(wall * 0.40));
++    wallBottom[i] = bottomY;
++    const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
++    const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
++    const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
+ 
+-    if (dxn > 0.1) {
+-      g.fillStyle = css(pal.ember, clamp01((dxn - 0.1) / 0.9) * 0.25);
+-      g.fillRect(x, Math.round(top + depth) - 2, 1, 2);
++    for (let y = Math.ceil(frontY); y <= Math.floor(bottomY); y++) {
++      if (y < 0 || y >= VH) continue;
++      const faceY = (y - cyTop) / ry;
++      if (faceX * faceX + faceY * faceY <= 1) continue;
++      const depth = y - frontY;
++      const light = quantise(0.70 + 0.30 * clamp01(faceX * KEY_X + 0.42), 0.08);
++      const fluidLayer = depth < waterBand || water;
++      if (fluidLayer) {
++        const t = clamp01(depth / Math.max(1, water ? (bottomY - frontY) : waterBand));
++        const facet = x % 14 === 0 ? 0.20 : 0;
++        g.fillStyle = css(shade(rgb(
++          mix(pal.waterLip.r, pal.waterDeep.r, t),
++          mix(pal.waterLip.g, pal.waterDeep.g, t),
++          mix(pal.waterLip.b, pal.waterDeep.b, t),
++        ), light + facet));
++      } else {
++        const t = clamp01((depth - waterBand) / Math.max(1, bottomY - frontY - waterBand));
++        const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
++        g.fillStyle = css(shade(pal.strata[stripe], light));
++      }
++      g.fillRect(x, y, 1, 1);
+     }
+-    g.fillStyle = 'rgba(2,2,6,0.55)';
+-    g.fillRect(x, Math.round(top + depth) - 1, 1, 1);
+   }
++
++
+ }
+ 
+ // ─── Atmosphere shell ─────────────────────────────────────────────────────────
+diff --git a/src/rendering/IsoDioramaRenderer.ts b/src/rendering/IsoDioramaRenderer.ts
+index b9e512e..c8ed4f9 100644
+--- a/src/rendering/IsoDioramaRenderer.ts
++++ b/src/rendering/IsoDioramaRenderer.ts
+@@ -34,7 +34,7 @@ import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
+ import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
+ import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
+ import type { Planet, StarBody } from '../simulation/BigBangEngine';
+-import { bakeCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
++import { dioramaCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
+ import {
+   HabitableCutawayEngine,
+   type HabitableType,
+@@ -1161,6 +1161,7 @@ export class IsoDioramaRenderer {
+       lush: this.lushFor(bio),
+       weatherMix: this.cloudMixFor(),
+       decalSeed: this.planet?.genomeSeed ?? 0,
++      genomeSeed: this.planet?.genomeSeed,
+       decalAtlas: this.decalAtlas,
+     });
+     this.pickBuf = this.cutaway.pick;
+@@ -2198,18 +2199,8 @@ export class IsoDioramaRenderer {
+     const MAX_CREATURES = 42;
+     const MAX_SETTLEMENTS = 13;
+ 
+-    // On-screen size in virtual pixels, by size class. This is set here rather
+-    // than taken from the baked sprite: sprite canvases carry margin for fins
+-    // and wings, and blitting them 1:1 made a "medium" animal 27px wide on a
+-    // 270px world.
+-    const SIZE_PX: Record<string, number> = {
+-      microscopic: 2.5, tiny: 4, small: 5.5, medium: 7.5, large: 10, massive: 13.5,
+-    };
+-
+-    const phaseScale = phase === 'multicellular' ? 0.55
+-                     : phase === 'complex'       ? 0.78
+-                     : phase === 'primitive'     ? 0.92
+-                     : 1.0;
++    // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
++    // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
+ 
+     const creatureSpots: Array<{ x: number; y: number; id: string }> = [];
+     const settlementSpots: Array<{
+@@ -2253,7 +2244,8 @@ export class IsoDioramaRenderer {
+           // and their life density — so a walking animal placed off the raw grid
+           // ends up standing on open water, and the whole rim rings with
+           // creatures wading in the sea.
+-          const swims = byId.get(cell.dominantSpeciesId)?.dna.locomotion === 'swimming';
++          const loco = byId.get(cell.dominantSpeciesId)?.dna.locomotion;
++          const swims = loco === 'swimming' || loco === 'flying';   // fliers may cross water
+           if (this.habitable && !onLand && !swims) continue;
+           creatureSpots.push({ x: px, y: py - lift, id: cell.dominantSpeciesId });
+         }
+@@ -2294,16 +2286,16 @@ export class IsoDioramaRenderer {
+     for (const spot of scatter(creatureSpots, MAX_CREATURES, rx * 0.075)) {
+       const genome = byId.get(spot.id);
+       if (!genome) continue;
+-      const sprite = bakeCreatureSprite(genome, 1);
+       // Perspective: things near the front of the disc read slightly larger.
++      // The sprite is baked AT its on-screen size (size class x phase x depth)
++      // and blitted 1:1 — resampling a bigger bake erased eyes, spines and
++      // craniums, and is what tools/speciesSpriteCheck.ts caught.
+       const depth = (spot.y - (cy - ry)) / (ry * 2);
+-      const target = (SIZE_PX[genome.physicalTraits.size] ?? 5)
+-                   * phaseScale * (0.8 + depth * 0.4);
+-      const aspect = sprite.height / sprite.width;
++      const sprite = dioramaCreatureSprite(genome, phase ?? 'intelligent', depth);
+       this.inhabitants.push({
+         x: spot.x, y: spot.y, sprite,
+-        w: Math.max(2, target),
+-        h: Math.max(2, target * aspect),
++        w: sprite.width,
++        h: sprite.height,
+         phase: s.range(0, Math.PI * 2),
+         sway: s.range(0.4, 1.5),
+         depth,
