@@ -51,8 +51,11 @@ follows the rim round the front of the disc.
   distance measures coincide there (the rim ellipse's extreme x is `rx`, the
   dome circle's radius), so blend them over a few pixels either side of `cy`.
 - The band thins toward the front-most point of the ellipse — less air along
-  the line of sight there — reaching a small floor rather than zero, so the
-  rim reads as edged by air rather than by a hairline.
+  the line of sight there — and reaches zero before it gets there. (Amended
+  while planning: a non-zero floor would run into the kept pancake-only cut at
+  `y > cy + ry` and make a new shelf at the front.) The band's whole glow, not
+  only its limb term, fades with distance from the rim, so it ends in a fade
+  rather than a cut.
 - Unchanged: no air under the tabletop (`y > cy + ry` still returns null — the
   pancake-only line and its comment stay; they go with the pancake).
 - `bakeAirMask` uses `ozoneAt`, so the wisp mask follows automatically. Check
