@@ -103,7 +103,7 @@ function sizeIndex(sz: SpeciesSize): number {
  * biology does throw up things that look like mistakes, and a world where those
  * never happen feels authored.
  */
-function isCoherent(g: SpeciesGenome): boolean {
+export function isCoherent(g: SpeciesGenome): boolean {
   const d = g.dna;
   const si = sizeIndex(g.physicalTraits.size);
 
@@ -121,6 +121,12 @@ function isCoherent(g: SpeciesGenome): boolean {
   // Walking requires a body and dry ground.
   if (d.locomotion === 'walking' && (d.environment === 'ocean' || d.environment === 'deep_sea')) return false;
   if (d.locomotion === 'walking' && si < 2) return false;
+  // ...and the mirror cases. Without these the engine bred land-swimmers and
+  // ocean-fliers, scored them as thriving (`fitness` never reads locomotion),
+  // while `archetypeFit` in SpeciesDistribution correctly gave a swimmer on
+  // land 0.25 — so they held no ground and the map read as a monoculture.
+  if (d.locomotion === 'swimming' && d.environment === 'land') return false;
+  if (d.locomotion === 'flying' && (d.environment === 'ocean' || d.environment === 'deep_sea')) return false;
   // Single cells stay microscopic; big bodies need structure.
   if (g.physicalTraits.bodyStructure === 'single-celled' && si > 1) return false;
   if (si >= 4 && (g.physicalTraits.bodyStructure === 'single-celled' ||
@@ -144,6 +150,10 @@ function repair(g: SpeciesGenome): boolean {
     else if (d.locomotion === 'flying' && si > 3) g.physicalTraits.size = SIZE_ORDER[3];
     else if (d.locomotion === 'walking' && (d.environment === 'ocean' || d.environment === 'deep_sea')) d.environment = 'coastal';
     else if (d.locomotion === 'walking' && si < 2) g.physicalTraits.size = SIZE_ORDER[2];
+    // Fix the animal, not the habitat: a lineage that reached land keeps the
+    // land. Small bodies crawl, bodies with a frame walk.
+    else if (d.locomotion === 'swimming' && d.environment === 'land') d.locomotion = si >= 2 ? 'walking' : 'crawling';
+    else if (d.locomotion === 'flying' && (d.environment === 'ocean' || d.environment === 'deep_sea')) d.locomotion = 'swimming';
     else if (g.physicalTraits.bodyStructure === 'single-celled' && si > 1) g.physicalTraits.bodyStructure = 'colonial';
     else if (si >= 4 && (g.physicalTraits.bodyStructure === 'single-celled' ||
                          g.physicalTraits.bodyStructure === 'filamentous')) g.physicalTraits.bodyStructure = 'vertebrate';
@@ -219,6 +229,12 @@ export function createFoundingSpecies(tick: number, rng: SeedRNG): SpeciesGenome
       toolUse:            0,
     },
   };
+  // The founding roll picks metabolism and habitat independently, so it could
+  // birth a photosynthetic organism in the deep sea — 13.4% of 5000 seeds, a
+  // plant living where no light reaches. `isCoherent` has always rejected that
+  // combination; nothing was checking it here. Every later path repairs, so
+  // this was the one genome that could start the whole biosphere broken.
+  repair(g);
   syncDescriptors(g, rng);
   g.name = nameForGenome(g, rng);
   return g;

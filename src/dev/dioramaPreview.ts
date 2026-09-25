@@ -4,7 +4,7 @@
  * replaying a full game. Not imported by the game bundle.
  */
 import { IsoDioramaRenderer } from '../rendering/IsoDioramaRenderer';
-import { generatePlanetGrid, isHabitable, GRID_SIZE } from '../simulation/PlanetGrid';
+import { generatePlanetGrid, isHabitable, isWater, GRID_SIZE } from '../simulation/PlanetGrid';
 import { DEFAULT_BIOSPHERE } from '../simulation/SpeciesGenome';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { stepEvolution, createFoundingSpecies } from '../simulation/EvolutionEngine';
@@ -74,7 +74,14 @@ function rebuild(): void {
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
       const cell = grid[r][c];
-      cell.lifeDensity = isHabitable(cell.biome) ? Math.min(1, cell.fertility * 1.4) : 0;
+      // Water gets life too. `isHabitable` is `!isWater && !mountain &&
+      // !volcanic`, so gating on it alone left every ocean dead — and the
+      // microbial phase of `stepLifeSpread` spreads ONLY in water, so that is
+      // the opposite of the game. PlanetGrid.ts carries the same lesson at the
+      // fertility layer. Measuring species range on a dry-ocean preview made
+      // every aquatic lineage look homeless and the map look like a monoculture.
+      const alive = isHabitable(cell.biome) || isWater(cell.biome);
+      cell.lifeDensity = alive ? Math.min(1, cell.fertility * 1.4) : 0;
       if (wantCiv && isHabitable(cell.biome) && cell.fertility > 0.45) cell.civId = '0';
     }
   }

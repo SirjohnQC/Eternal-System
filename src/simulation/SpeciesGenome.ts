@@ -103,3 +103,56 @@ export function createPrimordialSpecies(tick: number): SpeciesGenome {
     },
   };
 }
+
+/**
+ * May this species be DRAWN standing on a water cell?
+ *
+ * The diorama's top face sinks its outer hemisphere (`rimFalloff`) without
+ * changing biome or life density, so a land animal placed off the raw grid can
+ * end up standing on open sea and the whole rim rings with waders. The renderer
+ * therefore gates creatures on water.
+ *
+ * That gate used to ask about LOCOMOTION — swimming or flying only — which
+ * silently hid every aquatic organism that neither swims nor flies: kelp and
+ * reef (`stationary`) and sea-floor crawlers. Measured at 12-22% of occupied
+ * cells drawn as empty ocean.
+ *
+ * Environment is the right question, and it is now trustworthy: `isCoherent`
+ * rejects land-swimmers and ocean-fliers, so a genome's habitat and its means
+ * of moving can no longer disagree. Fliers are allowed over water because they
+ * cross it.
+ */
+export function inhabitsWater(g: SpeciesGenome): boolean {
+  const env = g.dna.environment;
+  return env === 'ocean' || env === 'deep_sea' || env === 'coastal'
+      || g.dna.locomotion === 'flying';
+}
+
+/**
+ * How deeply a species sits when it occupies a water cell, 0..1.
+ *
+ * 0 = drawn wholly above the surface (fliers crossing open water).
+ * 1 = wholly submerged, no part breaking the surface.
+ *
+ * Drawing marine life standing proud on the water read as statues on plinths.
+ * Habitat sets the baseline depth, then two adjustments: rooted organisms (kelp,
+ * reef) stay under because they are anchored to the floor, and big bodies breach
+ * — a massive animal shows its back the way a whale does.
+ */
+export function waterSubmersion(g: SpeciesGenome): number {
+  if (g.dna.locomotion === 'flying') return 0;
+
+  const env = g.dna.environment;
+  let s = env === 'deep_sea' ? 1.0
+        : env === 'ocean'    ? 0.85
+        : env === 'coastal'  ? 0.55
+        :                      0.85;   // land/aerial here would be incoherent
+
+  if (g.dna.locomotion === 'stationary') s += 0.15;   // rooted to the floor
+
+  const size = g.physicalTraits.size;
+  if (size === 'massive') s -= 0.22;
+  else if (size === 'large') s -= 0.12;
+
+  return Math.max(0, Math.min(1, s));
+}

@@ -33,11 +33,13 @@
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
+import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
-import { bakeCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
+import { dioramaCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
 import {
   HabitableCutawayEngine,
   type HabitableType,
+  cutawayWaterSurf,
 } from './HabitableCutawayEngine';
 import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
@@ -498,7 +500,11 @@ export class IsoDioramaRenderer {
   private inhabitants: Array<{
     x: number; y: number; sprite: HTMLCanvasElement;
     w: number; h: number; phase: number; sway: number; depth: number;
+    /** 0 = fully above the surface, 1 = fully under. See waterSubmersion(). */
+    submersion: number;
   }> = [];
+  /** Scratch for compositing a submerged creature without tinting the sea. */
+  private subScratch: HTMLCanvasElement | null = null;
   private settlements: Array<{
     x: number; y: number; sprite: HTMLCanvasElement; w: number; h: number; depth: number;
   }> = [];
@@ -2198,20 +2204,10 @@ export class IsoDioramaRenderer {
     const MAX_CREATURES = 42;
     const MAX_SETTLEMENTS = 13;
 
-    // On-screen size in virtual pixels, by size class. This is set here rather
-    // than taken from the baked sprite: sprite canvases carry margin for fins
-    // and wings, and blitting them 1:1 made a "medium" animal 27px wide on a
-    // 270px world.
-    const SIZE_PX: Record<string, number> = {
-      microscopic: 2.5, tiny: 4, small: 5.5, medium: 7.5, large: 10, massive: 13.5,
-    };
+    // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
+    // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
 
-    const phaseScale = phase === 'multicellular' ? 0.55
-                     : phase === 'complex'       ? 0.78
-                     : phase === 'primitive'     ? 0.92
-                     : 1.0;
-
-    const creatureSpots: Array<{ x: number; y: number; id: string }> = [];
+    const creatureSpots: Array<{ x: number; y: number; id: string; onWater: boolean }> = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
       fertility: number; row: number; col: number;
@@ -2253,9 +2249,15 @@ export class IsoDioramaRenderer {
           // and their life density — so a walking animal placed off the raw grid
           // ends up standing on open water, and the whole rim rings with
           // creatures wading in the sea.
-          const swims = byId.get(cell.dominantSpeciesId)?.dna.locomotion === 'swimming';
-          if (this.habitable && !onLand && !swims) continue;
-          creatureSpots.push({ x: px, y: py - lift, id: cell.dominantSpeciesId });
+          // Ask about HABITAT, not locomotion: kelp and reef are `stationary`
+          // and sea-floor grazers `crawling`, and a locomotion test drew neither.
+          // See inhabitsWater() in SpeciesGenome.ts.
+          const occupant = byId.get(cell.dominantSpeciesId);
+          if (this.habitable && !onLand && !(occupant && inhabitsWater(occupant))) continue;
+          creatureSpots.push({
+            x: px, y: py - lift, id: cell.dominantSpeciesId,
+            onWater: this.habitable && !onLand,
+          });
         }
       }
     }
@@ -2294,19 +2296,20 @@ export class IsoDioramaRenderer {
     for (const spot of scatter(creatureSpots, MAX_CREATURES, rx * 0.075)) {
       const genome = byId.get(spot.id);
       if (!genome) continue;
-      const sprite = bakeCreatureSprite(genome, 1);
       // Perspective: things near the front of the disc read slightly larger.
+      // The sprite is baked AT its on-screen size (size class x phase x depth)
+      // and blitted 1:1 — resampling a bigger bake erased eyes, spines and
+      // craniums, and is what tools/speciesSpriteCheck.ts caught.
       const depth = (spot.y - (cy - ry)) / (ry * 2);
-      const target = (SIZE_PX[genome.physicalTraits.size] ?? 5)
-                   * phaseScale * (0.8 + depth * 0.4);
-      const aspect = sprite.height / sprite.width;
+      const sprite = dioramaCreatureSprite(genome, phase ?? 'intelligent', depth);
       this.inhabitants.push({
         x: spot.x, y: spot.y, sprite,
-        w: Math.max(2, target),
-        h: Math.max(2, target * aspect),
+        w: sprite.width,
+        h: sprite.height,
         phase: s.range(0, Math.PI * 2),
         sway: s.range(0.4, 1.5),
         depth,
+        submersion: spot.onWater ? waterSubmersion(genome) : 0,
       });
     }
 
@@ -2382,12 +2385,58 @@ export class IsoDioramaRenderer {
     g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     g.clip();
 
+    const surf = this.habitable ? cutawayWaterSurf(this.planetType as HabitableType) : null;
+
     for (const c of this.inhabitants) {
       // A small idle bob keeps the world alive without implying real movement.
       const bob = Math.sin(t * c.sway + c.phase) * 0.6;
-      g.drawImage(c.sprite,
-        Math.round(c.x - c.w / 2), Math.round(c.y + layerBob - c.h + bob),
-        Math.round(c.w), Math.round(c.h));
+      const dx = Math.round(c.x - c.w / 2);
+      const dy = Math.round(c.y + layerBob - c.h + bob);
+
+      if (c.submersion <= 0 || !surf) {
+        g.drawImage(c.sprite, dx, dy, Math.round(c.w), Math.round(c.h));
+        continue;
+      }
+
+      // Sink the body so only the unsubmerged fraction clears the waterline,
+      // then tint what is under. The tint is applied INSIDE a scratch with
+      // 'source-atop', so it lands on the animal's own pixels and never on the
+      // sea — filling a rect straight onto the frame would leave a coloured box.
+      const w = Math.max(1, Math.round(c.w)), h = Math.max(1, Math.round(c.h));
+      if (!this.subScratch) this.subScratch = document.createElement('canvas');
+      const sc = this.subScratch;
+      if (sc.width < w || sc.height < h) { sc.width = Math.max(sc.width, w); sc.height = Math.max(sc.height, h); }
+      const sg = sc.getContext('2d');
+      if (!sg) { g.drawImage(c.sprite, dx, dy, w, h); continue; }
+
+      sg.clearRect(0, 0, w, h);
+      sg.globalCompositeOperation = 'source-over';
+      sg.drawImage(c.sprite, 0, 0, w, h);
+
+      // Waterline in sprite-local pixels: everything at or below is underwater.
+      const line = Math.round(h * (1 - c.submersion));
+      sg.globalCompositeOperation = 'source-atop';
+      sg.fillStyle = `rgba(${surf.mid.r},${surf.mid.g},${surf.mid.b},0.55)`;
+      sg.fillRect(0, line, w, h - line);
+      // Deep water swallows more of the body than shallow.
+      if (c.submersion > 0.9) {
+        sg.fillStyle = `rgba(${surf.deep.r},${surf.deep.g},${surf.deep.b},0.3)`;
+        sg.fillRect(0, line, w, h - line);
+      }
+      sg.globalCompositeOperation = 'source-over';
+
+      // Sunk by the submerged fraction, so the waterline sits where the cell is.
+      const sunk = dy + Math.round(h * c.submersion);
+      g.save();
+      g.globalAlpha = c.submersion >= 1 ? 0.78 : 0.92;
+      g.drawImage(sc, 0, 0, w, h, dx, sunk, w, h);
+      g.restore();
+
+      // A one-pixel glint where the body breaks the surface sells the meniscus.
+      if (c.submersion < 1) {
+        g.fillStyle = `rgba(${surf.light.r},${surf.light.g},${surf.light.b},0.5)`;
+        g.fillRect(dx, sunk + line, w, 1);
+      }
     }
 
     for (const st of this.settlements) {
