@@ -43,6 +43,8 @@
  *     --format=esm --outfile=/tmp/atmo.mjs && node /tmp/atmo.mjs [--control]
  */
 const CONTROL = process.argv.includes('--control');
+const ROLLED = process.argv.includes('--rolled');
+const BENCH = process.argv.includes('--bench');
 
 /** Cool and dense, hot and dense, warm and thin — three air channels. */
 const TYPES = ['ocean', 'lava', 'desert'] as const;
@@ -57,7 +59,27 @@ class FakeImageData {
 (globalThis as any).ImageData = FakeImageData;
 
 const { paintAtmosphere } = await import('../src/rendering/HabitableCutawayEngine');
-const { genomeFromLegacy } = await import('../src/simulation/PlanetGenome');
+const { genomeFromLegacy, rollPlanetGenome, genomeSeedFor } =
+  await import('../src/simulation/PlanetGenome');
+type Air = ReturnType<typeof genomeFromLegacy>['atmosphere'];
+
+if (BENCH) {
+  // Fixed geometry literal, so later layout changes compare like with like.
+  const BW = 1200, BH = 800;
+  const bgeom: any = { cx: 600, cyTop: 255, rx: 262, ry: 136 };
+  const img = new FakeImageData(BW, BH);
+  const times: number[] = [];
+  for (let i = 0; i < 30; i++) {
+    img.data.fill(0);
+    const t0 = performance.now();
+    paintAtmosphere(img as any, bgeom, 'ocean' as any, 0, 0.7, 1);
+    const t1 = performance.now();
+    if (i >= 5) times.push(t1 - t0);
+  }
+  times.sort((a, b) => a - b);
+  console.log(`  bench paintAtmosphere 1200x800 ocean: median ${times[12].toFixed(2)} ms (p10 ${times[2].toFixed(2)}, p90 ${times[22].toFixed(2)})`);
+  process.exit(0);
+}
 
 const W = 420, H = 320;
 const geom: any = { cx: 210, cyTop: 150, rx: 130, ry: 65 };
@@ -81,9 +103,9 @@ interface Metrics {
   thickSpread: number; aerialFall: number; nearAlpha: number;
 }
 
-function measure(type: string): Metrics {
+function measure(type: string, air?: Air): Metrics {
   const img = new FakeImageData(W, H);
-  paintAtmosphere(img as any, geom, type as any, 0, 0, 1);
+  paintAtmosphere(img as any, geom, type as any, 0, 0, 1, undefined, air);
   const A = (x: number, y: number) => img.data[(y * W + x) * 4 + 3];
   const RGB = (x: number, y: number) => {
     const o = (y * W + x) * 4;
@@ -115,7 +137,7 @@ function measure(type: string): Metrics {
     litC[0] - darkC[0], litC[1] - darkC[1], litC[2] - darkC[2]));
 
   // 2b. hue sanity — neither limb may wander out of the planet's colour family.
-  const baseHue = genomeFromLegacy(type, 0).atmosphere.hue;
+  const baseHue = (air ?? genomeFromLegacy(type, 0).atmosphere).hue;
   const hueDrift = Math.max(dh(hueOf(litC), baseHue), dh(hueOf(darkC), baseHue));
 
   // 3. thickness — the shell's EQUIVALENT WIDTH past the rim: the alpha profile
@@ -220,6 +242,31 @@ for (const type of TYPES) {
     // A ratio computed on near-zero alphas would pass on nothing at all.
     assert(type, 'the veil is actually there', m.nearAlpha >= MIN_NEAR_ALPHA,
       `a@20% ${m.nearAlpha.toFixed(1)} >= ${MIN_NEAR_ALPHA}`);
+  }
+}
+
+if (ROLLED) {
+  console.log('\n  ROLLED — every seed must pass, not the median. 12 seeds per type.');
+  for (const type of TYPES) {
+    const rows: Metrics[] = [];
+    for (let i = 0; i < 12; i++) {
+      const air = rollPlanetGenome(genomeSeedFor(100 + i, 0), type, null).atmosphere;
+      const m = measure(type, air);
+      rows.push(m);
+      const bad: string[] = [];
+      if (m.seam > WANT_SEAM) bad.push(`seam ${m.seam.toFixed(2)}`);
+      if (m.chroma < WANT_CHROMA) bad.push(`chroma ${m.chroma}`);
+      if (m.hueDrift > MAX_HUE_DRIFT) bad.push(`hueDrift ${m.hueDrift.toFixed(1)}`);
+      if (m.thickSpread <= WANT_THICK) bad.push(`thick ${m.thickSpread.toFixed(2)}`);
+      if (m.aerialFall < WANT_FALL) bad.push(`fall ${m.aerialFall.toFixed(2)}`);
+      if (m.nearAlpha < MIN_NEAR_ALPHA) bad.push(`near ${m.nearAlpha.toFixed(1)}`);
+      if (bad.length) { failed++; console.log(`  FAIL  [${type} seed#${i}] ${bad.join(', ')}  (thickness ${air.thicknessPx}px, density ${air.density.toFixed(2)})`); }
+    }
+    const span = (k: keyof Metrics) => {
+      const v = rows.map(r => r[k] as number).sort((a, b) => a - b);
+      return `${v[0].toFixed(2)} / ${v[6].toFixed(2)} / ${v[11].toFixed(2)}`;
+    };
+    console.log(`  ${type}  min/median/max  seam ${span('seam')}  chroma ${span('chroma')}  hueDrift ${span('hueDrift')}  thick ${span('thickSpread')}  fall ${span('aerialFall')}`);
   }
 }
 
