@@ -232,3 +232,22 @@ Tuning is done against the picture; the metrics guard it.
 - Gas-giant weather.
 - The drag controls (spin the planet / pan the view) — their own spec; this
   one only requires the lookup to be rebuildable on a projection change.
+
+## Amendments (2026-09-26, measured while planning)
+
+These override the sections above where they conflict. Details and numbers are
+in `docs/superpowers/plans/2026-09-26-weather-sim.md`.
+
+1. **Planet type enters through an explicit per-type climate table.** The
+   grid's `temperature` and `moisture` do not depend on type (identical means on
+   ocean, ice, lava and desert for one seed); type shows only in
+   `classifyBiome`. "Types show up mostly through the grid's own maps" was wrong.
+2. **Ash emitters are vents** — volcanic cells at elevation >= 0.70 on a 3x3
+   local peak, hash-thinned — because 65% of a lava world is `volcanic` biome.
+   Chimney screen sites are not an input.
+3. **Rain-shadow metric is relative** to a flat twin grid (synthetic) and to
+   the uplift-ablated run (real grids): lee cells are farther from the coast and
+   drier even without a ridge.
+4. **Wet-vs-dry is controlled by today's wisps only**; the null model shares the
+   ordering it would be tested on.
+5. **Structure metric is the spread of latitude-band means (>= 0.15).**
