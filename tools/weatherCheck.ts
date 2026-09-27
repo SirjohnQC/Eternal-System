@@ -462,7 +462,14 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   const stormStats = (over: Partial<ClimateInput>, seed: number) => {
     const p = painterFor('storm', seed, over);
     let minLive = Infinity; const f0 = p.painter.flashesTotal;
-    for (let f = 0; f < 60 * 60; f++) { p.frame(); if (f % 30 === 0) minLive = Math.min(minLive, p.painter.pCount); }
+    // R4c: the spec's metric is the storm type's STEADY STATE. Rain minima are
+    // sampled after a 5 s settle (frame 300 on): right after warm-up a weak
+    // seed's sim is still ramping (seed 99: ~30 live at frame 0, 57 by frame 30).
+    // Flashes are counted over the full minute.
+    for (let f = 0; f < 60 * 60; f++) {
+      p.frame();
+      if (f >= 300 && f % 30 === 0) minLive = Math.min(minLive, p.painter.pCount);
+    }
     return { minLive, flashesPer5s: (p.painter.flashesTotal - f0) / 12 };
   };
   // -0.6 cancels the storm type's +0.6 base, so stormPressure clamps to 0.

@@ -70,7 +70,13 @@ const P_RGBA = [150, 190, 232, 0.55, 190, 222, 105, 0.6, 240, 250, 255, 0.8, 64,
 const PMAX = 320, FMAX = 8;
 /** Steps of fall simulated when a painter first comes up (snow takes ~8). */
 const PRIME_STEPS = 8;
-const RAIN_SPAWN = 1.0;
+/**
+ * R4c: was 1.0. The weakest storm seed (99) had a steady-state minimum of 3-27
+ * live drops at 1-3. At 8 its minimum is 58 and at 6 it is 43. Stronger storm
+ * seeds sit at the PMAX cap (accepted by the ruling). The spawn saturates at one
+ * drop per sampled pixel per step.
+ */
+const RAIN_SPAWN = 8;
 /**
  * Per sampled storm pixel per step, and at most one new bolt per onStep.
  * Flashes spawn only in onStep (4 Hz) and live 0.09 s, so flicker is <= 4 Hz;
