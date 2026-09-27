@@ -603,7 +603,16 @@ check('a lava world grows nothing but rock',
 // the check tell the truth. Where the measured behaviour is weaker than the
 // feature's stated intent, that is recorded as a finding, not tuned away.
 const GRID_SEEDS = [7777, 1234, 4242, 90210, 31337, 5150, 8675309, 2024];
-const GENOME_SEEDS = [0xC0FFEE, 0xBADF00D, 0x5EED];
+// Widened 3 -> 8 genome seeds (24 -> 64 worlds) on 2026-09-27. FINDING, not a
+// fix: the rates below are NOT independent draws per world. Every world samples
+// the decal noise lattice at the same alignment (a shared origin constant in
+// SurfaceDecals), so changing only that constant moves all three rates far
+// beyond binomial noise (64 worlds: mid-woody 59-89%, lush-woody 80-100%, clump
+// 56-77%). With a per-world origin (a true distribution), clump measured 44-69%
+// and lush-woody 80-86% across five hash salts — below their bars every time.
+// The pass/fail here is therefore a property of one lattice alignment; the
+// decal feature needs its own tuning pass. See ROADMAP / memory.
+const GENOME_SEEDS = [0xC0FFEE, 0xBADF00D, 0x5EED, 0x1CE, 0xD1CE, 0xFACADE, 0xBEEF5, 0x7A57E];
 
 interface SweepRow {
   gridSeed: number; genomeSeed: number;
