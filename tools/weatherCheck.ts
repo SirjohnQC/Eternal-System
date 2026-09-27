@@ -357,5 +357,30 @@ console.log('\n  PHYSICS');
   check('stable over hours, every type', fails.length === 0, fails.join('; ') || `${TYPES.length} types x ${QUICK ? 2 : 6} seeds x ${LONG} steps`);
 }
 
+// ─── 3. Anomalies ─────────────────────────────────────────────────────────────
+console.log('\n  ANOMALIES');
+{
+  const TWO_HOURS = 7200 / WX_DT;
+  const counts: number[] = [];
+  let deterministic = true;
+  for (const seed of SEEDS.slice(0, 3)) {
+    const c = buildClimate(input(generatePlanetGrid('ocean', seed * 7777, null, null), 'ocean', seed));
+    const a = new WeatherSim(c), b = new WeatherSim(c);
+    const kindsA: string[] = [], kindsB: string[] = [];
+    for (let n = 0; n < TWO_HOURS; n++) {
+      a.step(WX_DT); b.step(WX_DT);
+      if (a.anomaly && a.anomaly.until - a.time > 29.9) kindsA.push(`${a.anomaly.kind}@${a.anomaly.i},${a.anomaly.j}`);
+      if (b.anomaly && b.anomaly.until - b.time > 29.9) kindsB.push(`${b.anomaly.kind}@${b.anomaly.i},${b.anomaly.j}`);
+    }
+    counts.push(a.anomalyCount);
+    if (kindsA.join('|') !== kindsB.join('|')) deterministic = false;
+  }
+  check('anomalies: 12-24 per two hours', counts.every(n => n >= 12 && n <= 24), counts.join(', '));
+  check('anomalies are deterministic', deterministic, '');
+  const off = new WeatherSim(buildClimate(input(generatePlanetGrid('ocean', 7777, null, null), 'ocean', 1)), { anomalies: true });
+  for (let n = 0; n < TWO_HOURS; n++) off.step(WX_DT);
+  check('  control: ablated schedule fires none', off.anomalyCount === 0, `${off.anomalyCount}`);
+}
+
 console.log(failed === 0 ? '\n  all weather checks passed\n' : `\n  ${failed} weather check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);
