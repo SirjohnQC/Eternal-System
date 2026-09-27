@@ -68,13 +68,29 @@ const P_SPEED = [62, 54, 14, 20];
 const P_LEN = [3, 3, 1, 1];
 const P_RGBA = [150, 190, 232, 0.55, 190, 222, 105, 0.6, 240, 250, 255, 0.8, 64, 56, 54, 0.75];
 const PMAX = 320, FMAX = 8;
+/** Steps of fall simulated when a painter first comes up (snow takes ~8). */
+const PRIME_STEPS = 8;
 const RAIN_SPAWN = 1.0;
 /**
- * Per sampled storm pixel per step. Was 0.02: storm seeds ran 35-146 flashes
- * per 5 s, most at the FMAX cap, a 7-29 Hz strobe (photosensitivity hazard
- * above 3 Hz). 0.0015 measures 0.1-13.3 per 5 s over 8 storm seeds.
+ * Per sampled storm pixel per step, and at most one new bolt per onStep.
+ * Flashes spawn only in onStep (4 Hz) and live 0.09 s, so flicker is <= 4 Hz;
+ * without the cap, 0.02 put several simultaneous bolts up each step (35-146
+ * flash spawns per 5 s over 8 storm seeds). With the cap: 3.8-19.9 per 5 s
+ * over storm seeds 1/7/42/99/123/256.
  */
-const FLASH_CHANCE = 0.0015;
+const FLASH_CHANCE = 0.02;
+/**
+ * Density gain per sky kind (indexed by WK: CLEAR, CUMULUS, STORM, ICE, ASH,
+ * SMOG). R4a: ICE and ASH were 1 and read blank. Thin polar haze and soot never
+ * reached the first step (median drawn: ice 1.2%, carbon 1.1%).
+ */
+const KIND_GAIN = [1, 1, 1, 2, 2, 1];
+/**
+ * Extra density gain per unit of climate.nebula, which is 0.35 on crystal worlds
+ * and 1 inside a nebula. Nebula is capped at NEBULA_GAIN_CAP first, so a
+ * nebula world gets crystal's lift rather than four times the cloud.
+ */
+const NEBULA_GAIN = 3, NEBULA_GAIN_CAP = 0.35;
 const DT_W = 128, DT_H = 64, DT_PER_CELL = 2;
 
 /** Alpha is passed to over() in 1/A_ONE units, as an integer. */
@@ -190,6 +206,8 @@ export class WeatherPainter {
     this.primed = true;
     const lut = this.lut, cell = this.cell, rs = this.rs;
     const stride = 29;
+    // At most one new bolt per step: several at once read as a strobe.
+    let flashed = false;
     this.roll();
     for (let n = Math.floor((rs[0] >>> 0) * INV32 * stride); n < lut.count; n += stride) {
       const k = cell[n];
@@ -204,7 +222,7 @@ export class WeatherPainter {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < 0.05) this.spawn(n, 3);
       }
-      if (this.fCount < FMAX && (kindAt(sim, k) === WK.STORM || sim.ash[k] > 0.7)) {
+      if (!flashed && this.fCount < FMAX && (kindAt(sim, k) === WK.STORM || sim.ash[k] > 0.7)) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < FLASH_CHANCE) {
           const f = this.fCount++;
@@ -213,6 +231,7 @@ export class WeatherPainter {
           this.roll();
           this.fSeed[f] = rs[0] >>> 0;
           this.flashesTotal++;
+          flashed = true;
         }
       }
     }
@@ -220,16 +239,23 @@ export class WeatherPainter {
 
   /** Once per frame, before painting: interpolate the field, move particles. */
   prepare(sim: WeatherSim, t: number, dt: number): void {
+    const neb = this.climate.nebula, nebGain = 1 + NEBULA_GAIN * (neb < NEBULA_GAIN_CAP ? neb : NEBULA_GAIN_CAP);
     if (!this.primed) {
       // The painter came up over a sky that is already raining (a new world
-      // view, a warm sim): spawn one step's worth and spread it down the fall,
-      // so the first frame shows rain in progress rather than an empty sky.
-      const first = this.pCount;
-      this.onStep(sim);
-      for (let q = first; q < this.pCount; q++) {
-        this.roll();
-        this.pY[q] += (this.pGround[q] - this.pY[q]) * (this.rs[0] >>> 0) * INV32;
+      // view, a warm sim): spawn PRIME_STEPS steps' worth, each batch aged by
+      // its step, so the first frame shows the steady fall rather than an empty
+      // sky. Particles aged past their ground die in the loop below. Bolts from
+      // the prime are dropped: eight at once on frame 0 would be a flashbulb.
+      const f0 = this.fCount, ft0 = this.flashesTotal;
+      for (let b = 0; b < PRIME_STEPS; b++) {
+        const first = this.pCount;
+        this.onStep(sim);
+        for (let q = first; q < this.pCount; q++) {
+          this.roll();
+          this.pY[q] += P_SPEED[this.pKind[q]] * WX_DT * (b + (this.rs[0] >>> 0) * INV32);
+        }
       }
+      this.fCount = f0; this.flashesTotal = ft0;
     }
     const simTime = sim.time - (1 - t) * WX_DT;
     for (let k = 0; k < WX_N; k++) {
@@ -237,8 +263,9 @@ export class WeatherPainter {
       const a = sim.prevAsh[k] + (sim.ash[k] - sim.prevAsh[k]) * t;
       const s = sim.prevSmog[k] + (sim.smog[k] - sim.prevSmog[k]) * t;
       this.cloudNow[k] = c;
-      this.dens[k] = c * 1.5 + a * 0.9 + s * 0.8;
-      this.kind[k] = kindAt(sim, k);
+      const kind = kindAt(sim, k);
+      this.kind[k] = kind;
+      this.dens[k] = (c * 1.5 + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
     }
     if (sim !== this.bandSim || sim.climate !== this.bandClimate) {
       for (let j = 0; j < WX_NY; j++) this.bandU[j] = sim.baseWindU(j);

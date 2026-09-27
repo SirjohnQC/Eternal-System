@@ -425,37 +425,58 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
 {
   // Terrain stays readable.
   const TYPES = ['ocean', 'rocky', 'ice', 'lava', 'desert', 'storm', 'toxic', 'carbon', 'crystal'];
-  const shareOf = (type: string, seed: number, opts: object = {}) => {
+  /** Mean share of face pixels at mid-or-dense cloud, and at any cloud step. */
+  const coverOf = (type: string, seed: number, opts: object = {}) => {
     const p = painterFor(type, seed, {}, opts);
-    let sum = 0;
-    for (let f = 0; f < 60; f++) { p.frame(); sum += p.painter.stats.midOrDense / p.lut.count; }
-    return sum / 60;
+    let sum = 0, drawn = 0;
+    for (let f = 0; f < 60; f++) {
+      p.frame();
+      sum += p.painter.stats.midOrDense / p.lut.count;
+      drawn += p.painter.stats.drawn / p.lut.count;
+    }
+    return { mid: sum / 60, drawn: drawn / 60 };
   };
+  const shareOf = (type: string, seed: number, opts: object = {}) => coverOf(type, seed, opts).mid;
   let readable = true, detail = '';
+  // R4a: the sky must not read blank either. Desert is exempt (R2i: no
+  // evaporating water, its sky is legitimately near-empty).
+  let notBlank = true, blankDetail = '';
   for (const t of TYPES) {
-    const shares = SEEDS.slice(0, QUICK ? 3 : 12).map(s => shareOf(t, s)).sort((a, b) => a - b);
+    const covers = SEEDS.slice(0, QUICK ? 3 : 12).map(s => coverOf(t, s));
+    const shares = covers.map(c => c.mid).sort((a, b) => a - b);
+    const drawn = covers.map(c => c.drawn).sort((a, b) => a - b);
     const med = shares[Math.floor(shares.length / 2)], max = shares[shares.length - 1];
+    const dMed = drawn[Math.floor(drawn.length / 2)];
     detail += `${t} ${(med * 100).toFixed(0)}/${(max * 100).toFixed(0)}% `;
+    blankDetail += `${t} ${(dMed * 100).toFixed(1)}% `;
     if (med > 0.55 || max > 0.70) readable = false;
     if (t === 'ocean' && med < 0.10) readable = false;
+    if (t !== 'desert' && dMed < 0.05) notBlank = false;
   }
   check('terrain stays readable (median/max)', readable, detail);
+  check('sky is not blank (median drawn >= 5%)', notBlank, blankDetail);
   const blanket = shareOf('lava', 7, { ashFloor: 0.12 });
   check('  control: lava ash floor hides the face', blanket > 0.70, `${(blanket * 100).toFixed(0)}% > 70%`);
 
   // Storm reads in a still frame.
-  const stormStats = (over: Partial<ClimateInput>) => {
-    const p = painterFor('storm', 7, over);
+  const stormStats = (over: Partial<ClimateInput>, seed: number) => {
+    const p = painterFor('storm', seed, over);
     let minLive = Infinity; const f0 = p.painter.flashesTotal;
     for (let f = 0; f < 60 * 60; f++) { p.frame(); if (f % 30 === 0) minLive = Math.min(minLive, p.painter.pCount); }
     return { minLive, flashesPer5s: (p.painter.flashesTotal - f0) / 12 };
   };
   // -0.6 cancels the storm type's +0.6 base, so stormPressure clamps to 0.
-  const st = stormStats({}), stCalm = stormStats({ extinctionPressure: -0.6 });
-  check('storm world: rain always visible', st.minLive >= 40, `min live particles ${st.minLive} >= 40`);
-  check('storm world: lightning every few seconds', st.flashesPer5s >= 1, `${st.flashesPer5s.toFixed(1)} per 5 s`);
-  check('  control: calm storm world has no lightning', !(stCalm.flashesPer5s >= 1 && stCalm.minLive >= 40),
-    `${stCalm.flashesPer5s.toFixed(1)} per 5 s, min live ${stCalm.minLive}`);
+  // R4b: every storm seed, not one.
+  const STORM_SEEDS = SEEDS.slice(0, QUICK ? 3 : 6);
+  const st = STORM_SEEDS.map(s => stormStats({}, s));
+  const stCalm = STORM_SEEDS.map(s => stormStats({ extinctionPressure: -0.6 }, s));
+  check('storm world: rain always visible', st.every(r => r.minLive >= 40),
+    `min live per seed ${st.map(r => r.minLive).join(', ')} >= 40`);
+  check('storm world: lightning every few seconds', st.every(r => r.flashesPer5s >= 1),
+    `per 5 s per seed ${st.map(r => r.flashesPer5s.toFixed(1)).join(', ')}`);
+  // The control must fail on EVERY seed: no calm world may read as a storm.
+  check('  control: calm storm world has no lightning', stCalm.every(r => !(r.flashesPer5s >= 1 && r.minLive >= 40)),
+    stCalm.map(r => `${r.flashesPer5s.toFixed(1)}/5s live ${r.minLive}`).join(', '));
 
   // Rain lands on the ground; painter stays in bounds.
   const p = painterFor('storm', 42);
