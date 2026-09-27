@@ -319,16 +319,20 @@ console.log('\n  PHYSICS');
   // Stable over hours.
   const TYPES = ['ocean', 'rocky', 'ice', 'lava', 'desert', 'storm', 'toxic', 'carbon', 'crystal'];
   const LONG = QUICK ? 4000 : 20000;
+  // Dry by TYPE, not by measured water: mean(c.water) reads ~0 on most ice and
+  // all crystal seeds, which would let a vapour-starved ice world (the failure
+  // R2h fixed) pass on the weaker 'alive' bar.
+  const DRY_TYPES = new Set(['desert', 'lava', 'carbon']);
   const fails: string[] = [];
   for (const t of TYPES) for (const seed of SEEDS.slice(0, QUICK ? 2 : 6)) {
     const c = buildClimate(input(generatePlanetGrid(t, seed * 7777, null, null), t, seed));
-    // The floor catches a dead sim, not a dry world: a world with evaporating
-    // water must keep >= 2% cover; one without (desert, lava, ...) must only
+    // The floor catches a dead sim, not a dry world: a water-bearing type
+    // must keep >= 2% cover; a dry type (DRY_TYPES) must only
     // stay alive, max cloud (+ash, the same aerosol the cover counts) > 0.05 at
     // every sample. (0.1 sat inside desert's live range, 0.090-0.145; a dead
     // sim reads 0.) The 75% cap, the NaN/range check and the frozen check
     // apply to every type.
-    const wet = mean(c.water) >= 0.01;
+    const wet = !DRY_TYPES.has(t);
     const s = new WeatherSim(c); s.warmUp(WX_WARMUP);
     let snap = s.cloud.slice(), frozen = 0, samples = 0, failed1 = false;
     for (let n = 1; n <= LONG; n++) {
