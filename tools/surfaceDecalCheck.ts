@@ -160,6 +160,19 @@ const opts: any = {
 
 const dead = planSurfaceDecals(opts, 0.04, 0xC0FFEE);
 const mid  = planSurfaceDecals(opts, 0.45, 0xC0FFEE);
+
+// Decals belong to the WORLD, not to the screen: moving the body (a window
+// resize, the atmosphere pass's framing) must not re-roll them. They used to
+// sample noise and hashes at absolute screen px/py, so a 34 px shift of the
+// body re-rolled every grove.
+{
+  const shifted = planSurfaceDecals({ ...opts, cyTop: opts.cyTop + 34 }, 0.45, 0xC0FFEE);
+  const key = (d: any, dy: number) => `${d.x},${d.y - dy},${d.kind}`;
+  const a1 = mid.map(d => key(d, 0)).sort().join('|');
+  const b1 = shifted.map(d => key(d, 34)).sort().join('|');
+  check('decals do not re-roll when the body moves', a1 === b1,
+        `${mid.length} vs ${shifted.length} decals, identical=${a1 === b1}`);
+}
 const lush = planSurfaceDecals(opts, 0.92, 0xC0FFEE);
 console.log(`\n  sites: dead ${dead.length}  mid ${mid.length}  lush ${lush.length}\n`);
 

@@ -129,6 +129,13 @@ export function genomeFromLegacy(type: string, seed: number): PlanetGenome {
 // ─── The roll ─────────────────────────────────────────────────────────────────
 
 /**
+ * The thickest shell the roll can produce, in native px. The home-world
+ * layout reserves room for this much air above the dome, so it must stay the
+ * roll's real upper bound.
+ */
+export const ATMO_THICKNESS_MAX_PX = 13;
+
+/**
  * Roll a genome. Type and DNA bias the result; the seed decides it.
  *
  * Phase 1 rolls only the atmosphere channel. Terrain archetype, materials,
@@ -147,7 +154,7 @@ export function rollPlanetGenome(
       // so a lava world is still recognisably lava-coloured.
       hue: (base.hue + rand(seed, 101, -22, 22) + 360) % 360,
       saturation: Math.max(0, Math.min(1, base.saturation * rand(seed, 103, 0.82, 1.18))),
-      thicknessPx: Math.round(rand(seed, 107, 6, 13)),
+      thicknessPx: Math.round(rand(seed, 107, 6, ATMO_THICKNESS_MAX_PX)),
       // Density is deliberately unclamped because it is a multiplier (0.85–1.15×),
       // not a normalised value.
       density: base.density * rand(seed, 109, 0.85, 1.15),

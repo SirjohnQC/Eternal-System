@@ -34,7 +34,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
-import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGenome';
+import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import {
   planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
 } from './SurfaceDecals';
@@ -133,6 +133,28 @@ export const ATMO_RATIO = 0.25;
 export const ATMO_MIN_PX = 14;
 export const CY_TOP_DROP = 0.67; // cyTop = cyBody - 0.67 * R
 
+/** Clear space kept above the dome's air and below the keel, in px. */
+export const FRAME_MARGIN_PX = 4;
+
+/**
+ * How far past the dome the ozone band can reach for a shell of `thicknessPx`:
+ * the wobble swings it by up to ±55% (WOBBLE_AMP), plus 2px of feather.
+ * paintAtmosphere and the layout both read this, so they cannot disagree.
+ */
+export function ozoneFadeMax(thicknessPx: number): number {
+  return thicknessPx * 1.6 + 2;
+}
+
+/** Deepest the hanging keel can drop below the front wall. */
+export function crustDepthOf(rx: number): number {
+  return Math.max(8, Math.round(rx * 0.88));
+}
+
+/** Lowest pixel the crust can reach: rim front + wall + ridge (±2.5) + keel. */
+export function keelBottomOf(g: Pick<HabitableGeom, 'cyTop' | 'rx' | 'ry' | 'wall'>): number {
+  return g.cyTop + g.ry + g.wall + 3 + crustDepthOf(g.rx);
+}
+
 export interface HabitableGeom {
   cx: number;
   cyBody: number;
@@ -149,20 +171,44 @@ export function bobOf(_elapsed: number, _R: number): number {
   return 0;
 }
 
+/**
+ * Lay the body out for one R. Pushes the whole body down if the dome's air
+ * would leave the top of the canvas — there is empty space under the keel in
+ * every normal view, so moving is cheaper than shrinking.
+ */
+function layoutAt(VW: number, VH: number, R: number): HabitableGeom {
+  const T = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
+  const cx = Math.round(VW / 2);
+  const rx = Math.max(8, Math.round(R * BOARD_WIDTH));
+  const ry = Math.max(6, Math.round(rx * BOARD_SQUASH));
+  const wall = Math.max(4, Math.round(rx * WALL_RATIO));
+  let cyBody = Math.round(VH * 0.56);
+  let cyTop = Math.round(cyBody - CY_TOP_DROP * R);
+  const domeTop = cyTop - rx - Math.ceil(ozoneFadeMax(ATMO_THICKNESS_MAX_PX));
+  if (domeTop < FRAME_MARGIN_PX) {
+    const shift = FRAME_MARGIN_PX - domeTop;
+    cyBody += shift;
+    cyTop += shift;
+  }
+  return { cx, cyBody, cyTop, R, rx, ry, wall, T };
+}
+
 export function habitableGeom(VW: number, VH: number): HabitableGeom {
   let R = Math.round(Math.min(VW * 0.50, VH * 0.36));
   const T = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
   // If the shell would clip, shrink R — never shrink T below ATMO_MIN_PX.
   const maxR = Math.floor(Math.min(VW, VH) / 2 - T - 4);
   if (R > maxR) R = Math.max(16, maxR);
-  const T2 = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
-  const cx = Math.round(VW / 2);
-  const cyBody = Math.round(VH * 0.56);
-  const rx = Math.max(8, Math.round(R * BOARD_WIDTH));
-  const ry = Math.max(6, Math.round(rx * BOARD_SQUASH));
-  const cyTop = Math.round(cyBody - CY_TOP_DROP * R);
-  const wall = Math.max(4, Math.round(rx * WALL_RATIO));
-  return { cx, cyBody, cyTop, R, rx, ry, wall, T: T2 };
+  // The dome must fit above and the keel below. Moving the body down (in
+  // layoutAt) spends the space under the keel; only when that runs out does
+  // the body shrink. Each step down in R raises the dome top and the keel
+  // bottom together, so this terminates well before the 16px floor in any
+  // real view — the floor is only a guard for degenerate sizes.
+  for (;;) {
+    const g = layoutAt(VW, VH, R);
+    if (R <= 16 || keelBottomOf(g) <= VH - FRAME_MARGIN_PX) return g;
+    R -= 1;
+  }
 }
 
 export interface CutawayGeom {
@@ -1048,7 +1094,7 @@ export function paintCutawayCrust(
   const rimX1 = Math.min(VW - 1, Math.floor(cx + rx));
   const cols = rimX1 - rimX0 + 1;
   const wallBottom = new Float32Array(cols);
-  const crustH = Math.max(8, Math.round(rx * 0.88));
+  const crustH = crustDepthOf(rx);
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
   for (let x = rimX0; x <= rimX1; x++) {
@@ -1338,7 +1384,7 @@ export function paintAtmosphere(
   const wobbleSeed = (chan.hue * 7.13 + chan.thicknessPx * 31.7);
   const p1c = Math.cos(wobbleSeed),       p1s = Math.sin(wobbleSeed);
   const p2c = Math.cos(wobbleSeed * 1.7), p2s = Math.sin(wobbleSeed * 1.7);
-  const fadeMax = fade * 1.6 + 2;
+  const fadeMax = ozoneFadeMax(fade);
   const aerialReach = rx * 0.35;
   const y0 = Math.max(0, Math.floor(cy - rx - fadeMax));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));

@@ -142,6 +142,9 @@ export function planSurfaceDecals(
     const dy = (py - cyTop) / ry;
     for (let px = cx - rx; px <= cx + rx; px += 2) {
       const dx = (px - cx) / rx;
+      // Body-relative sampling position: decals belong to the world, so moving the
+      // body on screen (resize, framing) must not re-roll them. Offset keeps it positive.
+      const bx = px - cx + 4096, by = py - cyTop + 4096;
       const r = Math.hypot(dx, dy);
       if (r > 0.94) continue;                      // keep decals off the coast rim
       const gp = opts.discToGrid(dx, dy);
@@ -176,10 +179,10 @@ export function planSurfaceDecals(
       // made scrub carpet wherever trees thinned, the opposite of the intent.
       // Wavelengths scale with the body (see REF_RX) so a grove covers the same
       // FRACTION of the world at every render size.
-      const grove = vnoise(px, py, 52 * sc, seed) * 0.7
-                  + vnoise(px, py, 19 * sc, seed ^ 0x9e) * 0.3;
-      const sward = vnoise(px, py, 88 * sc, seed ^ 0x5bd1) * 0.75
-                  + vnoise(px, py, 27 * sc, seed ^ 0x31af) * 0.25;
+      const grove = vnoise(bx, by, 52 * sc, seed) * 0.7
+                  + vnoise(bx, by, 19 * sc, seed ^ 0x9e) * 0.3;
+      const sward = vnoise(bx, by, 88 * sc, seed ^ 0x5bd1) * 0.75
+                  + vnoise(bx, by, 27 * sc, seed ^ 0x31af) * 0.25;
       const canopy = biome === 'forest' || biome === 'jungle';
       if (grove < (canopy ? 0.58 : 0.74) - life * 0.04 && sward < 0.80 - life * 0.04) continue;
 
@@ -191,21 +194,21 @@ export function planSurfaceDecals(
         // fall back to rock when the life floor isn't met. (Falling back to
         // rock rather than skipping the site keeps mountain terrain reading
         // as rocky at every lushness; only the vegetated kind is gated.)
-        const wantsScrub = hash1(px * 31 + py, seed) >= 0.62;
+        const wantsScrub = hash1(bx * 31 + by, seed) >= 0.62;
         kind = (wantsScrub && life >= 0.12) ? 'scrub' : 'rock';
       } else if (fert <= 0) {
         continue;                                        // dead ground, not rock
       } else if (biome === 'desert') {
         if (fert < 0.22) continue;                  // dry land stays visibly dry
-        kind = hash1(px * 7 + py, seed) < 0.45 ? 'cactus' : 'rock';
+        kind = hash1(bx * 7 + by, seed) < 0.45 ? 'cactus' : 'rock';
       } else if (biome === 'tundra') {
-        kind = hash1(px + py * 17, seed) < 0.30 ? 'conifer' : 'scrub';
+        kind = hash1(bx + by * 17, seed) < 0.30 ? 'conifer' : 'scrub';
       } else if (biome === 'jungle') {
         kind = 'broadleaf';
       } else if (biome === 'forest') {
-        kind = hash1(px * 13 + py * 5, seed) < 0.62 ? 'conifer' : 'broadleaf';
+        kind = hash1(bx * 13 + by * 5, seed) < 0.62 ? 'conifer' : 'broadleaf';
       } else {
-        kind = hash1(px * 5 + py * 11, seed) < 0.18 + life * 0.22 ? 'conifer' : 'scrub';
+        kind = hash1(bx * 5 + by * 11, seed) < 0.18 + life * 0.22 ? 'conifer' : 'scrub';
       }
       // Bound by what this WORLD can carry, not just what this cell says.
       // NOTE: rewriting `kind` here also changes the TOTAL site count, not just
@@ -215,7 +218,7 @@ export function planSurfaceDecals(
       // branch is never a pure re-labelling.
       if (bound !== 'forest' && (kind === 'conifer' || kind === 'broadleaf')) {
         kind = bound === 'arid'
-          ? (hash1(px * 17 + py * 3, seed) < 0.40 ? 'cactus' : 'scrub')
+          ? (hash1(bx * 17 + by * 3, seed) < 0.40 ? 'cactus' : 'scrub')
           : 'scrub';
       }
 
@@ -231,7 +234,7 @@ export function planSurfaceDecals(
       cand.push({
         x: px, y: py - lift, kind, scale: 0.75 + (1 - r) * 0.45,
         row: gp.row, col: gp.col,
-        w: life * (woody ? grove : sward) * (0.6 + hash1(px * 977 + py * 31, seed) * 0.8),
+        w: life * (woody ? grove : sward) * (0.6 + hash1(bx * 977 + by * 31, seed) * 0.8),
       });
     }
   }
@@ -244,7 +247,9 @@ export function planSurfaceDecals(
   const sites: DecalSite[] = [];
   for (const c of cand) {
     if (sites.length >= budget) break;
-    const key = ((c.x / bucket) | 0) * 4096 + ((c.y / bucket) | 0);
+    // Body-relative buckets, like the sampling above: moving the body must
+    // not move the bucket grid under the decals.
+    const key = (((c.x - cx + 4096) / bucket) | 0) * 4096 + (((c.y - cyTop + 4096) / bucket) | 0);
     if (taken.has(key)) continue;
     taken.add(key);
     sites.push({ x: c.x, y: c.y, kind: c.kind, scale: c.scale, row: c.row, col: c.col });

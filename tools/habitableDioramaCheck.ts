@@ -233,6 +233,53 @@ check('pancake overhangs crest', farRim < crest,
 check('bob is disabled', bobOf(Math.PI / 1.4, g480.R) === 0,
       `bob=${bobOf(Math.PI / 1.4, g480.R)}`);
 
+// ─── The dome and keel are on canvas ──────────────────────────────────────────
+//
+// habitableGeom used to reserve room for T above the body, not for the dome,
+// whose top sits at cyTop - rx - fadeMax. With R at its 0.36*VH cap the dome
+// top landed at about -0.01*VH before the fade band was even counted.
+// Measured on real paint, not on the formula: atmosphere at the THICKEST air
+// the roll can produce, crust painted into a canvas taller than the view so a
+// keel that overhangs the bottom is seen rather than clipped away.
+{
+  const { ATMO_THICKNESS_MAX_PX } = await import('../src/simulation/PlanetGenome');
+  const thickAir = { hue: 210, saturation: 0.8, thicknessPx: ATMO_THICKNESS_MAX_PX, density: 1.6 };
+  const SIZES: Array<[number, number]> = [[1200, 800], [1174, 650], [390, 844], [480, 320]];
+  for (const [W, H] of SIZES) {
+    const gm = habitableGeom(W, H);
+    const img = { width: W, height: H, data: new Uint8ClampedArray(W * H * 4) };
+    paintAtmosphere(img as any, gm, 'ocean', 0, 0, 1, undefined, thickAir);
+    let domeTop = -1;
+    for (let y = 0; y < H && domeTop < 0; y++) {
+      for (let x = 0; x < W; x++) {
+        if (img.data[(y * W + x) * 4 + 3] > 2) { domeTop = y; break; }
+      }
+    }
+    check(`dome on canvas ${W}x${H}`, domeTop >= 2, `top alpha row ${domeTop}`);
+
+    let keelBottom = -1;
+    for (const seed of [1, 0xbeef, 77]) {
+      const tall = makeCanvas(W, H + 400);
+      const tctx = tall.getContext() as RecordingCtx;
+      paintCutawayCrust(tctx as unknown as CanvasRenderingContext2D, {
+        w: W, h: H + 400, cx: gm.cx, cyTop: gm.cyTop, rx: gm.rx, ry: gm.ry,
+        wall: gm.wall, seed, planetType: 'ocean',
+      } as any);
+      for (let y = H + 399; y >= 0; y--) {
+        let hit = false;
+        for (let x = 0; x < W; x++) if (tctx.mask[y * W + x]) { hit = true; break; }
+        if (hit) { keelBottom = Math.max(keelBottom, y); break; }
+      }
+    }
+    check(`keel on canvas ${W}x${H}`, keelBottom >= 0 && keelBottom <= H - 3,
+          `keel bottom ${keelBottom} of ${H}`);
+  }
+  // Review focus: the shrink loop must terminate on a tiny view.
+  const tiny = habitableGeom(120, 90);
+  check('tiny view still lays out', tiny.R >= 16 && Number.isFinite(tiny.cyTop),
+        `R=${tiny.R} cyTop=${tiny.cyTop}`);
+}
+
 console.log('');
 
 const faceArea = Math.PI * rx * ry;
