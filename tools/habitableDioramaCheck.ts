@@ -343,7 +343,17 @@ for (const planetType of ['ocean', 'rocky'] as const) {
       const dy = y - cy;
       const r = Math.hypot(dx, dy) / geom.rx;
       const face = (dx / geom.rx) ** 2 + (dy / geom.ry) ** 2;
-      if (y > cy && face > 1) frontBleed++;
+      // Below the rim line, air may only sit in the limb band that wraps the
+      // rim (atmosphere pass, 2026-09-26): within the legacy shell's reach
+      // (8px thickness x 1.6 wobble + 2) of the rim ellipse, tapering to
+      // nothing at the front. Anything beyond that is air spilling down the drum.
+      if (y > cy && face > 1) {
+        const s2 = dy / geom.ry;
+        const taper = s2 >= 1 ? 0 : 1 - s2 * s2;
+        const distPx = Math.hypot(dx, dy);
+        const outsideRim = distPx * (1 - 1 / Math.sqrt(face));
+        if (outsideRim >= (8 * 1.6 + 2) * taper) frontBleed++;
+      }
       if (r > 1.18) farBleed++;
       else if (r > 1 && y <= cy) fringe++;
       else if (face > 1) {
@@ -359,7 +369,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('tabletop air is thinner than the limb', faceMax < limbMax * 0.55,
         `face ${faceMax} vs limb ${limbMax}`);
   check('ozone limb feathers into space', fringe > 40, `${fringe} fringe px`);
-  check('atmo does not bleed past the cake front', frontBleed === 0, `${frontBleed} front`);
+  check('atmo below the rim stays in the limb band', frontBleed === 0, `${frontBleed} front`);
   check('atmo does not bleed far from the dome', farBleed === 0, `${farBleed} far`);
   check('atmo stays above crust', atmoBelow === 0, `${atmoBelow} below pancake`);
   // Colour is measured on RENDERED pixels, not on a palette struct. These two

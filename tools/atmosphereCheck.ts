@@ -101,6 +101,7 @@ const dh = (a: number, b: number) => {
 interface Metrics {
   seam: number; chroma: number; hueDrift: number;
   thickSpread: number; aerialFall: number; nearAlpha: number;
+  shelf: number; bandPixels: number; bandStep: number;
 }
 
 function measure(type: string, air?: Air): Metrics {
@@ -122,6 +123,11 @@ function measure(type: string, air?: Air): Metrics {
     const x = Math.round(geom.cx + geom.rx * frac);
     for (let y = geom.cyTop - geom.ry - 14; y < geom.cyTop + geom.ry + 14; y++) {
       if (y < 1 || y >= H - 1) continue;
+      // The seam is the face/dome crossfade. The rim band below the rim line
+      // and outside the face has its own fade metric (bandStep); its tail
+      // (14, 6, 0) would read here as a ratio on near-zero alphas.
+      const fxs = (x - geom.cx) / geom.rx, fyb = (y + 1 - geom.cyTop) / geom.ry;
+      if (y + 1 > geom.cyTop && fxs * fxs + fyb * fyb > 1) continue;
       const a = A(x, y), b = A(x, y + 1);
       if (a > 2 && b > 2) seam = Math.max(seam, Math.max(a, b) / Math.min(a, b));
     }
@@ -184,7 +190,59 @@ function measure(type: string, air?: Air): Metrics {
   const nearAlpha = at(0.20);
   const aerialFall = nearAlpha / Math.max(0.5, at(0.35));
 
-  return { seam, chroma, hueDrift, thickSpread, aerialFall, nearAlpha };
+  // 5. shelf — does the limb stop dead on the rim line? Just outside the dome
+  //    radius on each side, alpha ON the rim row vs the mean of the three rows
+  //    below. Pre-fix the rows below are 0 (ozoneAt cut `y > cy && face > 1`),
+  //    so the ratio is the full rim alpha. Only samples with a visible rim
+  //    count, or a ratio of two near-zero alphas decides the verdict.
+  const cy = geom.cyTop;
+  let shelf = 1;
+  for (const side of [-1, 1]) {
+    for (let k = 1; k <= 4; k++) {
+      const x = Math.round(geom.cx + side * (geom.rx + k));
+      const top = A(x, cy);
+      if (top < 6) continue;
+      const below = (A(x, cy + 1) + A(x, cy + 2) + A(x, cy + 3)) / 3;
+      shelf = Math.max(shelf, top / Math.max(1, below));
+    }
+  }
+
+  // 6. bandPixels — does the band continue round the rim at all? Visible
+  //    pixels outside the face ellipse and below the rim line.
+  // 7. bandStep — and when it ends, does it fade or cut? The largest absolute
+  //    alpha drop between vertically adjacent band pixels, RELATIVE to the
+  //    sharpest outward drop on the dome's own limb above the rim line. "No
+  //    sharper than the edge it continues." A ratio of adjacent alphas was
+  //    tried first and is the wrong dimension: at the tail of any linear fade
+  //    the last visible pixel over a zero is an unbounded ratio, so a soft
+  //    4-px fade (107, 74, 42, 15, 0) scored 15.
+  let domeStep = 1;
+  for (let y = cy - 30; y < cy; y++) {
+    for (const side of [-1, 1]) {
+      for (let k = -6; k <= 20; k++) {
+        const x = Math.round(geom.cx + side * (geom.rx + k));
+        const xn = x + side;
+        if (x < 0 || xn < 0 || x >= W || xn >= W) continue;
+        domeStep = Math.max(domeStep, A(x, y) - A(xn, y));
+      }
+    }
+  }
+  let bandPixels = 0, maxDrop = 0;
+  const outside = (x: number, y: number) => {
+    const fx = (x - geom.cx) / geom.rx, fy = (y - cy) / geom.ry;
+    return fx * fx + fy * fy > 1;
+  };
+  for (let y = cy + 1; y <= cy + geom.ry && y < H - 1; y++) {
+    for (let x = geom.cx - geom.rx - 40; x <= geom.cx + geom.rx + 40; x++) {
+      if (x < 0 || x >= W || !outside(x, y)) continue;
+      const a = A(x, y);
+      if (a >= 3) bandPixels++;
+      maxDrop = Math.max(maxDrop, a - A(x, y + 1));
+    }
+  }
+  const bandStep = maxDrop / domeStep;
+
+  return { seam, chroma, hueDrift, thickSpread, aerialFall, nearAlpha, shelf, bandPixels, bandStep };
 }
 
 // Calibrated from both populations, measured per type. Pre-fix renderer
@@ -199,6 +257,10 @@ function measure(type: string, air?: Air): Metrics {
 // the tightest passing type, so neither verdict rides on a sampling accident.
 const WANT_SEAM = 2.0, WANT_CHROMA = 40, MAX_HUE_DRIFT = 45;
 const WANT_THICK = 1.2, WANT_FALL = 1.6, MIN_NEAR_ALPHA = 4;
+// Shelf: same ratio scale as `seam`. bandPixels: at least ry visible pixels
+// across both sides — a band a few px wide running a fraction of the rim.
+// bandStep: the band's sharpest drop may be at most 1.25x the dome limb's own.
+const WANT_SHELF = 2.0, MIN_BAND_PIXELS = geom.ry, MAX_BAND_STEP = 1.25;
 
 let failed = 0;
 const assert = (type: string, n: string, ok: boolean, d: string) => {
@@ -219,6 +281,8 @@ for (const type of TYPES) {
   console.log(`    equiv-width spread p90-p10 (px)        : ${m.thickSpread.toFixed(2)}`);
   console.log(`    aerial falloff (a@20% / a@35%)         : ${m.aerialFall.toFixed(2)}`
     + `  (a@20% = ${m.nearAlpha.toFixed(1)})`);
+  console.log(`    shelf (rim row / rows below)           : ${m.shelf.toFixed(2)}`);
+  console.log(`    band below rim: pixels / step vs limb  : ${m.bandPixels} / ${m.bandStep.toFixed(2)}`);
   if (CONTROL) {
     assert(type, 'seam is visible', m.seam > WANT_SEAM,
       `${m.seam.toFixed(2)} > ${WANT_SEAM}`);
@@ -228,6 +292,13 @@ for (const type of TYPES) {
       `${m.thickSpread.toFixed(2)} <= ${WANT_THICK}`);
     assert(type, 'inner falloff is flat', m.aerialFall < WANT_FALL,
       `${m.aerialFall.toFixed(2)} < ${WANT_FALL}`);
+    // The shelf control passes on renderers before the atmosphere-pass commit;
+    // the four above only on 898a4c6 and earlier. Run it against the matching
+    // old renderer via `git show <sha>:src/rendering/HabitableCutawayEngine.ts`.
+    assert(type, 'limb stops on the rim line', m.shelf > WANT_SHELF,
+      `${m.shelf.toFixed(2)} > ${WANT_SHELF}`);
+    assert(type, 'no band below the rim', m.bandPixels < MIN_BAND_PIXELS,
+      `${m.bandPixels} < ${MIN_BAND_PIXELS}`);
   } else {
     assert(type, 'no visible seam', m.seam <= WANT_SEAM,
       `${m.seam.toFixed(2)} <= ${WANT_SEAM}`);
@@ -242,6 +313,12 @@ for (const type of TYPES) {
     // A ratio computed on near-zero alphas would pass on nothing at all.
     assert(type, 'the veil is actually there', m.nearAlpha >= MIN_NEAR_ALPHA,
       `a@20% ${m.nearAlpha.toFixed(1)} >= ${MIN_NEAR_ALPHA}`);
+    assert(type, 'no shelf at the rim line', m.shelf <= WANT_SHELF,
+      `${m.shelf.toFixed(2)} <= ${WANT_SHELF}`);
+    assert(type, 'limb continues round the rim', m.bandPixels >= MIN_BAND_PIXELS,
+      `${m.bandPixels} >= ${MIN_BAND_PIXELS}`);
+    assert(type, 'band fades out, no new cut', m.bandStep <= MAX_BAND_STEP,
+      `${m.bandStep.toFixed(2)} <= ${MAX_BAND_STEP}`);
   }
 }
 
@@ -260,6 +337,9 @@ if (ROLLED) {
       if (m.thickSpread <= WANT_THICK) bad.push(`thick ${m.thickSpread.toFixed(2)}`);
       if (m.aerialFall < WANT_FALL) bad.push(`fall ${m.aerialFall.toFixed(2)}`);
       if (m.nearAlpha < MIN_NEAR_ALPHA) bad.push(`near ${m.nearAlpha.toFixed(1)}`);
+      if (m.shelf > WANT_SHELF) bad.push(`shelf ${m.shelf.toFixed(2)}`);
+      if (m.bandPixels < MIN_BAND_PIXELS) bad.push(`band ${m.bandPixels}`);
+      if (m.bandStep > MAX_BAND_STEP) bad.push(`bandStep ${m.bandStep.toFixed(2)}`);
       if (bad.length) { failed++; console.log(`  FAIL  [${type} seed#${i}] ${bad.join(', ')}  (thickness ${air.thicknessPx}px, density ${air.density.toFixed(2)})`); }
     }
     const span = (k: keyof Metrics) => {

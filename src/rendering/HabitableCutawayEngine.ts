@@ -1189,6 +1189,19 @@ export function cakeAirLimit(rx: number, ry: number): number {
 }
 
 /** True when (x,y) sits in the ozone half-dome (sky cap + thin tabletop air). */
+/**
+ * How much of the air band survives below the rim line, 1 on the line and 0 at
+ * the front of the rim. The line of sight through the air shortens toward the
+ * front, and the band must reach zero before the pancake-only cut below
+ * (`y > cy + ry`) or that cut becomes a new shelf.
+ */
+function rimTaper(ddy: number, ry: number): number {
+  // 1 - s², not (1 - s)²: flat at the rim line so the band leaves the dome at
+  // full width (no shelf), zero at the front (no cut against the pancake line).
+  const s = ddy / ry;
+  return s >= 1 ? 0 : 1 - s * s;
+}
+
 function ozoneAt(
   x: number, y: number, geom: HabitableGeom, bob: number,
   extraPx = 0,
@@ -1209,8 +1222,36 @@ function ozoneAt(
   if (y > cy + ry) return null;
   const dyr = ddy / ry;
   const face = dx * dx + dyr * dyr;
+  // Below the rim line, outside the face: not dome air. paintAtmosphere asks
+  // rimBandAt for those pixels. Kept out of here on purpose — this function
+  // runs for every pixel of the dome's box each frame, and growing it cost
+  // ~10% of the frame (measured 2026-09-26) for a band of ~1% of the pixels.
   if (y > cy && face > 1) return null;
   return { dome: (distPx / rx) * (distPx / rx), face, dx, distPx };
+}
+
+/**
+ * The limb band wrapping round the front of the rim, below the rim line and
+ * outside the face. Measured from the rim ELLIPSE, not the dome circle — on the
+ * rim line the two coincide (the ellipse's extreme x is rx), so the band
+ * continues the dome's limb with no step. This used to be a hard cut, which
+ * drew a horizontal shelf where the glow ended at rim height.
+ * Returns the pixel distance outside the rim ellipse, or -1 if not in the band.
+ */
+function rimBandAt(
+  x: number, y: number, geom: HabitableGeom, bob: number, extraPx: number,
+): number {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + bob;
+  const ddx = x - cx, ddy = y - cy;
+  if (ddy <= 0 || ddy > ry) return -1;           // pancake-only: none under the tabletop
+  const dx = ddx / rx, dyr = ddy / ry;
+  const face = dx * dx + dyr * dyr;
+  if (face <= 1) return -1;
+  const distPx = Math.sqrt(ddx * ddx + ddy * ddy);
+  if (distPx > rx + extraPx) return -1;
+  const rimPx = distPx * (1 - 1 / Math.sqrt(face));
+  return rimPx < extraPx * rimTaper(ddy, ry) ? rimPx : -1;
 }
 
 /** HSL → RGB, h in degrees, s and l in 0–1. */
@@ -1305,16 +1346,30 @@ export function paintAtmosphere(
   const x1 = Math.min(w - 1, Math.ceil(cx + rx + fadeMax));
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      const hit = ozoneAt(x, y, geom, bob, fadeMax);
-      if (!hit) continue;
+      let hit = ozoneAt(x, y, geom, bob, fadeMax);
+      let rimPx = 0;
+      if (!hit) {
+        if (y <= cy) continue;
+        rimPx = rimBandAt(x, y, geom, bob, fadeMax);
+        if (rimPx < 0) continue;
+        const ddx = x - cx, ddy = y - cy;
+        const dx = ddx / rx, dyr = ddy / ry;
+        const distPx = Math.sqrt(ddx * ddx + ddy * ddy);
+        hit = { dome: (distPx / rx) * (distPx / rx), face: dx * dx + dyr * dyr, dx, distPx };
+      }
       const inv = hit.distPx > 0.0001 ? 1 / hit.distPx : 0;
       const ct = (x - cx) * inv, st = (y - cy) * inv;   // cos t, sin t
       const s2 = 2 * st * ct,    c2 = ct * ct - st * st;
       const s3 = st * (3 - 4 * st * st), c3 = ct * (4 * ct * ct - 3);
       const n = (s2 * p1c + c2 * p1s) * WOBBLE_H2 + (s3 * p2c + c3 * p2s) * WOBBLE_H3;
       const localFade = Math.max(3, fade * (1 + n * WOBBLE_AMP));
-      const beyond = hit.distPx - rx;
-      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / localFade);
+      // Above the rim line the shell is measured from the dome circle; below
+      // it, from the rim ellipse, thinning toward the front (see rimTaper).
+      const below = rimPx > 0;
+      const taper = below ? rimTaper(y - cy, ry) : 1;
+      const beyond = below ? rimPx : hit.distPx - rx;
+      const bandFade = below ? Math.max(0.001, localFade * taper) : localFade;
+      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / bandFade);
       if (edge < 0.02) continue;
       const inside = Math.max(0, rx - hit.distPx);
       const sigmaL = localFade * 1.15;
@@ -1333,7 +1388,17 @@ export function paintAtmosphere(
       const aerial    = inside < aerialReach
         ? Math.pow(1 - inside / aerialReach, 1.7) * 0.16 * lit * intensity * dens
         : 0;
-      const glow      = faceGlow + (domeGlow - faceGlow) * blend + aerial;
+      // The band's whole glow fades with `edge`, not just the limb term: the
+      // unscaled base in domeGlow/faceGlow would otherwise end in a cut under
+      // the rim. It also dims with the taper — a thinner band is fainter air —
+      // or its fade gets steeper as it narrows toward the front. Blended in over
+      // 6 rows so the band meets the dome with no step.
+      // Target is 1 where the band touches the face (edge = 1), so it meets the
+      // face with no seam, and falls with edge — faster where the band is thin.
+      const bandGain  = below
+        ? 1 + (edge * (taper + (1 - taper) * edge) - 1) * Math.min(1, (y - cy) / 6)
+        : 1;
+      const glow      = (faceGlow + (domeGlow - faceGlow) * blend + aerial) * bandGain;
       const a = Math.round(Math.min(255, glow * 255));
       if (a < 3) continue;
       const o = (y * w + x) * 4;
