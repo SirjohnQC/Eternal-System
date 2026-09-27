@@ -357,6 +357,28 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   });
   check('frame reuses live ImageData', frameCtx.createImageDataCalls === imageAllocations,
         `${frameCtx.createImageDataCalls - imageAllocations} new frame allocations`);
+  // Genome reach: the air a host passes must be the air that gets painted.
+  // Hand-built channels 180 degrees apart, so the verdict depends on the
+  // wiring, not on how far two particular seeds happen to drift.
+  if (planetType === 'ocean') {
+    const limbOf = (air: unknown) => {
+      engine.frame({
+        g: frameCtx as unknown as CanvasRenderingContext2D,
+        dt: 1 / 60, elapsed: 1.2, bg: makeCanvas(VW, VH),
+        drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+        weatherMix: [], air,
+      } as any);
+      const img = (engine as any).atmoImage as { width: number; data: Uint8ClampedArray };
+      const gm = engine.geom;
+      const o = (gm.cyTop * img.width + gm.cx + gm.rx - 2) * 4;
+      return [img.data[o], img.data[o + 1], img.data[o + 2], img.data[o + 3]];
+    };
+    const a = limbOf({ hue: 210, saturation: 0.8, thicknessPx: 8, density: 1 });
+    const b = limbOf({ hue: 30, saturation: 0.8, thicknessPx: 8, density: 1 });
+    const dist = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    check('frame paints the air it is given', a[3] > 0 && dist >= 40,
+          `limb colour distance ${dist.toFixed(1)}, alpha ${a[3]}`);
+  }
   const bobBeforeSurfaceRebake = engine.bob;
   engine.rebakeSurface();
   check('surface rebake preserves bob', engine.bob === bobBeforeSurfaceRebake,

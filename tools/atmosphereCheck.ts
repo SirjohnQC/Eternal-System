@@ -99,7 +99,7 @@ const dh = (a: number, b: number) => {
 };
 
 interface Metrics {
-  seam: number; chroma: number; hueDrift: number;
+  seam: number; chroma: number; hueDrift: number; litHue: number; familyDrift: number;
   thickSpread: number; aerialFall: number; nearAlpha: number;
   shelf: number; bandPixels: number; bandStep: number;
 }
@@ -145,6 +145,13 @@ function measure(type: string, air?: Air): Metrics {
   // 2b. hue sanity — neither limb may wander out of the planet's colour family.
   const baseHue = (air ?? genomeFromLegacy(type, 0).atmosphere).hue;
   const hueDrift = Math.max(dh(hueOf(litC), baseHue), dh(hueOf(darkC), baseHue));
+  // 2c. family — the same limbs against the TYPE's hue, not the rolled one.
+  //    hueDrift above is measured against this world's own rolled hue, so it
+  //    cannot see the roll itself leaving the type's colour family (a lava
+  //    world rolled to hue 2 rendered salmon-pink and passed everything).
+  const familyHue = genomeFromLegacy(type, 0).atmosphere.hue;
+  const familyDrift = Math.max(dh(hueOf(litC), familyHue), dh(hueOf(darkC), familyHue));
+  const litHue = hueOf(litC);
 
   // 3. thickness — the shell's EQUIVALENT WIDTH past the rim: the alpha profile
   //    along an outward ray, integrated and divided by the alpha at the rim.
@@ -242,7 +249,7 @@ function measure(type: string, air?: Air): Metrics {
   }
   const bandStep = maxDrop / domeStep;
 
-  return { seam, chroma, hueDrift, thickSpread, aerialFall, nearAlpha, shelf, bandPixels, bandStep };
+  return { seam, chroma, hueDrift, litHue, familyDrift, thickSpread, aerialFall, nearAlpha, shelf, bandPixels, bandStep };
 }
 
 // Calibrated from both populations, measured per type. Pre-fix renderer
@@ -260,6 +267,7 @@ const WANT_THICK = 1.2, WANT_FALL = 1.6, MIN_NEAR_ALPHA = 4;
 // Shelf: same ratio scale as `seam`. bandPixels: at least ry visible pixels
 // across both sides — a band a few px wide running a fraction of the rim.
 // bandStep: the band's sharpest drop may be at most 1.25x the dome limb's own.
+const WARM_HUE_MIN = 10;
 const WANT_SHELF = 2.0, MIN_BAND_PIXELS = geom.ry, MAX_BAND_STEP = 1.25;
 
 let failed = 0;
@@ -337,6 +345,11 @@ if (ROLLED) {
       if (m.thickSpread <= WANT_THICK) bad.push(`thick ${m.thickSpread.toFixed(2)}`);
       if (m.aerialFall < WANT_FALL) bad.push(`fall ${m.aerialFall.toFixed(2)}`);
       if (m.nearAlpha < MIN_NEAR_ALPHA) bad.push(`near ${m.nearAlpha.toFixed(1)}`);
+      // Warm air must stay out of pink: the sunlit limb of a lava or desert
+      // world keeps an orange-family hue (the legacy lava limb renders at ~20).
+      if ((type === 'lava' || type === 'desert') && (m.litHue < WARM_HUE_MIN || m.litHue > 60)) {
+        bad.push(`lit hue ${m.litHue.toFixed(1)} outside warm family [${WARM_HUE_MIN}, 60]`);
+      }
       if (m.shelf > WANT_SHELF) bad.push(`shelf ${m.shelf.toFixed(2)}`);
       if (m.bandPixels < MIN_BAND_PIXELS) bad.push(`band ${m.bandPixels}`);
       if (m.bandStep > MAX_BAND_STEP) bad.push(`bandStep ${m.bandStep.toFixed(2)}`);
@@ -346,6 +359,7 @@ if (ROLLED) {
       const v = rows.map(r => r[k] as number).sort((a, b) => a - b);
       return `${v[0].toFixed(2)} / ${v[6].toFixed(2)} / ${v[11].toFixed(2)}`;
     };
+    console.log(`  ${type}  litHue ${span('litHue')}  familyDrift ${span('familyDrift')}`);
     console.log(`  ${type}  min/median/max  seam ${span('seam')}  chroma ${span('chroma')}  hueDrift ${span('hueDrift')}  thick ${span('thickSpread')}  fall ${span('aerialFall')}`);
   }
 }

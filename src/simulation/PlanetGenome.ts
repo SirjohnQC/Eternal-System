@@ -2,10 +2,12 @@
  * PlanetGenome — the single source of per-planet identity.
  *
  * Everything that makes one world look different from another derives from one
- * number. The genome is NEVER derived from `planet.type`: terraforming mutates
- * type (BigBangEngine TERRAFORM_SEQUENCES), and a type-derived genome would
- * silently reroll a world's identity mid-game. Type biases the roll once, at
- * creation, and is recorded as `sourceType` for reference only.
+ * number. The SEED is never derived from `planet.type`: terraforming mutates
+ * type (BigBangEngine TERRAFORM_SEQUENCES), and a type-derived seed would
+ * silently reroll a world's identity mid-game. Type is an input to the roll —
+ * it sets the colour family the seed drifts around — so the air of a
+ * terraformed world follows its new type while keeping its own drift.
+ * `sourceType` records the type a genome was rolled with.
  *
  * Pure module. No DOM, no Canvas, no imports from src/rendering.
  */
@@ -126,6 +128,23 @@ export function genomeFromLegacy(type: string, seed: number): PlanetGenome {
   return { seed, sourceType: type, atmosphere: legacyChannel(type) };
 }
 
+/**
+ * The air to draw for a planet.
+ *
+ * Pass the LIVE type. Type sets the colour family and the seed sets the drift
+ * around it, so a terraformed world's air follows its new type while its
+ * drift — its identity — stays the same. With no usable seed (a dev harness,
+ * or anything that bypassed `loadState`'s backfill) this is the shipped
+ * per-type air, exactly as before genomes reached the screen.
+ */
+export function atmosphereForPlanet(
+  genomeSeed: number | undefined, type: string,
+): AtmosphereChannel {
+  return Number.isFinite(genomeSeed)
+    ? rollPlanetGenome(genomeSeed as number, type, null).atmosphere
+    : legacyChannel(type);
+}
+
 // ─── The roll ─────────────────────────────────────────────────────────────────
 
 /**
@@ -134,6 +153,16 @@ export function genomeFromLegacy(type: string, seed: number): PlanetGenome {
  * roll's real upper bound.
  */
 export const ATMO_THICKNESS_MAX_PX = 13;
+
+/**
+ * Hue drift range per type, degrees; ±22 unless listed. Lava sits at ~16deg,
+ * one short step from the red/magenta boundary: a symmetric roll reached 354deg
+ * and rendered a salmon-PINK dome (measured 2026-09-26, 3 of 12 seeds; the
+ * project's recurring lava-pink failure). Its drift only runs toward orange.
+ */
+const HUE_DRIFT: Record<string, [number, number]> = {
+  lava: [-4, 22],
+};
 
 /**
  * Roll a genome. Type and DNA bias the result; the seed decides it.
@@ -152,7 +181,7 @@ export function rollPlanetGenome(
     atmosphere: {
       // Drift around the type's characteristic hue rather than replacing it,
       // so a lava world is still recognisably lava-coloured.
-      hue: (base.hue + rand(seed, 101, -22, 22) + 360) % 360,
+      hue: (base.hue + rand(seed, 101, HUE_DRIFT[type]?.[0] ?? -22, HUE_DRIFT[type]?.[1] ?? 22) + 360) % 360,
       saturation: Math.max(0, Math.min(1, base.saturation * rand(seed, 103, 0.82, 1.18))),
       thicknessPx: Math.round(rand(seed, 107, 6, ATMO_THICKNESS_MAX_PX)),
       // Density is deliberately unclamped because it is a multiplier (0.85–1.15×),

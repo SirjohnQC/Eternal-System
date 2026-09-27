@@ -1859,6 +1859,8 @@ export interface HabitableFrameInput {
   sunAzimuth?: number;
   /** CSS camera zoom; atmosphere dissolves as this rises. */
   viewZoom?: number;
+  /** This world's air. Omitted: the shipped per-type air. */
+  air?: AtmosphereChannel;
 }
 
 interface Wisp {
@@ -2018,7 +2020,7 @@ export class HabitableCutawayEngine {
       const gasTint = this.planetType === 'gas' && this.gasBands.length
         ? averageBands(this.gasBands)
         : undefined;
-      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint);
+      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air);
       atmoG.putImageData(atmo, 0, 0);
       g.drawImage(this.atmoScratch, 0, 0);
     }

@@ -43,6 +43,7 @@ import {
 } from './HabitableCutawayEngine';
 import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
+import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -473,6 +474,8 @@ export class IsoDioramaRenderer {
   private biosphere:   PlanetBiosphere | null = null;
   private species:     SpeciesGenome[] = [];
   private planet:      Planet | null = null;
+  /** Rolled air, keyed by seed AND type — a terraformed world must re-roll. */
+  private airCache: { key: string; air: AtmosphereChannel } | null = null;
   private planetType:  PlanetType = 'ocean';
   private gasHalo:     RGB = PALETTES.gas.halo;
   private star:        StarBody | null = null;
@@ -619,6 +622,16 @@ export class IsoDioramaRenderer {
   private get cutH(): number { return Math.round(this.rx * 0.13); }
   /** Depth of the rock crust below the cut band. */
   private get crustH(): number { return Math.round(this.rx * 0.88); }
+
+  /** This world's air; see `atmosphereForPlanet`. */
+  private get air(): AtmosphereChannel {
+    const seed = this.planet?.genomeSeed;
+    const key = `${seed}|${this.planetType}`;
+    if (!this.airCache || this.airCache.key !== key) {
+      this.airCache = { key, air: atmosphereForPlanet(seed, this.planetType) };
+    }
+    return this.airCache.air;
+  }
 
   private get planetSeed(): number {
     if (!this.planet) return 9999;
@@ -2483,6 +2496,7 @@ export class IsoDioramaRenderer {
         bg: this.bgLayer,
         sunAzimuth: this.dayAngle,
         viewZoom: this.viewZoom,
+        air: this.air,
         drawFarSpace: (g) => {
           this.drawStarBloom(g, this.elapsed);
           this.drawSiblings(g, this.elapsed);
