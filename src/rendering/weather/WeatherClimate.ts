@@ -22,8 +22,6 @@ export interface WeatherPersonality {
   rowPhase: Float32Array;
   /** Mid-latitude waves around the planet, 4-7. */
   waveNumber: number;
-  /** Wave phase speed, rad/s. */
-  waveSpeed: number;
   /** Offset into the detail-noise texture, in field cells. */
   detailOffset: number;
   /** Seed of the anomaly schedule. */
@@ -74,20 +72,22 @@ export interface ClimateOptions {
 interface TypeClimate {
   tScale: number; tShift: number; moist: number;
   waterEvaporates: boolean; storm: number; soot: number; nebula: number;
+  /** Vapour from bare frozen land (sublimation), independent of lushness. */
+  sublimation: number;
 }
 
 export const TYPE_CLIMATE: Record<string, TypeClimate> = {
-  ocean:   { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0 },
-  rocky:   { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0 },
-  storm:   { tScale: 1.00, tShift: 0.05, moist: 1.2, waterEvaporates: true,  storm: 0.60, soot: 0,    nebula: 0 },
-  toxic:   { tScale: 1.00, tShift: 0.05, moist: 1.0, waterEvaporates: true,  storm: 0.10, soot: 0,    nebula: 0 },
-  ice:     { tScale: 0.45, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0 },
-  desert:  { tScale: 0.80, tShift: 0.25, moist: 0.3, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0 },
+  ocean:   { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
+  rocky:   { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
+  storm:   { tScale: 1.00, tShift: 0.05, moist: 1.2, waterEvaporates: true,  storm: 0.60, soot: 0,    nebula: 0, sublimation: 0 },
+  toxic:   { tScale: 1.00, tShift: 0.05, moist: 1.0, waterEvaporates: true,  storm: 0.10, soot: 0,    nebula: 0, sublimation: 0 },
+  ice:     { tScale: 0.45, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0.12 },
+  desert:  { tScale: 0.80, tShift: 0.25, moist: 0.3, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
   // Magma lakes classify as water biomes. They must not evaporate water.
-  lava:    { tScale: 0.50, tShift: 0.50, moist: 0.1, waterEvaporates: false, storm: 0.10, soot: 0,    nebula: 0 },
-  carbon:  { tScale: 1.00, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0.02, nebula: 0 },
-  crystal: { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0.35 },
-  gas:     { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0 },
+  lava:    { tScale: 0.50, tShift: 0.50, moist: 0.1, waterEvaporates: false, storm: 0.10, soot: 0,    nebula: 0, sublimation: 0 },
+  carbon:  { tScale: 1.00, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0.02, nebula: 0, sublimation: 0 },
+  crystal: { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0.35, sublimation: 0 },
+  gas:     { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
 };
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -117,7 +117,6 @@ export function personalityFor(seed: number): WeatherPersonality {
     bandGain: [0.75 + r() * 0.5, 0.75 + r() * 0.5, 0.75 + r() * 0.5],
     rowPhase,
     waveNumber: 4 + Math.floor(r() * 4),
-    waveSpeed: 0.06 + r() * 0.06,
     detailOffset: r() * WX_NX,
     anomalySeed: Math.floor(r() * 4294967296) >>> 0,
   };
@@ -171,7 +170,8 @@ export function buildClimate(input: ClimateInput, opts: ClimateOptions = {}): Cl
       water[k] = tc.waterEvaporates ? w / per : 0;
       temp[k] = clamp01((t / per) * tc.tScale + tc.tShift);
       elev[k] = e / per;
-      landMoist[k] = land > 0 ? (m / land) * (land / per) * tc.moist * lushGain : 0;
+      landMoist[k] = (land > 0 ? (m / land) * (land / per) * tc.moist * lushGain : 0)
+        + tc.sublimation * (land / per);
       ashEmit[k] = Math.min(1, vents * 0.5) + tc.soot;
       // Settlement DENSITY, not territory: squared, so dense cores emit and
       // thin borders barely do (the preview marks 40k of 65k cells as civ).
