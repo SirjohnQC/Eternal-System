@@ -66,6 +66,12 @@ export class WeatherSim {
   private na = new Float32Array(WX_N);
   private ns = new Float32Array(WX_N);
   private nextAnomaly = 0;
+  /** Per-row constants of step(), rebuilt when the climate object changes. */
+  private rowU = new Float64Array(WX_NY);
+  private rowV = new Float64Array(WX_NY);
+  private rowEnv = new Float64Array(WX_NY);
+  private rowCell = new Float64Array(WX_NY);
+  private rowFor: ClimateSources | null = null;
   private anomalyRng: () => number = Math.random;
 
   constructor(public climate: ClimateSources, readonly ablate: SimAblation = {}) {
@@ -116,20 +122,22 @@ export class WeatherSim {
   }
 
   /**
-   * Rising (+) / sinking (-) air: Hadley/Ferrel cells plus weather systems.
-   * The wave term takes its longitude from the advected coordinate i - u*t,
-   * so weather systems ride the band wind. (A short-wavelength detail term
-   * was removed: its 7-cell wavelength aliased against the trades' ~6.6-cell
-   * travel per 10 s, so tropical cloud read as stationary.)
+   * Row constants: band wind, drift, and the latitude parts of vertical motion.
+   * Rising (+) / sinking (-) air is Hadley/Ferrel cells (cellTerm) plus weather
+   * systems (env x a wave whose longitude is the advected coordinate i - u*t,
+   * so weather systems ride the band wind). A short-wavelength detail term was
+   * removed: its 7-cell wavelength aliased against the trades' ~6.6-cell travel
+   * per 10 s, so tropical cloud read as stationary.
    */
-  private verticalMotion(i: number, j: number): number {
-    if (this.ablate.vertical) return 0;
-    const p = this.climate.personality;
-    const lat = latOf(j), alat = Math.abs(lat);
-    const x = i - this.baseWindU(j) * this.time;
-    const env = Math.max(0, 1 - Math.abs(alat - 0.95) / 0.4);
-    return 0.85 * Math.cos(6 * lat)
-      + 0.9 * env * Math.sin(x * Math.PI * 2 / WX_NX * p.waveNumber + j * 0.35);
+  private buildRows(): void {
+    for (let j = 0; j < WX_NY; j++) {
+      this.rowU[j] = this.baseWindU(j);
+      this.rowV[j] = this.windV(j);
+      const lat = latOf(j), alat = Math.abs(lat);
+      this.rowEnv[j] = Math.max(0, 1 - Math.abs(alat - 0.95) / 0.4);
+      this.rowCell[j] = 0.85 * Math.cos(6 * lat);
+    }
+    this.rowFor = this.climate;
   }
 
   private near(i: number, j: number, r: number): boolean {
@@ -145,42 +153,73 @@ export class WeatherSim {
     const { nv, nc, na, ns } = this;
 
     // Semi-Lagrangian advection: trace back along the wind, sample bilinearly.
+    // windU and sampleField are inlined by hand (same expressions, bit-identical
+    // results): as out-of-line calls in this long loop each returned double
+    // was boxed, ~130 KB of garbage per step. tools/weatherCheck measures the heap.
+    const vap = this.vapour, cl = this.cloud, as = this.ash, sm = this.smog;
+    if (this.rowFor !== c) this.buildRows();
+    const rowU = this.rowU, rowV = this.rowV;
+    const rowPhase = c.personality.rowPhase, an = this.anomaly;
+    const noWind = !!this.ablate.wind;
     for (let j = 0; j < WX_NY; j++) {
-      const v = this.windV(j);
+      const v = rowV[j], base = rowU[j];
+      const flip = an !== null && an.kind === 'reversal' && Math.abs(j - an.j) <= 3;
       for (let i = 0; i < WX_NX; i++) {
-        const x = i - this.windU(i, j) * dt, y = j - v * dt;
+        let u = 0;
+        if (!noWind) {
+          u = base + 0.3 * Math.sin((i - base * this.time) * 0.25 + rowPhase[j]);
+          if (flip) u = -u;
+        }
+        const x = i - u * dt, y = j - v * dt;
         const k = j * WX_NX + i;
-        nv[k] = sampleField(this.vapour, x, y);
-        nc[k] = sampleField(this.cloud, x, y);
-        na[k] = sampleField(this.ash, x, y);
-        ns[k] = sampleField(this.smog, x, y);
+        const i0 = Math.floor(x), j0 = Math.floor(y);
+        const fx = x - i0, fy = y - j0;
+        const a = wrapI(i0), b = wrapI(i0 + 1), r0 = clampJ(j0) * WX_NX, r1 = clampJ(j0 + 1) * WX_NX;
+        nv[k] = vap[r0 + a] * (1 - fx) * (1 - fy) + vap[r0 + b] * fx * (1 - fy)
+              + vap[r1 + a] * (1 - fx) * fy + vap[r1 + b] * fx * fy;
+        nc[k] = cl[r0 + a] * (1 - fx) * (1 - fy) + cl[r0 + b] * fx * (1 - fy)
+              + cl[r1 + a] * (1 - fx) * fy + cl[r1 + b] * fx * fy;
+        na[k] = as[r0 + a] * (1 - fx) * (1 - fy) + as[r0 + b] * fx * (1 - fy)
+              + as[r1 + a] * (1 - fx) * fy + as[r1 + b] * fx * fy;
+        ns[k] = sm[r0 + a] * (1 - fx) * (1 - fy) + sm[r0 + b] * fx * (1 - fy)
+              + sm[r1 + a] * (1 - fx) * fy + sm[r1 + b] * fx * fy;
       }
     }
 
     const pressure = this.ablate.stress ? 0 : c.stormPressure;
+    const waveNumber = c.personality.waveNumber, noVertical = !!this.ablate.vertical;
+    // Clamps in the cell loop are ternaries, not Math.min/max: V8's mid tier
+    // (Maglev) boxes Math.min/max results, ~60 KB of garbage per step whenever
+    // this function is not running TurboFan code. Same values bit for bit.
+    const condense = 2 * dt < 1 ? 2 * dt : 1, clearing = 1 - (0.8 * dt < 1 ? 0.8 * dt : 1);
     for (let j = 0; j < WX_NY; j++) {
+      const baseU = rowU[j], env = this.rowEnv[j], cellTerm = this.rowCell[j];
       for (let i = 0; i < WX_NX; i++) {
         const k = j * WX_NX + i;
         const T = c.temp[k];
         nv[k] += dt * 0.06 * (c.water[k] * (0.3 + 0.7 * T) + 0.25 * c.landMoist[k]);
 
         // Orographic lift: air blowing up the elevation gradient.
-        const up = this.baseWindU(j) >= 0 ? 1 : -1;
+        const up = baseU >= 0 ? 1 : -1;
         const slope = (c.elev[j * WX_NX + wrapI(i + up)] - c.elev[j * WX_NX + wrapI(i - up)]) * 0.5;
-        const oro = this.ablate.uplift ? 0 : Math.max(0, slope) * 30;
+        const oro = this.ablate.uplift ? 0 : slope > 0 ? slope * 30 : 0;
 
         let conv = T * (0.4 + c.water[k] * 0.6) * 0.5 * (1 + 2.5 * pressure);
         if (this.anomaly?.kind === 'supercell' && this.near(i, j, 2)) conv *= 3;
         this.convection[k] = conv;
 
-        const lift = Math.min(0.8, Math.max(-0.6,
-          0.8 * this.verticalMotion(i, j) + oro + conv * 0.3));
-        const cap = Math.max(0.05, (0.18 + 0.7 * T) * (1 - lift));
+        const vm = noVertical ? 0
+          : cellTerm + 0.9 * env * Math.sin((i - baseU * this.time) * Math.PI * 2 / WX_NX * waveNumber + j * 0.35);
+        const rawLift = 0.8 * vm + oro + conv * 0.3;
+        const lift = rawLift > 0.8 ? 0.8 : rawLift < -0.6 ? -0.6 : rawLift;
+        const rawCap = (0.18 + 0.7 * T) * (1 - lift);
+        const cap = rawCap > 0.05 ? rawCap : 0.05;
         if (nv[k] > cap) {
-          const d = (nv[k] - cap) * Math.min(1, 2 * dt);
+          const d = (nv[k] - cap) * condense;
           nv[k] -= d; nc[k] += d;
         } else {
-          const d = Math.min(nc[k], (cap - nv[k]) * CLOUD_EVAP * dt);
+          const evap = (cap - nv[k]) * CLOUD_EVAP * dt;
+          const d = evap < nc[k] ? evap : nc[k];
           nc[k] -= d; nv[k] += d;
         }
 
@@ -188,13 +227,15 @@ export class WeatherSim {
         if (nc[k] > 0.42) { p = (nc[k] - 0.42) * 0.35 * dt; nc[k] -= p; }
         this.precip[k] = p / dt;
         this.snow[k] = !this.ablate.cold && T < COLD ? 1 : 0;
-        if (this.anomaly?.kind === 'clearing' && this.near(i, j, 3)) nc[k] *= 1 - Math.min(1, 0.8 * dt);
+        if (this.anomaly?.kind === 'clearing' && this.near(i, j, 3)) nc[k] *= clearing;
 
-        nv[k] = Math.min(2, nv[k] * (1 - 0.01 * dt));
-        na[k] = Math.min(1.2, na[k] * (1 - 0.05 * dt) + c.ashEmit[k] * 0.5 * dt);
-        ns[k] = Math.min(1, Math.max(0,
-          ns[k] * (1 - 0.02 * dt - this.precip[k] * 0.8 * dt) + c.smogEmit[k] * 0.003 * dt));
-        nc[k] = Math.min(1.4, nc[k]);
+        const v2 = nv[k] * (1 - 0.01 * dt);
+        nv[k] = v2 < 2 ? v2 : 2;
+        const a2 = na[k] * (1 - 0.05 * dt) + c.ashEmit[k] * 0.5 * dt;
+        na[k] = a2 < 1.2 ? a2 : 1.2;
+        const s2 = ns[k] * (1 - 0.02 * dt - this.precip[k] * 0.8 * dt) + c.smogEmit[k] * 0.003 * dt;
+        ns[k] = s2 < 0 ? 0 : s2 > 1 ? 1 : s2;
+        if (nc[k] > 1.4) nc[k] = 1.4;
       }
     }
 

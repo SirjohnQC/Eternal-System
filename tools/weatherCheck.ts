@@ -18,6 +18,9 @@ import type { ClimateSources } from '../src/rendering/weather/WeatherClimate';
 import {
   WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
+import {
+  WeatherPainter, buildWeatherLut, type WeatherLut,
+} from '../src/rendering/weather/WeatherPainter';
 
 const QUICK = process.argv.includes('--quick');
 let failed = 0;
@@ -380,6 +383,122 @@ console.log('\n  ANOMALIES');
   const off = new WeatherSim(buildClimate(input(generatePlanetGrid('ocean', 7777, null, null), 'ocean', 1)), { anomalies: true });
   for (let n = 0; n < TWO_HOURS; n++) off.step(WX_DT);
   check('  control: ablated schedule fires none', off.anomalyCount === 0, `${off.anomalyCount}`);
+}
+
+// ─── 4. Painter ───────────────────────────────────────────────────────────────
+console.log('\n  PAINTER');
+// A 480x260 canvas like the real renderer's, face rx 150 / ry 78, and an
+// azimuthal projection centred on the equator (as habitableDioramaCheck does).
+const PW = 480, PH = 260;
+const pgeom = { cx: 240, cyTop: 140, rx: 150, ry: 78 };
+const project = (dx: number, dy: number) => {
+  const r = Math.hypot(dx, dy);
+  if (r > 1) return null;
+  const c = r * (Math.PI / 2), sinC = Math.sin(c), cosC = Math.cos(c);
+  const ny = -dy;
+  const lat = r < 1e-6 ? 0 : Math.asin(Math.max(-1, Math.min(1, (ny * sinC) / r)));
+  const lon = Math.atan2(dx * sinC, r * cosC);
+  const v = 0.5 - lat / Math.PI, u = ((lon / (Math.PI * 2)) % 1 + 1) % 1;
+  return { row: Math.max(0, Math.min(GRID_SIZE - 1, Math.round(v * (GRID_SIZE - 1)))),
+           col: Math.min(GRID_SIZE - 1, Math.floor(u * GRID_SIZE)) };
+};
+function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}, opts: object = {}) {
+  const grid = generatePlanetGrid(type, seed * 7777, null, null);
+  const lift = (row: number, col: number) => grid[row][col].elevation >= SEA_LEVEL ? Math.round((grid[row][col].elevation - SEA_LEVEL) * 30) : 0;
+  const lut = buildWeatherLut(pgeom, project, (row, col) => lift(row, col));
+  const c = buildClimate(input(grid, type, seed, over), opts);
+  const sim = new WeatherSim(c); sim.warmUp(WX_WARMUP);
+  const painter = new WeatherPainter(lut, c, 24, seed);
+  const img = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
+  const shadow = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
+  let acc = 0;
+  const frame = (dt = 1 / 60) => {
+    acc += dt;
+    while (acc >= WX_DT) { acc -= WX_DT; sim.step(WX_DT); painter.onStep(sim); }
+    painter.prepare(sim, acc / WX_DT, dt);
+    img.data.fill(0); shadow.data.fill(0);
+    painter.paintShadows(shadow, 0.6, 1);
+    painter.paintClouds(img, 0.6, 1);
+  };
+  return { lut, c, sim, painter, img, shadow, frame };
+}
+{
+  // Terrain stays readable.
+  const TYPES = ['ocean', 'rocky', 'ice', 'lava', 'desert', 'storm', 'toxic', 'carbon', 'crystal'];
+  const shareOf = (type: string, seed: number, opts: object = {}) => {
+    const p = painterFor(type, seed, {}, opts);
+    let sum = 0;
+    for (let f = 0; f < 60; f++) { p.frame(); sum += p.painter.stats.midOrDense / p.lut.count; }
+    return sum / 60;
+  };
+  let readable = true, detail = '';
+  for (const t of TYPES) {
+    const shares = SEEDS.slice(0, QUICK ? 3 : 12).map(s => shareOf(t, s)).sort((a, b) => a - b);
+    const med = shares[Math.floor(shares.length / 2)], max = shares[shares.length - 1];
+    detail += `${t} ${(med * 100).toFixed(0)}/${(max * 100).toFixed(0)}% `;
+    if (med > 0.55 || max > 0.70) readable = false;
+    if (t === 'ocean' && med < 0.10) readable = false;
+  }
+  check('terrain stays readable (median/max)', readable, detail);
+  const blanket = shareOf('lava', 7, { ashFloor: 0.12 });
+  check('  control: lava ash floor hides the face', blanket > 0.70, `${(blanket * 100).toFixed(0)}% > 70%`);
+
+  // Storm reads in a still frame.
+  const stormStats = (over: Partial<ClimateInput>) => {
+    const p = painterFor('storm', 7, over);
+    let minLive = Infinity; const f0 = p.painter.flashesTotal;
+    for (let f = 0; f < 60 * 60; f++) { p.frame(); if (f % 30 === 0) minLive = Math.min(minLive, p.painter.pCount); }
+    return { minLive, flashesPer5s: (p.painter.flashesTotal - f0) / 12 };
+  };
+  // -0.6 cancels the storm type's +0.6 base, so stormPressure clamps to 0.
+  const st = stormStats({}), stCalm = stormStats({ extinctionPressure: -0.6 });
+  check('storm world: rain always visible', st.minLive >= 40, `min live particles ${st.minLive} >= 40`);
+  check('storm world: lightning every few seconds', st.flashesPer5s >= 1, `${st.flashesPer5s.toFixed(1)} per 5 s`);
+  check('  control: calm storm world has no lightning', !(stCalm.flashesPer5s >= 1 && stCalm.minLive >= 40),
+    `${stCalm.flashesPer5s.toFixed(1)} per 5 s, min live ${stCalm.minLive}`);
+
+  // Rain lands on the ground; painter stays in bounds.
+  const p = painterFor('storm', 42);
+  let offGround = 0, outOfBounds = 0;
+  const allowed = new Uint8Array(PW * PH);
+  for (let n = 0; n < p.lut.count; n++) {
+    const x = p.lut.px[n];
+    const yTop = p.lut.py[n] - 24 - 4, yBot = Math.max(p.lut.py[n], p.lut.ground[n]) + 1;
+    for (let xx = x - 3; xx <= x + 3; xx++) for (let y = yTop; y <= yBot; y++) {
+      if (xx >= 0 && y >= 0 && xx < PW && y < PH) allowed[y * PW + xx] = 1;
+    }
+  }
+  for (let f = 0; f < 600; f++) {
+    p.frame();
+    for (let q = 0; q < p.painter.pCount; q++) {
+      if (p.painter.pY[q] > p.painter.pGround[q] || p.painter.pGround[q] !== p.lut.ground[p.painter.pSpawn[q]]) offGround++;
+    }
+    for (let k = 0; k < PW * PH; k++) {
+      if ((p.img.data[k * 4 + 3] || p.shadow.data[k * 4 + 3]) && !allowed[k]) outOfBounds++;
+    }
+  }
+  check('rain lands on the ground under its cloud', offGround === 0, `${offGround} violations`);
+  check('painter stays on the face + cloud band', outOfBounds === 0, `${outOfBounds} stray pixels`);
+
+  // No per-frame allocation.
+  const gcFn = (globalThis as any).gc as (() => void) | undefined;
+  if (!gcFn) {
+    check('no per-frame allocation', false, 'run with node --expose-gc');
+  } else {
+    const q = painterFor('ocean', 7);
+    for (let f = 0; f < 100; f++) q.frame();
+    gcFn(); const h0 = process.memoryUsage().heapUsed;
+    for (let f = 0; f < 1000; f++) q.frame();
+    const grew = process.memoryUsage().heapUsed - h0;
+    check('no per-frame allocation', grew < 64 * 1024, `heap +${(grew / 1024).toFixed(1)} KB over 1000 frames`);
+  }
+
+  // Headless cost (informational — the gate is measured in the preview, Task 6).
+  const b = painterFor('ocean', 7);
+  const times: number[] = [];
+  for (let f = 0; f < 200; f++) { const t0 = performance.now(); b.frame(); times.push(performance.now() - t0); }
+  times.sort((x, y) => x - y);
+  console.log(`  info  headless frame (sim amortised + paint) median ${times[100].toFixed(2)} ms`);
 }
 
 console.log(failed === 0 ? '\n  all weather checks passed\n' : `\n  ${failed} weather check(s) FAILED\n`);
