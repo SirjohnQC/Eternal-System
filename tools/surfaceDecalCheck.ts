@@ -160,6 +160,19 @@ const opts: any = {
 
 const dead = planSurfaceDecals(opts, 0.04, 0xC0FFEE);
 const mid  = planSurfaceDecals(opts, 0.45, 0xC0FFEE);
+
+// Decals belong to the WORLD, not to the screen: moving the body (a window
+// resize, the atmosphere pass's framing) must not re-roll them. They used to
+// sample noise and hashes at absolute screen px/py, so a 34 px shift of the
+// body re-rolled every grove.
+{
+  const shifted = planSurfaceDecals({ ...opts, cyTop: opts.cyTop + 34 }, 0.45, 0xC0FFEE);
+  const key = (d: any, dy: number) => `${d.x},${d.y - dy},${d.kind}`;
+  const a1 = mid.map(d => key(d, 0)).sort().join('|');
+  const b1 = shifted.map(d => key(d, 34)).sort().join('|');
+  check('decals do not re-roll when the body moves', a1 === b1,
+        `${mid.length} vs ${shifted.length} decals, identical=${a1 === b1}`);
+}
 const lush = planSurfaceDecals(opts, 0.92, 0xC0FFEE);
 console.log(`\n  sites: dead ${dead.length}  mid ${mid.length}  lush ${lush.length}\n`);
 
@@ -590,7 +603,18 @@ check('a lava world grows nothing but rock',
 // the check tell the truth. Where the measured behaviour is weaker than the
 // feature's stated intent, that is recorded as a finding, not tuned away.
 const GRID_SEEDS = [7777, 1234, 4242, 90210, 31337, 5150, 8675309, 2024];
-const GENOME_SEEDS = [0xC0FFEE, 0xBADF00D, 0x5EED];
+// Widened 3 -> 8 genome seeds (24 -> 64 worlds) on 2026-09-27. FINDING, not a
+// fix: the rates below are NOT independent draws per world. Every world samples
+// the decal noise lattice at the same alignment (a shared origin constant in
+// SurfaceDecals), so changing only that constant moves all three rates far
+// beyond binomial noise (64 worlds: mid-woody 59-89%, lush-woody 80-100%, clump
+// 56-77%). With a per-world origin (a true distribution), clump measured 44-69%
+// and lush-woody 80-86% across five hash salts — below their bars every time.
+// The pass/fail here is therefore a property of one lattice alignment; the
+// decal feature needs its own tuning pass. KNOWN FINDING: 'most worlds clump'
+// stays RED until the decal tuning pass in ROADMAP (KNOWN BACKLOG) lands — do
+// not lower CLUMP_RATE to turn it green.
+const GENOME_SEEDS = [0xC0FFEE, 0xBADF00D, 0x5EED, 0x1CE, 0xD1CE, 0xFACADE, 0xBEEF5, 0x7A57E];
 
 interface SweepRow {
   gridSeed: number; genomeSeed: number;

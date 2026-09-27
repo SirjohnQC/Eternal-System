@@ -5,7 +5,7 @@
  *   node_modules/.bin/esbuild tools/genomeCheck.ts --bundle --platform=node \
  *     --format=esm --outfile=/tmp/genomeCheck.mjs && node /tmp/genomeCheck.mjs
  */
-const { rollPlanetGenome, genomeFromLegacy, genomeSeedFor } =
+const { rollPlanetGenome, genomeFromLegacy, genomeSeedFor, atmosphereForPlanet } =
   await import('../src/simulation/PlanetGenome');
 
 let failed = 0;
@@ -186,6 +186,25 @@ engine.loadState(snap3);
 check('loadState leaves an existing genomeSeed alone',
   engine.stars[0].planets[keepIdx].genomeSeed === SENTINEL,
   `got ${engine.stars[0].planets[keepIdx].genomeSeed}`);
+
+// 5. atmosphereForPlanet — the air the renderer draws.
+{
+  const legacyLava = JSON.stringify(genomeFromLegacy('lava', 0).atmosphere);
+  check('no seed -> shipped per-type air',
+    JSON.stringify(atmosphereForPlanet(undefined, 'lava')) === legacyLava);
+  check('NaN seed -> shipped per-type air',
+    JSON.stringify(atmosphereForPlanet(NaN, 'lava')) === legacyLava);
+  check('seeded air is the rolled air',
+    JSON.stringify(atmosphereForPlanet(5, 'ocean')) ===
+    JSON.stringify(rollPlanetGenome(5, 'ocean', null).atmosphere));
+  check('two worlds of one type differ',
+    JSON.stringify(atmosphereForPlanet(1, 'ocean')) !==
+    JSON.stringify(atmosphereForPlanet(2, 'ocean')));
+  // Terraforming: same world, new type — the air follows the type.
+  const ocean = atmosphereForPlanet(42, 'ocean'), lava = atmosphereForPlanet(42, 'lava');
+  const dHue = Math.min(Math.abs(ocean.hue - lava.hue), 360 - Math.abs(ocean.hue - lava.hue));
+  check('air follows a terraformed type', dHue > 60, `hue ${ocean.hue.toFixed(0)} vs ${lava.hue.toFixed(0)}`);
+}
 
 console.log(failed === 0 ? '\nAll genome checks passed.' : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

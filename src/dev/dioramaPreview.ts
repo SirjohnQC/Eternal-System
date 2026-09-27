@@ -28,6 +28,7 @@ function makePlanet(): Planet {
     eccentricity: 0, periapsisAngle: 0,
     radius: 6, type, hasLife: true, biosphere: 0.8,
     color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`,
+    genomeSeed: seed,
     moons: [
       { name: 'I-a', radius: 1.6, orbitalRadius: 14, orbitalAngle: 0.6,
         orbitalSpeed: 0.09, color: '#d6ecf8', kind: 'ice',

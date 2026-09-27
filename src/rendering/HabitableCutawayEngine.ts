@@ -34,7 +34,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
-import { genomeFromLegacy, type AtmosphereChannel } from '../simulation/PlanetGenome';
+import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import {
   planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
 } from './SurfaceDecals';
@@ -133,6 +133,28 @@ export const ATMO_RATIO = 0.25;
 export const ATMO_MIN_PX = 14;
 export const CY_TOP_DROP = 0.67; // cyTop = cyBody - 0.67 * R
 
+/** Clear space kept above the dome's air and below the keel, in px. */
+export const FRAME_MARGIN_PX = 4;
+
+/**
+ * How far past the dome the ozone band can reach for a shell of `thicknessPx`:
+ * the wobble swings it by up to ±55% (WOBBLE_AMP), plus 2px of feather.
+ * paintAtmosphere and the layout both read this, so they cannot disagree.
+ */
+export function ozoneFadeMax(thicknessPx: number): number {
+  return thicknessPx * 1.6 + 2;
+}
+
+/** Deepest the hanging keel can drop below the front wall. */
+export function crustDepthOf(rx: number): number {
+  return Math.max(8, Math.round(rx * 0.88));
+}
+
+/** Lowest pixel the crust can reach: rim front + wall + ridge (±2.5) + keel. */
+export function keelBottomOf(g: Pick<HabitableGeom, 'cyTop' | 'rx' | 'ry' | 'wall'>): number {
+  return g.cyTop + g.ry + g.wall + 3 + crustDepthOf(g.rx);
+}
+
 export interface HabitableGeom {
   cx: number;
   cyBody: number;
@@ -149,20 +171,44 @@ export function bobOf(_elapsed: number, _R: number): number {
   return 0;
 }
 
+/**
+ * Lay the body out for one R. Pushes the whole body down if the dome's air
+ * would leave the top of the canvas — there is empty space under the keel in
+ * every normal view, so moving is cheaper than shrinking.
+ */
+function layoutAt(VW: number, VH: number, R: number): HabitableGeom {
+  const T = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
+  const cx = Math.round(VW / 2);
+  const rx = Math.max(8, Math.round(R * BOARD_WIDTH));
+  const ry = Math.max(6, Math.round(rx * BOARD_SQUASH));
+  const wall = Math.max(4, Math.round(rx * WALL_RATIO));
+  let cyBody = Math.round(VH * 0.56);
+  let cyTop = Math.round(cyBody - CY_TOP_DROP * R);
+  const domeTop = cyTop - rx - Math.ceil(ozoneFadeMax(ATMO_THICKNESS_MAX_PX));
+  if (domeTop < FRAME_MARGIN_PX) {
+    const shift = FRAME_MARGIN_PX - domeTop;
+    cyBody += shift;
+    cyTop += shift;
+  }
+  return { cx, cyBody, cyTop, R, rx, ry, wall, T };
+}
+
 export function habitableGeom(VW: number, VH: number): HabitableGeom {
   let R = Math.round(Math.min(VW * 0.50, VH * 0.36));
   const T = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
   // If the shell would clip, shrink R — never shrink T below ATMO_MIN_PX.
   const maxR = Math.floor(Math.min(VW, VH) / 2 - T - 4);
   if (R > maxR) R = Math.max(16, maxR);
-  const T2 = Math.max(ATMO_MIN_PX, Math.round(R * ATMO_RATIO));
-  const cx = Math.round(VW / 2);
-  const cyBody = Math.round(VH * 0.56);
-  const rx = Math.max(8, Math.round(R * BOARD_WIDTH));
-  const ry = Math.max(6, Math.round(rx * BOARD_SQUASH));
-  const cyTop = Math.round(cyBody - CY_TOP_DROP * R);
-  const wall = Math.max(4, Math.round(rx * WALL_RATIO));
-  return { cx, cyBody, cyTop, R, rx, ry, wall, T: T2 };
+  // The dome must fit above and the keel below. Moving the body down (in
+  // layoutAt) spends the space under the keel; only when that runs out does
+  // the body shrink. Each step down in R raises the dome top and the keel
+  // bottom together, so this terminates well before the 16px floor in any
+  // real view — the floor is only a guard for degenerate sizes.
+  for (;;) {
+    const g = layoutAt(VW, VH, R);
+    if (R <= 16 || keelBottomOf(g) <= VH - FRAME_MARGIN_PX) return g;
+    R -= 1;
+  }
 }
 
 export interface CutawayGeom {
@@ -1048,7 +1094,7 @@ export function paintCutawayCrust(
   const rimX1 = Math.min(VW - 1, Math.floor(cx + rx));
   const cols = rimX1 - rimX0 + 1;
   const wallBottom = new Float32Array(cols);
-  const crustH = Math.max(8, Math.round(rx * 0.88));
+  const crustH = crustDepthOf(rx);
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
   for (let x = rimX0; x <= rimX1; x++) {
@@ -1189,6 +1235,19 @@ export function cakeAirLimit(rx: number, ry: number): number {
 }
 
 /** True when (x,y) sits in the ozone half-dome (sky cap + thin tabletop air). */
+/**
+ * How much of the air band survives below the rim line, 1 on the line and 0 at
+ * the front of the rim. The line of sight through the air shortens toward the
+ * front, and the band must reach zero before the pancake-only cut below
+ * (`y > cy + ry`) or that cut becomes a new shelf.
+ */
+function rimTaper(ddy: number, ry: number): number {
+  // 1 - s², not (1 - s)²: flat at the rim line so the band leaves the dome at
+  // full width (no shelf), zero at the front (no cut against the pancake line).
+  const s = ddy / ry;
+  return s >= 1 ? 0 : 1 - s * s;
+}
+
 function ozoneAt(
   x: number, y: number, geom: HabitableGeom, bob: number,
   extraPx = 0,
@@ -1209,8 +1268,36 @@ function ozoneAt(
   if (y > cy + ry) return null;
   const dyr = ddy / ry;
   const face = dx * dx + dyr * dyr;
+  // Below the rim line, outside the face: not dome air. paintAtmosphere asks
+  // rimBandAt for those pixels. Kept out of here on purpose — this function
+  // runs for every pixel of the dome's box each frame, and growing it cost
+  // ~10% of the frame (measured 2026-09-26) for a band of ~1% of the pixels.
   if (y > cy && face > 1) return null;
   return { dome: (distPx / rx) * (distPx / rx), face, dx, distPx };
+}
+
+/**
+ * The limb band wrapping round the front of the rim, below the rim line and
+ * outside the face. Measured from the rim ELLIPSE, not the dome circle — on the
+ * rim line the two coincide (the ellipse's extreme x is rx), so the band
+ * continues the dome's limb with no step. This used to be a hard cut, which
+ * drew a horizontal shelf where the glow ended at rim height.
+ * Returns the pixel distance outside the rim ellipse, or -1 if not in the band.
+ */
+function rimBandAt(
+  x: number, y: number, geom: HabitableGeom, bob: number, extraPx: number,
+): number {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + bob;
+  const ddx = x - cx, ddy = y - cy;
+  if (ddy <= 0 || ddy > ry) return -1;           // pancake-only: none under the tabletop
+  const dx = ddx / rx, dyr = ddy / ry;
+  const face = dx * dx + dyr * dyr;
+  if (face <= 1) return -1;
+  const distPx = Math.sqrt(ddx * ddx + ddy * ddy);
+  if (distPx > rx + extraPx) return -1;
+  const rimPx = distPx * (1 - 1 / Math.sqrt(face));
+  return rimPx < extraPx * rimTaper(ddy, ry) ? rimPx : -1;
 }
 
 /** HSL → RGB, h in degrees, s and l in 0–1. */
@@ -1297,7 +1384,7 @@ export function paintAtmosphere(
   const wobbleSeed = (chan.hue * 7.13 + chan.thicknessPx * 31.7);
   const p1c = Math.cos(wobbleSeed),       p1s = Math.sin(wobbleSeed);
   const p2c = Math.cos(wobbleSeed * 1.7), p2s = Math.sin(wobbleSeed * 1.7);
-  const fadeMax = fade * 1.6 + 2;
+  const fadeMax = ozoneFadeMax(fade);
   const aerialReach = rx * 0.35;
   const y0 = Math.max(0, Math.floor(cy - rx - fadeMax));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
@@ -1305,16 +1392,30 @@ export function paintAtmosphere(
   const x1 = Math.min(w - 1, Math.ceil(cx + rx + fadeMax));
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      const hit = ozoneAt(x, y, geom, bob, fadeMax);
-      if (!hit) continue;
+      let hit = ozoneAt(x, y, geom, bob, fadeMax);
+      let rimPx = 0;
+      if (!hit) {
+        if (y <= cy) continue;
+        rimPx = rimBandAt(x, y, geom, bob, fadeMax);
+        if (rimPx < 0) continue;
+        const ddx = x - cx, ddy = y - cy;
+        const dx = ddx / rx, dyr = ddy / ry;
+        const distPx = Math.sqrt(ddx * ddx + ddy * ddy);
+        hit = { dome: (distPx / rx) * (distPx / rx), face: dx * dx + dyr * dyr, dx, distPx };
+      }
       const inv = hit.distPx > 0.0001 ? 1 / hit.distPx : 0;
       const ct = (x - cx) * inv, st = (y - cy) * inv;   // cos t, sin t
       const s2 = 2 * st * ct,    c2 = ct * ct - st * st;
       const s3 = st * (3 - 4 * st * st), c3 = ct * (4 * ct * ct - 3);
       const n = (s2 * p1c + c2 * p1s) * WOBBLE_H2 + (s3 * p2c + c3 * p2s) * WOBBLE_H3;
       const localFade = Math.max(3, fade * (1 + n * WOBBLE_AMP));
-      const beyond = hit.distPx - rx;
-      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / localFade);
+      // Above the rim line the shell is measured from the dome circle; below
+      // it, from the rim ellipse, thinning toward the front (see rimTaper).
+      const below = rimPx > 0;
+      const taper = below ? rimTaper(y - cy, ry) : 1;
+      const beyond = below ? rimPx : hit.distPx - rx;
+      const bandFade = below ? Math.max(0.001, localFade * taper) : localFade;
+      const edge = beyond <= 0 ? 1 : Math.max(0, 1 - beyond / bandFade);
       if (edge < 0.02) continue;
       const inside = Math.max(0, rx - hit.distPx);
       const sigmaL = localFade * 1.15;
@@ -1333,7 +1434,17 @@ export function paintAtmosphere(
       const aerial    = inside < aerialReach
         ? Math.pow(1 - inside / aerialReach, 1.7) * 0.16 * lit * intensity * dens
         : 0;
-      const glow      = faceGlow + (domeGlow - faceGlow) * blend + aerial;
+      // The band's whole glow fades with `edge`, not just the limb term: the
+      // unscaled base in domeGlow/faceGlow would otherwise end in a cut under
+      // the rim. It also dims with the taper — a thinner band is fainter air —
+      // or its fade gets steeper as it narrows toward the front. Blended in over
+      // 6 rows so the band meets the dome with no step.
+      // Target is 1 where the band touches the face (edge = 1), so it meets the
+      // face with no seam, and falls with edge — faster where the band is thin.
+      const bandGain  = below
+        ? 1 + (edge * (taper + (1 - taper) * edge) - 1) * Math.min(1, (y - cy) / 6)
+        : 1;
+      const glow      = (faceGlow + (domeGlow - faceGlow) * blend + aerial) * bandGain;
       const a = Math.round(Math.min(255, glow * 255));
       if (a < 3) continue;
       const o = (y * w + x) * 4;
@@ -1546,6 +1657,8 @@ export function paintFluids(
     for (let px = x0; px <= x1; px++) {
       const idx = py * w + px;
       const sourceY = py - layerBob;
+      // Offset keeps the noise domain positive, as in SurfaceDecals.
+      const lx = px - cx + 4096, ly = sourceY - geom.cyTop + 4096;
       if (sourceY < 0 || sourceY >= h || occupancy[sourceY * w + px] !== 1) continue;
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
@@ -1600,8 +1713,10 @@ export function paintFluids(
 
         // Web domain: pixel → cell space, pushed along the landward normal by
         // the passing crest, then softly warped so walls curve like refracted light.
-        const bx = px * cellScale + nx * disp;
-        const by = py * cellScale + ny * disp;
+        // Body-relative sampling (lx/ly): water belongs to the world, so moving
+        // the body on screen — framing, a resize — must not re-roll the web.
+        const bx = lx * cellScale + nx * disp;
+        const by = ly * cellScale + ny * disp;
         const warp = noise2(bx * 0.45 + wobX, by * 0.45 + wobY, seed + 3);
         const qx = bx + (warp - 0.5) * 1.5;
         const qy = by + (warp - 0.5) * 1.5;
@@ -1611,11 +1726,11 @@ export function paintFluids(
         const b1 = cellRidge(qx, qy, seed);
         const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02;
         let b = b1 < b2 ? b1 : b2;
-        const grain = noise2(px * 0.23, py * 0.23, seed + 11);
+        const grain = noise2(lx * 0.23, ly * 0.23, seed + 11);
         b += (grain - 0.5) * 0.035;
         const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
         // Narrow halo; open water barely gets the pale patch treatment.
-        const blob = noise2(px * 0.07 + 3.1, py * 0.07 + blobY, seed + 23);
+        const blob = noise2(lx * 0.07 + 3.1, ly * 0.07 + blobY, seed + 23);
         const halo = (WEB_HALO + Math.max(0, blob - 0.72) * 0.22 + swell * 0.9)
                    * (0.35 + 0.65 * detail);
 
@@ -1648,7 +1763,7 @@ export function paintFluids(
       } else {
         // Magma: keep travelling swell + hot glint.
         const toward = shore > 0 ? shore : Math.sqrt(r2) * rx;
-        const drift = Math.sin(px * 0.055 - py * 0.04) * 2.4;
+        const drift = Math.sin(lx * 0.055 - ly * 0.04) * 2.4;
         const wave = Math.sin((toward + drift) * 0.22 + t * 1.15 * speed)
                    + Math.cos((toward + drift) * 0.09 + t * 0.42 * speed) * 0.35;
         if (wave > 0.48) c = pal.glint;
@@ -1748,6 +1863,8 @@ export interface HabitableFrameInput {
   sunAzimuth?: number;
   /** CSS camera zoom; atmosphere dissolves as this rises. */
   viewZoom?: number;
+  /** This world's air. Omitted: the shipped per-type air. */
+  air?: AtmosphereChannel;
 }
 
 interface Wisp {
@@ -1907,7 +2024,7 @@ export class HabitableCutawayEngine {
       const gasTint = this.planetType === 'gas' && this.gasBands.length
         ? averageBands(this.gasBands)
         : undefined;
-      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint);
+      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air);
       atmoG.putImageData(atmo, 0, 0);
       g.drawImage(this.atmoScratch, 0, 0);
     }

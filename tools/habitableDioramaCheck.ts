@@ -233,6 +233,53 @@ check('pancake overhangs crest', farRim < crest,
 check('bob is disabled', bobOf(Math.PI / 1.4, g480.R) === 0,
       `bob=${bobOf(Math.PI / 1.4, g480.R)}`);
 
+// ─── The dome and keel are on canvas ──────────────────────────────────────────
+//
+// habitableGeom used to reserve room for T above the body, not for the dome,
+// whose top sits at cyTop - rx - fadeMax. With R at its 0.36*VH cap the dome
+// top landed at about -0.01*VH before the fade band was even counted.
+// Measured on real paint, not on the formula: atmosphere at the THICKEST air
+// the roll can produce, crust painted into a canvas taller than the view so a
+// keel that overhangs the bottom is seen rather than clipped away.
+{
+  const { ATMO_THICKNESS_MAX_PX } = await import('../src/simulation/PlanetGenome');
+  const thickAir = { hue: 210, saturation: 0.8, thicknessPx: ATMO_THICKNESS_MAX_PX, density: 1.6 };
+  const SIZES: Array<[number, number]> = [[1200, 800], [1174, 650], [390, 844], [480, 320]];
+  for (const [W, H] of SIZES) {
+    const gm = habitableGeom(W, H);
+    const img = { width: W, height: H, data: new Uint8ClampedArray(W * H * 4) };
+    paintAtmosphere(img as any, gm, 'ocean', 0, 0, 1, undefined, thickAir);
+    let domeTop = -1;
+    for (let y = 0; y < H && domeTop < 0; y++) {
+      for (let x = 0; x < W; x++) {
+        if (img.data[(y * W + x) * 4 + 3] > 2) { domeTop = y; break; }
+      }
+    }
+    check(`dome on canvas ${W}x${H}`, domeTop >= 2, `top alpha row ${domeTop}`);
+
+    let keelBottom = -1;
+    for (const seed of [1, 0xbeef, 77]) {
+      const tall = makeCanvas(W, H + 400);
+      const tctx = tall.getContext() as RecordingCtx;
+      paintCutawayCrust(tctx as unknown as CanvasRenderingContext2D, {
+        w: W, h: H + 400, cx: gm.cx, cyTop: gm.cyTop, rx: gm.rx, ry: gm.ry,
+        wall: gm.wall, seed, planetType: 'ocean',
+      } as any);
+      for (let y = H + 399; y >= 0; y--) {
+        let hit = false;
+        for (let x = 0; x < W; x++) if (tctx.mask[y * W + x]) { hit = true; break; }
+        if (hit) { keelBottom = Math.max(keelBottom, y); break; }
+      }
+    }
+    check(`keel on canvas ${W}x${H}`, keelBottom >= 0 && keelBottom <= H - 3,
+          `keel bottom ${keelBottom} of ${H}`);
+  }
+  // Review focus: the shrink loop must terminate on a tiny view.
+  const tiny = habitableGeom(120, 90);
+  check('tiny view still lays out', tiny.R >= 16 && Number.isFinite(tiny.cyTop),
+        `R=${tiny.R} cyTop=${tiny.cyTop}`);
+}
+
 console.log('');
 
 const faceArea = Math.PI * rx * ry;
@@ -310,6 +357,28 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   });
   check('frame reuses live ImageData', frameCtx.createImageDataCalls === imageAllocations,
         `${frameCtx.createImageDataCalls - imageAllocations} new frame allocations`);
+  // Genome reach: the air a host passes must be the air that gets painted.
+  // Hand-built channels 180 degrees apart, so the verdict depends on the
+  // wiring, not on how far two particular seeds happen to drift.
+  if (planetType === 'ocean') {
+    const limbOf = (air: unknown) => {
+      engine.frame({
+        g: frameCtx as unknown as CanvasRenderingContext2D,
+        dt: 1 / 60, elapsed: 1.2, bg: makeCanvas(VW, VH),
+        drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
+        weatherMix: [], air,
+      } as any);
+      const img = (engine as any).atmoImage as { width: number; data: Uint8ClampedArray };
+      const gm = engine.geom;
+      const o = (gm.cyTop * img.width + gm.cx + gm.rx - 2) * 4;
+      return [img.data[o], img.data[o + 1], img.data[o + 2], img.data[o + 3]];
+    };
+    const a = limbOf({ hue: 210, saturation: 0.8, thicknessPx: 8, density: 1 });
+    const b = limbOf({ hue: 30, saturation: 0.8, thicknessPx: 8, density: 1 });
+    const dist = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    check('frame paints the air it is given', a[3] > 0 && dist >= 40,
+          `limb colour distance ${dist.toFixed(1)}, alpha ${a[3]}`);
+  }
   const bobBeforeSurfaceRebake = engine.bob;
   engine.rebakeSurface();
   check('surface rebake preserves bob', engine.bob === bobBeforeSurfaceRebake,
@@ -343,7 +412,17 @@ for (const planetType of ['ocean', 'rocky'] as const) {
       const dy = y - cy;
       const r = Math.hypot(dx, dy) / geom.rx;
       const face = (dx / geom.rx) ** 2 + (dy / geom.ry) ** 2;
-      if (y > cy && face > 1) frontBleed++;
+      // Below the rim line, air may only sit in the limb band that wraps the
+      // rim (atmosphere pass, 2026-09-26): within the legacy shell's reach
+      // (8px thickness x 1.6 wobble + 2) of the rim ellipse, tapering to
+      // nothing at the front. Anything beyond that is air spilling down the drum.
+      if (y > cy && face > 1) {
+        const s2 = dy / geom.ry;
+        const taper = s2 >= 1 ? 0 : 1 - s2 * s2;
+        const distPx = Math.hypot(dx, dy);
+        const outsideRim = distPx * (1 - 1 / Math.sqrt(face));
+        if (outsideRim >= (8 * 1.6 + 2) * taper) frontBleed++;
+      }
       if (r > 1.18) farBleed++;
       else if (r > 1 && y <= cy) fringe++;
       else if (face > 1) {
@@ -359,7 +438,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('tabletop air is thinner than the limb', faceMax < limbMax * 0.55,
         `face ${faceMax} vs limb ${limbMax}`);
   check('ozone limb feathers into space', fringe > 40, `${fringe} fringe px`);
-  check('atmo does not bleed past the cake front', frontBleed === 0, `${frontBleed} front`);
+  check('atmo below the rim stays in the limb band', frontBleed === 0, `${frontBleed} front`);
   check('atmo does not bleed far from the dome', farBleed === 0, `${farBleed} far`);
   check('atmo stays above crust', atmoBelow === 0, `${atmoBelow} below pancake`);
   // Colour is measured on RENDERED pixels, not on a palette struct. These two
@@ -752,6 +831,42 @@ for (const planetType of SMOKE_TYPES) {
   }
 
   console.log('');
+}
+
+// Water belongs to the WORLD, not the screen: moving the body (framing, a
+// resize) must not re-roll its web, grain and swell. paintFluids used to sample
+// noise at absolute screen px/py, so a 27 px layout shift flipped the swell and
+// glint checks on the OLD renderer (final review, 2026-09-27).
+{
+  const W2 = 480, H2 = 360, SHIFT = 27;
+  const gA = habitableGeom(W2, H2);
+  const gB = { ...gA, cyTop: gA.cyTop + SHIFT, cyBody: gA.cyBody + SHIFT };
+  const occFor = (g: typeof gA) => {
+    const occ = new Uint8Array(W2 * H2);
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+      const dx = (x - g.cx) / g.rx, dy = (y - g.cyTop) / g.ry;
+      // Water everywhere on the face, with one island so shore distance varies.
+      const island = ((x - g.cx - g.rx * 0.3) / (g.rx * 0.2)) ** 2 + ((y - g.cyTop) / (g.ry * 0.25)) ** 2 < 1;
+      if (dx * dx + dy * dy <= 1 && !island) occ[y * W2 + x] = 1;
+    }
+    return occ;
+  };
+  const paint = (g: typeof gA) => {
+    const occ = occFor(g);
+    const shore = bakeShoreDistance(occ, g, W2, H2);
+    const img = { width: W2, height: H2, data: new Uint8ClampedArray(W2 * H2 * 4) };
+    paintFluids(img as any, g, occ, 'ocean', 7.3, 0, shore);
+    return img.data;
+  };
+  const a = paint(gA), b = paint(gB);
+  let diff = 0, n = 0;
+  for (let y = 0; y + SHIFT < H2; y++) for (let x = 0; x < W2; x++) {
+    const oa = (y * W2 + x) * 4, ob = ((y + SHIFT) * W2 + x) * 4;
+    if (a[oa + 3] === 0 && b[ob + 3] === 0) continue;
+    n++;
+    if (a[oa] !== b[ob] || a[oa + 1] !== b[ob + 1] || a[oa + 2] !== b[ob + 2] || a[oa + 3] !== b[ob + 3]) diff++;
+  }
+  check('water does not re-roll when the body moves', n > 0 && diff === 0, `${diff}/${n} water px differ`);
 }
 
 console.log(failures === 0
