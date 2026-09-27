@@ -833,6 +833,42 @@ for (const planetType of SMOKE_TYPES) {
   console.log('');
 }
 
+// Water belongs to the WORLD, not the screen: moving the body (framing, a
+// resize) must not re-roll its web, grain and swell. paintFluids used to sample
+// noise at absolute screen px/py, so a 27 px layout shift flipped the swell and
+// glint checks on the OLD renderer (final review, 2026-09-27).
+{
+  const W2 = 480, H2 = 360, SHIFT = 27;
+  const gA = habitableGeom(W2, H2);
+  const gB = { ...gA, cyTop: gA.cyTop + SHIFT, cyBody: gA.cyBody + SHIFT };
+  const occFor = (g: typeof gA) => {
+    const occ = new Uint8Array(W2 * H2);
+    for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+      const dx = (x - g.cx) / g.rx, dy = (y - g.cyTop) / g.ry;
+      // Water everywhere on the face, with one island so shore distance varies.
+      const island = ((x - g.cx - g.rx * 0.3) / (g.rx * 0.2)) ** 2 + ((y - g.cyTop) / (g.ry * 0.25)) ** 2 < 1;
+      if (dx * dx + dy * dy <= 1 && !island) occ[y * W2 + x] = 1;
+    }
+    return occ;
+  };
+  const paint = (g: typeof gA) => {
+    const occ = occFor(g);
+    const shore = bakeShoreDistance(occ, g, W2, H2);
+    const img = { width: W2, height: H2, data: new Uint8ClampedArray(W2 * H2 * 4) };
+    paintFluids(img as any, g, occ, 'ocean', 7.3, 0, shore);
+    return img.data;
+  };
+  const a = paint(gA), b = paint(gB);
+  let diff = 0, n = 0;
+  for (let y = 0; y + SHIFT < H2; y++) for (let x = 0; x < W2; x++) {
+    const oa = (y * W2 + x) * 4, ob = ((y + SHIFT) * W2 + x) * 4;
+    if (a[oa + 3] === 0 && b[ob + 3] === 0) continue;
+    n++;
+    if (a[oa] !== b[ob] || a[oa + 1] !== b[ob + 1] || a[oa + 2] !== b[ob + 2] || a[oa + 3] !== b[ob + 3]) diff++;
+  }
+  check('water does not re-roll when the body moves', n > 0 && diff === 0, `${diff}/${n} water px differ`);
+}
+
 console.log(failures === 0
   ? `  all habitable cutaway checks passed\n`
   : `  ${failures} check(s) FAILED\n`);

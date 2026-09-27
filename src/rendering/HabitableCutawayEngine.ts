@@ -1657,6 +1657,8 @@ export function paintFluids(
     for (let px = x0; px <= x1; px++) {
       const idx = py * w + px;
       const sourceY = py - layerBob;
+      // Offset keeps the noise domain positive, as in SurfaceDecals.
+      const lx = px - cx + 4096, ly = sourceY - geom.cyTop + 4096;
       if (sourceY < 0 || sourceY >= h || occupancy[sourceY * w + px] !== 1) continue;
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
@@ -1711,8 +1713,10 @@ export function paintFluids(
 
         // Web domain: pixel → cell space, pushed along the landward normal by
         // the passing crest, then softly warped so walls curve like refracted light.
-        const bx = px * cellScale + nx * disp;
-        const by = py * cellScale + ny * disp;
+        // Body-relative sampling (lx/ly): water belongs to the world, so moving
+        // the body on screen — framing, a resize — must not re-roll the web.
+        const bx = lx * cellScale + nx * disp;
+        const by = ly * cellScale + ny * disp;
         const warp = noise2(bx * 0.45 + wobX, by * 0.45 + wobY, seed + 3);
         const qx = bx + (warp - 0.5) * 1.5;
         const qy = by + (warp - 0.5) * 1.5;
@@ -1722,11 +1726,11 @@ export function paintFluids(
         const b1 = cellRidge(qx, qy, seed);
         const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02;
         let b = b1 < b2 ? b1 : b2;
-        const grain = noise2(px * 0.23, py * 0.23, seed + 11);
+        const grain = noise2(lx * 0.23, ly * 0.23, seed + 11);
         b += (grain - 0.5) * 0.035;
         const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
         // Narrow halo; open water barely gets the pale patch treatment.
-        const blob = noise2(px * 0.07 + 3.1, py * 0.07 + blobY, seed + 23);
+        const blob = noise2(lx * 0.07 + 3.1, ly * 0.07 + blobY, seed + 23);
         const halo = (WEB_HALO + Math.max(0, blob - 0.72) * 0.22 + swell * 0.9)
                    * (0.35 + 0.65 * detail);
 
@@ -1759,7 +1763,7 @@ export function paintFluids(
       } else {
         // Magma: keep travelling swell + hot glint.
         const toward = shore > 0 ? shore : Math.sqrt(r2) * rx;
-        const drift = Math.sin(px * 0.055 - py * 0.04) * 2.4;
+        const drift = Math.sin(lx * 0.055 - ly * 0.04) * 2.4;
         const wave = Math.sin((toward + drift) * 0.22 + t * 1.15 * speed)
                    + Math.cos((toward + drift) * 0.09 + t * 0.42 * speed) * 0.35;
         if (wave > 0.48) c = pal.glint;
