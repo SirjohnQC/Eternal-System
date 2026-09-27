@@ -1717,3 +1717,13 @@ Ideas raised by Sirjohn 2026-09-05, grouped by what they actually change.
 - Canvas → WebGL migration for volumetric nebula rendering
 - Gemini image caching to reduce API calls
 - Universe history export as readable narrative PDF
+- **Decal tuning pass (open finding, 2026-09-27).** `tools/surfaceDecalCheck.ts`
+  'sweep: most worlds clump' is RED (64% vs 70%) and stays red until this lands.
+  The sweep's rates are one draw: every world samples the decal noise lattice at
+  one shared origin in `SurfaceDecals.ts`. With a per-world origin, clump runs
+  44-69% and lush-woody 80-86% — under their bars on every salt. Needs a
+  per-world origin plus a grove/sward noise retune with a visual pass across
+  several worlds. Do not lower the bars.
+- **Review or bisect `3fcb582` before anything reaches `main`.** The 6,586-line
+  unreviewed Cursor snapshot is an ancestor of `feat/surface-decals` but not of
+  `main`, and is the prime suspect for the smoke test dropping 52/52 -> 49/52.

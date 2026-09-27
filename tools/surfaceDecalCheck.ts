@@ -611,7 +611,9 @@ const GRID_SEEDS = [7777, 1234, 4242, 90210, 31337, 5150, 8675309, 2024];
 // 56-77%). With a per-world origin (a true distribution), clump measured 44-69%
 // and lush-woody 80-86% across five hash salts — below their bars every time.
 // The pass/fail here is therefore a property of one lattice alignment; the
-// decal feature needs its own tuning pass. See ROADMAP / memory.
+// decal feature needs its own tuning pass. KNOWN FINDING: 'most worlds clump'
+// stays RED until the decal tuning pass in ROADMAP (KNOWN BACKLOG) lands — do
+// not lower CLUMP_RATE to turn it green.
 const GENOME_SEEDS = [0xC0FFEE, 0xBADF00D, 0x5EED, 0x1CE, 0xD1CE, 0xFACADE, 0xBEEF5, 0x7A57E];
 
 interface SweepRow {
