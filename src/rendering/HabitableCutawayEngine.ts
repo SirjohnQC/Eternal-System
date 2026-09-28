@@ -38,6 +38,9 @@ import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from 
 import {
   planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
 } from './SurfaceDecals';
+import type { ClimateSources } from './weather/WeatherClimate';
+import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
+import { WeatherPainter, buildWeatherLut } from './weather/WeatherPainter';
 //
 // COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
 // threshold (used at the reclassification site below), but it LIVES in
@@ -1225,8 +1228,8 @@ export function atmoHazeAmount(viewZoom = 1): number {
 }
 
 /**
- * Face² limit for a circle of radius `rx`. Wisps stay inside this so they
- * cannot drift into the feathered limb.
+ * Face² limit for a circle of radius `rx`: inside it, an overlay cannot reach
+ * the feathered limb. (The weather layer is bounded by its own lookup instead.)
  */
 export function cakeAirLimit(rx: number, ry: number): number {
   const inset = 1.25 / Math.max(1, Math.min(rx, ry));
@@ -1786,79 +1789,17 @@ export function paintFluids(
   }
 }
 
-// ─── Wispy clouds ─────────────────────────────────────────────────────────────
-
-/**
- * A thin, stretched cloud streak for the habitable shell.
- *
- * `makeCloudSprite` in the legacy renderer builds a puffy cumulus blob, which
- * is right for a sky seen from inside a dome and wrong for a planet seen from
- * space: from out here, cloud reads as long, flat, torn bands. Same tint inputs
- * so a storm, an ash plume or smog still arrives visibly different.
- */
-export function makeWispSprite(
-  w: number, h: number, seed: number, body: RGB, under: RGB,
-): HTMLCanvasElement {
-  w = Math.max(8, Math.round(w));
-  h = Math.max(3, Math.round(h));
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const g = c.getContext('2d');
-  if (!g) return c;
-  const s = new Stream(seed);
-
-  // Overlapping lenses along the streak, each much wider than tall. Their
-  // heights VARY a lot on purpose: equal-height lobes packed edge to edge fill
-  // the canvas and the streak draws as a solid grey bar, which at this scale
-  // looks like a rendering fault rather than weather.
-  const lobes = 4 + Math.floor(s.next() * 4);
-  for (let i = 0; i < lobes; i++) {
-    const t = (i + s.range(0.15, 0.85)) / lobes;
-    const px = w * t;
-    // Thickest in the middle of the streak, tapering to nothing at the ends.
-    const taper = Math.sin(Math.PI * clamp01(t));
-    const lw = w * s.range(0.10, 0.24);
-    const lh = Math.max(0.6, h * 0.5 * s.range(0.35, 1.0) * taper);
-    const py = h * 0.5 + (s.next() - 0.5) * (h * 0.5 - lh) * 0.8;
-    g.fillStyle = css(body, s.range(0.45, 0.85) * taper);
-    g.beginPath();
-    g.ellipse(px, py, lw, lh, 0, 0, Math.PI * 2);
-    g.fill();
-  }
-
-  // Shaded underside, clipped to what was drawn — turns the streak from a smear
-  // into something with a top and a bottom.
-  g.globalCompositeOperation = 'source-atop';
-  const grad = g.createLinearGradient(0, h * 0.45, 0, h);
-  grad.addColorStop(0, css(under, 0));
-  grad.addColorStop(1, css(under, 0.50));
-  g.fillStyle = grad;
-  g.fillRect(0, 0, w, h);
-
-  // Fade both ends, so a streak drifts in and out of view instead of ending on
-  // a vertical edge.
-  g.globalCompositeOperation = 'destination-out';
-  const ends = g.createLinearGradient(0, 0, w, 0);
-  ends.addColorStop(0, 'rgba(0,0,0,0.95)');
-  ends.addColorStop(0.22, 'rgba(0,0,0,0)');
-  ends.addColorStop(0.78, 'rgba(0,0,0,0)');
-  ends.addColorStop(1, 'rgba(0,0,0,0.95)');
-  g.fillStyle = ends;
-  g.fillRect(0, 0, w, h);
-  g.globalCompositeOperation = 'source-over';
-
-  return c;
-}
-
 export interface HabitableFrameInput {
   g: CanvasRenderingContext2D;
   dt: number;
   elapsed: number;
   bg: HTMLCanvasElement;
   drawFarSpace: (g: CanvasRenderingContext2D) => void;
-  drawOverlays: (g: CanvasRenderingContext2D) => void;
+  /** Drawn on the ground, under the weather: city lights, inhabitants. */
+  drawSurfaceOverlays: (g: CanvasRenderingContext2D) => void;
+  /** Drawn over everything but moons: tile markers, divine effects. Never under weather. */
+  drawUiOverlays: (g: CanvasRenderingContext2D) => void;
   drawNearMoons: (g: CanvasRenderingContext2D) => void;
-  weatherMix: Array<{ kind: string; weight: number }>;
   /** Local day angle in radians; 0 lights the +x limb. */
   sunAzimuth?: number;
   /** CSS camera zoom; atmosphere dissolves as this rises. */
@@ -1866,25 +1807,6 @@ export interface HabitableFrameInput {
   /** This world's air. Omitted: the shipped per-type air. */
   air?: AtmosphereChannel;
 }
-
-interface Wisp {
-  x: number;
-  y: number;
-  speed: number;
-  alpha: number;
-  sprite: HTMLCanvasElement;
-}
-
-const WISP_COLOURS: Record<string, { body: RGB; under: RGB }> = {
-  cumulus: { body: rgb(244, 250, 255), under: rgb(142, 174, 204) },
-  storm: { body: rgb(132, 150, 178), under: rgb(55, 66, 88) },
-  ash: { body: rgb(168, 150, 140), under: rgb(78, 62, 58) },
-  smog: { body: rgb(174, 156, 118), under: rgb(90, 76, 54) },
-  pollution: { body: rgb(174, 156, 118), under: rgb(90, 76, 54) },
-  acid: { body: rgb(190, 210, 80), under: rgb(90, 110, 40) },
-  nebula: { body: rgb(180, 140, 220), under: rgb(90, 50, 140) },
-  ice_haze: { body: rgb(225, 244, 255), under: rgb(138, 180, 208) },
-};
 
 /**
  * Owns static layers and composites moving habitable-world effects.
@@ -1900,10 +1822,16 @@ export class HabitableCutawayEngine {
   private land = document.createElement('canvas');
   private atmoScratch = document.createElement('canvas');
   private fluidScratch = document.createElement('canvas');
-  private wispScratch = document.createElement('canvas');
-  private airMask = document.createElement('canvas');
+  private weatherScratch = document.createElement('canvas');
   private atmoG: CanvasRenderingContext2D | null = null;
-  private wispG: CanvasRenderingContext2D | null = null;
+  private weatherG: CanvasRenderingContext2D | null = null;
+  private weatherImage: ImageData | null = null;
+  private weatherSim: WeatherSim | null = null;
+  private weatherPainter: WeatherPainter | null = null;
+  private weatherAcc = 0;
+  /** Grid longitude at the disc centre, and +1 when screen +x is east. */
+  private weatherFocusLon = 0;
+  private weatherEast = 1;
   private atmoImage: ImageData | null = null;
   private fluidImage: ImageData | null = null;
   private surfaceBakeOpts: CutawayBakeOpts | null = null;
@@ -1914,8 +1842,6 @@ export class HabitableCutawayEngine {
   private gasBands: RGB[] = [];
   private hasRing = false;
   private elapsed = 0;
-  private wisps: Wisp[] = [];
-  private lastWispSig = '';
 
   constructor() {
     this.resizeLayers(1, 1);
@@ -1930,7 +1856,7 @@ export class HabitableCutawayEngine {
   }
 
   bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
-    w: number; h: number; weatherMix?: Array<{ kind: string; weight: number }>;
+    w: number; h: number; weather?: ClimateSources | null;
   }): void {
     this.w = Math.max(1, Math.round(opts.w));
     this.h = Math.max(1, Math.round(opts.h));
@@ -1941,8 +1867,6 @@ export class HabitableCutawayEngine {
     this.occupancy = new Uint8Array(this.w * this.h);
     this.shoreDist = new Float32Array(this.w * this.h);
     this.pick = new Int32Array(this.w * this.h);
-    this.wisps = [];
-    this.lastWispSig = '\0';
     if (opts.planetType === 'gas') {
       this.gasBands = makeGasBands(opts.seed);
       this.hasRing = ((opts.seed >>> 5) & 3) !== 0; // ~75%
@@ -1962,7 +1886,30 @@ export class HabitableCutawayEngine {
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, bakeOpts);
     this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
-    this.rebuildWisps(opts.weatherMix ?? []);
+    // Weather: a fresh sim per bake — a new planet must never inherit the last
+    // one's sky (the repo's recurring state-leak pattern).
+    this.weatherSim = null;
+    this.weatherPainter = null;
+    this.weatherAcc = 0;
+    const grid = opts.grid;
+    if (opts.weather && grid && opts.planetType !== 'gas') {
+      const lut = buildWeatherLut(this.geom, opts.discToGrid,
+        (row, col, r) => opts.liftOf(opts.smoothElevation(grid, row, col) - opts.rimFalloff(r)));
+      // Orientation for the sun: which grid longitude faces the viewer, and
+      // which way east runs on screen, read off the same projection.
+      const lonOf = (col: number) => (col + 0.5) / GRID_SIZE * Math.PI * 2;
+      const c0 = opts.discToGrid(0, 0), cE = opts.discToGrid(0.2, 0);
+      this.weatherFocusLon = c0 ? lonOf(c0.col) : 0;
+      if (c0 && cE) {
+        const d = ((cE.col - c0.col) % GRID_SIZE + GRID_SIZE * 1.5) % GRID_SIZE - GRID_SIZE / 2;
+        this.weatherEast = d < 0 ? -1 : 1;
+      } else {
+        this.weatherEast = 1;
+      }
+      this.weatherSim = new WeatherSim(opts.weather);
+      this.weatherSim.warmUp(WX_WARMUP);
+      this.weatherPainter = new WeatherPainter(lut, opts.weather, (opts.maxLift ?? 18) + 6, opts.seed);
+    }
   }
 
   /** Repaint the mutable top-face data without resetting animation or crust. */
@@ -1986,10 +1933,16 @@ export class HabitableCutawayEngine {
     this.surfaceBakeOpts = { ...this.surfaceBakeOpts, ...patch };
   }
 
+  /** New climate sources (lushness, civ level, stress). Keeps the current sky. */
+  setWeatherClimate(c: ClimateSources | null): void {
+    if (!c || !this.weatherSim || !this.weatherPainter) return;
+    this.weatherSim.setClimate(c);
+    this.weatherPainter.setClimate(c);
+  }
+
   frame(input: HabitableFrameInput): void {
     const { g, elapsed } = input;
     this.elapsed = elapsed;
-    this.rebuildWisps(input.weatherMix);
     const bob = this.bob;
     const layerBob = Math.round(bob);
 
@@ -2009,12 +1962,35 @@ export class HabitableCutawayEngine {
         g.drawImage(this.fluidScratch, 0, 0);
         fluids.data.fill(0);
         paintDayNight(fluids, this.geom, sunAzimuth, layerBob);
+        if (this.weatherSim && this.weatherPainter) {
+          // At most 4 steps per frame: a refocused tab hands us seconds of dt.
+          // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
+          // the subsolar point is a quarter turn from the centre toward +x, and
+          // it moves toward -x as the day turns.
+          this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
+          this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
+          while (this.weatherAcc >= WX_DT) {
+            this.weatherAcc -= WX_DT;
+            this.weatherSim.step(WX_DT);
+            this.weatherPainter.onStep(this.weatherSim);
+          }
+          this.weatherPainter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
+          this.weatherPainter.paintShadows(fluids, sunAzimuth, atmoHazeAmount(input.viewZoom ?? 1));
+        }
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
       }
     }
-    input.drawOverlays(g);
+    input.drawSurfaceOverlays(g);
     const haze = atmoHazeAmount(input.viewZoom ?? 1);
+    const weatherG = this.weatherG, weatherImage = this.weatherImage;
+    if (this.weatherPainter && weatherImage && weatherG && haze > 0.01) {
+      // putImageData-only, like the atmosphere canvas.
+      weatherImage.data.fill(0);
+      this.weatherPainter.paintClouds(weatherImage, sunAzimuth, haze);
+      weatherG.putImageData(weatherImage, 0, 0);
+      g.drawImage(this.weatherScratch, 0, 0);
+    }
     const atmo = this.atmoImage;
     const atmoG = this.atmoG;
     if (atmo && atmoG && haze > 0.01) {
@@ -2028,15 +2004,7 @@ export class HabitableCutawayEngine {
       atmoG.putImageData(atmo, 0, 0);
       g.drawImage(this.atmoScratch, 0, 0);
     }
-    const wispG = this.wispG;
-    if (wispG && haze > 0.01 && this.wisps.length > 0) {
-      wispG.clearRect(0, 0, this.w, this.h);
-      this.drawWisps(wispG, elapsed, bob, sunAzimuth, haze);
-      wispG.globalCompositeOperation = 'destination-in';
-      wispG.drawImage(this.airMask, 0, 0);
-      wispG.globalCompositeOperation = 'source-over';
-      g.drawImage(this.wispScratch, 0, 0);
-    }
+    input.drawUiOverlays(g);
     if (this.planetType === 'gas') this.drawGasRings(g, false, bob);
     input.drawNearMoons(g);
 
@@ -2094,76 +2062,13 @@ export class HabitableCutawayEngine {
     this.land.width = w; this.land.height = h;
     this.atmoScratch.width = w; this.atmoScratch.height = h;
     this.fluidScratch.width = w; this.fluidScratch.height = h;
-    this.wispScratch.width = w; this.wispScratch.height = h;
-    this.airMask.width = w; this.airMask.height = h;
+    this.weatherScratch.width = w; this.weatherScratch.height = h;
     this.atmoG = this.atmoScratch.getContext('2d');
-    this.wispG = this.wispScratch.getContext('2d');
+    this.weatherG = this.weatherScratch.getContext('2d');
     const fluidG = this.fluidScratch.getContext('2d');
     this.atmoImage = this.atmoG?.createImageData(w, h) ?? null;
     this.fluidImage = fluidG?.createImageData(w, h) ?? null;
-    this.bakeAirMask();
-  }
-
-  /** Hard pixel half-dome used to stamp wisps without a GPU readback. */
-  private bakeAirMask(): void {
-    const g = this.airMask.getContext('2d');
-    if (!g) return;
-    const img = g.createImageData(this.w, this.h);
-    const d = img.data;
-    for (let y = 0; y < this.h; y++) {
-      for (let x = 0; x < this.w; x++) {
-        if (!ozoneAt(x, y, this.geom, 0)) continue;
-        const o = (y * this.w + x) * 4;
-        d[o] = 255; d[o + 1] = 255; d[o + 2] = 255; d[o + 3] = 255;
-      }
-    }
-    g.putImageData(img, 0, 0);
-  }
-
-  private rebuildWisps(weatherMix: Array<{ kind: string; weight: number }>): void {
-    const sig = weatherMix.map(m => `${m.kind}:${m.weight}`).join('|');
-    if (sig === this.lastWispSig) return;
-    this.lastWispSig = sig;
-    const stream = new Stream((this.geom.cx * 8191 + this.geom.R * 131 + sig.length) >>> 0);
-    const positive = weatherMix.filter(m => m.weight > 0);
-    const total = positive.reduce((sum, m) => sum + m.weight, 0);
-    const count = positive.length === 0 ? 1 : 5 + stream.int(0, 3);
-    const pickKind = (): string => {
-      if (total <= 0) return 'cumulus';
-      let roll = stream.next() * total;
-      for (const mix of positive) {
-        roll -= mix.weight;
-        if (roll <= 0) return mix.kind;
-      }
-      return positive[positive.length - 1].kind;
-    };
-    this.wisps = Array.from({ length: count }, () => {
-      const kind = pickKind();
-      const colour = WISP_COLOURS[kind] ?? WISP_COLOURS.cumulus;
-      const width = stream.range(this.geom.rx * 0.22, this.geom.rx * 0.62);
-      const height = width * stream.range(0.09, 0.17);
-      return {
-        x: this.geom.cx + stream.range(-this.geom.rx * 0.72, this.geom.rx * 0.72),
-        y: this.geom.cyTop + stream.range(-this.geom.rx * 0.78, this.geom.ry * 0.35),
-        speed: stream.range(2.5, 7),
-        alpha: stream.range(0.25, 0.58),
-        sprite: makeWispSprite(width, height, stream.int(1, 1 << 20), colour.body, colour.under),
-      };
-    });
-  }
-
-  private drawWisps(
-    g: CanvasRenderingContext2D, elapsed: number, bob: number, sunAzimuth: number, intensity = 1,
-  ): void {
-    const { cx, rx } = this.geom;
-    for (const wisp of this.wisps) {
-      const span = rx * 2;
-      const drift = elapsed * wisp.speed + sunAzimuth * rx * 0.35;
-      const x = ((wisp.x + drift - (cx - rx)) % span + span) % span + cx - rx;
-      g.globalAlpha = wisp.alpha * intensity;
-      g.drawImage(wisp.sprite, Math.round(x - wisp.sprite.width / 2), Math.round(wisp.y + bob - wisp.sprite.height / 2));
-    }
-    g.globalAlpha = 1;
+    this.weatherImage = this.weatherG?.createImageData(w, h) ?? null;
   }
 }
 

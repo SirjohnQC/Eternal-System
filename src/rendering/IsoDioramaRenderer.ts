@@ -44,6 +44,7 @@ import {
 import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
+import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -279,86 +280,6 @@ const shade = (c: RGB, f: number): RGB =>
 
 // ─── Scattered prop types ─────────────────────────────────────────────────────
 
-// ─── Weather ──────────────────────────────────────────────────────────────────
-
-/**
- * What kind of cloud is in the sky.
- *
- * The diorama used to have exactly one: a white puff, identical on every world
- * regardless of what that world was actually like. A molten planet and a
- * heavily industrialised one had the same weather. Each kind here is chosen from
- * real planet and biosphere state (see `cloudMixFor`), so the sky reports
- * something true about the world under it.
- */
-export type CloudKind =
-  | 'cumulus'     // benign fair-weather cloud
-  | 'storm'       // dark, heavy, lightning, hard rain
-  | 'acid'        // sickly yellow-green; acid rain
-  | 'pollution'   // industrial smog — only where a civilisation makes it
-  | 'ash'         // volcanic ash plume, falls as dark grit
-  | 'nebula'      // luminous exotic vapour on worlds bathed in nebula light
-  | 'ice_haze';   // thin frozen veil; falls as snow
-
-export type PrecipKind = 'none' | 'rain' | 'acid_rain' | 'snow' | 'ashfall';
-
-interface CloudProfile {
-  /** Body colour of the puff. */
-  body:      RGB;
-  /** Shaded underside. */
-  under:     RGB;
-  /** Alpha range for individual clouds of this kind. */
-  alphaLo:   number;
-  alphaHi:   number;
-  precip:    PrecipKind;
-  /** Chance per second that a cloud of this kind flashes. */
-  lightning: number;
-  /** Clouds of this kind glow rather than only occluding. */
-  emissive:  boolean;
-}
-
-const CLOUD_PROFILES: Record<CloudKind, CloudProfile> = {
-  cumulus: {
-    body: rgb(255, 255, 255), under: rgb(150, 180, 215),
-    alphaLo: 0.50, alphaHi: 0.95, precip: 'none', lightning: 0, emissive: false,
-  },
-  storm: {
-    body: rgb(118, 124, 140), under: rgb(48, 54, 70),
-    alphaLo: 0.80, alphaHi: 1.00, precip: 'rain', lightning: 0.5, emissive: false,
-  },
-  acid: {
-    body: rgb(206, 224, 120), under: rgb(120, 140, 48),
-    alphaLo: 0.62, alphaHi: 0.92, precip: 'acid_rain', lightning: 0.12, emissive: false,
-  },
-  pollution: {
-    body: rgb(150, 132, 108), under: rgb(84, 70, 56),
-    alphaLo: 0.55, alphaHi: 0.88, precip: 'none', lightning: 0, emissive: false,
-  },
-  ash: {
-    body: rgb(96, 88, 86), under: rgb(40, 34, 34),
-    alphaLo: 0.70, alphaHi: 0.98, precip: 'ashfall', lightning: 0.30, emissive: false,
-  },
-  nebula: {
-    body: rgb(190, 150, 235), under: rgb(110, 80, 170),
-    alphaLo: 0.40, alphaHi: 0.72, precip: 'none', lightning: 0, emissive: true,
-  },
-  ice_haze: {
-    body: rgb(226, 242, 252), under: rgb(160, 196, 224),
-    alphaLo: 0.35, alphaHi: 0.66, precip: 'snow', lightning: 0, emissive: false,
-  },
-};
-
-/** Colour and shape of one falling particle, by precipitation kind. */
-const PRECIP_STYLE: Record<Exclude<PrecipKind, 'none'>, {
-  color: string; len: number; speed: number; drift: number; count: number;
-}> = {
-  rain:      { color: 'rgba(150,190,232,0.42)', len: 2, speed: 62, drift: 6,  count: 12 },
-  acid_rain: { color: 'rgba(190,222,105,0.50)', len: 2, speed: 54, drift: 5,  count: 11 },
-  snow:      { color: 'rgba(240,250,255,0.70)', len: 1, speed: 14, drift: 11, count: 12 },
-  ashfall:   { color: 'rgba(64,56,54,0.62)',    len: 1, speed: 20, drift: 8,  count: 12 },
-};
-
-interface Drop { x: number; y: number; vy: number; drift: number; phase: number }
-
 // ─── Divine powers ────────────────────────────────────────────────────────────
 
 /**
@@ -420,15 +341,6 @@ interface DivineEffect {
   motes: Mote[];
 }
 
-interface Cloud {
-  x: number; y: number; w: number; h: number;
-  alpha: number; speed: number; sprite: HTMLCanvasElement;
-  kind: CloudKind;
-  /** Falling particles under this cloud, empty when it does not precipitate. */
-  drops: Drop[];
-  /** Seconds remaining on the current lightning flash, 0 when dark. */
-  flash: number;
-}
 interface CityDot { x: number; y: number; phase: number; rate: number }
 interface Ripple  { x: number; y: number; rx: number; phase: number; speed: number }
 interface Ember   { x: number; y: number; vy: number; life: number; maxLife: number }
@@ -487,9 +399,6 @@ export class IsoDioramaRenderer {
   private focusLon = 0;
 
   // Props
-  private clouds:   Cloud[]   = [];
-  /** Signature of the weather mix the current clouds were built from. */
-  private lastCloudSig = '';
   private cityDots: CityDot[] = [];
   private ripples:  Ripple[]  = [];
   private embers:   Ember[]   = [];
@@ -1157,6 +1066,27 @@ export class IsoDioramaRenderer {
   }
 
   /**
+   * The weather's view of this world. Every input is real state: grid, biosphere
+   * stress and oxygen, civ level, and the planet's own genome seed, so each world
+   * has its own weather personality. Null for gas giants and before a grid exists.
+   */
+  private climateFor(): ClimateSources | null {
+    const grid = this.grid;
+    if (!grid || this.planetType === 'gas') return null;
+    const bio = this.biosphere;
+    return buildClimate({
+      grid,
+      planetType: this.planetType,
+      seed: this.planet?.genomeSeed ?? this.planetSeed,
+      lush: this.lushFor(bio),
+      extinctionPressure: bio?.extinctionPressure ?? 0,
+      oxygenLevel: bio?.oxygenLevel ?? 0.5,
+      civLevel: this.star?.civLevel ?? 0,
+      inNebula: this.inNebula(),
+    });
+  }
+
+  /**
    * Arguments for the habitable cutaway bake.
    *
    * The engine does not know about `PlanetGrid` focus, elevation terracing or
@@ -1178,7 +1108,7 @@ export class IsoDioramaRenderer {
       smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
       maxLift: this.maxLift,
       lush: this.lushFor(bio),
-      weatherMix: this.cloudMixFor(),
+      weather: this.climateFor(),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
     });
@@ -1196,6 +1126,8 @@ export class IsoDioramaRenderer {
       decalAtlas: this.decalAtlas,
     });
     this.cutaway.rebakeSurface();
+    // Sources follow the world (industry, stress, lushness); the sky is kept.
+    this.cutaway.setWeatherClimate(this.climateFor());
     this.pickBuf = this.cutaway.pick;
     this.lastSurfaceBake = this.elapsed;
     this.surfaceDirty = false;
@@ -1213,7 +1145,6 @@ export class IsoDioramaRenderer {
     }
     this.bakeCrust();
     this.bakeSurface();
-    this.buildClouds();
     this.buildCityDots();
     this.buildRipples();
     this.buildInhabitants();
@@ -1976,91 +1907,6 @@ export class IsoDioramaRenderer {
   // ─── Prop construction ─────────────────────────────────────────────────────
 
   /**
-   * The weather this world actually deserves, as weights per cloud kind.
-   *
-   * Every input here is real simulation state, so the sky changes as the planet
-   * does: a world that industrialises grows smog, one whose biosphere is under
-   * pressure turns stormy, a molten one throws ash. A world with none of those
-   * conditions still just gets fair weather.
-   */
-  private cloudMixFor(): Array<{ kind: CloudKind; weight: number }> {
-    const bio  = this.biosphere;
-    const civ  = this.star?.civLevel ?? 0;
-    const type = this.planetType;
-
-    const mix: Array<{ kind: CloudKind; weight: number }> = [];
-    const add = (kind: CloudKind, weight: number) => {
-      if (weight > 0.001) mix.push({ kind, weight });
-    };
-
-    if (type === 'lava') {
-      add('ash', 3.0);
-      add('storm', 0.6);
-      add('acid', 0.8);
-      return mix;
-    }
-    if (type === 'ice') {
-      add('ice_haze', 3.0);
-      add('cumulus', 0.8);
-      add('storm', 0.4);
-      return mix;
-    }
-    if (type === 'toxic') {
-      add('acid', 3.2);
-      add('pollution', 1.2);
-      add('storm', 0.6);
-      return mix;
-    }
-    if (type === 'storm') {
-      add('storm', 3.5);
-      add('cumulus', 0.8);
-      add('ash', 0.4);
-      return mix;
-    }
-    if (type === 'desert') {
-      add('pollution', 1.6);
-      add('cumulus', 0.9);
-      return mix;
-    }
-    if (type === 'crystal') {
-      add('nebula', 1.8);
-      add('cumulus', 1.0);
-      add('ice_haze', 0.6);
-      return mix;
-    }
-    if (type === 'carbon') {
-      add('ash', 1.4);
-      add('pollution', 0.8);
-      add('cumulus', 0.5);
-      return mix;
-    }
-    if (type === 'gas') {
-      add('storm', 1.2);
-      add('cumulus', 0.8);
-      return mix;
-    }
-
-    // Baseline fair weather, scaled by how much ocean there is to evaporate.
-    add('cumulus', 1.6 + (bio?.oceanLife ?? 0.4) * 2.0);
-
-    // A biosphere under pressure is a world with a violent climate.
-    add('storm', 0.5 + (bio?.extinctionPressure ?? 0) * 2.6);
-
-    // Industry makes smog, and only industry does: no civilisation, no smog.
-    // civLevel 4 is the Atomic tier — the first that plausibly pollutes.
-    if (civ >= 4) add('pollution', (civ - 3) * 0.75);
-
-    // Thin or unbreathable air reads as an acidic sky.
-    const oxy = bio?.oxygenLevel ?? 0.5;
-    add('acid', clamp01(0.42 - oxy) * 3.2);
-
-    // Exotic light: only for worlds sitting in a nebula-lit part of the disc.
-    if (this.inNebula()) add('nebula', 1.4);
-
-    return mix;
-  }
-
-  /**
    * Is this world bathed in nebula light?
    *
    * Derived from the star's position rather than stored: the background already
@@ -2072,78 +1918,6 @@ export class IsoDioramaRenderer {
     if (!st) return false;
     const d = Math.hypot(st.x, st.y);
     return Math.abs(st.y) < 260 && d > 40;
-  }
-
-  /** Stable string for the current weather mix, to detect real changes. */
-  private cloudMixSignature(): string {
-    return this.cloudMixFor()
-      .map(m => `${m.kind}:${m.weight.toFixed(1)}`)
-      .join('|');
-  }
-
-  private buildClouds(): void {
-    this.clouds = [];
-    this.lastCloudSig = this.cloudMixSignature();
-    if (this.habitable) return;
-    // Gated on the planet TYPE, not on `hasDome`. Ash and acid are properties of
-    // an atmosphere, not of the glass: a molten world has the most dramatic sky
-    // of any of them and used to render with an empty one, because it is the one
-    // planet type that has no dome. Only the gas giant is excluded — it draws a
-    // whole banded sphere and already has weather of its own.
-    if (this.planetType === 'gas') return;
-
-    const { cx, cy, rx, ry } = this;
-    const s = new Stream(this.planetSeed ^ 0x7f4a7c15);
-    const bio = this.biosphere;
-    const humid = bio ? clamp01(0.35 + bio.oceanLife * 0.4) : 0.5;
-    const n = 5 + Math.round(humid * 5);
-
-    const mix = this.cloudMixFor();
-    const total = mix.reduce((a, m) => a + m.weight, 0);
-    const pickKind = (): CloudKind => {
-      if (total <= 0) return 'cumulus';
-      let roll = s.next() * total;
-      for (const m of mix) { roll -= m.weight; if (roll <= 0) return m.kind; }
-      return mix[mix.length - 1].kind;
-    };
-
-    for (let i = 0; i < n; i++) {
-      const kind = pickKind();
-      const prof = CLOUD_PROFILES[kind];
-      // Storm and ash heads are bigger and slower; haze is broad and thin.
-      const sizeMul = kind === 'storm' || kind === 'ash' ? 1.30
-                    : kind === 'ice_haze' ? 1.45 : 1.0;
-      const w = s.range(rx * 0.16, rx * 0.42) * sizeMul;
-      const h = w * s.range(0.22, 0.36) * (kind === 'ice_haze' ? 0.62 : 1);
-      const x = cx + s.range(-rx, rx);
-      const y = cy - ry * s.range(0.1, 0.9) - rx * s.range(0.05, 0.42);
-
-      const drops: Drop[] = [];
-      if (prof.precip !== 'none') {
-        const st = PRECIP_STYLE[prof.precip];
-        for (let k = 0; k < st.count; k++) {
-          drops.push({
-            x: s.range(-w * 0.45, w * 0.45),
-            // Stagger the initial fall so it does not start as a single sheet.
-            y: s.range(0, ry * 1.9 + rx * 0.42),
-            vy: st.speed * s.range(0.82, 1.18),
-            drift: st.drift * s.range(-1, 1),
-            phase: s.range(0, Math.PI * 2),
-          });
-        }
-      }
-
-      this.clouds.push({
-        x, y, w, h,
-        alpha: s.range(prof.alphaLo, prof.alphaHi),
-        // Heavy weather moves slowly; thin haze streams past.
-        speed: s.range(2.5, 7.0) * (kind === 'storm' || kind === 'ash' ? 0.55 : 1),
-        sprite: makeCloudSprite(Math.round(w), Math.round(h), s.int(1, 1 << 20), kind),
-        kind,
-        drops,
-        flash: 0,
-      });
-    }
   }
 
   private buildCityDots(): void {
@@ -2502,16 +2276,17 @@ export class IsoDioramaRenderer {
           this.drawSiblings(g, this.elapsed);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
-        drawOverlays: (g) => {
+        drawSurfaceOverlays: (g) => {
           this.drawCityLights(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
+        },
+        drawUiOverlays: (g) => {
           this.drawTileMarkers(g, this.elapsed);
           this.drawDivineEffects(g, dt);
         },
         drawNearMoons: (g) => {
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), true);
         },
-        weatherMix: this.cloudMixFor(),
       });
       this.displayCtx.drawImage(this.buf, 0, 0);
       return;
@@ -2527,15 +2302,6 @@ export class IsoDioramaRenderer {
       this.bakeSurface();
       this.buildCityDots();
       this.buildInhabitants();
-      // Weather has to follow the planet too — a world that industrialises
-      // should grow smog, one whose biosphere collapses should turn stormy.
-      // Rebuilt only when the MIX changes, because an unconditional rebuild
-      // teleports every cloud back to a new random position every few seconds.
-      const sig = this.cloudMixSignature();
-      if (sig !== this.lastCloudSig) {
-        this.lastCloudSig = sig;
-        this.buildClouds();
-      }
     }
 
     // 1 — space backdrop
@@ -2599,9 +2365,6 @@ export class IsoDioramaRenderer {
 
     // 10d — divine powers landing on the surface
     this.drawDivineEffects(g, dt);
-
-    // 11 — clouds inside the dome
-    this.drawClouds(g, dt);
 
     // 12 — the glass dome itself (gas giants have neither dome nor cut face)
     if (pal.hasDome) this.drawDome(g, t);
@@ -2962,96 +2725,6 @@ export class IsoDioramaRenderer {
     }
   }
 
-  private drawClouds(g: CanvasRenderingContext2D, dt: number): void {
-    if (this.clouds.length === 0) return;
-    const { cx, cy, rx, ry } = this;
-
-    g.save();
-    // Clouds live inside the atmosphere. On the habitable path that is the body
-    // circle, which sits a full radius below the cut face; on the legacy path it
-    // is the dome, centred on the face.
-    g.beginPath();
-    if (this.habitable) g.arc(cx, this.bodyCy, rx - 1, 0, Math.PI * 2);
-    else g.arc(cx, cy, rx, 0, Math.PI * 2);
-    g.clip();
-
-    // ── Precipitation, drawn under the clouds that produce it ────────────────
-    for (const c of this.clouds) {
-      const prof = CLOUD_PROFILES[c.kind];
-      if (prof.precip === 'none' || c.drops.length === 0) continue;
-      const st = PRECIP_STYLE[prof.precip];
-      // Fall stops at the ground: the top face is an ellipse, so the surface
-      // under a given x sits at cy + ry·sqrt(1-(dx/rx)²) at its nearest.
-      g.strokeStyle = st.color;
-      g.fillStyle = st.color;
-      g.lineWidth = 1;
-      for (const drop of c.drops) {
-        drop.y += drop.vy * dt;
-        drop.phase += dt * 2.2;
-        const px = c.x + drop.x + Math.sin(drop.phase) * drop.drift;
-        const py = c.y + drop.y;
-        const ndx = (px - cx) / rx;
-        const ground = cy + (Math.abs(ndx) < 1 ? ry * Math.sqrt(1 - ndx * ndx) : 0);
-        if (py > ground || py > cy + ry) {
-          // Landed — restart it just under its cloud.
-          drop.y = -c.h * 0.3;
-          continue;
-        }
-        if (st.len > 1) {
-          g.beginPath();
-          g.moveTo(Math.round(px) + 0.5, Math.round(py));
-          g.lineTo(Math.round(px) + 0.5, Math.round(py) + st.len);
-          g.stroke();
-        } else {
-          g.fillRect(Math.round(px), Math.round(py), 1, 1);
-        }
-      }
-    }
-
-    // ── The clouds themselves ────────────────────────────────────────────────
-    for (const c of this.clouds) {
-      const prof = CLOUD_PROFILES[c.kind];
-      c.x += c.speed * dt;
-      if (c.x - c.w > cx + rx) c.x = cx - rx - c.w;
-
-      // Lightning: a brief bright flash inside the head, plus a wash of light
-      // over the ground beneath it.
-      if (prof.lightning > 0) {
-        if (c.flash > 0) c.flash -= dt;
-        else if (Math.random() < prof.lightning * dt) c.flash = 0.09;
-      }
-
-      g.globalAlpha = c.alpha;
-      if (prof.emissive) g.globalCompositeOperation = 'lighter';
-      g.drawImage(c.sprite, Math.round(c.x - c.w / 2), Math.round(c.y - c.h / 2));
-      if (prof.emissive) g.globalCompositeOperation = 'source-over';
-
-      if (c.flash > 0) {
-        g.globalAlpha = clamp01(c.flash / 0.09) * 0.85;
-        g.globalCompositeOperation = 'lighter';
-        const fx = c.x, fy = c.y + c.h * 0.1;
-        const bolt = g.createRadialGradient(fx, fy, 0, fx, fy, c.w * 0.75);
-        bolt.addColorStop(0, 'rgba(255,255,255,0.95)');
-        bolt.addColorStop(0.4, 'rgba(200,220,255,0.45)');
-        bolt.addColorStop(1, 'rgba(160,190,255,0)');
-        g.fillStyle = bolt;
-        g.beginPath(); g.arc(fx, fy, c.w * 0.75, 0, Math.PI * 2); g.fill();
-        g.globalCompositeOperation = 'source-over';
-      }
-    }
-    g.globalAlpha = 1;
-    g.restore();
-  }
-
-  /** The weather currently over the world, for the UI to report. */
-  get weatherSummary(): Array<{ kind: CloudKind; count: number }> {
-    const tally = new Map<CloudKind, number>();
-    for (const c of this.clouds) tally.set(c.kind, (tally.get(c.kind) ?? 0) + 1);
-    return [...tally.entries()]
-      .map(([kind, count]) => ({ kind, count }))
-      .sort((a, b) => b.count - a.count);
-  }
-
   private drawEmbers(g: CanvasRenderingContext2D, dt: number): void {
     const { cx, cy, rx, ry } = this;
     // Keep a steady population of rising sparks.
@@ -3277,50 +2950,3 @@ function planetTypeRGB(type: string): RGB {
   }
 }
 
-/**
- * Pre-render a puffy cloud into its own small canvas (drawn once, blitted often).
- *
- * Tinted by `kind`, so a storm head, an ash plume and a fair-weather puff are
- * visibly different objects rather than the same white blob everywhere.
- */
-function makeCloudSprite(
-  w: number, h: number, seed: number, kind: CloudKind = 'cumulus',
-): HTMLCanvasElement {
-  w = Math.max(6, w); h = Math.max(3, h);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const g = c.getContext('2d')!;
-  const s = new Stream(seed);
-  const prof = CLOUD_PROFILES[kind];
-  const B = prof.body;
-
-  // Storm and ash heads are taller and lumpier; haze and nebula are wispier.
-  const puffs = kind === 'storm' || kind === 'ash' ? 5 + Math.floor(s.next() * 4)
-              : kind === 'ice_haze' || kind === 'nebula' ? 2 + Math.floor(s.next() * 3)
-              : 3 + Math.floor(s.next() * 4);
-
-  for (let i = 0; i < puffs; i++) {
-    const px = s.range(w * 0.18, w * 0.82);
-    const py = s.range(h * 0.42, h * 0.72);
-    const pr = s.range(h * 0.32, h * 0.62);
-    const grad = g.createRadialGradient(px, py, 0, px, py, pr);
-    grad.addColorStop(0,   css(B, 0.95));
-    grad.addColorStop(0.6, css(shade(B, 0.90), 0.62));
-    grad.addColorStop(1,   css(B, 0));
-    g.fillStyle = grad;
-    g.beginPath(); g.arc(px, py, pr, 0, Math.PI * 2); g.fill();
-  }
-
-  // Flat, shaded underside — reads as a cloud rather than a blob. Heavier on
-  // storm and ash, which is most of what makes them look laden.
-  const underStrength = kind === 'storm' ? 0.68 : kind === 'ash' ? 0.62 : 0.45;
-  g.globalCompositeOperation = 'source-atop';
-  const under = g.createLinearGradient(0, h * 0.5, 0, h);
-  under.addColorStop(0, css(prof.under, 0));
-  under.addColorStop(1, css(prof.under, underStrength));
-  g.fillStyle = under;
-  g.fillRect(0, 0, w, h);
-  g.globalCompositeOperation = 'source-over';
-
-  return c;
-}
