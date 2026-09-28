@@ -9,14 +9,56 @@ import { WX_NX, WX_NY, WX_N, weatherRng, type ClimateSources } from './WeatherCl
 
 export const WX_DT = 0.25;
 export const WX_WARMUP = 200;
+/** Seconds per warm-up step. */
+export const WX_WARMUP_DT = 1;
 /** Below this effective temperature, precipitation is snow. */
 export const COLD = 0.3;
 /** Rate at which sub-saturated air re-evaporates cloud, per second per unit deficit. */
 export const CLOUD_EVAP = 1.5;
 
+/**
+ * Shower cycle. A cell starts to rain when its cloud passes RAIN_ON and keeps
+ * raining until the cloud is drained below RAIN_OFF; then it is dry until the
+ * cloud builds back up. Without the hysteresis, rising-air cells sat just above
+ * one threshold at equilibrium and rained for the whole hour.
+ */
+export const RAIN_ON = 0.55;
+export const RAIN_OFF = 0.35;
+export const RAIN_RATE = 0.35;
+/** Shower state above which rain continues (onset sets it to 1). */
+export const SHOWER_ALIVE = 0.3;
+/** Seconds for the shower state to decay from 1 to 0; a shower lasts ~0.7 of this. */
+export const SHOWER_LIFE = 90;
+/** Lee strength per unit downslope: raises shower onset by this fraction. */
+export const OROGRAPHIC_DESCENT = 6;
+/** Shower decay per second per unit lee strength. */
+export const LEE_KILL = 2;
+/** Seconds for fohn dryness to fade as the air moves on. */
+export const FOHN_LIFE = 10;
+/** Shower lifetime multiplier per unit storm pressure. */
+export const STORM_SHOWER = 2;
+/** Initial vapour as a fraction of the no-lift saturation cap. */
+export const VAPOUR_START = 0.6;
+/** A shower drains vapour down to this fraction of the saturation cap. */
+export const RAIN_DRY = 0.8;
+/**
+ * Day cycle. Rising air is scaled by local solar heating, weak at night and
+ * strong in the afternoon, averaging 1 over a day. Without it the equatorial
+ * rising band never let up and its cells rained for the whole hour. Weighted
+ * to the tropics (1 at the equator, 0 from 30 degrees): tropical convection
+ * follows the sun; mid-latitude weather is frontal and rides the band wind.
+ */
+export const DIURNAL = 0.6;
+/** Seconds per day when nothing drives the sun (headless runs); the host sets `sunLon`. */
+export const WX_DAY = 45;
+
 export interface SimAblation {
   uplift?: boolean; vertical?: boolean; cold?: boolean;
   stress?: boolean; wind?: boolean; anomalies?: boolean;
+  /** No shower cycle: rain whenever cloud exceeds one threshold (the old sim). */
+  cycle?: boolean;
+  /** No day cycle: rising air is the same at noon and midnight. */
+  diurnal?: boolean;
 }
 
 export const WK = { CLEAR: 0, CUMULUS: 1, STORM: 2, ICE: 3, ASH: 4, SMOG: 5 } as const;
@@ -57,7 +99,17 @@ export class WeatherSim {
   readonly precip = new Float32Array(WX_N);
   readonly convection = new Float32Array(WX_N);
   readonly snow = new Uint8Array(WX_N);
+  /**
+   * Shower state, 0-1; a shower is under way where it is above 0.5. Continuous
+   * so it can be advected bilinearly: a 0/1 flag copied from the nearest source
+   * cell never moved, because the air moves ~0.14 cells per step.
+   */
+  raining = new Float32Array(WX_N);
+  /** Fohn dryness, 0+: air that came down a slope. Advected; suppresses showers. */
+  dryness = new Float32Array(WX_N);
   time = 0;
+  /** Grid longitude of the subsolar point, radians. The host sets it each frame. */
+  sunLon = 0;
   anomaly: Anomaly | null = null;
   anomalyCount = 0;
 
@@ -65,12 +117,16 @@ export class WeatherSim {
   private nc = new Float32Array(WX_N);
   private na = new Float32Array(WX_N);
   private ns = new Float32Array(WX_N);
+  private nr = new Float32Array(WX_N);
+  private nd = new Float32Array(WX_N);
   private nextAnomaly = 0;
   /** Per-row constants of step(), rebuilt when the climate object changes. */
   private rowU = new Float64Array(WX_NY);
   private rowV = new Float64Array(WX_NY);
   private rowEnv = new Float64Array(WX_NY);
   private rowCell = new Float64Array(WX_NY);
+  private rowCos = new Float64Array(WX_NY);
+  private rowTrop = new Float64Array(WX_NY);
   private rowFor: ClimateSources | null = null;
   private anomalyRng: () => number = Math.random;
 
@@ -83,8 +139,14 @@ export class WeatherSim {
     for (const f of [this.cloud, this.ash, this.smog, this.prevCloud, this.prevAsh, this.prevSmog,
                      this.precip, this.convection]) f.fill(0);
     this.snow.fill(0);
-    for (let k = 0; k < WX_N; k++) this.vapour[k] = 0.3 * (0.18 + 0.7 * this.climate.temp[k]);
+    this.raining.fill(0);
+    this.dryness.fill(0);
+    // Start near saturation: from 30% a dry storm world (seed 99) took ~80 s to
+    // rain at all, past the 50 s warm-up, so a new planet opened rainless.
+    for (let k = 0; k < WX_N; k++) this.vapour[k] = VAPOUR_START * (0.18 + 0.7 * this.climate.temp[k]);
     this.time = 0;
+    // Each world's day starts at its own hour, so two seeds do not share a sky.
+    this.sunLon = (this.climate.personality.detailOffset / WX_NX) * Math.PI * 2;
     this.anomaly = null;
     this.anomalyCount = 0;
     this.anomalyRng = weatherRng(this.climate.personality.anomalySeed);
@@ -136,6 +198,10 @@ export class WeatherSim {
       const lat = latOf(j), alat = Math.abs(lat);
       this.rowEnv[j] = Math.max(0, 1 - Math.abs(alat - 0.95) / 0.4);
       this.rowCell[j] = 0.85 * Math.cos(6 * lat);
+      this.rowCos[j] = Math.cos(lat);
+      // Tropics only, fading to nothing at 30 degrees.
+      const tr = 1 - alat / (Math.PI / 6);
+      this.rowTrop[j] = tr > 0 ? tr : 0;
     }
     this.rowFor = this.climate;
   }
@@ -149,14 +215,15 @@ export class WeatherSim {
 
   step(dt = WX_DT): void {
     this.time += dt;
+    this.sunLon -= (Math.PI * 2 / WX_DAY) * dt;   // the sun moves west
     const c = this.climate;
-    const { nv, nc, na, ns } = this;
+    const { nv, nc, na, ns, nr, nd } = this;
 
     // Semi-Lagrangian advection: trace back along the wind, sample bilinearly.
     // windU and sampleField are inlined by hand (same expressions, bit-identical
     // results): as out-of-line calls in this long loop each returned double
     // was boxed, ~130 KB of garbage per step. tools/weatherCheck measures the heap.
-    const vap = this.vapour, cl = this.cloud, as = this.ash, sm = this.smog;
+    const vap = this.vapour, cl = this.cloud, as = this.ash, sm = this.smog, rain = this.raining, dry = this.dryness;
     if (this.rowFor !== c) this.buildRows();
     const rowU = this.rowU, rowV = this.rowV;
     const rowPhase = c.personality.rowPhase, an = this.anomaly;
@@ -183,10 +250,19 @@ export class WeatherSim {
               + as[r1 + a] * (1 - fx) * fy + as[r1 + b] * fx * fy;
         ns[k] = sm[r0 + a] * (1 - fx) * (1 - fy) + sm[r0 + b] * fx * (1 - fy)
               + sm[r1 + a] * (1 - fx) * fy + sm[r1 + b] * fx * fy;
+        nr[k] = rain[r0 + a] * (1 - fx) * (1 - fy) + rain[r0 + b] * fx * (1 - fy)
+              + rain[r1 + a] * (1 - fx) * fy + rain[r1 + b] * fx * fy;
+        nd[k] = dry[r0 + a] * (1 - fx) * (1 - fy) + dry[r0 + b] * fx * (1 - fy)
+              + dry[r1 + a] * (1 - fx) * fy + dry[r1 + b] * fx * fy;
       }
     }
 
     const pressure = this.ablate.stress ? 0 : c.stormPressure;
+    const noCycle = !!this.ablate.cycle, noDiurnal = !!this.ablate.diurnal;
+    // Stormy air (type or biosphere stress) keeps showers going longer. Starting
+    // them sooner instead drained cloud before it could build into storms.
+    const showerDecay = 1 / (SHOWER_LIFE * (1 + STORM_SHOWER * pressure));
+    const sunLon = this.sunLon, lonStep = Math.PI * 2 / WX_NX;
     const waveNumber = c.personality.waveNumber, noVertical = !!this.ablate.vertical;
     // Clamps in the cell loop are ternaries, not Math.min/max: V8's mid tier
     // (Maglev) boxes Math.min/max results, ~60 KB of garbage per step whenever
@@ -203,6 +279,16 @@ export class WeatherSim {
         const up = baseU >= 0 ? 1 : -1;
         const slope = (c.elev[j * WX_NX + wrapI(i + up)] - c.elev[j * WX_NX + wrapI(i - up)]) * 0.5;
         const oro = this.ablate.uplift ? 0 : slope > 0 ? slope * 30 : 0;
+        // Down the slope the air sinks and warms (fohn) and stays dry downstream
+        // for a while (dryness, advected, fading over FOHN_LIFE): no new showers,
+        // and ones riding over the ridge die out. Applied to the SHOWERS, not the
+        // cloud: evaporating cloud in the lee pinned cloud edges to the terrain
+        // and cost ~13 points of drift-with-the-wind. Without it, wind-carried
+        // showers rained on the lee as hard as upwind.
+        const descent = this.ablate.uplift || slope >= 0 ? 0 : -slope * OROGRAPHIC_DESCENT;
+        const d0 = nd[k] * (1 - dt / FOHN_LIFE);
+        const lee = descent > d0 ? descent : d0 > 0 ? d0 : 0;
+        nd[k] = lee;
 
         let conv = T * (0.4 + c.water[k] * 0.6) * 0.5 * (1 + 2.5 * pressure);
         if (this.anomaly?.kind === 'supercell' && this.near(i, j, 2)) conv *= 3;
@@ -210,7 +296,11 @@ export class WeatherSim {
 
         const vm = noVertical ? 0
           : cellTerm + 0.9 * env * Math.sin((i - baseU * this.time) * Math.PI * 2 / WX_NX * waveNumber + j * 0.35);
-        const rawLift = 0.8 * vm + oro + conv * 0.3;
+        // Local solar heating: 0 at night, peak at noon; mean over a day 1/pi.
+        const sunCos = Math.cos(i * lonStep - sunLon) * this.rowCos[j];
+        const heat = noDiurnal ? 1
+          : 1 + this.rowTrop[j] * DIURNAL * (Math.PI * (sunCos > 0 ? sunCos : 0) - 1);
+        const rawLift = (0.8 * vm + oro + conv * 0.3) * heat;
         const lift = rawLift > 0.8 ? 0.8 : rawLift < -0.6 ? -0.6 : rawLift;
         const rawCap = (0.18 + 0.7 * T) * (1 - lift);
         const cap = rawCap > 0.05 ? rawCap : 0.05;
@@ -224,7 +314,30 @@ export class WeatherSim {
         }
 
         let p = 0;
-        if (nc[k] > 0.42) { p = (nc[k] - 0.42) * 0.35 * dt; nc[k] -= p; }
+        if (noCycle) {
+          if (nc[k] > 0.42) { p = (nc[k] - 0.42) * 0.35 * dt; nc[k] -= p; }
+        } else {
+          // Onset needs a built-up cloud (RAIN_ON). Once under way, a shower
+          // rides the wind over any cloud above RAIN_OFF until it has aged out
+          // (SHOWER_LIFE). A 0.5 cut on the blended state flickered (4 s median
+          // spells); refreshing it to 1 while raining let windward slopes under
+          // steady inflow rain for the whole hour.
+          let r = nr[k];
+          if (r <= SHOWER_ALIVE && nc[k] > RAIN_ON * (1 + lee)) r = 1;
+          if (r > SHOWER_ALIVE) {
+            r -= dt * (showerDecay + lee * LEE_KILL);
+            const pr = (nc[k] - RAIN_OFF * 0.5) * RAIN_RATE * dt;
+            p = pr > 0 ? pr : 0;
+            nc[k] -= p;
+            // The downdraft dries the column too. Without this, a vapour pool
+            // under steady uplift refilled the cloud as fast as it rained out
+            // and ~10% of cells still rained all hour.
+            const dv = (nv[k] - cap * RAIN_DRY) * RAIN_RATE * dt;
+            if (dv > 0) { nv[k] -= dv; p += dv; }
+            if (nc[k] < RAIN_OFF) r = 0;
+          }
+          nr[k] = r;
+        }
         this.precip[k] = p / dt;
         this.snow[k] = !this.ablate.cold && T < COLD ? 1 : 0;
         if (this.anomaly?.kind === 'clearing' && this.near(i, j, 3)) nc[k] *= clearing;
@@ -244,6 +357,8 @@ export class WeatherSim {
     t = this.prevAsh; this.prevAsh = this.ash; this.ash = na; this.na = t;
     t = this.prevSmog; this.prevSmog = this.smog; this.smog = ns; this.ns = t;
     t = this.vapour; this.vapour = nv; this.nv = t;
+    const tr = this.raining; this.raining = nr; this.nr = tr;
+    const td = this.dryness; this.dryness = nd; this.nd = td;
 
     this.scheduleAnomaly();
   }
@@ -261,8 +376,13 @@ export class WeatherSim {
     this.nextAnomaly = this.time + 300 + r() * 300;
   }
 
+  /**
+   * Spin up to the climate's steady state. Coarse steps (WX_WARMUP_DT): at the
+   * frame step, 200 steps (50 s) ended well short of equilibrium (ocean cloud
+   * 0.27 vs 0.33 settled), so a new planet opened on a transient sky.
+   */
   warmUp(steps = WX_WARMUP): void {
-    for (let n = 0; n < steps; n++) this.step(WX_DT);
+    for (let n = 0; n < steps; n++) this.step(WX_WARMUP_DT);
   }
 }
 

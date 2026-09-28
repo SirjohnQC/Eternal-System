@@ -1829,6 +1829,9 @@ export class HabitableCutawayEngine {
   private weatherSim: WeatherSim | null = null;
   private weatherPainter: WeatherPainter | null = null;
   private weatherAcc = 0;
+  /** Grid longitude at the disc centre, and +1 when screen +x is east. */
+  private weatherFocusLon = 0;
+  private weatherEast = 1;
   private atmoImage: ImageData | null = null;
   private fluidImage: ImageData | null = null;
   private surfaceBakeOpts: CutawayBakeOpts | null = null;
@@ -1892,6 +1895,17 @@ export class HabitableCutawayEngine {
     if (opts.weather && grid && opts.planetType !== 'gas') {
       const lut = buildWeatherLut(this.geom, opts.discToGrid,
         (row, col, r) => opts.liftOf(opts.smoothElevation(grid, row, col) - opts.rimFalloff(r)));
+      // Orientation for the sun: which grid longitude faces the viewer, and
+      // which way east runs on screen, read off the same projection.
+      const lonOf = (col: number) => (col + 0.5) / GRID_SIZE * Math.PI * 2;
+      const c0 = opts.discToGrid(0, 0), cE = opts.discToGrid(0.2, 0);
+      this.weatherFocusLon = c0 ? lonOf(c0.col) : 0;
+      if (c0 && cE) {
+        const d = ((cE.col - c0.col) % GRID_SIZE + GRID_SIZE * 1.5) % GRID_SIZE - GRID_SIZE / 2;
+        this.weatherEast = d < 0 ? -1 : 1;
+      } else {
+        this.weatherEast = 1;
+      }
       this.weatherSim = new WeatherSim(opts.weather);
       this.weatherSim.warmUp(WX_WARMUP);
       this.weatherPainter = new WeatherPainter(lut, opts.weather, (opts.maxLift ?? 18) + 6, opts.seed);
@@ -1950,6 +1964,10 @@ export class HabitableCutawayEngine {
         paintDayNight(fluids, this.geom, sunAzimuth, layerBob);
         if (this.weatherSim && this.weatherPainter) {
           // At most 4 steps per frame: a refocused tab hands us seconds of dt.
+          // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
+          // the subsolar point is a quarter turn from the centre toward +x, and
+          // it moves toward -x as the day turns.
+          this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
           this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
           while (this.weatherAcc >= WX_DT) {
             this.weatherAcc -= WX_DT;

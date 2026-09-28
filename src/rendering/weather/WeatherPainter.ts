@@ -6,7 +6,7 @@
  * the frame rate hitched (2026-09-26). tools/weatherCheck measures the heap.
  */
 import { CELL_COLS, CELL_ROWS, WX_NX, WX_NY, WX_N, type ClimateSources } from './WeatherClimate';
-import { WeatherSim, WX_DT, WK, kindAt, fieldIndex } from './WeatherSim';
+import { WeatherSim, WX_DT, WK, kindAt, fieldIndex, latOf } from './WeatherSim';
 
 export interface ImageDataLike { width: number; height: number; data: Uint8ClampedArray }
 
@@ -52,6 +52,7 @@ export function buildWeatherLut(
 }
 
 const LEVEL_ALPHA = [0, 0.5, 0.75, 0.95];
+const CLOUD_GAIN = 1.9;
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
 /** body rgb, under rgb — per WK kind. Carried over from the legacy CLOUD_PROFILES. */
 const PAL = [
@@ -145,6 +146,14 @@ export class WeatherPainter {
   private dens = new Float32Array(WX_N);
   private kind = new Uint8Array(WX_N);
   private shift = new Float32Array(WX_NY);
+  /**
+   * Polar blend per row, 0 below 55 degrees, 1 from 80. Longitude columns meet
+   * at the pole, so any cloud difference between them drew as radial spokes (a
+   * pinwheel on every world once the warm-up reached steady state). Density
+   * blends toward the row mean and the detail texture toward its mean.
+   */
+  private poleW = new Float32Array(WX_NY);
+  private detMean = 0.5;
   private detail = new Float32Array(DT_W * DT_H);
   /** Nearest field cell of each lookup pixel. Fixed, so computed once. */
   private cell: Int32Array;
@@ -165,6 +174,10 @@ export class WeatherPainter {
     this.cell = new Int32Array(lut.count);
     for (let n = 0; n < lut.count; n++) this.cell[n] = fieldIndex(lut.fx[n], lut.fy[n]);
     this.bakeDetail(seed);
+    for (let j = 0; j < WX_NY; j++) {
+      const w = (Math.abs(latOf(j)) * 180 / Math.PI - 55) / 25;
+      this.poleW[j] = w < 0 ? 0 : w > 1 ? 1 : w;
+    }
   }
 
   setClimate(c: ClimateSources): void { this.climate = c; }
@@ -189,9 +202,14 @@ export class WeatherPainter {
       const a = lattice(i, j, pw), b = lattice(i + 1, j, pw), c = lattice(i, j + 1, pw), d = lattice(i + 1, j + 1, pw);
       return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
     };
+    let sq = 0;
     for (let y = 0; y < DT_H; y++) for (let x = 0; x < DT_W; x++) {
-      this.detail[y * DT_W + x] = 0.65 * octave(x, y, 8) + 0.35 * octave(x, y, 4);
+      const v = 0.65 * octave(x, y, 8) + 0.35 * octave(x, y, 4);
+      this.detail[y * DT_W + x] = v;
+      sq += v * v;
     }
+    // RMS, so dens * (0.2 + 1.6 det^2) keeps its mean where detail is faded out.
+    this.detMean = Math.sqrt(sq / (DT_W * DT_H));
   }
 
   private spawn(n: number, kind: number): void {
@@ -269,7 +287,17 @@ export class WeatherPainter {
       const s = sim.prevSmog[k] + (sim.smog[k] - sim.prevSmog[k]) * t;
       const kind = kindAt(sim, k);
       this.kind[k] = kind;
-      this.dens[k] = (c * 1.5 + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
+      // Cloud gain 1.9 (was 1.5): the shower cycle rains more water out, so the
+      // mean cloud field is thinner and ocean skies fell under the readability floor.
+      this.dens[k] = (c * CLOUD_GAIN + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
+    }
+    for (let j = 0; j < WX_NY; j++) {
+      const w = this.poleW[j];
+      if (w === 0) continue;
+      let m = 0;
+      for (let i = 0; i < WX_NX; i++) m += this.dens[j * WX_NX + i];
+      m /= WX_NX;
+      for (let i = 0; i < WX_NX; i++) { const k = j * WX_NX + i; this.dens[k] += (m - this.dens[k]) * w; }
     }
     if (sim !== this.bandSim || sim.climate !== this.bandClimate) {
       for (let j = 0; j < WX_NY; j++) this.bandU[j] = sim.baseWindU(j);
@@ -362,7 +390,8 @@ export class WeatherPainter {
       let r1 = (j0 + 1 < 0 ? 0 : j0 + 1 > WX_NY - 1 ? WX_NY - 1 : j0 + 1) * WX_NX;
       const dens = den[r0 + a] * (1 - tx) * (1 - ty) + den[r0 + b] * tx * (1 - ty)
                  + den[r1 + a] * (1 - tx) * ty + den[r1 + b] * tx * ty;
-      const dd = dens * (0.2 + 1.6 * det * det);
+      const pw = this.poleW[jr], dEff = det + (this.detMean - det) * pw;
+      const dd = dens * (0.2 + 1.6 * dEff * dEff);
       if (dd < 0.34) continue;
       const bay = BAYER4[(y & 3) * 4 + (x & 3)];
       const lv = (dd > 0.39 ? 1 : (dd - 0.34) / 0.05 > bay ? 1 : 0)

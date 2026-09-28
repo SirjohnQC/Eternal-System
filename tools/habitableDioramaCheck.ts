@@ -385,6 +385,19 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     const kept = !!before && wx.weatherSim.cloud.every((v: number, k: number) => v === before[k]);
     const applied = wx.weatherSim?.climate === next && wx.weatherPainter?.climate === next;
     check('climate update keeps the sky', kept && applied, `sky kept ${kept}, sources applied ${applied}`);
+
+    // The sim's sun is the one on screen: azimuth 0 lights the +x limb, so the
+    // subsolar longitude is the grid longitude seen near disc (+0.9, 0).
+    const sunAt = (az: number) => {
+      engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 1 / 60, elapsed: 50, bg: makeCanvas(VW, VH),
+        sunAzimuth: az, drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
+      return wx.weatherSim.sunLon as number;
+    };
+    const angDiff = (a: number, b: number) => Math.abs(((a - b) % (2 * Math.PI) + 3 * Math.PI) % (2 * Math.PI) - Math.PI);
+    const lonAt = (dx: number) => { const p = discToGrid(dx, 0)!; return (p.col + 0.5) / GRID_SIZE * Math.PI * 2; };
+    const offE = angDiff(sunAt(0), lonAt(0.9)), offW = angDiff(sunAt(Math.PI), lonAt(-0.9));
+    check('weather sun matches the lit limb', offE < 0.35 && offW < 0.35,
+      `sun 0: ${offE.toFixed(2)} rad from the +x limb; sun pi: ${offW.toFixed(2)} rad from the -x limb`);
   }
   // Genome reach: the air a host passes must be the air that gets painted.
   // Hand-built channels 180 degrees apart, so the verdict depends on the
