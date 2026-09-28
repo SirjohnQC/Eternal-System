@@ -143,7 +143,6 @@ export class WeatherPainter {
   readonly stats = { drawn: 0, midOrDense: 0 };
 
   private dens = new Float32Array(WX_N);
-  private cloudNow = new Float32Array(WX_N);
   private kind = new Uint8Array(WX_N);
   private shift = new Float32Array(WX_NY);
   private detail = new Float32Array(DT_W * DT_H);
@@ -268,7 +267,6 @@ export class WeatherPainter {
       const c = sim.prevCloud[k] + (sim.cloud[k] - sim.prevCloud[k]) * t;
       const a = sim.prevAsh[k] + (sim.ash[k] - sim.prevAsh[k]) * t;
       const s = sim.prevSmog[k] + (sim.smog[k] - sim.prevSmog[k]) * t;
-      this.cloudNow[k] = c;
       const kind = kindAt(sim, k);
       this.kind[k] = kind;
       this.dens[k] = (c * 1.5 + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
@@ -340,8 +338,8 @@ export class WeatherPainter {
       }
     }
 
-    const acid = this.climate.acid, neb = this.climate.nebula, cell = this.cell;
-    const den = this.dens, now = this.cloudNow, tex = this.detail, shift = this.shift;
+    const acid = this.climate.acid, neb = this.climate.nebula;
+    const den = this.dens, tex = this.detail, shift = this.shift;
     const off = this.climate.personality.detailOffset;
     for (let n = 0; n < lut.count; n++) {
       const x = lut.px[n], y = lut.py[n] - this.cloudLift;
@@ -373,18 +371,24 @@ export class WeatherPainter {
       if (lv === 0) continue;
       this.stats.drawn++;
       if (lv >= 2) this.stats.midOrDense++;
-      const k = cell[n], kind = this.kind[k];
+      // R5: the kind (and so the palette) is picked from the four surrounding
+      // cells by ordered dither on the bilinear weights. The nearest cell's kind
+      // switched cumulus/storm colour along cell edges, in rectangles.
+      const kind = this.kind[(ty > BAYER4[(x & 3) * 4 + (y & 3)] ? r1 : r0) + (tx > bay ? b : a)];
 
-      // sampleField(cloudNow, fx + sunX * 0.35, fy - 0.15), inlined: a thinner
-      // sunward neighbour makes this pixel a lit cloud top.
+      // sampleField(dens, fx + sunX * 0.35, fy - 0.15), inlined: a thinner
+      // sunward neighbour makes this pixel a lit cloud top. R5: compared against
+      // this pixel's own smoothed density, not the nearest cell's raw cloud —
+      // that flipped shading at every cell edge (rectangles) and, over a lone
+      // ash plume with no cloud, never lit anything.
       const sx = fx + sunX * 0.35, sy = fy - 0.15;
       i0 = Math.floor(sx); j0 = Math.floor(sy); tx = sx - i0; ty = sy - j0;
       a = ((i0 % WX_NX) + WX_NX) % WX_NX; b = (a + 1) % WX_NX;
       r0 = (j0 < 0 ? 0 : j0 > WX_NY - 1 ? WX_NY - 1 : j0) * WX_NX;
       r1 = (j0 + 1 < 0 ? 0 : j0 + 1 > WX_NY - 1 ? WX_NY - 1 : j0 + 1) * WX_NX;
-      const sunward = now[r0 + a] * (1 - tx) * (1 - ty) + now[r0 + b] * tx * (1 - ty)
-                    + now[r1 + a] * (1 - tx) * ty + now[r1 + b] * tx * ty;
-      const facing = sunward < now[k];
+      const sunward = den[r0 + a] * (1 - tx) * (1 - ty) + den[r0 + b] * tx * (1 - ty)
+                    + den[r1 + a] * (1 - tx) * ty + den[r1 + b] * tx * ty;
+      const facing = sunward < dens;
 
       let o = kind * 6 + (facing ? 0 : 3);
       let r = PAL[o], g = PAL[o + 1], bl = PAL[o + 2];

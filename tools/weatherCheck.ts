@@ -16,7 +16,7 @@ import {
 import { SEA_LEVEL } from '../src/simulation/PlanetGrid';
 import type { ClimateSources } from '../src/rendering/weather/WeatherClimate';
 import {
-  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, type SimAblation,
+  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
 import {
   WeatherPainter, buildWeatherLut, type WeatherLut,
@@ -507,6 +507,70 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   }
   check('rain lands on the ground under its cloud', offGround === 0, `${offGround} violations`);
   check('painter stays on the face + cloud band', outOfBounds === 0, `${outOfBounds} stray pixels`);
+
+  // R5a: shading follows the cloud, not the field grid. A sharp light/dark jump
+  // between two same-level cloud pixels should sit on a field-cell boundary no
+  // more often than any pixel pair does. Comparing a smoothed sunward sample
+  // against the NEAREST cell's value flipped shading at every cell edge and
+  // tiled clouds into rectangles (seen 2026-09-27 in renders/weather-2026-09-27).
+  const gridBias = (type: string, seed: number) => {
+    const q = painterFor(type, seed);
+    const at = new Int32Array(PW * PH).fill(-1);
+    for (let n = 0; n < q.lut.count; n++) {
+      const y = q.lut.py[n] - 24;
+      if (y >= 0) at[y * PW + q.lut.px[n]] = fieldIndex(q.lut.fx[n], q.lut.fy[n]);
+    }
+    let pairs = 0, pairsB = 0, jumps = 0, jumpsB = 0;
+    const d = q.img.data, lum = (o: number) => d[o] * 0.3 + d[o + 1] * 0.59 + d[o + 2] * 0.11;
+    for (let f = 0; f < 240; f++) {
+      q.painter.pCount = 0; q.frame();
+      if (f % 40) continue;
+      for (let y = 0; y < PH - 1; y++) for (let x = 0; x < PW - 1; x++) {
+        const i = y * PW + x, o = i * 4;
+        if (!d[o + 3] || at[i] < 0) continue;
+        for (const j of [i + 1, i + PW]) {
+          const oj = j * 4;
+          if (d[oj + 3] !== d[o + 3] || at[j] < 0) continue;
+          const b = at[i] !== at[j];
+          pairs++; if (b) pairsB++;
+          if (Math.abs(lum(o) - lum(oj)) > 30) { jumps++; if (b) jumpsB++; }
+        }
+      }
+    }
+    return jumps < 20 ? 1 : (jumpsB / jumps) / (pairsB / pairs);
+  };
+  const biases = ['ocean', 'storm', 'toxic'].flatMap(t => SEEDS.slice(0, 3).map(s => gridBias(t, s)));
+  const worstBias = Math.max(...biases);
+  check('cloud shading ignores the field grid', worstBias < 2,
+    `jumps on cell edges vs chance, worst ${worstBias.toFixed(2)} < 2 (${biases.map(v => v.toFixed(1)).join(' ')})`);
+
+  // R5b: a lone ash plume is lit on the sun side and dark on the far side, not
+  // a dark ring around a lit core (the carbon vent, 2026-09-27).
+  {
+    const q = painterFor('carbon', 7);
+    const s = q.sim;
+    s.cloud.fill(0); s.prevCloud.fill(0); s.smog.fill(0); s.prevSmog.fill(0); s.ash.fill(0); s.prevAsh.fill(0);
+    for (let j = 0; j < WX_NY; j++) for (let i = 0; i < WX_NX; i++) {
+      const r2 = (i - 16) ** 2 + (j - 20) ** 2;
+      s.ash[j * WX_NX + i] = s.prevAsh[j * WX_NX + i] = 0.9 * Math.exp(-r2 / 4);
+    }
+    q.painter.pCount = 0;
+    q.painter.prepare(s, 1, 0);
+    q.img.data.fill(0);
+    q.painter.paintClouds(q.img, 0.6, 1);
+    const lums: { x: number; l: number }[] = [];
+    const d = q.img.data;
+    for (let i = 0; i < PW * PH; i++) if (d[i * 4 + 3]) lums.push({ x: i % PW, l: d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11 });
+    let cx = 0; for (const p of lums) cx += p.x; cx /= Math.max(1, lums.length);
+    const sorted = lums.map(p => p.l).sort((a, b) => a - b);
+    const mid = sorted[sorted.length >> 1] ?? 0;
+    const dark = lums.filter(p => p.l < mid - 10), lit = lums.filter(p => p.l > mid + 10);
+    // sunAzimuth 0.6: the sun is toward +x.
+    const darkSunSide = dark.filter(p => p.x > cx).length / Math.max(1, dark.length);
+    const litSunSide = lit.filter(p => p.x > cx).length / Math.max(1, lit.length);
+    check('lone plume: lit toward the sun, dark away', lums.length > 30 && lit.length > 0.1 * lums.length && darkSunSide < 0.3 && litSunSide > 0.7,
+      `${lums.length} px, lit ${lit.length}, dark on sun side ${(darkSunSide * 100).toFixed(0)}%, lit on sun side ${(litSunSide * 100).toFixed(0)}%`);
+  }
 
   // No per-frame allocation.
   const gcFn = (globalThis as any).gc as (() => void) | undefined;
