@@ -577,12 +577,27 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   if (!gcFn) {
     check('no per-frame allocation', false, 'run with node --expose-gc');
   } else {
+    // Best of three windows after a long warm-up. One window after 100 frames
+    // failed ~1 run in 5 (+146 KB vs a steady +36 KB): the optimising compiler
+    // tiering up mid-window puts code and feedback on the heap. That happens
+    // once; a real per-frame allocation shows in every window.
+    const growth = (frame: () => void) => {
+      for (let f = 0; f < 1000; f++) frame();
+      let best = Infinity;
+      for (let w = 0; w < 3; w++) {
+        gcFn(); const h0 = process.memoryUsage().heapUsed;
+        for (let f = 0; f < 1000; f++) frame();
+        best = Math.min(best, process.memoryUsage().heapUsed - h0);
+      }
+      return best;
+    };
     const q = painterFor('ocean', 7);
-    for (let f = 0; f < 100; f++) q.frame();
-    gcFn(); const h0 = process.memoryUsage().heapUsed;
-    for (let f = 0; f < 1000; f++) q.frame();
-    const grew = process.memoryUsage().heapUsed - h0;
-    check('no per-frame allocation', grew < 64 * 1024, `heap +${(grew / 1024).toFixed(1)} KB over 1000 frames`);
+    const grew = growth(q.frame);
+    check('no per-frame allocation', grew < 64 * 1024, `heap +${(grew / 1024).toFixed(1)} KB per 1000 frames, best of 3`);
+    const sink: { v: Float32Array | null } = { v: null };
+    const q2 = painterFor('ocean', 7);
+    const grewCtl = growth(() => { q2.frame(); sink.v = new Float32Array(16); });
+    check('  control: one small array per frame', grewCtl >= 64 * 1024, `heap +${(grewCtl / 1024).toFixed(1)} KB`);
   }
 
   // Headless cost (informational — the gate is measured in the preview, Task 6).
