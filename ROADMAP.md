@@ -1325,6 +1325,14 @@ Cost: the surface bake went 4.42ms → 12.1ms, measured in-page. It runs once ev
 4 seconds, not per frame; the per-frame path is unchanged at 0.19ms.
 
 ### 22f — Cloud engine ✅
+
+> **Superseded 2026-09-28** by the weather sim (`src/rendering/weather/`,
+> spec `docs/superpowers/specs/2026-09-26-weather-sim-design.md`). Everything
+> below was the legacy Canvas path, and it was dead since the cutaway became the
+> only renderer (`usesCutaway` is always true). `cloudMixFor`, `buildClouds`,
+> `drawClouds` and `makeCloudSprite` are deleted. The same drivers (stress,
+> industry, oxygen, nebula, planet type) now feed `IsoDioramaRenderer.climateFor`
+> → `buildClimate`; `tools/weatherCheck.ts` proves each against an ablation.
 - [x] Seven cloud kinds — cumulus, storm, acid, pollution, ash, nebula, ice haze
       — each with its own colour, density, size and behaviour
 - [x] Four kinds of precipitation — rain, acid rain, snow, ashfall — falling from
