@@ -1178,7 +1178,7 @@ export class IsoDioramaRenderer {
       smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
       maxLift: this.maxLift,
       lush: this.lushFor(bio),
-      weatherMix: this.cloudMixFor(),
+      weather: null, // wired in the host task
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
     });
@@ -2502,16 +2502,17 @@ export class IsoDioramaRenderer {
           this.drawSiblings(g, this.elapsed);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
-        drawOverlays: (g) => {
+        drawSurfaceOverlays: (g) => {
           this.drawCityLights(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
+        },
+        drawUiOverlays: (g) => {
           this.drawTileMarkers(g, this.elapsed);
           this.drawDivineEffects(g, dt);
         },
         drawNearMoons: (g) => {
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), true);
         },
-        weatherMix: this.cloudMixFor(),
       });
       this.displayCtx.drawImage(this.buf, 0, 0);
       return;

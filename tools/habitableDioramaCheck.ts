@@ -144,6 +144,7 @@ const {
   planVolcanoChimneys,
 } = await import('../src/rendering/HabitableCutawayEngine');
 const type = await import('../src/rendering/HabitableCutawayEngine');
+const { buildClimate } = await import('../src/rendering/weather/WeatherClimate');
 type CutawayBakeOpts = Parameters<typeof type.paintCutawaySurface>[1];
 
 const VW = 480, VH = 320;
@@ -331,6 +332,10 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     w: VW, h: VH, seed: opts.seed, grid, planetType,
     discToGrid, rimFalloff, liftOf, smoothElevation,
     maxLift: MAX_LIFT, lush: 0.6,
+    weather: buildClimate({
+      grid, planetType, seed: 0xbeef, lush: 0.6, extinctionPressure: 0.1,
+      oxygenLevel: 0.6, civLevel: 0, inNebula: false,
+    }),
   });
   check('class bake occupancy', engine.occupancy.some(v => v === 1), 'has water');
   const classHit = engine.hitTest(engine.geom.cx, engine.geom.cyTop);
@@ -340,8 +345,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
-    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
-    weatherMix: [],
+    drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
         `${frameCtx.putImageDataCalls} live putImageData calls`);
@@ -352,11 +356,36 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: 1.1, bg: makeCanvas(VW, VH),
-    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
-    weatherMix: [],
+    drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('frame reuses live ImageData', frameCtx.createImageDataCalls === imageAllocations,
         `${frameCtx.createImageDataCalls - imageAllocations} new frame allocations`);
+
+  // Weather replaces the wisps.
+  {
+    const wx = engine as any;
+    check('weather sim built at bake', wx.weatherSim != null && wx.weatherPainter != null, '');
+    const wImg = wx.weatherImage as { data: Uint8ClampedArray } | null;
+    const painted = !!wImg && wImg.data.some((v: number, i: number) => i % 4 === 3 && v > 0);
+    check('weather layer paints something', painted, planetType);
+
+    // Review focus 1: a huge dt (tab refocused) runs at most 4 steps.
+    const t0 = wx.weatherSim?.time ?? 0;
+    engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 30, elapsed: 40, bg: makeCanvas(VW, VH),
+      drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
+    const ran = Math.round(((wx.weatherSim?.time ?? 0) - t0) / 0.25);
+    check('refocus runs at most 4 sim steps', ran >= 1 && ran <= 4, `${ran} steps`);
+
+    // Review focus 3: new sources keep the sky.
+    // Also require the new sources to have landed: a no-op would keep the sky too.
+    const before = wx.weatherSim?.cloud.slice();
+    const next = buildClimate({ grid, planetType, seed: 0xbeef, lush: 0.9,
+      extinctionPressure: 0.5, oxygenLevel: 0.6, civLevel: 5, inNebula: false });
+    (engine as any).setWeatherClimate?.(next);
+    const kept = !!before && wx.weatherSim.cloud.every((v: number, k: number) => v === before[k]);
+    const applied = wx.weatherSim?.climate === next && wx.weatherPainter?.climate === next;
+    check('climate update keeps the sky', kept && applied, `sky kept ${kept}, sources applied ${applied}`);
+  }
   // Genome reach: the air a host passes must be the air that gets painted.
   // Hand-built channels 180 degrees apart, so the verdict depends on the
   // wiring, not on how far two particular seeds happen to drift.
@@ -365,8 +394,8 @@ for (const planetType of ['ocean', 'rocky'] as const) {
       engine.frame({
         g: frameCtx as unknown as CanvasRenderingContext2D,
         dt: 1 / 60, elapsed: 1.2, bg: makeCanvas(VW, VH),
-        drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
-        weatherMix: [], air,
+        drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
+        air,
       } as any);
       const img = (engine as any).atmoImage as { width: number; data: Uint8ClampedArray };
       const gm = engine.geom;
@@ -724,8 +753,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: Math.PI / 1.4, bg: makeCanvas(VW, VH),
-    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
-    weatherMix: [],
+    drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('hitTest stays on planted surface',
         JSON.stringify(engine.hitTest(engine.geom.cx, engine.geom.cyTop)) === JSON.stringify(classHit)
@@ -795,8 +823,7 @@ for (const planetType of SMOKE_TYPES) {
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
-    drawFarSpace: () => {}, drawOverlays: () => {}, drawNearMoons: () => {},
-    weatherMix: [],
+    drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check(`${planetType} frame composites`, frameCtx.putImageDataCalls === 0,
         `${frameCtx.putImageDataCalls} live putImageData`);
@@ -867,6 +894,48 @@ for (const planetType of SMOKE_TYPES) {
     if (a[oa] !== b[ob] || a[oa + 1] !== b[ob + 1] || a[oa + 2] !== b[ob + 2] || a[oa + 3] !== b[ob + 3]) diff++;
   }
   check('water does not re-roll when the body moves', n > 0 && diff === 0, `${diff}/${n} water px differ`);
+}
+
+// ─── Weather across bakes ─────────────────────────────────────────────────────
+{
+  console.log('  ── weather across bakes ──');
+  const grid = generatePlanetGrid('ocean', 0xbeef, null, null);
+  const base = {
+    discToGrid: makeProjection(0, 0), rimFalloff, liftOf, smoothElevation, maxLift: MAX_LIFT, lush: 0.6,
+  };
+  const climate = (seed: number) => buildClimate({ grid, planetType: 'ocean', seed, lush: 0.6,
+    extinctionPressure: 0.1, oxygenLevel: 0.6, civLevel: 0, inNebula: false });
+  const noop = () => {};
+  const frameIn = (f: number) => ({ g: makeCanvas(VW, VH).getContext(), dt: 1 / 60, elapsed: f / 60,
+    bg: makeCanvas(VW, VH), drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop }) as any;
+
+  // Review focus 2: planet A's sky must not survive into planet B.
+  const a = new HabitableCutawayEngine();
+  a.bake({ w: VW, h: VH, seed: 1, grid, planetType: 'ocean', ...base, weather: climate(1) } as any);
+  for (let f = 0; f < 120; f++) a.frame(frameIn(f));
+  a.bake({ w: VW, h: VH, seed: 2, grid, planetType: 'ocean', ...base, weather: climate(2) } as any);
+  const fresh = new HabitableCutawayEngine();
+  fresh.bake({ w: VW, h: VH, seed: 2, grid, planetType: 'ocean', ...base, weather: climate(2) } as any);
+  const wa = (a as any).weatherSim, wf = (fresh as any).weatherSim;
+  const same = !!wa && !!wf && wa.cloud.every((v: number, k: number) => v === wf.cloud[k])
+    && (a as any).weatherPainter.pCount === (fresh as any).weatherPainter.pCount;
+  check('no weather leaks between planets', same, '');
+
+  // A bake with no climate (gas giant, or a host that has none) clears the sky.
+  a.bake({ w: VW, h: VH, seed: 3, grid, planetType: 'ocean', ...base, weather: null } as any);
+  check('bake without climate has no weather', (a as any).weatherSim === null, '');
+
+  // Review focus 5: a new size rebuilds the lookup for the new face.
+  const big = new HabitableCutawayEngine();
+  big.bake({ w: 640, h: 360, seed: 3, grid, planetType: 'ocean', ...base, weather: climate(3) } as any);
+  const lut = (big as any).weatherPainter?.lut;
+  let outside = 0;
+  for (let n = 0; n < (lut?.count ?? 0); n++) {
+    const dx = (lut.px[n] - big.geom.cx) / big.geom.rx, dy = (lut.py[n] - big.geom.cyTop) / big.geom.ry;
+    if (dx * dx + dy * dy > 1.0001) outside++;
+  }
+  check('resize rebuilds the weather lookup', !!lut && outside === 0 && lut.count > 0,
+    `${outside} lookup pixels off the face, ${lut?.count ?? 0} in lookup`);
 }
 
 console.log(failures === 0
