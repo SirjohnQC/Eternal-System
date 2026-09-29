@@ -7,6 +7,7 @@
  */
 import { CELL_COLS, CELL_ROWS, WX_NX, WX_NY, WX_N, type ClimateSources } from './WeatherClimate';
 import { WeatherSim, WX_DT, WK, kindAt, fieldIndex, latOf } from './WeatherSim';
+import { ELEV_LIGHT } from '../sky/SunLight';
 
 export interface ImageDataLike { width: number; height: number; data: Uint8ClampedArray }
 
@@ -327,9 +328,9 @@ export class WeatherPainter {
   /** Cloud shadows on the terrain, into the day/night image. Day side only. */
   paintShadows(img: ImageDataLike, sunAzimuth: number, intensity: number): void {
     const lut = this.lut, d = img.data, w = img.width, h = img.height, den = this.dens;
-    const sunX = Math.cos(sunAzimuth);
+    const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
     for (let n = 0; n < lut.count; n++) {
-      const rawLit = 0.5 + lut.dx[n] * sunX;
+      const rawLit = 0.5 + lut.dx[n] * sunX + sunUp;
       const lit = rawLit < 0 ? 0 : rawLit > 1 ? 1 : rawLit;
       if (lit <= 0.3) continue;
       // sampleField(dens, fx - sunX * 0.9, fy), inlined.
@@ -350,7 +351,7 @@ export class WeatherPainter {
   /** Precipitation, then cloud, then lightning. */
   paintClouds(img: ImageDataLike, sunAzimuth: number, intensity: number): void {
     const lut = this.lut, d = img.data, w = img.width, h = img.height;
-    const sunX = Math.cos(sunAzimuth);
+    const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
     this.stats.drawn = 0; this.stats.midOrDense = 0;
 
     for (let q = 0; q < this.pCount; q++) {
@@ -425,7 +426,7 @@ export class WeatherPainter {
         o = facing ? 0 : 3;
         r += (ACID[o] - r) * acid; g += (ACID[o + 1] - g) * acid; bl += (ACID[o + 2] - bl) * acid;
       }
-      const rawLit = 0.5 + lut.dx[n] * sunX;
+      const rawLit = 0.5 + lut.dx[n] * sunX + sunUp;
       const lit = 0.35 + 0.65 * (rawLit < 0 ? 0 : rawLit > 1 ? 1 : rawLit);
       r *= lit; g *= lit; bl *= lit;
       if (neb > 0 && facing && kind === WK.CUMULUS) { r += 40 * neb; g += 10 * neb; bl += 60 * neb; }

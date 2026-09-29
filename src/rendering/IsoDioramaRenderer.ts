@@ -45,6 +45,7 @@ import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
+import { sunFacing, moonShade } from './sky/SunLight';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -2493,9 +2494,10 @@ export class IsoDioramaRenderer {
       // Body
       g.fillStyle = css(tint, 1);
       g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
-      // Terminator, lit from the same side as the world below.
-      g.fillStyle = css(shade(tint, 0.45), 0.6);
-      g.beginPath(); g.arc(x - r * 0.30, y + r * 0.12, r * 0.92, 0, Math.PI * 2); g.fill();
+      // Terminator: away from the sun, deeper while it is down (sky/SunLight).
+      const ms = moonShade(this.dayAngle);
+      g.fillStyle = css(shade(tint, 0.45), ms.alpha);
+      g.beginPath(); g.arc(x + r * ms.offset, y + r * 0.12, r * 0.92, 0, Math.PI * 2); g.fill();
 
       // Surface detail: craters on rock and iron, cracks on ice, glow on lava.
       if (m.kind === 'volcanic') {
@@ -2578,7 +2580,7 @@ export class IsoDioramaRenderer {
       const flicker = 0.55 + 0.45 * Math.sin(t * dot.rate + dot.phase);
       if (flicker < 0.35) continue;
       const dx = (dot.x - this.cx) / this.rx;
-      const nightBias = clamp01(0.55 - dx * Math.cos(this.dayAngle) * 0.85);
+      const nightBias = clamp01(0.55 - sunFacing(dx, this.dayAngle) * 0.85);
       const a = flicker * (0.35 + nightBias * 0.65);
       g.fillStyle = `rgba(255,226,150,${a})`;
       g.fillRect(dot.x, dot.y + layerBob, 1, 1);
