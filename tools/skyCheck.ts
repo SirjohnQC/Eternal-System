@@ -252,7 +252,7 @@ console.log('\n  BACKDROP');
   check('  control: frozen clock', !(Math.abs(ctl.sum - W) <= 2), `advances ${ctl.sum} px`);
 }
 
-const { skyLayout, trackX, trackY, paintSky, SUN_DIAMETER } = await import('../src/rendering/sky/SkyPainter');
+const { skyLayout, trackX, trackY, paintSky, SUN_DIAMETER, BLOOM_CORE, bloomCoreAlpha } = await import('../src/rendering/sky/SkyPainter');
 
 // ─── 4. Sky painter ───────────────────────────────────────────────────────────
 console.log('\n  SKY PAINTER');
@@ -320,6 +320,49 @@ const sunDisc = (img: ReturnType<typeof blank>) => {
     }
   }
   check('sky track stays in frame (VW 200-640)', outside === 0, `${outside} points outside`);
+}
+
+{
+  // Ruling 8: the renderer's wash (flat WASH_ALPHA*fade out to BLOOM_CORE,
+  // then linear to 0 at t=1 — IsoDioramaRenderer.drawSunWash) and the
+  // painter's own bloomCoreAlpha must composite, source-over same colour,
+  // into one continuous glow profile with no seam at t = BLOOM_CORE.
+  // washAt and pAt are written independently of the implementation (not the
+  // exported WASH_ALPHA / coreProfile) so this actually checks the contract.
+  const WASH_ALPHA = 0.07;
+  const pAt = (t: number): number =>
+    t < 0.10 ? 0.55 + (0.22 - 0.55) * (t / 0.10)
+      : t < BLOOM_CORE ? 0.22 + (0.07 - 0.22) * ((t - 0.10) / 0.25)
+      : 0.07 * (1 - (t - 0.35) / 0.65);
+  const washAt = (t: number, fade: number): number => {
+    const w = WASH_ALPHA * fade;
+    return t <= BLOOM_CORE ? w : w * (1 - (t - BLOOM_CORE) / (1 - BLOOM_CORE));
+  };
+  const composite = (core: number, wash: number): number => 1 - (1 - core) * (1 - wash);
+
+  let worst = 0;
+  for (const fade of [1, 0.6, 0.2]) {
+    for (let t = 0; t <= 0.5; t += 0.005) {
+      const got = composite(bloomCoreAlpha(t, fade), washAt(t, fade));
+      worst = Math.max(worst, Math.abs(got - pAt(t) * fade));
+    }
+  }
+  const seam = bloomCoreAlpha(BLOOM_CORE - 1e-6, 1);
+  check('sun glow composites without a seam', worst <= 0.002 && seam < 0.002,
+    `worst mismatch ${worst.toFixed(4)}, seam alpha ${seam.toFixed(4)}`);
+
+  // Control: the pre-Ruling-8 painter alpha (plain pAt(t)*fade for
+  // t < BLOOM_CORE, 0 beyond) composited over the same wash double-counts
+  // the core and must fail the match.
+  let worstCtl = 0;
+  for (const fade of [1, 0.6, 0.2]) {
+    for (let t = 0; t <= 0.5; t += 0.005) {
+      const oldAlpha = t < BLOOM_CORE ? pAt(t) * fade : 0;
+      const got = composite(oldAlpha, washAt(t, fade));
+      worstCtl = Math.max(worstCtl, Math.abs(got - pAt(t) * fade));
+    }
+  }
+  check('  control: core drawn over the wash unadjusted', !(worstCtl <= 0.002), `worst mismatch ${worstCtl.toFixed(4)}`);
 }
 
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);

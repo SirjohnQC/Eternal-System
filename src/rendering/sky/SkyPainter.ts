@@ -26,12 +26,42 @@ export const trackY = (az: number, L: SkyLayout): number => L.horizonY - Math.co
 /**
  * The painter only rasterises the bright bloom CORE, t < BLOOM_CORE, so the
  * per-pixel loop stays a small box around the sun instead of scanning close
- * to the whole canvas. The faint outer wash beyond it (t in [BLOOM_CORE, 1),
- * alpha fading 0.07 -> 0) is drawn by the renderer as a canvas radial
- * gradient instead — `bloom` in SkyLayout is still that gradient's full
- * radius, only the painter's own loop is restricted.
+ * to the whole canvas. The faint outer wash beyond it (t in [BLOOM_CORE, 1))
+ * is drawn by the renderer as a canvas radial gradient instead — `bloom` in
+ * SkyLayout is still that gradient's full radius, only the painter's own loop
+ * is restricted. The wash is also the CORE's base level (see `bloomCoreAlpha`
+ * below), so the two composite into one continuous profile with no seam.
  */
 export const BLOOM_CORE = 0.35;
+
+/**
+ * The renderer's outer wash is a flat alpha from the centre out to
+ * BLOOM_CORE, then falls to 0 by t = 1 (see `IsoDioramaRenderer.drawSunWash`).
+ * WASH_ALPHA is that flat level, scaled by `fade` like everything else here.
+ */
+export const WASH_ALPHA = 0.07;
+
+/** t < 0.10: 0.55 -> 0.22; t < BLOOM_CORE: 0.22 -> 0.07; else 0 (the wash's job). */
+function coreProfile(t: number): number {
+  if (t >= BLOOM_CORE) return 0;
+  return t < 0.10 ? 0.55 + (0.22 - 0.55) * (t / 0.10)
+    : 0.22 + (0.07 - 0.22) * ((t - 0.10) / 0.25);
+}
+
+/**
+ * The painter's own alpha at t, chosen so that compositing it OVER the
+ * renderer's flat wash (alpha `WASH_ALPHA * fade` from the centre to
+ * BLOOM_CORE) reproduces `coreProfile(t) * fade` exactly — not the wash's
+ * alpha plus the painter's, which double-counted the core and left a seam at
+ * t = BLOOM_CORE. Given two same-colour layers composited with the usual
+ * `1 - (1-a)(1-w)`, solving for `a` at the target `p * fade` gives this.
+ * Reaches 0 at t = BLOOM_CORE, so there is nothing left to seam.
+ */
+export function bloomCoreAlpha(t: number, fade: number): number {
+  const w = WASH_ALPHA * fade;
+  const a = (coreProfile(t) * fade - w) / (1 - w);
+  return a < 0 ? 0 : a;
+}
 
 export const SUN_DIAMETER = 5;
 export function sunDiameter(sizeScale: number): number {
@@ -94,7 +124,8 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
 
   // The sun: bloom core (t < BLOOM_CORE; the outer wash beyond it is the
   // renderer's canvas radial gradient, not this loop), flare cross, then the
-  // opaque core.
+  // opaque core. `bloomCoreAlpha` draws only the brightness ABOVE the wash,
+  // so painter-over-wash composites to the full target profile with no seam.
   if (!sunUp) return;
   const f = fadeOf(sky.sunElev), warm = sky.sunElev < 0.3 ? 1 - sky.sunElev / 0.3 : 0;
   const cr = sky.sunRgb[0] + (255 - sky.sunRgb[0]) * 0.5 * warm;
@@ -105,9 +136,7 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
     for (let x = Math.max(0, Math.floor(sunX - RbCore)); x <= Math.min(W - 1, Math.ceil(sunX + RbCore)); x++) {
       const t = Math.hypot(x - sunX, y - sunY) / Rb;
       if (t >= BLOOM_CORE) continue;
-      const a = t < 0.10 ? 0.55 + (0.22 - 0.55) * (t / 0.10)
-        : 0.22 + (0.07 - 0.22) * ((t - 0.10) / 0.25);
-      over(d, (y * W + x) * 4, cr, cg, cb, a * f);
+      over(d, (y * W + x) * 4, cr, cg, cb, bloomCoreAlpha(t, f));
     }
   }
   const D = opts.fixedSunSize ? SUN_DIAMETER : sunDiameter(sky.sunSizeScale), rad = D / 2;

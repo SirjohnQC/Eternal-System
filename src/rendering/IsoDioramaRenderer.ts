@@ -48,7 +48,7 @@ import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
 import { orbitSky, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
-import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, type SkyLayout } from './sky/SkyPainter';
+import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, type SkyLayout } from './sky/SkyPainter';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -2377,15 +2377,16 @@ export class IsoDioramaRenderer {
     const x = trackX(sky.sun.az, L), y = trackY(sky.sun.az, L);
     const R = L.bloom * sky.sun.sizeScale;
     const fade = Math.min(1, sky.sun.elev / 0.15);
-    // A canvas radial gradient holds its FIRST stop's colour solid inside the
-    // start circle, so starting the gradient at r=R*BLOOM_CORE doubled the
-    // painter's own core with a flat tint and left a visible step at its
-    // edge. Start at the centre instead and keep 0..BLOOM_CORE transparent,
-    // so the wash only paints t in [BLOOM_CORE, 1).
+    // The wash is the whole glow's BASE level: a flat alpha from the centre
+    // out to BLOOM_CORE, then falling to 0 by the edge. The painter's own
+    // core (bloomCoreAlpha) draws only the brightness ABOVE this base, so the
+    // two composite into one continuous profile with no seam at BLOOM_CORE —
+    // making the start circle solid (a canvas gradient's usual behaviour)
+    // is exactly what is wanted here, not a bug to route around.
+    const wash = WASH_ALPHA * fade;
     const grad = g.createRadialGradient(x, y, 0, x, y, R);
-    grad.addColorStop(0, css(sunRgb, 0));
-    grad.addColorStop(Math.max(0, BLOOM_CORE - 0.001), css(sunRgb, 0));
-    grad.addColorStop(BLOOM_CORE, css(sunRgb, 0.07 * fade));
+    grad.addColorStop(0, css(sunRgb, wash));
+    grad.addColorStop(BLOOM_CORE, css(sunRgb, wash));
     grad.addColorStop(1, css(sunRgb, 0));
     g.fillStyle = grad;
     const x0 = Math.max(0, x - R), y0 = Math.max(0, y - R);
