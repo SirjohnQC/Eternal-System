@@ -252,5 +252,66 @@ console.log('\n  BACKDROP');
   check('  control: frozen clock', !(Math.abs(ctl.sum - W) <= 2), `advances ${ctl.sum} px`);
 }
 
+const { skyLayout, trackX, trackY, paintSky, SUN_DIAMETER } = await import('../src/rendering/sky/SkyPainter');
+
+// ─── 4. Sky painter ───────────────────────────────────────────────────────────
+console.log('\n  SKY PAINTER');
+const VW = 480, VH = 320, geom4 = habitableGeom(VW, VH), L = skyLayout(geom4, VW, VH);
+const blank = () => ({ width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) });
+const drawOf = (sky: ReturnType<typeof orbitSky>) => ({
+  sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale,
+  sunRgb: [255, 236, 180] as [number, number, number],
+  siblings: sky.siblings.map(s => ({ az: s.az, elev: s.elev, litFraction: s.litFraction, radiusPx: 3, rgb: [70, 140, 210] as [number, number, number] })),
+});
+/** Centroid and diameter of the fully opaque sun core. */
+const sunDisc = (img: ReturnType<typeof blank>) => {
+  let n = 0, sx = 0;
+  for (let i = 0; i < VW * VH; i++) if (img.data[i * 4 + 3] === 255) { n++; sx += i % VW; }
+  return { n, x: n ? sx / n : NaN, diameter: 2 * Math.sqrt(n / Math.PI) };
+};
+{
+  // The sun is where the light comes from: +x side when cos d > 0, up when sin d > 0.
+  let bad = 0, pinnedBad = 0, drawnOff = 0;
+  for (let k = 0; k < 48; k++) {
+    const d = (k / 48) * TAU, sky = orbitSky({ animTick: 0, home: null, planets: [], dayAngle: d });
+    const x = trackX(sky.sun.az, L), up = sky.sun.elev > 0;
+    if (Math.abs(Math.cos(d)) > 0.05 && Math.sign(x - L.cx) !== Math.sign(Math.cos(d))) bad++;
+    if (Math.abs(Math.sin(d)) > 0.02 && up !== Math.sin(d) > 0) bad++;
+    // Control: the pinned top-left sun (x = 0.13 VW, always up).
+    if (Math.abs(Math.cos(d)) > 0.05 && Math.sign(0.13 * VW - L.cx) !== Math.sign(Math.cos(d))) pinnedBad++;
+    if (sky.sun.elev > 0.2) {
+      const img = blank(); paintSky(img, L, drawOf(sky));
+      if (Math.abs(sunDisc(img).x - trackX(sky.sun.az, L)) > 1) drawnOff++;
+    }
+  }
+  check('sun sits over the lit side, set at night', bad === 0 && drawnOff === 0, `${bad} mismatches, ${drawnOff} discs off the track`);
+  check('  control: pinned top-left sun', pinnedBad > 0, `${pinnedBad} mismatches`);
+}
+{
+  // Rendered sun size: e = 0.3 fixture at periapsis and apoapsis, sun overhead.
+  const at = (M: number, e: number, fixed = false) => {
+    const home = P(10, M, e);
+    const img = blank(); paintSky(img, L, drawOf(orbitSky({ animTick: 0, home, planets: [], dayAngle: Math.PI / 2 })), { fixedSunSize: fixed });
+    return sunDisc(img).diameter;
+  };
+  const e = 0.3, want = (s: number) => Math.min(8, Math.max(4, SUN_DIAMETER * s));
+  const peri = at(0, e), apo = at(Math.PI, e), c0 = at(0, 0), c1 = at(Math.PI, 0), fixedPeri = at(0, e, true);
+  check('rendered sun grows at periapsis', Math.abs(peri - want(1 / (1 - e))) <= 1 && Math.abs(apo - want(1 / (1 + e))) <= 1 && peri - apo >= 2 && c0 === c1,
+    `periapsis ${peri.toFixed(1)} px (want ${want(1 / (1 - e)).toFixed(1)}), apoapsis ${apo.toFixed(1)} (want ${want(1 / (1 + e)).toFixed(1)}), circular ${c0.toFixed(1)}/${c1.toFixed(1)}`);
+  check('  control: fixed sun size', !(Math.abs(fixedPeri - want(1 / (1 - e))) <= 1), `${fixedPeri.toFixed(1)} px`);
+}
+{
+  // Review focus 3: portrait. Every visible track point inside the frame.
+  let outside = 0;
+  for (const vw of [200, 320, 480, 640]) {
+    const g = habitableGeom(vw, 360), Lp = skyLayout(g, vw, 360);
+    for (let k = 0; k <= 180; k++) {
+      const az = -Math.PI / 2 + (k / 180) * Math.PI, x = trackX(az, Lp), y = trackY(az, Lp);
+      if (x < 0 || x >= vw || y < 0) outside++;
+    }
+  }
+  check('sky track stays in frame (VW 200-640)', outside === 0, `${outside} points outside`);
+}
+
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);
