@@ -2377,8 +2377,15 @@ export class IsoDioramaRenderer {
     const x = trackX(sky.sun.az, L), y = trackY(sky.sun.az, L);
     const R = L.bloom * sky.sun.sizeScale;
     const fade = Math.min(1, sky.sun.elev / 0.15);
-    const grad = g.createRadialGradient(x, y, R * BLOOM_CORE, x, y, R);
-    grad.addColorStop(0, css(sunRgb, 0.07 * fade));
+    // A canvas radial gradient holds its FIRST stop's colour solid inside the
+    // start circle, so starting the gradient at r=R*BLOOM_CORE doubled the
+    // painter's own core with a flat tint and left a visible step at its
+    // edge. Start at the centre instead and keep 0..BLOOM_CORE transparent,
+    // so the wash only paints t in [BLOOM_CORE, 1).
+    const grad = g.createRadialGradient(x, y, 0, x, y, R);
+    grad.addColorStop(0, css(sunRgb, 0));
+    grad.addColorStop(Math.max(0, BLOOM_CORE - 0.001), css(sunRgb, 0));
+    grad.addColorStop(BLOOM_CORE, css(sunRgb, 0.07 * fade));
     grad.addColorStop(1, css(sunRgb, 0));
     g.fillStyle = grad;
     const x0 = Math.max(0, x - R), y0 = Math.max(0, y - R);
