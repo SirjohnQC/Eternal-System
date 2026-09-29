@@ -19,13 +19,17 @@ const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
 
 const params = new URLSearchParams(location.search);
+// BigBangEngine's PLANET_ORBIT_MU (0.0012 rad per 60 Hz tick at radius 10), so
+// the preview's year matches the game's. ?year=N runs the clock N times faster.
+const orbitSpeed = (r: number) => 0.0012 / Math.sqrt(Math.max(0.5, r / 10));
+const YEAR = Number(params.get('year') ?? 1);
 let type: Planet['type'] = (params.get('type') as Planet['type']) || 'ocean';
 let seed = Number(params.get('seed')) || 1;
 
 function makePlanet(): Planet {
   return {
-    orbitalAngle: 0, orbitalRadius: 40, orbitalSpeed: 0.01,
-    eccentricity: 0, periapsisAngle: 0,
+    orbitalAngle: 0, orbitalRadius: 40, orbitalSpeed: orbitSpeed(40),
+    eccentricity: Number(params.get('ecc') ?? 0), periapsisAngle: 0,
     radius: 6, type, hasLife: true, biosphere: 0.8,
     color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`,
     genomeSeed: seed,
@@ -46,10 +50,12 @@ function makeStar(): StarBody {
     temperature: 5800, age: 0, hasLife: true, civLevel: 4,
     civName: 'Preview', planets: [
       makePlanet(),
+      { ...makePlanet(), type: 'rocky', name: 'A', orbitalRadius: 18, orbitalAngle: 2.2,
+        orbitalSpeed: orbitSpeed(18), radius: 3, eccentricity: 0 },
       { ...makePlanet(), type: 'gas', name: 'B', orbitalRadius: 72, orbitalAngle: 1.2,
-        orbitalSpeed: 0.006, radius: 11 },
+        orbitalSpeed: orbitSpeed(72), radius: 11 },
       { ...makePlanet(), type: 'ice', name: 'C', orbitalRadius: 118, orbitalAngle: 4.0,
-        orbitalSpeed: 0.0035, radius: 4 },
+        orbitalSpeed: orbitSpeed(118), radius: 4 },
     ],
     explorationRadius: 30, isPlayerStar: true, isDead: false,
     asteroidBelt: false, asteroidBeltDensity: 0, lastEventTick: 0,
@@ -113,6 +119,7 @@ function rebuild(): void {
   assignDominantSpecies(grid, species);
 
   const star = makeStar();
+  star.planets[0] = planet;   // the home planet must BE the star's planet (siblings are excluded by identity)
   star.biologyPhase = phase;
   star.civLevel = Number(params.get('civLevel') ?? params.get('civ') ?? 4);
 
@@ -135,6 +142,7 @@ function rebuild(): void {
 }
 
 await renderer.init(stage);
+renderer.setClock(() => (performance.now() / (1000 / 60)) * YEAR);
 // Exposed for console poking while iterating on the look.
 (window as any).__diorama = renderer;
 

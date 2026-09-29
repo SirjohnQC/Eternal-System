@@ -1795,7 +1795,8 @@ export interface HabitableFrameInput {
   g: CanvasRenderingContext2D;
   dt: number;
   elapsed: number;
-  bg: HTMLCanvasElement;
+  /** Space behind everything; the host slides a panorama with the year. */
+  drawBackdrop: (g: CanvasRenderingContext2D) => void;
   drawFarSpace: (g: CanvasRenderingContext2D) => void;
   /** Drawn on the ground, under the weather: city lights, inhabitants. */
   drawSurfaceOverlays: (g: CanvasRenderingContext2D) => void;
@@ -1948,7 +1949,7 @@ export class HabitableCutawayEngine {
     const bob = this.bob;
     const layerBob = Math.round(bob);
 
-    g.drawImage(input.bg, 0, 0);
+    input.drawBackdrop(g);
     input.drawFarSpace(g);
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob);

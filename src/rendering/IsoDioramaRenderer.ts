@@ -46,6 +46,9 @@ import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
+import { orbitSky, type SkyState } from './sky/OrbitSky';
+import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
+import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, type SkyLayout } from './sky/SkyPainter';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -357,6 +360,12 @@ export class IsoDioramaRenderer {
 
   // Baked static layers
   private bgLayer!:      HTMLCanvasElement;   // space, nebula, stars
+  private skyCanvas!:    HTMLCanvasElement;   // sun, arc, siblings (putImageData only)
+  private skyImage:      ImageData | null = null;
+  /** This frame's sky, from the real orbits. Read by the weather seasons. */
+  private sky:           SkyState<Planet> | null = null;
+  /** The engine's orbit clock (animTick); null counts nominal 60 Hz frames. */
+  private clock:         (() => number) | null = null;
   private crustLayer!:   HTMLCanvasElement;   // rock underside + rim cut band
   private surfaceLayer!: HTMLCanvasElement;   // top face terrain
   private cutaway = new HabitableCutawayEngine();
@@ -582,6 +591,7 @@ export class IsoDioramaRenderer {
     this.ctx = bctx;
 
     this.bgLayer      = document.createElement('canvas');
+    this.skyCanvas    = document.createElement('canvas');
     this.crustLayer   = document.createElement('canvas');
     this.surfaceLayer = document.createElement('canvas');
 
@@ -618,6 +628,10 @@ export class IsoDioramaRenderer {
       c.height = this.VH;
     }
     this.ctx.imageSmoothingEnabled = false;
+
+    this.bgLayer.width = backdropWidth(this.VW);          // panorama, see sky/Backdrop
+    this.skyCanvas.width = this.VW; this.skyCanvas.height = this.VH;
+    this.skyImage = this.skyCanvas.getContext('2d')?.createImageData(this.VW, this.VH) ?? null;
 
     this.bakeAll();
     this.clampViewPan(this.mount.getBoundingClientRect());
@@ -703,6 +717,20 @@ export class IsoDioramaRenderer {
   private applyViewTransform(): void {
     this.display.style.transform =
       `translate(${this.viewPanX}px, ${this.viewPanY}px) scale(${this.viewZoom})`;
+  }
+
+  /**
+   * The orbit clock. The game passes the engine's animTick through the LIVE
+   * module binding — enterUniverse replaces the engine and its clock restarts.
+   */
+  setClock(fn: (() => number) | null): void { this.clock = fn; }
+
+  private get animTick(): number {
+    return this.clock ? this.clock() : this.elapsed * 60;
+  }
+
+  private skyNow(): SkyState<Planet> {
+    return orbitSky({ animTick: this.animTick, home: this.planet, planets: this.star?.planets ?? [], dayAngle: this.dayAngle });
   }
 
   refreshData(
@@ -1152,70 +1180,12 @@ export class IsoDioramaRenderer {
     this.embers = [];
   }
 
-  // Space background: gradient, nebula band, star field.
+  // Space backdrop: a tiling panorama (sky/Backdrop) that slides with the year.
   private bakeBackground(): void {
     const g = this.bgLayer.getContext('2d')!;
-    const { VW, VH } = this;
-    g.clearRect(0, 0, VW, VH);
-
-    const grad = g.createLinearGradient(0, 0, VW * 0.4, VH);
-    grad.addColorStop(0, '#080a1c');
-    grad.addColorStop(0.55, '#050614');
-    grad.addColorStop(1, '#02030c');
-    g.fillStyle = grad;
-    g.fillRect(0, 0, VW, VH);
-
-    // Nebula band sweeping across the frame (matches the reference backdrop).
-    const s = new Stream(this.planetSeed ^ 0x9e3779b9);
-    const bandAngle = s.range(-0.55, -0.20);
-    g.save();
-    g.translate(VW * s.range(0.45, 0.75), VH * s.range(0.25, 0.6));
-    g.rotate(bandAngle);
-    for (let i = 0; i < 5; i++) {
-      const w = VW * s.range(0.5, 0.95);
-      // Aspect is capped — a very thin ellipse rotates into what looks like a
-      // lens-flare beam rather than a nebula.
-      const h = w * s.range(0.30, 0.55);
-      const cxo = s.range(-VW * 0.2, VW * 0.2);
-      const cyo = s.range(-VH * 0.08, VH * 0.08);
-      const neb = g.createRadialGradient(cxo, cyo, 0, cxo, cyo, w / 2);
-      const tint = s.next() > 0.5 ? '90,110,200' : '120,90,180';
-      // Kept faint — a bright band reads as a lens flare streaking the frame.
-      neb.addColorStop(0, `rgba(${tint},0.07)`);
-      neb.addColorStop(0.5, `rgba(${tint},0.028)`);
-      neb.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = neb;
-      g.save();
-      g.scale(1, h / w);
-      g.beginPath();
-      g.arc(cxo, cyo * w / h, w / 2, 0, Math.PI * 2);
-      g.fill();
-      g.restore();
-    }
-    g.restore();
-
-    // Star field — three brightness tiers, warm/cool mix.
-    const count = Math.round(VW * VH / 900);
-    for (let i = 0; i < count; i++) {
-      const x = Math.floor(s.next() * VW);
-      const y = Math.floor(s.next() * VH);
-      const t = s.next();
-      if (t > 0.965) {
-        // Bright star with a cross flare
-        const c = s.next() > 0.5 ? '255,240,210' : '210,230,255';
-        g.fillStyle = `rgba(${c},0.95)`;
-        g.fillRect(x, y, 1, 1);
-        g.fillStyle = `rgba(${c},0.35)`;
-        g.fillRect(x - 1, y, 1, 1); g.fillRect(x + 1, y, 1, 1);
-        g.fillRect(x, y - 1, 1, 1); g.fillRect(x, y + 1, 1, 1);
-      } else if (t > 0.80) {
-        g.fillStyle = `rgba(255,250,240,${0.55 + s.next() * 0.35})`;
-        g.fillRect(x, y, 1, 1);
-      } else {
-        g.fillStyle = `rgba(200,215,255,${0.14 + s.next() * 0.28})`;
-        g.fillRect(x, y, 1, 1);
-      }
-    }
+    const img = g.createImageData(this.bgLayer.width, this.VH);
+    bakeBackdrop(img, { seed: this.planetSeed ^ 0x9e3779b9, vw: this.VW, vh: this.VH });
+    g.putImageData(img, 0, 0);
   }
 
   /**
@@ -2258,6 +2228,7 @@ export class IsoDioramaRenderer {
 
   private frame(dt: number): void {
     if (this.habitable) {
+      this.sky = this.skyNow();
       if (this.surfaceDirty &&
           this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL) {
         this.bakeSurface();
@@ -2268,13 +2239,12 @@ export class IsoDioramaRenderer {
         g: this.ctx,
         dt,
         elapsed: this.elapsed,
-        bg: this.bgLayer,
+        drawBackdrop: (g) => this.drawBackdropPanorama(g),
         sunAzimuth: this.dayAngle,
         viewZoom: this.viewZoom,
         air: this.air,
         drawFarSpace: (g) => {
-          this.drawStarBloom(g, this.elapsed);
-          this.drawSiblings(g, this.elapsed);
+          this.drawSky(g);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
         drawSurfaceOverlays: (g) => {
@@ -2293,6 +2263,7 @@ export class IsoDioramaRenderer {
       return;
     }
 
+    this.sky = this.skyNow();
     const g = this.ctx;
     const { VW, VH, cx, cy, rx, ry } = this;
     const t = this.elapsed;
@@ -2306,13 +2277,10 @@ export class IsoDioramaRenderer {
     }
 
     // 1 — space backdrop
-    g.drawImage(this.bgLayer, 0, 0);
+    this.drawBackdropPanorama(g);
 
-    // 2 — parent star bloom (slow drift, colour by temperature)
-    this.drawStarBloom(g, t);
-
-    // 3 — sibling planets, far behind
-    this.drawSiblings(g, t);
+    // 2 — sky: orbit arc, phased siblings and the sun, from the real orbits
+    this.drawSky(g);
 
     // 4 — atmospheric halo behind the body. A gas giant is a full sphere
     // centred in the frame, not a disc, so its halo is centred too.
@@ -2390,66 +2358,61 @@ export class IsoDioramaRenderer {
     this.displayCtx.drawImage(this.buf, 0, 0);
   }
 
-  private drawStarBloom(g: CanvasRenderingContext2D, t: number): void {
-    const { VW, VH } = this;
-    const col = this.star ? tempToRGB(this.star.temperature) : rgb(255, 236, 180);
-    const x = VW * 0.13 + Math.cos(t * 0.05) * VW * 0.02;
-    const y = VH * 0.13 + Math.sin(t * 0.05) * VH * 0.02;
-    const R = Math.min(VW, VH) * 0.42;
-
-    const grad = g.createRadialGradient(x, y, 0, x, y, R);
-    grad.addColorStop(0, css(col, 0.55));
-    grad.addColorStop(0.10, css(col, 0.22));
-    grad.addColorStop(0.35, css(col, 0.07));
-    grad.addColorStop(1, css(col, 0));
-    g.fillStyle = grad;
-    g.fillRect(0, 0, VW, VH);
-
-    g.fillStyle = 'rgba(255,255,255,0.95)';
-    g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.fill();
-    // Lens flare spikes
-    g.strokeStyle = css(col, 0.35);
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(x - 12, y); g.lineTo(x + 12, y);
-    g.moveTo(x, y - 12); g.lineTo(x, y + 12);
-    g.stroke();
+  /** Backdrop panorama, slid left by the sun's true longitude (one turn a year). */
+  private drawBackdropPanorama(g: CanvasRenderingContext2D): void {
+    const W = this.bgLayer.width;
+    const off = backdropOffset(this.sky?.sunLongitude ?? 0, W);
+    g.drawImage(this.bgLayer, -off, 0);
+    if (W - off < this.VW) g.drawImage(this.bgLayer, W - off, 0);
   }
 
-  private drawSiblings(g: CanvasRenderingContext2D, t: number): void {
-    const planets = this.star?.planets;
-    if (!planets || planets.length < 2) return;
-    const { VW, VH, cx } = this;
+  /**
+   * The sun's faint outer wash beyond the painter's bloom core — a canvas
+   * radial gradient, since the painter only rasterises `t < BLOOM_CORE` of
+   * `L.bloom * sunSizeScale` to keep its per-pixel loop small. Continues the
+   * painter's profile exactly where its core stops (0.07 at t = BLOOM_CORE).
+   */
+  private drawSunWash(g: CanvasRenderingContext2D, L: SkyLayout, sky: SkyState<Planet>, sunRgb: RGB): void {
+    if (sky.sun.elev <= 0) return;
+    const x = trackX(sky.sun.az, L), y = trackY(sky.sun.az, L);
+    const R = L.bloom * sky.sun.sizeScale;
+    const fade = Math.min(1, sky.sun.elev / 0.15);
+    const grad = g.createRadialGradient(x, y, R * BLOOM_CORE, x, y, R);
+    grad.addColorStop(0, css(sunRgb, 0.07 * fade));
+    grad.addColorStop(1, css(sunRgb, 0));
+    g.fillStyle = grad;
+    const x0 = Math.max(0, x - R), y0 = Math.max(0, y - R);
+    const x1 = Math.min(this.VW, x + R), y1 = Math.min(this.VH, y + R);
+    g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  }
+
+  /** Orbit arc, sibling planets and the sun, from this frame's sky. */
+  private drawSky(g: CanvasRenderingContext2D): void {
+    const sky = this.sky, img = this.skyImage;
+    if (!sky || !img) return;
+    const geom = this.habitable ? this.cutaway.drawGeom : { cx: this.cx, cyTop: this.cy, rx: this.rx };
     const homeR = this.planet?.orbitalRadius ?? 40;
-    const spin = this.dayAngle;
-    const baseY = this.habitable
-      ? this.bodyCy - this.cutaway.drawGeom.R * 1.05
-      : this.cy - VH * 0.22;
-
-    const siblings = planets.filter((_, i) => i !== this.planetIndex).slice(0, 4);
-    for (let i = 0; i < siblings.length; i++) {
-      const p = siblings[i];
-      const far = Math.abs((p.orbitalRadius ?? homeR) - homeR);
-      const distN = far / Math.max(homeR, 12);
-      // Sky longitude: planet spin plus their own slower orbit, scaled by distance.
-      const az = spin + (p.orbitalAngle ?? 0) + t * (p.orbitalSpeed ?? 0.01) * (3.5 / (1 + distN))
-               + i * 1.9;
-      const elev = Math.cos(az);
-      if (elev < -0.05) continue;
-      const x = cx + Math.sin(az) * VW * (0.28 + distN * 0.16);
-      const y = baseY - elev * VH * (0.14 + distN * 0.07);
-      if (x < -10 || x > VW + 10 || y < -10 || y > VH + 10) continue;
-
-      const fade = Math.min(1, (elev + 0.05) / 0.40);
-      const c = planetTypeRGB(p.type);
-      const pr = Math.max(1.2, (2.2 + p.radius * 0.20) / (1 + distN * 0.7));
-      g.fillStyle = css(c, 0.14 * fade);
-      g.beginPath(); g.arc(x, y, pr + 2, 0, Math.PI * 2); g.fill();
-      g.fillStyle = css(c, 0.88 * fade);
-      g.beginPath(); g.arc(x, y, pr, 0, Math.PI * 2); g.fill();
-      g.fillStyle = `rgba(0,0,0,${0.45 * fade})`;
-      g.beginPath(); g.arc(x - pr * 0.35, y + pr * 0.2, pr * 0.85, 0, Math.PI * 2); g.fill();
-    }
+    const sun = this.star ? tempToRGB(this.star.temperature) : rgb(255, 236, 180);
+    const L = skyLayout(geom, this.VW, this.VH);
+    img.data.fill(0);
+    paintSky(img, L, {
+      sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale,
+      sunRgb: [sun.r, sun.g, sun.b],
+      siblings: sky.siblings.map(s => {
+        const distN = Math.abs((s.planet.orbitalRadius ?? homeR) - homeR) / Math.max(homeR, 12);
+        const c = planetTypeRGB(s.planet.type);
+        return {
+          az: s.az, elev: s.elev, litFraction: s.litFraction,
+          radiusPx: Math.max(1.2, (2.2 + s.planet.radius * 0.20) / (1 + distN * 0.7)),
+          rgb: [c.r, c.g, c.b] as [number, number, number],
+        };
+      }),
+    });
+    const sg = this.skyCanvas.getContext('2d');
+    if (!sg) return;
+    sg.putImageData(img, 0, 0);
+    this.drawSunWash(g, L, sky, sun);
+    g.drawImage(this.skyCanvas, 0, 0);
   }
 
   /**
