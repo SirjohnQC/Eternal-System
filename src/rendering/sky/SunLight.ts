@@ -30,9 +30,12 @@ export function sunLit(dx: number, d: number): number {
 
 /**
  * Moon shading: the shadow disc's horizontal offset in moon radii (away from
- * the sun) and its alpha (deeper when the sun is down). Continuous: no flip at noon.
+ * the sun) and its alpha (deeper when the sun is down). Continuous: no flip at
+ * noon. The shade is today's fixed 0.6 whenever the sun is down or on the
+ * horizon (sin d <= 0) and lightens only while the sun is up, reaching 0.24
+ * at noon — so the terminator is identical to the pre-2026-09-28 picture at
+ * sunrise, sunset and all night.
  */
 export function moonShade(d: number): { offset: number; alpha: number } {
-  const up = 0.5 * (1 + Math.sin(d));          // 1 at noon, 0 at midnight
-  return { offset: -0.3 * Math.cos(d), alpha: 0.6 * (1 - 0.6 * up) };
+  return { offset: -0.3 * Math.cos(d), alpha: 0.6 * (1 - 0.6 * Math.max(0, Math.sin(d))) };
 }

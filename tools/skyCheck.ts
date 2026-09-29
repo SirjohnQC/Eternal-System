@@ -73,6 +73,16 @@ console.log('\n  LIGHT');
   const deeper = moonShade(1.5 * Math.PI).alpha > moonShade(0.5 * Math.PI).alpha;
   check('moons shaded away from the sun', bad === 0 && deeper, `${bad} wrong sides, night deeper ${deeper}`);
   check('  control: fixed -x shadow', ctrlBad > 0, `${ctrlBad} wrong sides`);
+
+  // Terminator must be identical to the pre-2026-09-28 fixed picture at
+  // sunrise, sunset and all night: alpha 0.6, offset -0.3. Math.sin(Math.PI)
+  // is ~1.2e-16, not exactly 0, so compare with a tight epsilon rather than
+  // strict ===.
+  const sunrise = moonShade(0), sunset = moonShade(Math.PI);
+  const eq = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+  const terminatorOk = eq(sunrise.alpha, 0.6) && eq(sunset.alpha, 0.6) && eq(sunrise.offset, -0.3);
+  check('moon terminator matches pre-change picture at d=0/pi', terminatorOk,
+    `sunrise alpha ${sunrise.alpha} offset ${sunrise.offset}, sunset alpha ${sunset.alpha}`);
 }
 
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);
