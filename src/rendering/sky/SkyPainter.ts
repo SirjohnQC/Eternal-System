@@ -23,6 +23,16 @@ export function skyLayout(geom: { cx: number; cyTop: number; rx: number }, vw: n
 export const trackX = (az: number, L: SkyLayout): number => L.cx + Math.sin(az) * L.A;
 export const trackY = (az: number, L: SkyLayout): number => L.horizonY - Math.cos(az) * L.B;
 
+/**
+ * The painter only rasterises the bright bloom CORE, t < BLOOM_CORE, so the
+ * per-pixel loop stays a small box around the sun instead of scanning close
+ * to the whole canvas. The faint outer wash beyond it (t in [BLOOM_CORE, 1),
+ * alpha fading 0.07 -> 0) is drawn by the renderer as a canvas radial
+ * gradient instead — `bloom` in SkyLayout is still that gradient's full
+ * radius, only the painter's own loop is restricted.
+ */
+export const BLOOM_CORE = 0.35;
+
 export const SUN_DIAMETER = 5;
 export function sunDiameter(sizeScale: number): number {
   const d = SUN_DIAMETER * sizeScale;
@@ -82,20 +92,21 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
     }
   }
 
-  // The sun: bloom, flare cross, then the opaque core.
+  // The sun: bloom core (t < BLOOM_CORE; the outer wash beyond it is the
+  // renderer's canvas radial gradient, not this loop), flare cross, then the
+  // opaque core.
   if (!sunUp) return;
   const f = fadeOf(sky.sunElev), warm = sky.sunElev < 0.3 ? 1 - sky.sunElev / 0.3 : 0;
   const cr = sky.sunRgb[0] + (255 - sky.sunRgb[0]) * 0.5 * warm;
   const cg = sky.sunRgb[1] + (150 - sky.sunRgb[1]) * 0.5 * warm;
   const cb = sky.sunRgb[2] + (70 - sky.sunRgb[2]) * 0.5 * warm;
-  const Rb = L.bloom * sky.sunSizeScale;
-  for (let y = Math.max(0, Math.floor(sunY - Rb)); y <= Math.min(H - 1, Math.ceil(sunY + Rb)); y++) {
-    for (let x = Math.max(0, Math.floor(sunX - Rb)); x <= Math.min(W - 1, Math.ceil(sunX + Rb)); x++) {
+  const Rb = L.bloom * sky.sunSizeScale, RbCore = Rb * BLOOM_CORE;
+  for (let y = Math.max(0, Math.floor(sunY - RbCore)); y <= Math.min(H - 1, Math.ceil(sunY + RbCore)); y++) {
+    for (let x = Math.max(0, Math.floor(sunX - RbCore)); x <= Math.min(W - 1, Math.ceil(sunX + RbCore)); x++) {
       const t = Math.hypot(x - sunX, y - sunY) / Rb;
-      if (t >= 1) continue;
+      if (t >= BLOOM_CORE) continue;
       const a = t < 0.10 ? 0.55 + (0.22 - 0.55) * (t / 0.10)
-        : t < 0.35 ? 0.22 + (0.07 - 0.22) * ((t - 0.10) / 0.25)
-        : 0.07 * (1 - (t - 0.35) / 0.65);
+        : 0.22 + (0.07 - 0.22) * ((t - 0.10) / 0.25);
       over(d, (y * W + x) * 4, cr, cg, cb, a * f);
     }
   }

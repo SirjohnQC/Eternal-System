@@ -272,13 +272,22 @@ const sunDisc = (img: ReturnType<typeof blank>) => {
 {
   // The sun is where the light comes from: +x side when cos d > 0, up when sin d > 0.
   let bad = 0, pinnedBad = 0, drawnOff = 0;
+  // Control fixture: a sun pinned at screen x = 0.13 VW, always above the
+  // horizon — solved as an azimuth so it can be rendered for real rather
+  // than compared as a bare literal.
+  const azPinned = Math.asin((0.13 * VW - L.cx) / L.A), elevPinned = Math.cos(azPinned);
   for (let k = 0; k < 48; k++) {
     const d = (k / 48) * TAU, sky = orbitSky({ animTick: 0, home: null, planets: [], dayAngle: d });
     const x = trackX(sky.sun.az, L), up = sky.sun.elev > 0;
     if (Math.abs(Math.cos(d)) > 0.05 && Math.sign(x - L.cx) !== Math.sign(Math.cos(d))) bad++;
     if (Math.abs(Math.sin(d)) > 0.02 && up !== Math.sin(d) > 0) bad++;
-    // Control: the pinned top-left sun (x = 0.13 VW, always up).
-    if (Math.abs(Math.cos(d)) > 0.05 && Math.sign(0.13 * VW - L.cx) !== Math.sign(Math.cos(d))) pinnedBad++;
+    // Control: render the pinned sun for real and measure its disc centroid.
+    if (Math.abs(Math.cos(d)) > 0.05) {
+      const pinnedImg = blank();
+      paintSky(pinnedImg, L, { ...drawOf(sky), sunAz: azPinned, sunElev: elevPinned });
+      const cxPinned = sunDisc(pinnedImg).x;
+      if (Math.sign(cxPinned - L.cx) !== Math.sign(Math.cos(d))) pinnedBad++;
+    }
     if (sky.sun.elev > 0.2) {
       const img = blank(); paintSky(img, L, drawOf(sky));
       if (Math.abs(sunDisc(img).x - trackX(sky.sun.az, L)) > 1) drawnOff++;
