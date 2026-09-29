@@ -85,5 +85,115 @@ console.log('\n  LIGHT');
     `sunrise alpha ${sunrise.alpha} offset ${sunrise.offset}, sunset alpha ${sunset.alpha}`);
 }
 
+const { orbitSky, axialTilt, wrapPi, MAX_TILT } = await import('../src/rendering/sky/OrbitSky');
+const { planetOffsetFromStar } = await import('../src/simulation/Orbit');
+
+/** Orbit fixture. speed 0 freezes it at mean anomaly `angle`. */
+const P = (r: number, angle: number, e = 0, peri = 0, speed = 0, genomeSeed = 1) =>
+  ({ orbitalRadius: r, orbitalAngle: angle, orbitalSpeed: speed, eccentricity: e, periapsisAngle: peri, genomeSeed });
+const muSpeed = (r: number) => 0.0012 / Math.sqrt(Math.max(0.5, r / 10));   // PLANET_ORBIT_MU at 60 Hz ticks
+
+// ─── 2. Sky model ─────────────────────────────────────────────────────────────
+console.log('\n  SKY MODEL');
+{
+  // Signed fixture: home at (10, 0), so the sun is due -x from it. A sibling
+  // placed due -y of home is +90 deg of longitude from the sun: it sits at
+  // sunAz + pi/2 and rises a quarter day after the sun.
+  const home = P(10, 0);
+  const sib = P(Math.hypot(10, 5), Math.atan2(-5, 10));
+  const s = orbitSky({ animTick: 0, home, planets: [home, sib], dayAngle: 0 });
+  const off = wrapPi(s.siblings[0].az - s.sun.az);
+  const riseAt = orbitSky({ animTick: 0, home, planets: [home, sib], dayAngle: Math.PI / 2 }).siblings[0].az;
+  check('sibling at +90 deg sits a quarter turn after the sun', Math.abs(off - Math.PI / 2) < 0.01 && Math.abs(riseAt - Math.PI / 2) < 0.01,
+    `offset ${off.toFixed(3)} (want 1.571), az at d=pi/2 ${riseAt.toFixed(3)}`);
+  check('  control: mirrored sign', Math.abs(-off - Math.PI / 2) >= 0.01, `mirrored ${(-off).toFixed(3)}`);
+
+  // Random systems, against an independent signed angle from the raw offsets.
+  let worst = 0, worstOld = 0, n = 0;
+  let rng = 12345;
+  const rnd = () => ((rng = Math.imul(rng ^ (rng >>> 15), 2246822519) + 0x6d2b79f5 | 0) >>> 0) / 4294967296;
+  for (let trial = 0; trial < 200; trial++) {
+    const hr = 20 + rnd() * 60;
+    const homeP = P(hr, rnd() * TAU, rnd() * 0.3, rnd() * TAU, muSpeed(hr));
+    const sibs = [0, 1, 2].map(() => { const r = 6 + rnd() * 120; return P(r, rnd() * TAU, rnd() * 0.4, rnd() * TAU, muSpeed(r)); });
+    const tick = rnd() * 1e6, d = rnd() * TAU;
+    const sky = orbitSky({ animTick: tick, home: homeP, planets: [homeP, ...sibs], dayAngle: d });
+    const h = planetOffsetFromStar(homeP, tick);
+    sky.siblings.forEach((sb, i) => {
+      const so = planetOffsetFromStar(sb.planet, tick);
+      const vx = so.x - h.x, vy = so.y - h.y, ux = -h.x, uy = -h.y;
+      const truth = Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);   // signed angle sun -> sibling
+      worst = Math.max(worst, Math.abs(wrapPi(sb.az - sky.sun.az - truth)));
+      // Control: the pre-2026-09-28 drawSiblings formula, against the same truth.
+      const distN = Math.abs(sb.planet.orbitalRadius - hr) / Math.max(hr, 12);
+      const oldAz = d + sb.planet.orbitalAngle + (tick / 60) * sb.planet.orbitalSpeed * (3.5 / (1 + distN)) + i * 1.9;
+      worstOld = Math.max(worstOld, Math.abs(wrapPi(oldAz - sky.sun.az - truth)));
+      n++;
+    });
+  }
+  check('siblings at their real positions (signed)', worst < 0.01, `worst error ${worst.toFixed(4)} rad over ${n}`);
+  check('  control: old drawSiblings formula', !(worstOld < 0.01), `worst ${worstOld.toFixed(2)} rad`);
+}
+{
+  // Phases, against the phase angle from the law of cosines.
+  const home = P(10, 0);
+  const lawAngle = (sib: ReturnType<typeof P>) => {
+    const h = planetOffsetFromStar(home, 0), s = planetOffsetFromStar(sib, 0);
+    const a = Math.hypot(s.x, s.y), b = Math.hypot(h.x - s.x, h.y - s.y), c = Math.hypot(h.x, h.y);
+    return Math.acos(Math.max(-1, Math.min(1, (a * a + b * b - c * c) / (2 * a * b))));
+  };
+  const litOf = (sib: ReturnType<typeof P>) => orbitSky({ animTick: 0, home, planets: [home, sib], dayAngle: 0 }).siblings[0];
+  const inferior = P(5, 0.1), superior = P(5, Math.PI + 0.1);
+  const lInf = litOf(inferior), lSup = litOf(superior);
+  let outerMin = 1, agree = 0;
+  for (let k = 0; k < 72; k++) {
+    const o = P(20, (k / 72) * TAU), l = litOf(o);
+    outerMin = Math.min(outerMin, l.litFraction);
+    agree = Math.max(agree, Math.abs(l.litFraction - (1 + Math.cos(lawAngle(o))) / 2));
+  }
+  agree = Math.max(agree, Math.abs(lInf.litFraction - (1 + Math.cos(lawAngle(inferior))) / 2));
+  check('phases: inner crescent, far side full, outer gibbous',
+    lInf.litFraction < 0.2 && lSup.litFraction > 0.8 && outerMin >= 0.9 && agree < 1e-6,
+    `inferior ${lInf.litFraction.toFixed(2)}, superior ${lSup.litFraction.toFixed(2)}, outer min ${outerMin.toFixed(2)}`);
+  // Control: (1 + cos(elongation)) / 2 — the formula the first spec draft had.
+  const elongInf = Math.abs(wrapPi(lInf.az - orbitSky({ animTick: 0, home, planets: [home], dayAngle: 0 }).sun.az));
+  check('  control: elongation formula', !((1 + Math.cos(elongInf)) / 2 < 0.2), `gives ${((1 + Math.cos(elongInf)) / 2).toFixed(2)} at inferior conjunction`);
+}
+{
+  // Seasons and size, sanity against Kepler fixtures.
+  const e = 0.3, a = 10;
+  const peri = orbitSky({ animTick: 0, home: P(a, 0, e), planets: [], dayAngle: 0 }).sun.sizeScale;
+  const apo = orbitSky({ animTick: 0, home: P(a, Math.PI, e), planets: [], dayAngle: 0 }).sun.sizeScale;
+  check('sun scale follows distance (Kepler fixture)', Math.abs(peri - 1 / (1 - e)) < 0.02 && Math.abs(apo - 1 / (1 + e)) < 0.02,
+    `periapsis ${peri.toFixed(3)} (want ${(1 / (1 - e)).toFixed(3)}), apoapsis ${apo.toFixed(3)}`);
+  const tilts = [1, 2, 3, 4, 5].map(axialTilt);
+  const inRange = tilts.every(t => t >= 0 && t <= MAX_TILT) && axialTilt(3) === axialTilt(3) && new Set(tilts).size === 5;
+  const yearHome = P(40, 0, 0.05, 1.0, muSpeed(40), 7);
+  const T = TAU / yearHome.orbitalSpeed;
+  let dMax = -9, dMin = 9;
+  for (let k = 0; k <= 400; k++) {
+    const dec = orbitSky({ animTick: (k / 400) * T, home: yearHome, planets: [], dayAngle: 0 }).declination;
+    dMax = Math.max(dMax, dec); dMin = Math.min(dMin, dec);
+  }
+  const tilt = axialTilt(7);
+  check('seasons swing +/- the tilt over a year', inRange && dMax > 0.98 * tilt && dMin < -0.98 * tilt && dMax <= tilt + 1e-9,
+    `tilt ${(tilt * 180 / Math.PI).toFixed(1)} deg, declination ${(dMin * 180 / Math.PI).toFixed(1)}..${(dMax * 180 / Math.PI).toFixed(1)}`);
+}
+{
+  // Review focus 1, 2, 4: huge clocks, no home, degenerate orbits, identity.
+  const home = P(40, 0.3, 0.1, 0.5, muSpeed(40));
+  const big = orbitSky({ animTick: 3e8, home, planets: [home, P(70, 1, 0.2, 2, muSpeed(70))], dayAngle: 5 });
+  const finite = [big.sun.az, big.sun.sizeScale, big.sunLongitude, big.declination, ...big.siblings.flatMap(s => [s.az, s.litFraction])]
+    .every(Number.isFinite);
+  const none = orbitSky({ animTick: 5, home: null, planets: [], dayAngle: 1 });
+  const flat = orbitSky({ animTick: 0, home: P(0, 0), planets: [], dayAngle: 1 });
+  const clone = { ...home };
+  const ids = orbitSky({ animTick: 0, home, planets: [home, clone], dayAngle: 0 });
+  check('huge clock, no home, zero orbit, identity',
+    finite && none.siblings.length === 0 && none.declination === 0 && Number.isFinite(flat.sun.sizeScale)
+      && ids.siblings.length === 1 && ids.siblings[0].planet === clone,
+    `finite ${finite}, no-home siblings ${none.siblings.length}, zero-orbit scale ${flat.sun.sizeScale}, siblings ${ids.siblings.length}`);
+}
+
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);
