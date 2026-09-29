@@ -232,19 +232,24 @@ console.log('\n  BACKDROP');
   const W = backdropWidth(480);
   const home = P(40, 0, 0.05, 1.0, muSpeed(40));
   const T = TAU / home.orbitalSpeed;
-  let prev = backdropOffset(orbitSky({ animTick: 0, home, planets: [], dayAngle: 0 }).sunLongitude, W);
-  let sum = 0, back = 0, inRange = true;
-  for (let k = 1; k <= 4000; k++) {
-    const o = backdropOffset(orbitSky({ animTick: (k / 4000) * T, home, planets: [], dayAngle: 0 }).sunLongitude, W);
-    if (!(o >= 0 && o < W)) inRange = false;
-    const inc = ((o - prev + W * 1.5) % W) - W / 2;
-    if (inc < 0) back++;
-    sum += inc; prev = o;
-  }
+  const turn = (tickOf: (k: number) => number) => {
+    let prev = backdropOffset(orbitSky({ animTick: tickOf(0), home, planets: [], dayAngle: 0 }).sunLongitude, W);
+    let sum = 0, back = 0, inRange = true;
+    for (let k = 1; k <= 4000; k++) {
+      const o = backdropOffset(orbitSky({ animTick: tickOf(k), home, planets: [], dayAngle: 0 }).sunLongitude, W);
+      if (!(o >= 0 && o < W)) inRange = false;
+      const inc = ((o - prev + W * 1.5) % W) - W / 2;
+      if (inc < 0) back++;
+      sum += inc; prev = o;
+    }
+    return { sum, back, inRange };
+  };
+  const real = turn(k => (k / 4000) * T);
   const huge = backdropOffset(orbitSky({ animTick: 3e8, home, planets: [], dayAngle: 0 }).sunLongitude, W);
-  check('backdrop turns once per year, leftward', Math.abs(sum - W) <= 2 && back === 0 && inRange && huge >= 0 && huge < W,
-    `advanced ${sum} px of ${W}, ${back} backward steps`);
-  check('  control: frozen backdrop', Math.abs(0 - W) > 2, 'advances 0 px');
+  check('backdrop turns once per year, leftward', Math.abs(real.sum - W) <= 2 && real.back === 0 && real.inRange && huge >= 0 && huge < W,
+    `advanced ${real.sum} px of ${W}, ${real.back} backward steps`);
+  const ctl = turn(() => 0);
+  check('  control: frozen clock', !(Math.abs(ctl.sum - W) <= 2), `advances ${ctl.sum} px`);
 }
 
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);
