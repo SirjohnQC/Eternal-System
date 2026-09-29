@@ -195,5 +195,57 @@ console.log('\n  SKY MODEL');
     `finite ${finite}, no-home siblings ${none.siblings.length}, zero-orbit scale ${flat.sun.sizeScale}, siblings ${ids.siblings.length}`);
 }
 
+const { bakeBackdrop, backdropWidth, backdropOffset } = await import('../src/rendering/sky/Backdrop');
+
+// ─── 3. Backdrop ──────────────────────────────────────────────────────────────
+console.log('\n  BACKDROP');
+{
+  // Seam: the wrap (last column -> first) must look like any other neighbouring
+  // pair. Compared with the 99th percentile, not the 90th: every column pair of
+  // a seamless panorama is just another neighbour pair, so requiring seam <=
+  // p90 on all 5 seeds fails by chance ~41% of the time. The old diagonal
+  // layout's seam (a gradient mismatch) is far above star-driven column
+  // differences and should still fail p99.
+  const seamOf = (periodic: boolean, seed: number) => {
+    const vw = 480, vh = 260, W = backdropWidth(vw);
+    const img = { width: W, height: vh, data: new Uint8ClampedArray(W * vh * 4) };
+    bakeBackdrop(img, { seed, vw, vh, periodic });
+    const col = (a: number, b: number) => {
+      let s = 0;
+      for (let y = 0; y < vh; y++) for (let c = 0; c < 3; c++) s += Math.abs(img.data[(y * W + a) * 4 + c] - img.data[(y * W + b) * 4 + c]);
+      return s / vh;
+    };
+    const diffs: number[] = [];
+    for (let x = 0; x < W - 1; x++) diffs.push(col(x, x + 1));
+    diffs.sort((p, q) => p - q);
+    return { seam: col(W - 1, 0), p99: diffs[Math.floor(diffs.length * 0.99)] };
+  };
+  const seeds = [1, 2, 3, 4, 5];
+  const fresh = seeds.map(s => seamOf(true, s)), old = seeds.map(s => seamOf(false, s));
+  check('backdrop wraps with no seam', fresh.every(r => r.seam <= r.p99),
+    fresh.map(r => `${r.seam.toFixed(1)}/${r.p99.toFixed(1)}`).join(' '));
+  check('  control: old diagonal layout', !old.every(r => r.seam <= r.p99),
+    old.map(r => `${r.seam.toFixed(1)}/${r.p99.toFixed(1)}`).join(' '));
+
+  // Turn: one panorama per orbital period, never backwards (offset rises =
+  // the panorama moves left). Review focus 1: offset stays in [0, W).
+  const W = backdropWidth(480);
+  const home = P(40, 0, 0.05, 1.0, muSpeed(40));
+  const T = TAU / home.orbitalSpeed;
+  let prev = backdropOffset(orbitSky({ animTick: 0, home, planets: [], dayAngle: 0 }).sunLongitude, W);
+  let sum = 0, back = 0, inRange = true;
+  for (let k = 1; k <= 4000; k++) {
+    const o = backdropOffset(orbitSky({ animTick: (k / 4000) * T, home, planets: [], dayAngle: 0 }).sunLongitude, W);
+    if (!(o >= 0 && o < W)) inRange = false;
+    const inc = ((o - prev + W * 1.5) % W) - W / 2;
+    if (inc < 0) back++;
+    sum += inc; prev = o;
+  }
+  const huge = backdropOffset(orbitSky({ animTick: 3e8, home, planets: [], dayAngle: 0 }).sunLongitude, W);
+  check('backdrop turns once per year, leftward', Math.abs(sum - W) <= 2 && back === 0 && inRange && huge >= 0 && huge < W,
+    `advanced ${sum} px of ${W}, ${back} backward steps`);
+  check('  control: frozen backdrop', Math.abs(0 - W) > 2, 'advances 0 px');
+}
+
 console.log(failed === 0 ? '\n  all sky checks passed\n' : `\n  ${failed} sky check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);
