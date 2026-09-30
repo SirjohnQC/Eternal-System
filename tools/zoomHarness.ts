@@ -144,8 +144,8 @@ export function hashImage(d: Uint8ClampedArray): string {
 // installs the DOM shim and loads the engine; renderLayers is then synchronous.
 
 installDom();
-const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } = await import('../src/simulation/PlanetGrid');
-const { HabitableCutawayEngine, paintFluids, paintDayNight } = await import('../src/rendering/HabitableCutawayEngine');
+const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater, classifyBiome } = await import('../src/simulation/PlanetGrid');
+const { HabitableCutawayEngine, paintFluids, paintDayNight, habitableGeom } = await import('../src/rendering/HabitableCutawayEngine');
 const { buildClimate } = await import('../src/rendering/weather/WeatherClimate');
 const { paintSky, skyLayout } = await import('../src/rendering/sky/SkyPainter');
 const { orbitSky } = await import('../src/rendering/sky/OrbitSky');
@@ -236,6 +236,49 @@ export function makeDiscToGrid(focusLat: number, focusLon: number) {
   };
 }
 
+/**
+ * IsoDioramaRenderer.discToGridF: the same projection as discToGrid, returning
+ * the FRACTIONAL position `row = v * (GRID_SIZE - 1)`, `col = u * GRID_SIZE`.
+ */
+export function makeDiscToGridF(focusLat: number, focusLon: number) {
+  return (dx: number, dy: number): { row: number; col: number } | null => {
+    const r = Math.hypot(dx, dy);
+    if (r > 1) return null;
+    const c = r * (Math.PI / 2);
+    const sinC = Math.sin(c), cosC = Math.cos(c);
+    const sinF = Math.sin(focusLat), cosF = Math.cos(focusLat);
+    const ny = -dy;
+    const lat = r < 1e-6 ? focusLat : Math.asin(clampAbs(cosC * sinF + (ny * sinC * cosF) / r, 1));
+    const lon = focusLon + Math.atan2(dx * sinC, r * cosF * cosC - ny * sinF * sinC);
+    const v = 0.5 - lat / Math.PI;
+    const u = ((lon / (Math.PI * 2)) % 1 + 1) % 1;
+    return { row: v * (GRID_SIZE - 1), col: u * GRID_SIZE };
+  };
+}
+
+/**
+ * IsoDioramaRenderer.elevationAt: smoothElevation interpolated bilinearly
+ * between the 4 cell centres around the fractional grid position. Row i's
+ * centre is at row i (discToGrid rounds); column j's centre is at col j + 0.5
+ * (discToGrid floors). Columns wrap, rows clamp.
+ */
+export function makeElevationAt(grid: Grid, focusLat: number, focusLon: number) {
+  const toF = makeDiscToGridF(focusLat, focusLon);
+  return (dx: number, dy: number): number | null => {
+    const f = toF(dx, dy);
+    if (!f) return null;
+    const rr = Math.max(0, Math.min(GRID_SIZE - 1, f.row));
+    const r0 = Math.min(GRID_SIZE - 2, Math.floor(rr)), tr = rr - r0;
+    const cc = f.col - 0.5;
+    const c0f = Math.floor(cc), tc = cc - c0f;
+    const c0 = ((c0f % GRID_SIZE) + GRID_SIZE) % GRID_SIZE, c1 = (c0 + 1) % GRID_SIZE;
+    const e00 = smoothElevation(grid, r0, c0), e01 = smoothElevation(grid, r0, c1);
+    const e10 = smoothElevation(grid, r0 + 1, c0), e11 = smoothElevation(grid, r0 + 1, c1);
+    const top = e00 + (e01 - e00) * tc, bot = e10 + (e11 - e10) * tc;
+    return top + (bot - top) * tr;
+  };
+}
+
 /** skyCheck's orbit fixture: speed 0 freezes it at mean anomaly `angle`. */
 const P = (r: number, angle: number) =>
   ({ orbitalRadius: r, orbitalAngle: angle, orbitalSpeed: 0, eccentricity: 0, periapsisAngle: 0, genomeSeed: 1 });
@@ -247,7 +290,14 @@ export let lastRandomCalls = 0;
 
 export const ELAPSED = 10, DT = 1 / 60, SUN_AZ = 0.6;
 
-export function renderLayers(type: string, seed: number): Record<string, Uint8ClampedArray> {
+export interface RenderOpts {
+  /** Pass `elevationAt` to the bake, as the renderer does (default true). False = the nearest-cell path. */
+  subCell?: boolean;
+  /** Added to rimFalloff — the identity check's control (default 0). */
+  rimPerturb?: number;
+}
+
+export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): Record<string, Uint8ClampedArray> {
   const realRandom = Math.random;
   let s = 0x2545f491, calls = 0;
   Math.random = () => { calls++; s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
@@ -257,10 +307,14 @@ export function renderLayers(type: string, seed: number): Record<string, Uint8Cl
     const focus = computeFocus(grid);
     const discToGrid = makeDiscToGrid(focus.lat, focus.lon);
 
+    const perturb = ro.rimPerturb ?? 0;
+    const rim = perturb === 0 ? rimFalloff : (r: number) => rimFalloff(r) + perturb;
+    const elevationAt = (ro.subCell ?? true) ? makeElevationAt(grid, focus.lat, focus.lon) : undefined;
+
     const engine = new HabitableCutawayEngine();
     engine.bake({
       w: VW, h: VH, seed, grid, planetType,
-      discToGrid, rimFalloff, liftOf, smoothElevation,
+      discToGrid, rimFalloff: rim, liftOf, smoothElevation, elevationAt,
       maxLift: MAX_LIFT, lush: 0.6, decalSeed: seed, decalAtlas: null,
       weather: type === 'gas' ? null : buildClimate({
         grid, planetType: type, seed, lush: 0.6, extinctionPressure: 0.1,
@@ -314,4 +368,72 @@ export function renderLayers(type: string, seed: number): Record<string, Uint8Cl
     lastRandomCalls = calls;
     Math.random = realRandom;
   }
+}
+
+/**
+ * The zoom-1 NEAREST-CELL classification of every screen pixel, in rendered
+ * (lifted) space: 0 empty, 1 water, 2 + lift for land at that terrace tier.
+ * Mirrors paintCutawaySurface's painter order: far rows first, land fills its
+ * top plate and cliff column (top .. py), a water pixel is never overwritten by
+ * land and wins over land drawn before it (the cliff punch). Gas: all 0.
+ */
+export function nearestClassMap(type: string, seed: number): Uint8Array {
+  const cls = new Uint8Array(VW * VH);
+  if (type === 'gas') return cls;
+  const grid = generatePlanetGrid(type, seed * 7777, null, null);
+  const focus = computeFocus(grid);
+  const discToGrid = makeDiscToGrid(focus.lat, focus.lon);
+  const { cx, cyTop, rx, ry } = habitableGeom(VW, VH);
+  const x0 = Math.max(0, cx - rx), x1 = Math.min(VW - 1, cx + rx);
+  const yFace0 = cyTop - ry, y1 = Math.min(VH - 1, cyTop + ry);
+  const water = new Uint8Array(VW * VH);
+  for (let py = yFace0; py <= y1; py++) {
+    const dy = (py - cyTop) / ry;
+    for (let px = x0; px <= x1; px++) {
+      const dx = (px - cx) / rx, r = Math.hypot(dx, dy);
+      if (r > 1) continue;
+      const gp = discToGrid(dx, dy);
+      if (!gp) continue;
+      const cell = grid[gp.row]?.[gp.col];
+      if (!cell) continue;
+      const elev = cell.elevation - rimFalloff(r);
+      if (isWater(classifyBiome(elev, cell.moisture, cell.temperature, type))) {
+        const i = py * VW + px;
+        if (i >= 0 && i < cls.length) { water[i] = 1; cls[i] = 1; }
+        continue;
+      }
+      const lift = liftOf(smoothElevation(grid, gp.row, gp.col) - rimFalloff(r));
+      for (let y = py - lift; y <= py; y++) {
+        if (y < 0 || y >= VH) continue;
+        const i = y * VW + px;
+        if (!water[i]) cls[i] = 2 + lift;
+      }
+    }
+  }
+  return cls;
+}
+
+/**
+ * Pixels within `reach` px (Euclidean) of a place where the class map changes
+ * between horizontal or vertical neighbours, both classes non-empty (coast or
+ * terrace boundary; the limb against empty space is not one).
+ */
+export function boundaryBand(cls: Uint8Array, reach = 2): Uint8Array {
+  const edge = new Uint8Array(VW * VH);
+  for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) {
+    const i = y * VW + x, a = cls[i];
+    if (!a) continue;
+    if (x + 1 < VW) { const b = cls[i + 1]; if (b && b !== a) { edge[i] = 1; edge[i + 1] = 1; } }
+    if (y + 1 < VH) { const b = cls[i + VW]; if (b && b !== a) { edge[i] = 1; edge[i + VW] = 1; } }
+  }
+  const band = new Uint8Array(VW * VH);
+  for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) {
+    if (!edge[y * VW + x]) continue;
+    for (let oy = -reach; oy <= reach; oy++) for (let ox = -reach; ox <= reach; ox++) {
+      if (ox * ox + oy * oy > reach * reach) continue;
+      const xx = x + ox, yy = y + oy;
+      if (xx >= 0 && xx < VW && yy >= 0 && yy < VH) band[yy * VW + xx] = 1;
+    }
+  }
+  return band;
 }

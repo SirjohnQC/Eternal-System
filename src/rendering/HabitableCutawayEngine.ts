@@ -248,6 +248,14 @@ export interface CutawayBakeOpts extends CutawayGeom {
   liftOf: (elev: number) => number;
   /** Elevation averaged over a cell's neighbours, to avoid stipple cliffs. */
   smoothElevation: (grid: PlanetGrid, row: number, col: number) => number;
+  /**
+   * Sub-cell elevation: `smoothElevation` interpolated bilinearly at the disc
+   * point's FRACTIONAL grid position, null off-face (the caller subtracts
+   * rimFalloff). When present the land/water test, the coast outline, the relief
+   * lift and the weather's ground lift use it, so edges resolve between cells;
+   * biome colour, placement and picking stay on the nearest cell.
+   */
+  elevationAt?: (dx: number, dy: number) => number | null;
   /** Tallest lift `liftOf` can return, so the bake can reserve rows above the rim. */
   maxLift: number;
 
@@ -875,9 +883,22 @@ export function paintCutawaySurface(
         const cell = grid[gp.row]?.[gp.col];
         if (!cell) continue;
 
-        const elev = cell.elevation - opts.rimFalloff(r);
+        const rim = opts.rimFalloff(r);
+        const elev = cell.elevation - rim;
         let biome: BiomeType =
           classifyBiome(elev, cell.moisture, cell.temperature, opts.planetType);
+        // Sub-cell elevation decides land vs water (and the coast outline and
+        // lift below), so the coast is a curve between cells, not a cell stair.
+        // Colour stays the nearest cell's biome — unless that cell is water and
+        // the interpolated ground here is land, when the land biome the
+        // interpolated elevation gives (the coast's own) is the only one to use.
+        const smoothF = opts.elevationAt ? opts.elevationAt(dx, dy) : null;
+        const elevF = smoothF === null ? elev : smoothF - rim;
+        if (smoothF !== null) {
+          const biomeF = classifyBiome(elevF, cell.moisture, cell.temperature, opts.planetType);
+          if (isWater(biomeF)) biome = biomeF;
+          else if (isWater(biome)) biome = biomeF;
+        }
 
         // Snow caps: the mockup's peaks are white-tipped regardless of latitude,
         // which is what altitude actually does to a mountain — except molten worlds.
@@ -940,13 +961,13 @@ export function paintCutawaySurface(
         // pass had to re-run the azimuthal projection for every pixel, which is
         // the most expensive thing in the bake, and coasts are at sea level so
         // they are never displaced by the extrusion anyway.
-        if (elev > SEA_LEVEL - 0.009 && elev < SEA_LEVEL + 0.014) {
+        if (elevF > SEA_LEVEL - 0.009 && elevF < SEA_LEVEL + 0.014) {
           cr = mix(cr, pal.foam.r, 0.55);
           cg = mix(cg, pal.foam.g, 0.55);
           cb = mix(cb, pal.foam.b, 0.55);
         }
 
-        lift = opts.liftOf(opts.smoothElevation(grid, gp.row, gp.col) - opts.rimFalloff(r));
+        lift = opts.liftOf((smoothF ?? opts.smoothElevation(grid, gp.row, gp.col)) - rim);
         cellId = gp.row * GRID_SIZE + gp.col + 1;
       }
 
@@ -1898,8 +1919,12 @@ export class HabitableCutawayEngine {
     this.weatherAcc = 0;
     const grid = opts.grid;
     if (opts.weather && grid && opts.planetType !== 'gas') {
+      // Ground lift follows the sub-cell elevation like the surface does; the
+      // lookup's field coordinates (fx/fy) stay per cell.
+      const elevAt = opts.elevationAt;
       const lut = buildWeatherLut(this.geom, opts.discToGrid,
-        (row, col, r) => opts.liftOf(opts.smoothElevation(grid, row, col) - opts.rimFalloff(r)));
+        (row, col, r, dx, dy) => opts.liftOf(
+          (elevAt?.(dx, dy) ?? opts.smoothElevation(grid, row, col)) - opts.rimFalloff(r)));
       // Orientation for the sun: which grid longitude faces the viewer, and
       // which way east runs on screen, read off the same projection.
       const lonOf = (col: number) => (col + 0.5) / GRID_SIZE * Math.PI * 2;

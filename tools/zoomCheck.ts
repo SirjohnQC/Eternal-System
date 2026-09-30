@@ -180,5 +180,55 @@ console.log('\n  CONTROLLER — pan, resize, supersede (Ruling 9 fix round 1)');
   check('  control: settled() without the supersede guard shows the stale camera', ns.showCamera === true, `showCamera ${ns.showCamera}`);
 }
 
+console.log('\n  IDENTITY (Task 3: sub-cell elevation is the one declared difference)');
+{
+  const { renderLayers, hashImage, nearestClassMap, boundaryBand, LAYERS } = await import('./zoomHarness');
+  const goldens = (await import('./zoomGoldens.json')).default as Record<string, Record<string, string>>;
+  // Layers the sub-cell change may touch: the surface and occupancy readers,
+  // and the weather (its ground lift). Everything else must hash identical.
+  const MAY_DIFFER = new Set(['crust', 'land', 'fluids', 'dayNight', 'weather']);
+  const SHARE_MAX = 0.02;
+
+  interface Verdict { ok: boolean; lines: string[] }
+  /** Compare `got` to the nearest-cell render `ref` (which must equal the goldens). */
+  const judge = (type: string, got: Record<string, Uint8ClampedArray>, ref: Record<string, Uint8ClampedArray>, band: Uint8Array): Verdict => {
+    let ok = true; const lines: string[] = [];
+    for (const layer of LAYERS) {
+      const g = got[layer], r = ref[layer];
+      if (hashImage(g) === goldens[type][layer]) { lines.push(`${layer}: identical`); continue; }
+      if (!MAY_DIFFER.has(layer) || g.length !== r.length || r.length !== band.length * 4) {
+        ok = false; lines.push(`${layer}: DIFFERS (not allowed to)`); continue;
+      }
+      let nonEmpty = 0, diff = 0, outside = 0;
+      for (let i = 0, p = 0; i < r.length; i += 4, p++) {
+        if (r[i + 3] > 0) nonEmpty++;
+        if (r[i] !== g[i] || r[i + 1] !== g[i + 1] || r[i + 2] !== g[i + 2] || r[i + 3] !== g[i + 3]) {
+          diff++; if (!band[p]) outside++;
+        }
+      }
+      const share = nonEmpty ? diff / nonEmpty : Infinity;
+      const good = share < SHARE_MAX && outside === 0;
+      if (!good) ok = false;
+      lines.push(`${layer}: ${diff} px differ = ${(share * 100).toFixed(3)}% of ${nonEmpty} non-empty, ${outside} outside the 2 px boundary band${good ? '' : '  <-- FAIL'}`);
+    }
+    return { ok, lines };
+  };
+
+  for (const type of Object.keys(goldens)) {
+    const ref = renderLayers(type, 7, { subCell: false });
+    const refSame = LAYERS.filter(l => hashImage(ref[l]) === goldens[type][l]).length;
+    check(`${type}: nearest-cell path hashes identical to the goldens`, refSame === LAYERS.length, `${refSame}/${LAYERS.length} layers`);
+    const band = boundaryBand(nearestClassMap(type, 7));
+    const v = judge(type, renderLayers(type, 7), ref, band);
+    check(`${type}: identity render differs only on coast/terrace edges`, v.ok, '');
+    for (const l of v.lines) console.log(`          ${l}`);
+    if (type !== 'gas') {  // gas never reads rimFalloff
+      const c = judge(type, renderLayers(type, 7, { rimPerturb: 0.02 }), ref, band);
+      check(`  control: ${type} rimFalloff + 0.02 fails the same bar`, !c.ok, '');
+      for (const l of c.lines) console.log(`          ${l}`);
+    }
+  }
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

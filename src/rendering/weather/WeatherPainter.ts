@@ -26,7 +26,7 @@ export interface WeatherLut {
 export function buildWeatherLut(
   geom: { cx: number; cyTop: number; rx: number; ry: number },
   project: (dx: number, dy: number) => { row: number; col: number } | null,
-  groundLift: (row: number, col: number, r: number) => number,
+  groundLift: (row: number, col: number, r: number, dx: number, dy: number) => number,
 ): WeatherLut {
   const px: number[] = [], py: number[] = [], ground: number[] = [];
   const fx: number[] = [], fy: number[] = [], ddx: number[] = [];
@@ -39,7 +39,7 @@ export function buildWeatherLut(
       const gp = project(dx, dy);
       if (!gp) continue;
       px.push(x); py.push(y);
-      ground.push(y - groundLift(gp.row, gp.col, r));
+      ground.push(y - groundLift(gp.row, gp.col, r, dx, dy));
       fx.push((gp.col + 0.5) / CELL_COLS - 0.5);
       fy.push((gp.row + 0.5) / CELL_ROWS - 0.5);
       ddx.push(dx);

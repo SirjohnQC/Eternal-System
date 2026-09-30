@@ -893,6 +893,21 @@ export class IsoDioramaRenderer {
    * great circle 90° away from the focus, so the top face shows one hemisphere.
    */
   private discToGrid(dx: number, dy: number): { row: number; col: number } | null {
+    const f = this.discToGridF(dx, dy);
+    if (!f) return null;
+    return {
+      row: Math.max(0, Math.min(GRID_SIZE - 1, Math.round(f.row))),
+      col: Math.min(GRID_SIZE - 1, Math.floor(f.col)),
+    };
+  }
+
+  /**
+   * {@link discToGrid} without the rounding: the FRACTIONAL grid position,
+   * `row = v * (GRID_SIZE - 1)` (cell i's centre at row i) and
+   * `col = u * GRID_SIZE` (cell j's centre at col j + 0.5). Bakes use it to
+   * sample elevation BETWEEN cells; picking and placement stay on discToGrid.
+   */
+  private discToGridF(dx: number, dy: number): { row: number; col: number } | null {
     const r = Math.hypot(dx, dy);
     if (r > 1) return null;
 
@@ -913,10 +928,29 @@ export class IsoDioramaRenderer {
     const v = 0.5 - lat / Math.PI;                       // 0 = north pole
     const u = ((lon / (Math.PI * 2)) % 1 + 1) % 1;
 
-    return {
-      row: Math.max(0, Math.min(GRID_SIZE - 1, Math.round(v * (GRID_SIZE - 1)))),
-      col: Math.min(GRID_SIZE - 1, Math.floor(u * GRID_SIZE)),
-    };
+    return { row: v * (GRID_SIZE - 1), col: u * GRID_SIZE };
+  }
+
+  /**
+   * Sub-cell elevation: {@link smoothElevation} interpolated bilinearly between
+   * the 4 cell centres around the pixel's fractional grid position (columns
+   * wrap, rows clamp). Coastlines and terrace edges follow it, so they become
+   * curves when the view is re-rendered zoomed in instead of cell-sized stair
+   * steps. Bake-time only — never called per frame. The caller subtracts
+   * rimFalloff as it does for smoothElevation.
+   */
+  private elevationAt(grid: PlanetGrid, dx: number, dy: number): number | null {
+    const f = this.discToGridF(dx, dy);
+    if (!f) return null;
+    const rr = Math.max(0, Math.min(GRID_SIZE - 1, f.row));
+    const r0 = Math.min(GRID_SIZE - 2, Math.floor(rr)), tr = rr - r0;
+    const cc = f.col - 0.5;
+    const c0f = Math.floor(cc), tc = cc - c0f;
+    const c0 = ((c0f % GRID_SIZE) + GRID_SIZE) % GRID_SIZE, c1 = (c0 + 1) % GRID_SIZE;
+    const e00 = this.smoothElevation(grid, r0, c0), e01 = this.smoothElevation(grid, r0, c1);
+    const e10 = this.smoothElevation(grid, r0 + 1, c0), e11 = this.smoothElevation(grid, r0 + 1, c1);
+    const top = e00 + (e01 - e00) * tc, bot = e10 + (e11 - e10) * tc;
+    return top + (bot - top) * tr;
   }
 
   /**
@@ -1126,6 +1160,7 @@ export class IsoDioramaRenderer {
    */
   private bakeHabitableCutaway(): void {
     const bio = this.biosphere;
+    const grid = this.grid;
     this.cutaway.bake({
       w: this.VW, h: this.VH,
       seed: this.planetSeed,
@@ -1135,6 +1170,7 @@ export class IsoDioramaRenderer {
       rimFalloff: (r) => this.rimFalloff(r),
       liftOf: (elev) => this.liftOf(elev),
       smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
+      elevationAt: grid ? (dx, dy) => this.elevationAt(grid, dx, dy) : undefined,
       maxLift: this.maxLift,
       lush: this.lushFor(bio),
       weather: this.climateFor(),
