@@ -83,5 +83,102 @@ console.log('\n  CONTROLLER');
   check('  control: no settle delay re-bakes mid-gesture', naive > 0, `${naive} re-bakes`);
 }
 
+console.log('\n  CONTROLLER — pan, resize, supersede (Ruling 9 fix round 1)');
+{
+  const rect = { width: 1175, height: 783 };
+
+  // (a) Pan gesture settles once, same as a wheel gesture. Panning only moves
+  // the view when zoomed in (clamp() zeroes pan at zoom 1), so zoom in first.
+  const cp = new ZoomController(rect, VW, VH);
+  let tp = 0;
+  cp.wheel(50, 50, -1, tp);
+  tp += 5;
+  cp.panStart(50, 50, tp);
+  let rebakesDuringPan = 0;
+  for (const dx of [10, 20, 30]) { tp += 20; cp.panMove(50 + dx, 50, tp); if (cp.tick(tp)) rebakesDuringPan++; }
+  tp += SETTLE_MS + 50;                          // pointer still down, well past the settle delay
+  const whilePanning = cp.tick(tp);
+  cp.panEnd(tp);
+  let rebakesAfterEnd = 0; let panCam: any = null;
+  for (let k = 0; k < 20; k++) { tp += 16; const r = cp.tick(tp); if (r) { rebakesAfterEnd++; panCam = r; } }
+  check('pan gesture settles once', rebakesDuringPan === 0 && whilePanning === null && rebakesAfterEnd === 1 && panCam !== null,
+    `duringPan ${rebakesDuringPan}, whilePanning ${whilePanning}, afterEnd ${rebakesAfterEnd}`);
+  cp.settled(panCam);
+  check('  after pan settle: showCamera and css none', cp.showCamera === true && cp.cssTransform() === 'none',
+    `showCamera ${cp.showCamera}, css ${cp.cssTransform()}`);
+  // Control: bypassing the panning guard inside tick() re-bakes while the
+  // pointer is still down, failing the "no re-bake while panning" bar.
+  class NoPanGuard extends ZoomController { tick(t: number) { (this as any).panning = false; return super.tick(t); } }
+  const npg = new NoPanGuard(rect, VW, VH);
+  let tn = 0;
+  npg.wheel(50, 50, -1, tn);
+  tn += 5;
+  npg.panStart(50, 50, tn);
+  npg.panMove(70, 50, tn += 20);
+  tn += SETTLE_MS + 50;
+  const controlResult = npg.tick(tn);
+  check('  control: no panning guard re-bakes while still panning', controlResult !== null, `${JSON.stringify(controlResult)}`);
+
+  // (b) resize() mid-gesture keeps the zoom and re-clamps pan to the new rect;
+  // the pending gesture still settles, now for the new size. A huge cursor
+  // offset saturates the pan clamp deterministically at every zoom step.
+  const rectA = { width: 1175, height: 783 };
+  const rectB = { width: 900, height: 600 };
+  const cr = new ZoomController(rectA, VW, VH);
+  let tr = 0;
+  for (let i = 0; i < 6; i++) { cr.wheel(10000, 10000, -1, tr); tr += 5; }
+  const zBefore = cr.viewZoom;
+  const boundA = (zBefore - 1) * rectA.width * 0.5;
+  check('  setup: pan pinned to the rectA clamp bound', Math.abs(Math.abs(cr.panX) - boundA) < 1e-6, `panX ${cr.panX}, boundA ${boundA.toFixed(1)}`);
+  cr.resize(rectB, VW, VH);
+  const boundB = (zBefore - 1) * rectB.width * 0.5;
+  check('resize mid-gesture keeps the zoom and re-clamps pan to the new rect',
+    cr.viewZoom === zBefore && Math.abs(Math.abs(cr.panX) - boundB) < 1e-6,
+    `zoom ${cr.viewZoom} (was ${zBefore.toFixed(3)}), panX ${cr.panX.toFixed(1)}, boundB ${boundB.toFixed(1)}`);
+  let camAfterResize: any = null; let tr2 = tr;
+  for (let k = 0; k < 20; k++) { tr2 += 16; const r = cr.tick(tr2); if (r) camAfterResize = r; }
+  check('  next settle after resize issues a camera sized for the new rect',
+    camAfterResize !== null && camAfterResize.fx >= -1 && camAfterResize.fx <= VW + 1 && camAfterResize.fy >= -1 && camAfterResize.fy <= VH + 1,
+    JSON.stringify(camAfterResize));
+  // Control: a resize() that forgets to re-clamp leaves pan beyond the new
+  // rect's (smaller) bound.
+  class NoReclampResize extends ZoomController {
+    resize(rect2: { width: number; height: number }, vw: number, vh: number) {
+      (this as any).rect = rect2; (this as any).VW = vw; (this as any).VH = vh; (this as any).issued = null; // bug: skips clamp()
+    }
+  }
+  const badR = new NoReclampResize(rectA, VW, VH);
+  let tb = 0;
+  for (let i = 0; i < 6; i++) { badR.wheel(10000, 10000, -1, tb); tb += 5; }
+  badR.resize(rectB, VW, VH);
+  const boundBbad = (badR.viewZoom - 1) * rectB.width * 0.5;
+  check('  control: resize without re-clamp leaves pan beyond the new rect bound', Math.abs(badR.panX) > boundBbad + 1e-6,
+    `panX ${badR.panX.toFixed(1)}, boundB ${boundBbad.toFixed(1)}`);
+
+  // (c) A settle for a superseded camera (a new gesture arrived between
+  // tick() issuing it and settled() being called) must be ignored.
+  const cs = new ZoomController(rect, VW, VH);
+  let ts = 0;
+  cs.wheel(50, 50, -1, ts);
+  let camA: any = null;
+  for (let k = 0; k < 20; k++) { ts += 16; const r = cs.tick(ts); if (r) camA = r; }
+  check('  setup: first gesture settles to camera A', camA !== null, JSON.stringify(camA));
+  cs.wheel(50, 50, -1, ts += 5);                  // a new gesture arrives before settled(camA) is applied
+  cs.settled(camA);                               // stale — must be ignored
+  check('superseded settle is ignored', cs.showCamera === false && cs.cssTransform() !== 'none',
+    `showCamera ${cs.showCamera}, css ${cs.cssTransform()}`);
+  // Control: a settled() that skips the supersede guard applies the stale
+  // camera anyway.
+  class NoSupersedeGuard extends ZoomController { settled(cam: any) { (this as any).cam = cam; (this as any).camShown = true; } }
+  const ns = new NoSupersedeGuard(rect, VW, VH);
+  let tn2 = 0;
+  ns.wheel(50, 50, -1, tn2);
+  let camB: any = null;
+  for (let k = 0; k < 20; k++) { tn2 += 16; const r = ns.tick(tn2); if (r) camB = r; }
+  ns.wheel(50, 50, -1, tn2 += 5);                 // new gesture supersedes
+  ns.settled(camB);                               // bug: applies the stale camera unconditionally
+  check('  control: settled() without the supersede guard shows the stale camera', ns.showCamera === true, `showCamera ${ns.showCamera}`);
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

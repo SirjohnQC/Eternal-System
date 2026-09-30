@@ -15,6 +15,7 @@ export class ZoomController {
   private lastInput = -Infinity; private panning = false; private pending = false;
   private panOrigin = { x: 0, y: 0, px: 0, py: 0 };
   private cam: Camera; private camShown = false;
+  private issued: Camera | null = null;
 
   constructor(private rect: { width: number; height: number }, private VW: number, private VH: number) {
     this.cam = identityCamera(VW, VH);
@@ -36,6 +37,7 @@ export class ZoomController {
     this.lastInput = t;
     this.pending = true;
     this.camShown = false;      // back to the identity layers + CSS while gesturing
+    this.issued = null;         // any new input supersedes a camera already requested
   }
 
   private clamp(): void {
@@ -56,6 +58,9 @@ export class ZoomController {
     this.clamp();
   }
 
+  // Drag-vs-click deadzone is deliberately not this controller's job — the host
+  // (IsoDioramaRenderer) decides when a pointer-down turns into a pan gesture
+  // before calling panStart/panMove.
   panStart(x: number, y: number, t: number): void {
     this.panning = true; this.panOrigin = { x, y, px: this.px, py: this.py }; this.beginInput(t);
   }
@@ -75,15 +80,25 @@ export class ZoomController {
     if (!this.pending || this.panning || t - this.lastInput < SETTLE_MS) return null;
     this.pending = false;
     const target = cameraFromView(this.zoom, this.px, this.py, this.rect, this.VW, this.VH);
-    if (this.zoom === 1) { this.cam = identityCamera(this.VW, this.VH); this.camShown = false; return null; }
+    if (this.zoom === 1) { this.cam = identityCamera(this.VW, this.VH); this.camShown = false; this.issued = null; return null; }
+    this.issued = target;
     return target;
   }
 
-  /** The host finished re-baking for `cam`: show the camera layers, CSS identity. */
-  settled(cam: Camera): void { this.cam = cam; this.camShown = true; }
+  /**
+   * The host finished re-baking for `cam`: show the camera layers, CSS identity.
+   * Ignored when `cam` is not the camera this controller most recently issued —
+   * a later gesture (wheel/pan) between tick() and settled() supersedes it, and
+   * applying the stale camera would flash the wrong render for a frame.
+   */
+  settled(cam: Camera): void {
+    if (cam !== this.issued) return;
+    this.cam = cam; this.camShown = true; this.issued = null;
+  }
 
   resize(rect: { width: number; height: number }, VW: number, VH: number): void {
     this.rect = rect; this.VW = VW; this.VH = VH; this.clamp();
+    this.issued = null; // the in-flight request (if any) was baked for the old size
     if (this.zoom !== 1) { this.pending = true; this.lastInput = -Infinity; this.camShown = false; }
     else this.cam = identityCamera(VW, VH);
   }
@@ -91,6 +106,6 @@ export class ZoomController {
   /** New planet: back to identity. */
   reset(): void {
     this.zoom = 1; this.px = 0; this.py = 0; this.pending = false; this.panning = false;
-    this.cam = identityCamera(this.VW, this.VH); this.camShown = false;
+    this.cam = identityCamera(this.VW, this.VH); this.camShown = false; this.issued = null;
   }
 }
