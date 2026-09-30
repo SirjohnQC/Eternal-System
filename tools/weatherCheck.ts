@@ -16,7 +16,7 @@ import {
 import { SEA_LEVEL } from '../src/simulation/PlanetGrid';
 import type { ClimateSources } from '../src/rendering/weather/WeatherClimate';
 import {
-  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, type SimAblation,
+  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, ITCZ_FOLLOW, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
 import {
   WeatherPainter, buildWeatherLut, type WeatherLut,
@@ -205,14 +205,17 @@ console.log('\n  PHYSICS');
 
   // Vertical motion's own signature: a subtropical dry belt (Hadley descent).
   // Temperature alone gives a monotone profile, so the ablated sim cannot make one.
+  // Row by row, not mirrored pairs: at sunLat 0 this is the same symmetric
+  // measurement as before, but at a solstice the bands follow the belt
+  // (ITCZ_FOLLOW * sunLat), the same shift the sim itself applies to rowCell.
   const dryBelt = (abl: SimAblation) => {
     const s = run(cO, STEPS, abl);
     let eq = 0, nE = 0, sub = 0, nS = 0, mid = 0, nM = 0;
-    for (let j = 0; j < WX_NY / 2; j++) {
+    for (let j = 0; j < WX_NY; j++) {
       let m = 0;
-      for (let i = 0; i < WX_NX; i++) m += s.cloud[j * WX_NX + i] + s.cloud[(WX_NY - 1 - j) * WX_NX + i];
-      m /= 2 * WX_NX;
-      const a = Math.abs(latOf(j)) * 180 / Math.PI;
+      for (let i = 0; i < WX_NX; i++) m += s.cloud[j * WX_NX + i];
+      m /= WX_NX;
+      const a = Math.abs(latOf(j) - ITCZ_FOLLOW * s.sunLat) * 180 / Math.PI;
       if (a < 12) { eq += m; nE++; }
       else if (a >= 20 && a <= 35) { sub += m; nS++; }
       else if (a >= 48 && a <= 65) { mid += m; nM++; }
@@ -424,24 +427,37 @@ console.log('\n  SEASONS');
   const worlds = ['ocean', 'rocky', 'ice'].flatMap(t => SEASON_SEEDS.map(seed =>
     buildClimate(input(generatePlanetGrid(t, seed * 7777, null, null), t, seed))))
     .filter(c => { let n = 0; for (let k = 0; k < WX_N; k++) if (Math.abs(c.temp[k] - COLD) < 0.1) n++; return n / WX_N >= 0.05; });
-  /** Northern snow share of precipitation, and the precip-weighted mean latitude of rain within 45 deg, over one window. */
+  /**
+   * Northern snow share of precipitation, and the latitude of the tropical
+   * rain belt over one window: the row of peak window-mean zonal precip
+   * within 40 deg of the equator, not a precip-weighted mean latitude (that
+   * mean was dominated by mid-latitude and intermittent shower rain, not the
+   * belt itself).
+   */
   const measure = (c: ClimateSources, sunLat: number, skip: number) => {
     const s = new WeatherSim(c); s.sunLat = sunLat; s.warmUp(WX_WARMUP);
     for (let n = 0; n < skip; n++) s.step(WX_DT);
-    let sn = 0, pn = 0, latSum = 0, latW = 0;
+    let sn = 0, pn = 0;
+    const rowPrecip = new Float64Array(WX_NY);
+    const TROP = Math.PI * 40 / 180;
     for (let n = 0; n < WIN; n++) {
       s.step(WX_DT);
       for (let j = 0; j < WX_NY; j++) {
-        const lat = latOf(j);
+        const lat = latOf(j), inTrop = Math.abs(lat) < TROP;
         for (let i = 0; i < WX_NX; i++) {
           const k = j * WX_NX + i, p = s.precip[k];
+          if (inTrop) rowPrecip[j] += p;
           if (p <= 0.004) continue;
           if (lat > 0) { pn += p; if (s.snow[k]) sn += p; }
-          if (Math.abs(lat) < Math.PI / 4) { latSum += lat * p; latW += p; }
         }
       }
     }
-    return { snowN: pn > 0 ? sn / pn : 0, rainLat: latW > 0 ? latSum / latW : 0 };
+    let peakJ = -1, peakP = -Infinity;
+    for (let j = 0; j < WX_NY; j++) {
+      if (Math.abs(latOf(j)) >= TROP) continue;
+      if (rowPrecip[j] > peakP) { peakP = rowPrecip[j]; peakJ = j; }
+    }
+    return { snowN: pn > 0 ? sn / pn : 0, rainLat: peakJ >= 0 ? latOf(peakJ) : 0 };
   };
   let snowSeason = 0, snowNoise = 0, beltShift = 0, beltNoise = 0, ctlSnow = 0, ctlBelt = 0;
   for (const c of worlds) {
