@@ -38,7 +38,7 @@ function blend(d: Uint8ClampedArray, o: number, r: number, g: number, b: number,
 }
 
 export function bakeBackdrop(
-  img: ImageDataLike, opts: { seed: number; vw: number; vh: number; periodic?: boolean },
+  img: ImageDataLike, opts: { seed: number; vw: number; periodic?: boolean },
 ): void {
   const periodic = opts.periodic ?? true;
   const W = img.width, H = img.height, d = img.data, vw = opts.vw;
@@ -46,14 +46,19 @@ export function bakeBackdrop(
 
   // Gradient. Periodic: vertical only (#080a1c -> #050614 at 55% -> #02030c).
   // Old: the diagonal createLinearGradient(0, 0, 0.4 vw, vh).
+  // Colour stops hoisted out of the per-pixel loop: picking between the two
+  // pre-built arrays below allocates nothing, where `[8, 10, 28, ...]` written
+  // inline in the loop allocated a fresh array every pixel.
+  const STOP_A = [8, 10, 28, 5, 6, 20], STOP_B = [5, 6, 20, 2, 3, 12];
   const gx = 0.4 * vw, gLen2 = gx * gx + H * H;
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     let t = periodic ? y / Math.max(1, H - 1) : (x * gx + y * H) / gLen2;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     const u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
-    const [r0, g0, b0, r1, g1, b1] = t < 0.55 ? [8, 10, 28, 5, 6, 20] : [5, 6, 20, 2, 3, 12];
+    const stop = t < 0.55 ? STOP_A : STOP_B;
     const o = (y * W + x) * 4;
-    d[o] = r0 + (r1 - r0) * u; d[o + 1] = g0 + (g1 - g0) * u; d[o + 2] = b0 + (b1 - b0) * u; d[o + 3] = 255;
+    d[o] = stop[0] + (stop[3] - stop[0]) * u; d[o + 1] = stop[1] + (stop[4] - stop[1]) * u;
+    d[o + 2] = stop[2] + (stop[5] - stop[2]) * u; d[o + 3] = 255;
   }
 
   // Nebula band: five soft blobs along a centre line. Periodic: the line is a

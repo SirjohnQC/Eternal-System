@@ -43,11 +43,13 @@ export const VAPOUR_START = 0.6;
 export const RAIN_DRY = 0.8;
 /**
  * Day cycle. Rising air is scaled by local solar heating, weak at night and
- * strong in the afternoon, averaging 1 over a day. Without it the equatorial
- * rising band never let up and its cells rained for the whole hour. Weighted
- * to the tropics around the subsolar latitude (1 there, 0 from 30 degrees
- * away): tropical convection follows the sun; mid-latitude weather is frontal
- * and rides the band wind.
+ * strong in the afternoon, averaging 1 over a day AT THE EQUATOR AT EQUINOX
+ * (sunLat = 0) — off the equator, or away from equinox, the row's own
+ * subsolar geometry (rowCos/rowSin against sunLat) shifts that mean. Without
+ * it the equatorial rising band never let up and its cells rained for the
+ * whole hour. Weighted to the tropics around the subsolar latitude (1 there,
+ * 0 from 30 degrees away): tropical convection follows the sun; mid-latitude
+ * weather is frontal and rides the band wind.
  */
 export const DIURNAL = 0.6;
 /** Seconds per day when nothing drives the sun (headless runs); the host sets `sunLon`. */

@@ -209,7 +209,7 @@ console.log('\n  BACKDROP');
   const seamOf = (periodic: boolean, seed: number) => {
     const vw = 480, vh = 260, W = backdropWidth(vw);
     const img = { width: W, height: vh, data: new Uint8ClampedArray(W * vh * 4) };
-    bakeBackdrop(img, { seed, vw, vh, periodic });
+    bakeBackdrop(img, { seed, vw, periodic });
     const col = (a: number, b: number) => {
       let s = 0;
       for (let y = 0; y < vh; y++) for (let c = 0; c < 3; c++) s += Math.abs(img.data[(y * W + a) * 4 + c] - img.data[(y * W + b) * 4 + c]);

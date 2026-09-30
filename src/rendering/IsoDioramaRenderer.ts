@@ -1185,7 +1185,7 @@ export class IsoDioramaRenderer {
   private bakeBackground(): void {
     const g = this.bgLayer.getContext('2d')!;
     const img = g.createImageData(this.bgLayer.width, this.VH);
-    bakeBackdrop(img, { seed: this.planetSeed ^ 0x9e3779b9, vw: this.VW, vh: this.VH });
+    bakeBackdrop(img, { seed: this.planetSeed ^ 0x9e3779b9, vw: this.VW });
     g.putImageData(img, 0, 0);
   }
 
@@ -2369,10 +2369,15 @@ export class IsoDioramaRenderer {
   }
 
   /**
-   * The sun's faint outer wash beyond the painter's bloom core — a canvas
-   * radial gradient, since the painter only rasterises `t < BLOOM_CORE` of
-   * `L.bloom * sunSizeScale` to keep its per-pixel loop small. Continues the
-   * painter's profile exactly where its core stops (0.07 at t = BLOOM_CORE).
+   * The sun's glow, drawn as a canvas radial gradient (GPU-cheap) since the
+   * painter only rasterises the bright bloom CORE (`t < BLOOM_CORE`) of
+   * `L.bloom * bloomScale(sunSizeScale)`, to keep its per-pixel loop small.
+   * This wash is the whole glow's flat BASE level — constant
+   * `WASH_ALPHA * fade` from the centre out to BLOOM_CORE, falling to 0 by
+   * t = 1 — and the painter draws only the brightness ABOVE that base
+   * (`bloomCoreAlpha`), so the two composite into one continuous profile with
+   * no seam at BLOOM_CORE. Must use the SAME clamped `bloomScale` as the
+   * painter's core, or the wash and core radii drift apart.
    */
   private drawSunWash(g: CanvasRenderingContext2D, L: SkyLayout, sky: SkyState<Planet>, sunRgb: RGB): void {
     if (sky.sun.elev <= 0) return;
