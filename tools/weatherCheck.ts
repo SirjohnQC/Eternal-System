@@ -16,7 +16,7 @@ import {
 import { SEA_LEVEL } from '../src/simulation/PlanetGrid';
 import type { ClimateSources } from '../src/rendering/weather/WeatherClimate';
 import {
-  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, ITCZ_FOLLOW, type SimAblation,
+  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
 import {
   WeatherPainter, buildWeatherLut, type WeatherLut,
@@ -130,6 +130,30 @@ function nullPrecip(c: ClimateSources): Float32Array {
   }
   return p;
 }
+/** The band the sim's OWN equinox Hadley descent sits at — fixed, not fitted. */
+const BELT_LAT = Math.PI * 30 / 180;
+/**
+ * The ITCZ index: the standard area-weighted precipitation centroid of
+ * window-mean zonal precipitation within +/-30 deg of the equator --
+ * sum(lat * P_j * cos(lat)) / sum(P_j * cos(lat)) over those rows, `P_j`
+ * being a row's precipitation summed over longitude and over the caller's
+ * accumulation window. Shared by the SEASONS belt check and the PHYSICS dry
+ * belt check, so both measure the belt the sim actually painted rather than
+ * a formula the sim was written against (Ruling 12: the earlier storm-belt
+ * statistic, latitude of the argmax of window-mean zonal rain, jumped between
+ * separate rain bands -- on ice worlds it picked winter mid-latitude rain --
+ * and was quantised to the grid's 5.6 deg rows).
+ */
+function itczCentroid(rowPrecip: Float64Array): { rainLat: number; tropTotal: number } {
+  let num = 0, den = 0, tropTotal = 0;
+  for (let j = 0; j < WX_NY; j++) {
+    const lat = latOf(j);
+    if (Math.abs(lat) > BELT_LAT) continue;
+    const w = rowPrecip[j] * Math.cos(lat);
+    num += lat * w; den += w; tropTotal += rowPrecip[j];
+  }
+  return { rainLat: den > 1e-9 ? num / den : 0, tropTotal };
+}
 const STEPS = QUICK ? 400 : 800;
 
 // ─── 2. Physics ───────────────────────────────────────────────────────────────
@@ -206,16 +230,33 @@ console.log('\n  PHYSICS');
   // Vertical motion's own signature: a subtropical dry belt (Hadley descent).
   // Temperature alone gives a monotone profile, so the ablated sim cannot make one.
   // Row by row, not mirrored pairs: at sunLat 0 this is the same symmetric
-  // measurement as before, but at a solstice the bands follow the belt
-  // (ITCZ_FOLLOW * sunLat), the same shift the sim itself applies to rowCell.
+  // measurement as before, but at a solstice the bands are centred on the
+  // MEASURED belt centroid (the ITCZ index, fix A), computed from this run's
+  // own window -- not the sim's own ITCZ_FOLLOW * sunLat, which could not
+  // catch a wrong ITCZ_FOLLOW.
+  const DRY_WIN = QUICK ? 480 : 960;
   const dryBelt = (abl: SimAblation) => {
-    const s = run(cO, STEPS, abl);
+    const s = new WeatherSim(cO, abl);
+    s.warmUp(WX_WARMUP);
+    for (let n = 0; n < STEPS; n++) s.step(WX_DT);
+    const cloudAvg = new Float64Array(WX_NY), rowPrecip = new Float64Array(WX_NY);
+    for (let n = 0; n < DRY_WIN; n++) {
+      s.step(WX_DT);
+      for (let j = 0; j < WX_NY; j++) {
+        let m = 0;
+        for (let i = 0; i < WX_NX; i++) {
+          const k = j * WX_NX + i;
+          m += s.cloud[k];
+          if (Math.abs(latOf(j)) <= BELT_LAT) rowPrecip[j] += s.precip[k];
+        }
+        cloudAvg[j] += m / WX_NX;
+      }
+    }
+    const { rainLat: beltCenter } = itczCentroid(rowPrecip);
     let eq = 0, nE = 0, sub = 0, nS = 0, mid = 0, nM = 0;
     for (let j = 0; j < WX_NY; j++) {
-      let m = 0;
-      for (let i = 0; i < WX_NX; i++) m += s.cloud[j * WX_NX + i];
-      m /= WX_NX;
-      const a = Math.abs(latOf(j) - ITCZ_FOLLOW * s.sunLat) * 180 / Math.PI;
+      const m = cloudAvg[j] / DRY_WIN;
+      const a = Math.abs(latOf(j) - beltCenter) * 180 / Math.PI;
       if (a < 12) { eq += m; nE++; }
       else if (a >= 20 && a <= 35) { sub += m; nS++; }
       else if (a >= 48 && a <= 65) { mid += m; nM++; }
@@ -428,58 +469,83 @@ console.log('\n  SEASONS');
     buildClimate(input(generatePlanetGrid(t, seed * 7777, null, null), t, seed))))
     .filter(c => { let n = 0; for (let k = 0; k < WX_N; k++) if (Math.abs(c.temp[k] - COLD) < 0.1) n++; return n / WX_N >= 0.05; });
   /**
-   * Northern snow share of precipitation, and the latitude of the tropical
-   * rain belt over one window: the row of peak window-mean zonal precip
-   * within 40 deg of the equator, not a precip-weighted mean latitude (that
-   * mean was dominated by mid-latitude and intermittent shower rain, not the
-   * belt itself).
+   * Northern snow share of precipitation, and the ITCZ index (`itczCentroid`,
+   * shared with the PHYSICS dry-belt check): the area-weighted precipitation
+   * centroid of window-mean zonal precip within +/-30 deg of the equator.
+   * Replaces an earlier "latitude of peak window-mean zonal precip within
+   * 40 deg" statistic, which jumped between separate rain bands (on ice
+   * worlds it picked winter mid-latitude rain instead of the tropical belt)
+   * and was quantised to the grid's 5.6 deg rows. `ablate` lets the caller
+   * run the exact real sim path through the `seasons` ablation, for a control
+   * that cannot pass by construction (Ruling 12) rather than a literal.
    */
-  const measure = (c: ClimateSources, sunLat: number, skip: number) => {
-    const s = new WeatherSim(c); s.sunLat = sunLat; s.warmUp(WX_WARMUP);
+  const measure = (c: ClimateSources, sunLat: number, skip: number, ablate: SimAblation = {}) => {
+    const s = new WeatherSim(c, ablate); s.sunLat = sunLat; s.warmUp(WX_WARMUP);
     for (let n = 0; n < skip; n++) s.step(WX_DT);
     let sn = 0, pn = 0;
     const rowPrecip = new Float64Array(WX_NY);
-    const TROP = Math.PI * 40 / 180;
     for (let n = 0; n < WIN; n++) {
       s.step(WX_DT);
       for (let j = 0; j < WX_NY; j++) {
-        const lat = latOf(j), inTrop = Math.abs(lat) < TROP;
+        const lat = latOf(j), inBelt = Math.abs(lat) <= BELT_LAT;
         for (let i = 0; i < WX_NX; i++) {
           const k = j * WX_NX + i, p = s.precip[k];
-          if (inTrop) rowPrecip[j] += p;
+          if (inBelt) rowPrecip[j] += p;
           if (p <= 0.004) continue;
           if (lat > 0) { pn += p; if (s.snow[k]) sn += p; }
         }
       }
     }
-    let peakJ = -1, peakP = -Infinity;
-    for (let j = 0; j < WX_NY; j++) {
-      if (Math.abs(latOf(j)) >= TROP) continue;
-      if (rowPrecip[j] > peakP) { peakP = rowPrecip[j]; peakJ = j; }
-    }
-    return { snowN: pn > 0 ? sn / pn : 0, rainLat: peakJ >= 0 ? latOf(peakJ) : 0 };
+    const { rainLat, tropTotal } = itczCentroid(rowPrecip);
+    return { snowN: pn > 0 ? sn / pn : 0, rainLat, tropTotal };
   };
   let snowSeason = 0, snowNoise = 0, beltShift = 0, beltNoise = 0, ctlSnow = 0, ctlBelt = 0;
-  for (const c of worlds) {
+  let beltWorlds = 0;
+  const perWorld = worlds.map(c => {
     const winterN = measure(c, -TILT, 0), summerN = measure(c, TILT, 0);
-    const a = measure(c, 0, 0), b = measure(c, 0, WIN);           // tilt 0, two windows: the noise floor
-    snowSeason += winterN.snowN - summerN.snowN; snowNoise += Math.abs(a.snowN - b.snowN);
-    beltShift += summerN.rainLat - winterN.rainLat; beltNoise += Math.abs(a.rainLat - b.rainLat);
-    // Control: the SAME winter-minus-summer measurement, but with sunLat 0 at
-    // both "solstices" — two separate calls through the real sim path, not a
-    // hardcoded literal.
-    const a2 = measure(c, 0, 0);
-    ctlSnow += a.snowN - a2.snowN; ctlBelt += a.rainLat - a2.rainLat;
+    // Noise floor: the SAME centroid statistic at tilt 0, over >= 3 separate
+    // (consecutive) windows of the same run -- per-world noise is the mean
+    // absolute difference between consecutive windows.
+    const w0 = measure(c, 0, 0), w1 = measure(c, 0, WIN), w2 = measure(c, 0, 2 * WIN);
+    // Real control (Ruling 12): the exact same winter-minus-summer
+    // measurement, but through the sim's `seasons` ablation -- sunLat is set
+    // on the instance, then ignored every step -- so this runs the real sim
+    // path twice and must show no signal, unlike a hardcoded literal, which
+    // cannot fail.
+    const ctlWinter = measure(c, -TILT, 0, { seasons: true });
+    const ctlSummer = measure(c, TILT, 0, { seasons: true });
+    return { winterN, summerN, w0, w1, w2, ctlWinter, ctlSummer };
+  });
+  // The mean window-mean tropical precip over ALL worlds at both solstices --
+  // the scale "negligible" (< 1e-3 of it) is judged against.
+  const tropMean = perWorld.reduce((s, r) => s + r.winterN.tropTotal + r.summerN.tropTotal, 0)
+    / Math.max(1, 2 * perWorld.length);
+  for (const r of perWorld) {
+    snowSeason += r.winterN.snowN - r.summerN.snowN;
+    snowNoise += (Math.abs(r.w0.snowN - r.w1.snowN) + Math.abs(r.w1.snowN - r.w2.snowN)) / 2;
+    ctlSnow += r.ctlWinter.snowN - r.ctlSummer.snowN;
+    // Exclude from the BELT statistic (shift, noise, control) any world with
+    // negligible tropical rain at both solstices -- it has no belt to shift.
+    // Kept for the snow statistic above. Rule: both solstices' window-mean
+    // tropical total below 1e-3 of the mean over all worlds.
+    if (r.winterN.tropTotal >= 1e-3 * tropMean || r.summerN.tropTotal >= 1e-3 * tropMean) {
+      beltWorlds++;
+      beltShift += r.summerN.rainLat - r.winterN.rainLat;
+      beltNoise += (Math.abs(r.w0.rainLat - r.w1.rainLat) + Math.abs(r.w1.rainLat - r.w2.rainLat)) / 2;
+      ctlBelt += r.ctlSummer.rainLat - r.ctlWinter.rainLat;
+    }
   }
-  const n = Math.max(1, worlds.length);
-  snowSeason /= n; snowNoise /= n; beltShift /= n; beltNoise /= n; ctlSnow /= n; ctlBelt /= n;
+  const n = Math.max(1, worlds.length), nBelt = Math.max(1, beltWorlds);
+  snowSeason /= n; snowNoise /= n; ctlSnow /= n;
+  beltShift /= nBelt; beltNoise /= nBelt; ctlBelt /= nBelt;
   const deg = (r: number) => ((r * 180) / Math.PI).toFixed(1);
   check('snow follows the seasons', worlds.length >= 3 && snowSeason >= 3 * snowNoise && snowSeason >= 0.05,
     `north winter - summer ${snowSeason.toFixed(3)} (noise ${snowNoise.toFixed(3)}) over ${worlds.length} worlds`);
-  check('  control: tilt 0', !(ctlSnow >= 3 * snowNoise && ctlSnow >= 0.05), `ctlSnow ${ctlSnow.toFixed(3)}`);
+  check('  control: seasons ablated', !(ctlSnow >= 3 * snowNoise && ctlSnow >= 0.05), `ctlSnow ${ctlSnow.toFixed(3)}`);
   check('storm belt follows the sun', beltShift >= 3 * beltNoise && beltShift >= (2 * Math.PI) / 180,
-    `rain latitude shifts ${deg(beltShift)} deg (noise ${deg(beltNoise)})`);
-  check('  control: tilt 0 belt', !(ctlBelt >= 3 * beltNoise && ctlBelt >= (2 * Math.PI) / 180), `ctlBelt ${deg(ctlBelt)} deg`);
+    `rain latitude shifts ${deg(beltShift)} deg (noise ${deg(beltNoise)}) over ${beltWorlds} worlds`);
+  check('  control: seasons ablated belt', !(ctlBelt >= 3 * beltNoise && ctlBelt >= (2 * Math.PI) / 180),
+    `ctlBelt ${deg(ctlBelt)} deg`);
 }
 
 // ─── 3. Anomalies ─────────────────────────────────────────────────────────────

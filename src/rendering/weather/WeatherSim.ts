@@ -71,6 +71,8 @@ export interface SimAblation {
   cycle?: boolean;
   /** No day cycle: rising air is the same at noon and midnight. */
   diurnal?: boolean;
+  /** No seasons: sunLat is ignored — the tropics, Hadley cell, solar heating and snow line behave as at equinox. */
+  seasons?: boolean;
 }
 
 export const WK = { CLEAR: 0, CUMULUS: 1, STORM: 2, ICE: 3, ASH: 4, SMOG: 5 } as const;
@@ -232,6 +234,9 @@ export class WeatherSim {
 
   step(dt = WX_DT): void {
     this.time += dt;
+    // No-seasons ablation: sunLat is ignored, so the tropics, Hadley cell,
+    // solar heating and snow line behave as at equinox (SimAblation.seasons).
+    const sunLat = this.ablate.seasons ? 0 : this.sunLat;
     this.sunLon -= (Math.PI * 2 / WX_DAY) * dt;   // the sun moves west
     const c = this.climate;
     const { nv, nc, na, ns, nr, nd } = this;
@@ -282,7 +287,9 @@ export class WeatherSim {
     const sunLon = this.sunLon, lonStep = Math.PI * 2 / WX_NX;
     // Season terms follow sunLat EVERY step — buildRows only reruns when the
     // climate object changes, so caching them there would freeze the seasons.
-    const sunLat = this.sunLat, cosSL = Math.cos(sunLat), sinSL = Math.sin(sunLat);
+    // (sunLat itself is the top-of-step local, already zeroed under the
+    // `seasons` ablation.)
+    const cosSL = Math.cos(sunLat), sinSL = Math.sin(sunLat);
     const snowGain = (SEASON_T * sinSL) / Math.sin(SEASON_REF);
     for (let j = 0; j < WX_NY; j++) {
       const dl = this.rowLat[j] - sunLat;
