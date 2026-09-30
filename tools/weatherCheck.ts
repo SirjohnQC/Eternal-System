@@ -590,13 +590,22 @@ const project = (dx: number, dy: number) => {
   return { row: Math.max(0, Math.min(GRID_SIZE - 1, Math.round(v * (GRID_SIZE - 1)))),
            col: Math.min(GRID_SIZE - 1, Math.floor(u * GRID_SIZE)) };
 };
-function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}, opts: object = {}) {
+/**
+ * `zoom` (k > 1): a zoom-camera painter as HabitableCutawayEngine.setCamera
+ * builds it — the face scaled by k about the view centre, the lookup clamped
+ * to the view, cloud lift, lift and world sizes x k, particle cap scaled.
+ */
+function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}, opts: object = {}, zoom = 1) {
   const grid = generatePlanetGrid(type, seed * 7777, null, null);
-  const lift = (row: number, col: number) => grid[row][col].elevation >= SEA_LEVEL ? Math.round((grid[row][col].elevation - SEA_LEVEL) * 30) : 0;
-  const lut = buildWeatherLut(pgeom, project, (row, col) => lift(row, col));
+  const lift = (row: number, col: number) => grid[row][col].elevation >= SEA_LEVEL ? Math.round((grid[row][col].elevation - SEA_LEVEL) * 30 * zoom) : 0;
+  const g = zoom === 1 ? pgeom : { cx: PW / 2 + (pgeom.cx - PW / 2) * zoom, cyTop: PH / 2 + (pgeom.cyTop - PH / 2) * zoom, rx: pgeom.rx * zoom, ry: pgeom.ry * zoom };
+  const cloudLift = Math.round(24 * zoom);
+  const lut = buildWeatherLut(g, project, (row, col) => lift(row, col),
+    zoom === 1 ? {} : { bounds: { w: PW, h: PH, below: cloudLift } });
   const c = buildClimate(input(grid, type, seed, over), opts);
   const sim = new WeatherSim(c); sim.warmUp(WX_WARMUP);
-  const painter = new WeatherPainter(lut, c, 24, seed);
+  const painter = zoom === 1 ? new WeatherPainter(lut, c, 24, seed)
+    : new WeatherPainter(lut, c, cloudLift, seed, { scale: zoom, pmax: 320 * zoom * zoom });
   const img = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   const shadow = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   let acc = 0;
@@ -800,6 +809,12 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
     const q2 = painterFor('ocean', 7);
     const grewCtl = growth(() => { q2.frame(); sink.v = new Float32Array(16); });
     check('  control: one small array per frame', grewCtl >= 64 * 1024, `heap +${(grewCtl / 1024).toFixed(1)} KB`);
+    // Zoom camera: a camera painter (non-integer zoom, so every scaled size is
+    // a double) on a storm world, whose rain fills the scaled particle cap.
+    const qz = painterFor('storm', 7, {}, {}, 2.5);
+    const grewZ = growth(qz.frame);
+    check('no per-frame allocation (camera painter, zoom 2.5)', grewZ < 64 * 1024,
+      `heap +${(grewZ / 1024).toFixed(1)} KB per 1000 frames, best of 3; lookup ${qz.lut.count}, ${qz.painter.pCount} live drops`);
   }
 
   // Headless cost (informational — the gate is measured in the preview, Task 6).

@@ -41,7 +41,7 @@ import {
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import type { ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
-import { WeatherPainter, buildWeatherLut } from './weather/WeatherPainter';
+import { WeatherPainter, buildWeatherLut, WEATHER_PMAX } from './weather/WeatherPainter';
 import { ELEV_LIGHT } from './sky/SunLight';
 //
 // COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
@@ -259,6 +259,14 @@ export interface CutawayBakeOpts extends CutawayGeom {
    * (Ruling 11). Biome colour, placement and picking always use the nearest cell.
    */
   elevationAt?: (dx: number, dy: number) => number | null;
+  /**
+   * `discToGrid` without the rounding: the FRACTIONAL grid position (row i's
+   * centre at row i, column j's at col j + 0.5). Only a camera layer set's
+   * weather lookup reads it, so cloud edges follow the pixel instead of
+   * stair-stepping per planet cell (Ruling 3). The identity lookup stays
+   * nearest-cell, as before zoom.
+   */
+  discToGridF?: (dx: number, dy: number) => { row: number; col: number } | null;
   /**
    * Zoom k of the camera this bake renders; undefined = 1 (identity). World-
    * class constants scale by k, per-px texture frequencies divide by it, 1-px
@@ -1556,6 +1564,7 @@ export function paintAtmosphere(
   intensity = 1,
   tint?: RGB,
   air?: AtmosphereChannel,
+  k = 1,
 ): void {
   if (intensity <= 0.01) return;
   const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
@@ -1568,7 +1577,9 @@ export function paintAtmosphere(
   const d = img.data;
   const w = img.width, h = img.height;
   const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
-  const fade = chan.thicknessPx;
+  // Zoom camera: the shell thickness is a world distance (x k); the wobble
+  // seed below keeps the unscaled thickness so the limb shape is the same world.
+  const fade = chan.thicknessPx * k;
   // A constant-thickness ring reads as a geometric annulus — an outline rather
   // than a volume. Perturb it slowly around the limb; see WOBBLE_AMP.
   // Angular wobble without transcendentals in the inner loop. (dx/d, dy/d) is
@@ -1578,7 +1589,9 @@ export function paintAtmosphere(
   const wobbleSeed = (chan.hue * 7.13 + chan.thicknessPx * 31.7);
   const p1c = Math.cos(wobbleSeed),       p1s = Math.sin(wobbleSeed);
   const p2c = Math.cos(wobbleSeed * 1.7), p2s = Math.sin(wobbleSeed * 1.7);
-  const fadeMax = ozoneFadeMax(fade);
+  // ozoneFadeMax's +2 px feather is world-sized too: the whole bound x k.
+  const fadeMax = k === 1 ? ozoneFadeMax(fade) : ozoneFadeMax(chan.thicknessPx) * k;
+  const fadeFloor = 3 * k, bandRows = 6 * k;
   const aerialReach = rx * 0.35;
   const y0 = Math.max(0, Math.floor(cy - rx - fadeMax));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
@@ -1602,7 +1615,7 @@ export function paintAtmosphere(
       const s2 = 2 * st * ct,    c2 = ct * ct - st * st;
       const s3 = st * (3 - 4 * st * st), c3 = ct * (4 * ct * ct - 3);
       const n = (s2 * p1c + c2 * p1s) * WOBBLE_H2 + (s3 * p2c + c3 * p2s) * WOBBLE_H3;
-      const localFade = Math.max(3, fade * (1 + n * WOBBLE_AMP));
+      const localFade = Math.max(fadeFloor, fade * (1 + n * WOBBLE_AMP));
       // Above the rim line the shell is measured from the dome circle; below
       // it, from the rim ellipse, thinning toward the front (see rimTaper).
       const below = rimPx > 0;
@@ -1636,7 +1649,7 @@ export function paintAtmosphere(
       // Target is 1 where the band touches the face (edge = 1), so it meets the
       // face with no seam, and falls with edge — faster where the band is thin.
       const bandGain  = below
-        ? 1 + (edge * (taper + (1 - taper) * edge) - 1) * Math.min(1, (y - cy) / 6)
+        ? 1 + (edge * (taper + (1 - taper) * edge) - 1) * Math.min(1, (y - cy) / bandRows)
         : 1;
       const glow      = (faceGlow + (domeGlow - faceGlow) * blend + aerial) * bandGain;
       const a = Math.round(Math.min(255, glow * 255));
@@ -1854,11 +1867,21 @@ export function paintFluids(
   img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
   planetType: HabitableType, elapsed: number, layerBob: number,
   shoreDist?: Float32Array | null,
+  k = 1,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
   const t = elapsed;
   const pal = cutawayWaterSurf(planetType);
+  // Zoom camera (k = camera zoom; 1 = identity, byte-identical to before zoom).
+  // The water texture is anchored in the world: noise coordinates and shore
+  // distances are converted to base-world px (x 1/k), so every per-px
+  // frequency and px distance below (SWELL_K, FOAM_REACH, CAUSTIC_FADE, the
+  // depth ramp, cellScale, grain/blob, magma drift) keeps its world size. The
+  // web's line thresholds (glint, halo, whisper) are 1-px strokes: the ridge
+  // distance is scaled by k so a line stays one screen px wide.
+  const invK = 1 / k;
+  const rimCut = k === 1 ? 0.94 : (1 - (1 - Math.sqrt(0.94)) / k) ** 2;
   const d = img.data;
   const w = img.width, h = img.height;
   const y0 = Math.max(0, Math.floor(cy - ry));
@@ -1891,7 +1914,7 @@ export function paintFluids(
       const idx = py * w + px;
       const sourceY = py - layerBob;
       // Offset keeps the noise domain positive, as in SurfaceDecals.
-      const lx = px - cx + 4096, ly = sourceY - geom.cyTop + 4096;
+      const lx = (px - cx) * invK + 4096, ly = (sourceY - geom.cyTop) * invK + 4096;
       if (sourceY < 0 || sourceY >= h || occupancy[sourceY * w + px] !== 1) continue;
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
@@ -1899,13 +1922,14 @@ export function paintFluids(
       if (r2 > 1) continue;
       const src = sourceY * w + px;
       const shore = hasShore ? shoreDist![src] : 0;
+      const shoreW = shore * invK;   // world px
 
       let c = pal.mid;
       if (useCaustic) {
         // Landward unit normal = −∇shoreDist. Neighbours outside the pancake
         // carry no distance, so they fall back to our own value (one-sided
         // difference) instead of dragging the normal toward the rim.
-        let nx = 0, ny = 0, toward = shore;
+        let nx = 0, ny = 0, toward = shoreW;
         if (shore > 0) {
           const sdy = (sourceY - geom.cyTop) * invRy;
           const sE = px + 1 < w && (occupancy[src + 1] === 1 || (px + 1 - cx) * invRx * ((px + 1 - cx) * invRx) + sdy * sdy <= 1)
@@ -1927,19 +1951,19 @@ export function paintFluids(
           // coasts): run the swell toward the pancake centre instead.
           const rl = Math.sqrt(r2) || 1;
           nx = -dx / rl; ny = -dy / rl;
-          if (shore <= 0) toward = rl * rx;
+          if (shore <= 0) toward = rl * rx * invK;
         }
 
         // How loud the caustic is: 1 at the beach, ~0 in open water.
         const detail = hasShore && shore > 0
-          ? clamp01(1 - Math.max(0, shore - FOAM_REACH * 0.35) / CAUSTIC_FADE)
+          ? clamp01(1 - Math.max(0, shoreW - FOAM_REACH * 0.35) / CAUSTIC_FADE)
           : 0.35;
         const detail2 = detail * detail;
 
         // Travelling swell: constant phase moves to SMALLER shore distance.
         const ph = toward * SWELL_K + t * omega;
         const sw = Math.sin(ph);
-        const nearShore = hasShore && shore > 0 ? clamp01(1 - shore / FOAM_REACH) : 0;
+        const nearShore = hasShore && shore > 0 ? clamp01(1 - shoreW / FOAM_REACH) : 0;
         const shoal = nearShore * nearShore;
         const dispPx = (SWELL_DISP_PX + (SWELL_DISP_SHORE_PX - SWELL_DISP_PX) * shoal) * (0.45 + 0.55 * detail);
         const disp = Math.cos(ph) * dispPx * cellScale;
@@ -1957,8 +1981,10 @@ export function paintFluids(
         // the two walls coincide in most places and braid apart elsewhere.
         const warp2 = noise2(bx * 0.9 + wob2X + 7.7, by * 0.9 + wob2Y, seed + 5);
         const b1 = cellRidge(qx, qy, seed);
-        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02;
-        let b = b1 < b2 ? b1 : b2;
+        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02 * invK;
+        // Ridge distance in screen terms (x k): the thresholds below then cut
+        // the same 1-px-wide lines at any zoom.
+        let b = (b1 < b2 ? b1 : b2) * k;
         const grain = noise2(lx * 0.23, ly * 0.23, seed + 11);
         b += (grain - 0.5) * 0.035;
         const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
@@ -1974,7 +2000,7 @@ export function paintFluids(
         else {
           // Depth ramp: shelf stays mid-blue; far from land → deep navy.
           const depth = hasShore && shore > 0
-            ? clamp01((shore - 2.5) / 16)
+            ? clamp01((shoreW - 2.5) / 16)
             : clamp01(Math.sqrt(r2) * 1.15);
           if (depth > 0.72) c = pal.deep;
           else if (depth > 0.38) c = (grain * 0.55 + depth) > 0.72 ? pal.deep : pal.mid;
@@ -1995,7 +2021,7 @@ export function paintFluids(
         }
       } else {
         // Magma: keep travelling swell + hot glint.
-        const toward = shore > 0 ? shore : Math.sqrt(r2) * rx;
+        const toward = (shore > 0 ? shore : Math.sqrt(r2) * rx) * invK;
         const drift = Math.sin(lx * 0.055 - ly * 0.04) * 2.4;
         const wave = Math.sin((toward + drift) * 0.22 + t * 1.15 * speed)
                    + Math.cos((toward + drift) * 0.09 + t * 0.42 * speed) * 0.35;
@@ -2005,7 +2031,7 @@ export function paintFluids(
       }
 
       let cr = c.r, cg = c.g, cb = c.b;
-      if (r2 > 0.94) {
+      if (r2 > rimCut) {
         cr = Math.min(255, cr + 45);
         cg = Math.min(255, cg + 45);
         cb = Math.min(255, cb + 55);
@@ -2060,6 +2086,12 @@ interface CameraLayerSet {
   occupancy: Uint8Array;
   shoreDist: Float32Array;
   pick: Int32Array;
+  /**
+   * This set's weather painter: its own lookup (camera geometry, clamped to the
+   * view, fractional field coordinates, ground lift x k) and cloud lift x k.
+   * Null when the world has no weather. Built by `setCamera`, never per frame.
+   */
+  painter: WeatherPainter | null;
 }
 
 export class HabitableCutawayEngine {
@@ -2072,6 +2104,12 @@ export class HabitableCutawayEngine {
    * set instead of the identity set. Ignored while there is no camera set.
    */
   showCamera = false;
+  /**
+   * Test hook (tools/zoomCheck): when set, atmosphere, clouds and cloud
+   * shadows use this intensity instead of `atmoHazeAmount(zoom)`. Never set in
+   * the game.
+   */
+  hazeOverride: number | null = null;
 
   private idOccupancy = new Uint8Array(1);
   private idShoreDist: Float32Array = new Float32Array(1);
@@ -2094,6 +2132,10 @@ export class HabitableCutawayEngine {
   private weatherImage: ImageData | null = null;
   private weatherSim: WeatherSim | null = null;
   private weatherPainter: WeatherPainter | null = null;
+  /** Climate the painters were last given (a camera painter is built from it). */
+  private weatherClimate: ClimateSources | null = null;
+  /** Entries in the identity weather lookup: a camera painter's particle cap scales from it. */
+  private idLutCount = 1;
   private weatherAcc = 0;
   /** Grid longitude at the disc centre, and +1 when screen +x is east. */
   private weatherFocusLon = 0;
@@ -2174,6 +2216,7 @@ export class HabitableCutawayEngine {
     // one's sky (the repo's recurring state-leak pattern).
     this.weatherSim = null;
     this.weatherPainter = null;
+    this.weatherClimate = null;
     this.weatherAcc = 0;
     const grid = opts.grid;
     if (opts.weather && grid && opts.planetType !== 'gas') {
@@ -2198,6 +2241,8 @@ export class HabitableCutawayEngine {
       this.weatherSim.sunLat = opts.sunLat ?? 0;   // before warm-up, or the first frames jump
       this.weatherSim.warmUp(WX_WARMUP);
       this.weatherPainter = new WeatherPainter(lut, opts.weather, (opts.maxLift ?? 18) + 6, opts.seed);
+      this.weatherClimate = opts.weather;
+      this.idLutCount = Math.max(1, lut.count);
     }
   }
 
@@ -2210,10 +2255,10 @@ export class HabitableCutawayEngine {
    * Decals and chimneys are the IDENTITY plans mapped through the camera,
    * never re-planned (Task 6 moves them to stored world coordinates).
    *
-   * Weather: the camera set has no weather painter yet (its lookup, cloud lift
-   * x k and clamp are Task 5); while the camera set is shown the sim keeps
-   * stepping and the identity painter keeps its particle state, but clouds and
-   * cloud shadows are not drawn.
+   * Weather: the set gets its own painter (see `cameraPainter`) over the SAME
+   * sim; while the set is shown only its painter spawns and moves particles,
+   * and the identity painter keeps its particle state for when it is shown
+   * again.
    */
   setCamera(cam: Camera): void {
     this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
@@ -2234,6 +2279,7 @@ export class HabitableCutawayEngine {
       occupancy: prev && prev.occupancy.length === n ? prev.occupancy : new Uint8Array(n),
       shoreDist: new Float32Array(0),   // baked below
       pick: prev && prev.pick.length === n ? prev.pick : new Int32Array(n),
+      painter: null,
     };
     set.opts = this.cameraOpts(base, set);
     if (set.crust.width !== this.w || set.crust.height !== this.h) {
@@ -2244,7 +2290,34 @@ export class HabitableCutawayEngine {
     const crustG = set.crust.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, set.opts);
     this.paintCameraSurface(set);
+    set.painter = this.cameraPainter(set, base);
     this.camSet = set;
+  }
+
+  /**
+   * A camera set's weather painter (spec 5: a NEW painter per camera set; the
+   * sim, its fields and clock are kept). Lookup on the camera geometry,
+   * clamped to the view plus the cloud lift below it, with fractional field
+   * coordinates (Ruling 3) and the k-scaled sub-cell ground lift; cloud lift,
+   * fall speeds and other world sizes x k; spawn density per screen px as
+   * before (Ruling 4). Primed at once from the running sim, so the first frame
+   * after a settle shows the steady fall, not a sky that refills.
+   */
+  private cameraPainter(set: CameraLayerSet, base: CutawayBakeOpts): WeatherPainter | null {
+    const sim = this.weatherSim, climate = this.weatherClimate, o = set.opts, grid = o.grid;
+    if (!sim || !climate || !grid || o.planetType === 'gas') return null;
+    const k = set.camera.zoom;
+    const cloudLift = Math.round((base.maxLift + 6) * k);
+    const elevAt = subCellSampler(o);
+    const lut = buildWeatherLut(set.geom, o.discToGrid,
+      (row, col, r, dx, dy) => o.liftOf(
+        (elevAt?.(dx, dy) ?? o.smoothElevation(grid, row, col)) - o.rimFalloff(r)),
+      { bounds: { w: this.w, h: this.h, below: cloudLift }, projectF: o.discToGridF });
+    const painter = new WeatherPainter(lut, climate, cloudLift, base.seed, {
+      scale: k, pmax: WEATHER_PMAX * Math.max(1, lut.count / this.idLutCount),
+    });
+    painter.prepare(sim, this.weatherAcc / WX_DT, 0);
+    return painter;
   }
 
   /** The identity options re-targeted at a camera set: world-class values x k. */
@@ -2324,6 +2397,8 @@ export class HabitableCutawayEngine {
     if (!c || !this.weatherSim || !this.weatherPainter) return;
     this.weatherSim.setClimate(c);
     this.weatherPainter.setClimate(c);
+    this.camSet?.painter?.setClimate(c);
+    this.weatherClimate = c;
   }
 
   frame(input: HabitableFrameInput): void {
@@ -2332,27 +2407,33 @@ export class HabitableCutawayEngine {
     const bob = this.bob;
     const layerBob = Math.round(bob);
     // The active layer set: the camera set while the host shows it. Per-frame
-    // painters below take its geometry; their own constants convert in Task 5.
+    // painters take its geometry and its zoom k (world sizes x k, strokes 1 px).
     const cs = this.shown;
     const geom = cs ? cs.geom : this.geom;
+    const k = cs ? cs.camera.zoom : 1;
+    // Haze follows the zoom the layers are RENDERED at: the camera zoom when
+    // the camera set is shown; during a gesture the identity layers are CSS-
+    // scaled, so it follows the CSS zoom exactly as before zoom.
+    const haze = this.hazeOverride ?? atmoHazeAmount(cs ? cs.camera.zoom : (input.viewZoom ?? 1));
+    const painter = cs ? cs.painter : this.weatherPainter;
 
     input.drawBackdrop(g);
     input.drawFarSpace(g);
     const sunAzimuth = input.sunAzimuth ?? 0;
-    if (this.planetType === 'gas') this.drawGasRings(g, true, bob);
+    if (this.planetType === 'gas') this.drawGasRings(g, true, bob, geom, k);
     g.drawImage(cs ? cs.crust : this.crust, 0, layerBob);
     g.drawImage(cs ? cs.land : this.land, 0, layerBob);
     const fluids = this.fluidImage;
     if (fluids) {
       fluids.data.fill(0);
-      paintFluids(fluids, geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist);
+      paintFluids(fluids, geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist, k);
       const fluidG = this.fluidScratch.getContext('2d');
       if (fluidG) {
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
         fluids.data.fill(0);
         paintDayNight(fluids, geom, sunAzimuth, layerBob);
-        if (this.weatherSim && this.weatherPainter) {
+        if (this.weatherSim) {
           // At most 4 steps per frame: a refocused tab hands us seconds of dt.
           // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
           // the subsolar point is a quarter turn from the centre toward +x, and
@@ -2363,11 +2444,14 @@ export class HabitableCutawayEngine {
           while (this.weatherAcc >= WX_DT) {
             this.weatherAcc -= WX_DT;
             this.weatherSim.step(WX_DT);
-            this.weatherPainter.onStep(this.weatherSim);
+            // Only the shown set's painter spawns and moves particles; the
+            // other one is frozen until it is shown again.
+            painter?.onStep(this.weatherSim);
           }
-          if (!cs) {
-            this.weatherPainter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
-            this.weatherPainter.paintShadows(fluids, sunAzimuth, atmoHazeAmount(input.viewZoom ?? 1));
+          if (painter) {
+            painter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
+            // Zero haze (zoomed past ~2.5x) draws nothing: skip the loop.
+            if (haze > 0) painter.paintShadows(fluids, sunAzimuth, haze);
           }
         }
         fluidG.putImageData(fluids, 0, 0);
@@ -2375,12 +2459,11 @@ export class HabitableCutawayEngine {
       }
     }
     input.drawSurfaceOverlays(g);
-    const haze = atmoHazeAmount(input.viewZoom ?? 1);
     const weatherG = this.weatherG, weatherImage = this.weatherImage;
-    if (!cs && this.weatherPainter && weatherImage && weatherG && haze > 0.01) {
+    if (painter && weatherImage && weatherG && haze > 0.01) {
       // putImageData-only, like the atmosphere canvas.
       weatherImage.data.fill(0);
-      this.weatherPainter.paintClouds(weatherImage, sunAzimuth, haze);
+      painter.paintClouds(weatherImage, sunAzimuth, haze);
       weatherG.putImageData(weatherImage, 0, 0);
       g.drawImage(this.weatherScratch, 0, 0);
     }
@@ -2393,18 +2476,26 @@ export class HabitableCutawayEngine {
       const gasTint = this.planetType === 'gas' && this.gasBands.length
         ? averageBands(this.gasBands)
         : undefined;
-      paintAtmosphere(atmo, geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air);
+      paintAtmosphere(atmo, geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air, k);
       atmoG.putImageData(atmo, 0, 0);
       g.drawImage(this.atmoScratch, 0, 0);
     }
     input.drawUiOverlays(g);
-    if (this.planetType === 'gas') this.drawGasRings(g, false, bob);
+    if (this.planetType === 'gas') this.drawGasRings(g, false, bob, geom, k);
     input.drawNearMoons(g);
+    this.drawVignette(g, this.geom, bob);
+  }
 
-    // Screen-space: from the BASE geometry, whatever the camera.
+  /**
+   * Screen-space vignette: fixed to the canvas, so it is computed from the
+   * BASE geometry whatever the camera. From a camera geometry its clear inner
+   * radius (rx * 0.7) grows with the zoom and its centre follows the body off
+   * screen, so the view would darken where it should not.
+   */
+  private drawVignette(g: CanvasRenderingContext2D, geom: HabitableGeom, bob: number): void {
     const vig = g.createRadialGradient(
-      this.geom.cx, this.geom.cyBody + bob, this.geom.rx * 0.7,
-      this.geom.cx, this.geom.cyBody + bob, Math.max(this.w, this.h) * 0.75,
+      geom.cx, geom.cyBody + bob, geom.rx * 0.7,
+      geom.cx, geom.cyBody + bob, Math.max(this.w, this.h) * 0.75,
     );
     vig.addColorStop(0, 'rgba(0,0,0,0)');
     vig.addColorStop(1, 'rgba(0,0,0,0.55)');
@@ -2415,13 +2506,21 @@ export class HabitableCutawayEngine {
   /**
    * Saturn-style rings around the pancake: back half behind the body, front
    * half after atmosphere (same ellipse-clip logic as legacy bakeGasGiant).
+   *
+   * `geom` is the ACTIVE geometry and `k` its zoom. Rings are iterated in BASE
+   * space (radius rx/k * 1.28..1.92, one ring per base px) and drawn at x k:
+   * ring spacing scales, the count does not, and each stroke stays 1 px.
    */
-  private drawGasRings(g: CanvasRenderingContext2D, back: boolean, bob: number): void {
+  private drawGasRings(
+    g: CanvasRenderingContext2D, back: boolean, bob: number,
+    geom: HabitableGeom = this.geom, k = 1,
+  ): void {
     if (!this.hasRing || this.gasBands.length === 0) return;
-    const { cx, rx } = this.geom;
-    const cy = this.geom.cyTop + bob;
+    const { cx } = geom;
+    const rxB = geom.rx / k;
+    const cy = geom.cyTop + bob;
     const VW = this.w, VH = this.h;
-    const ringInner = rx * 1.28, ringOuter = rx * 1.92, ringRy = 0.20;
+    const ringInner = rxB * 1.28, ringOuter = rxB * 1.92, ringRy = 0.20;
     const bands = this.gasBands;
     const seed = this.seed;
     g.save();
@@ -2434,10 +2533,11 @@ export class HabitableCutawayEngine {
       const a = (0.14 + gap * 0.42) * (1 - Math.abs(t - 0.45) * 0.85);
       if (a <= 0.01) continue;
       const c = bands[Math.floor(t * bands.length) % bands.length];
+      const rk = rr * k;
       g.strokeStyle = css(shade(c, 1.25), a);
       g.lineWidth = 1;
       g.beginPath();
-      g.ellipse(cx, cy, rr, rr * ringRy, -0.12, 0, Math.PI * 2);
+      g.ellipse(cx, cy, rk, rk * ringRy, -0.12, 0, Math.PI * 2);
       g.stroke();
     }
     g.restore();

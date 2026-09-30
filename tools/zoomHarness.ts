@@ -310,6 +310,8 @@ export interface RenderOpts {
    * geometry, occupancy and shore distance). Omitted: the identity set.
    */
   cam?: import('../src/rendering/ZoomCamera').Camera;
+  /** Force the atmosphere / cloud intensity (engine.hazeOverride); omitted: atmoHazeAmount(zoom). */
+  haze?: number;
 }
 
 /** The fixtures behind one bake, for checks that need more than pixels. */
@@ -335,7 +337,7 @@ export function bakeEngine(type: string, seed: number, ro: RenderOpts = {}): Bak
   const engine = new HabitableCutawayEngine();
   engine.bake({
     w: VW, h: VH, seed, grid, planetType,
-    discToGrid, rimFalloff: rim, liftOf, smoothElevation, elevationAt,
+    discToGrid, discToGridF: makeDiscToGridF(focus.lat, focus.lon), rimFalloff: rim, liftOf, smoothElevation, elevationAt,
     maxLift: MAX_LIFT, lush: 0.6, decalSeed: seed, decalAtlas: null,
     weather: type === 'gas' ? null : buildClimate({
       grid, planetType: type, seed, lush: 0.6, extinctionPressure: 0.1,
@@ -356,6 +358,7 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
       engine.setCamera(ro.cam);
       engine.showCamera = true;
     }
+    if (ro.haze !== undefined) engine.hazeOverride = ro.haze;
 
     const frameCanvas = new PixelCanvas(VW, VH);
     const noop = () => {};
@@ -371,7 +374,7 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
     const geom = cs ? engine.activeGeom : engine.geom;
 
     const fluids = blank(VW, VH);
-    paintFluids(fluids as unknown as ImageData, geom, engine.occupancy, planetType, ELAPSED, 0, engine.shoreDist);
+    paintFluids(fluids as unknown as ImageData, geom, engine.occupancy, planetType, ELAPSED, 0, engine.shoreDist, cs ? cs.camera.zoom : 1);
     const dayNight = blank(VW, VH);
     paintDayNight(dayNight as unknown as ImageData, geom, SUN_AZ, 0);
 

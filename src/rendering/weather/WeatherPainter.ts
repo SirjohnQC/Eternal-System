@@ -23,25 +23,62 @@ export interface WeatherLut {
   dx: Float32Array;
 }
 
+/**
+ * Options for a camera layer set's lookup (zoom camera). The identity lookup
+ * passes none and is built exactly as before zoom.
+ */
+export interface WeatherLutOpts {
+  /**
+   * Clamp to the view: x in [0, w - 1], y in [0, h - 1 + below]. `below` is the
+   * cloud lift: a face row under the canvas still puts its cloud (lifted by
+   * that much) into view. Everything else is invisible, so the lookup holds at
+   * most w * (h + below) entries whatever the zoom.
+   */
+  bounds?: { w: number; h: number; below: number };
+  /**
+   * Fractional grid position (discToGridF): field coordinates follow the pixel
+   * continuously instead of snapping to the nearest planet cell's centre, so
+   * cloud edges do not stair-step per planet cell at zoom (Ruling 3).
+   */
+  projectF?: (dx: number, dy: number) => { row: number; col: number } | null;
+}
+
 export function buildWeatherLut(
   geom: { cx: number; cyTop: number; rx: number; ry: number },
   project: (dx: number, dy: number) => { row: number; col: number } | null,
   groundLift: (row: number, col: number, r: number, dx: number, dy: number) => number,
+  opts: WeatherLutOpts = {},
 ): WeatherLut {
   const px: number[] = [], py: number[] = [], ground: number[] = [];
   const fx: number[] = [], fy: number[] = [], ddx: number[] = [];
   const { cx, cyTop, rx, ry } = geom;
-  for (let y = Math.floor(cyTop - ry); y <= Math.ceil(cyTop + ry); y++) {
-    for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+  let yA = Math.floor(cyTop - ry), yB = Math.ceil(cyTop + ry);
+  let xA = Math.floor(cx - rx), xB = Math.ceil(cx + rx);
+  const bd = opts.bounds;
+  if (bd) {
+    yA = Math.max(yA, 0); yB = Math.min(yB, bd.h - 1 + Math.ceil(bd.below));
+    xA = Math.max(xA, 0); xB = Math.min(xB, bd.w - 1);
+  }
+  const projectF = opts.projectF;
+  for (let y = yA; y <= yB; y++) {
+    for (let x = xA; x <= xB; x++) {
       const dx = (x - cx) / rx, dy = (y - cyTop) / ry;
       const r = Math.hypot(dx, dy);
       if (r > 1) continue;
       const gp = project(dx, dy);
       if (!gp) continue;
+      const gf = projectF ? projectF(dx, dy) : null;
       px.push(x); py.push(y);
       ground.push(y - groundLift(gp.row, gp.col, r, dx, dy));
-      fx.push((gp.col + 0.5) / CELL_COLS - 0.5);
-      fy.push((gp.row + 0.5) / CELL_ROWS - 0.5);
+      if (gf) {
+        // Cell j's centre is at col j + 0.5 and cell i's at row i (discToGridF),
+        // so at a cell centre this equals the snapped value below.
+        fx.push(gf.col / CELL_COLS - 0.5);
+        fy.push((gf.row + 0.5) / CELL_ROWS - 0.5);
+      } else {
+        fx.push((gp.col + 0.5) / CELL_COLS - 0.5);
+        fy.push((gp.row + 0.5) / CELL_ROWS - 0.5);
+      }
       ddx.push(dx);
     }
   }
@@ -70,6 +107,19 @@ const P_SPEED = [62, 54, 14, 20];
 const P_LEN = [3, 3, 1, 1];
 const P_RGBA = [150, 190, 232, 0.55, 190, 222, 105, 0.6, 240, 250, 255, 0.8, 64, 56, 54, 0.75];
 const PMAX = 320, FMAX = 8;
+/** Live-particle cap of an identity painter; a camera painter scales it with its lookup. */
+export const WEATHER_PMAX = PMAX;
+
+/**
+ * Zoom camera (k = camera zoom). World-class sizes of a camera layer set's
+ * painter: fall speeds, snow/ash sway, the spawn drop below the cloud base,
+ * the flash halo radius and the bolt's wander are world distances (x k). Rain
+ * streak length and every 1-px stroke stay (P_LEN, bolt width). Spawn and
+ * flash chances stay per sampled SCREEN pixel, so a zoomed storm keeps its
+ * on-screen density (Ruling 4); `pmax` lets the particle cap grow with the
+ * lookup so that density is not clipped by the identity cap.
+ */
+export interface WeatherPainterOpts { scale?: number; pmax?: number }
 /** Steps of fall simulated when a painter first comes up (snow takes ~8). */
 const PRIME_STEPS = 8;
 /**
@@ -129,12 +179,21 @@ function over(d: Uint8ClampedArray, o: number, r: number, g: number, b: number, 
  */
 export class WeatherPainter {
   pCount = 0;
-  readonly pX = new Float32Array(PMAX);
-  readonly pY = new Float32Array(PMAX);
-  readonly pGround = new Float32Array(PMAX);
-  readonly pSpawn = new Int32Array(PMAX);
-  private pPhase = new Float32Array(PMAX);
-  private pKind = new Uint8Array(PMAX);
+  readonly pX: Float32Array;
+  readonly pY: Float32Array;
+  readonly pGround: Float32Array;
+  readonly pSpawn: Int32Array;
+  private pPhase: Float32Array;
+  private pKind: Uint8Array;
+  /** Particle cap: WEATHER_PMAX, or the camera painter's scaled cap. */
+  readonly pmax: number;
+  /** P_SPEED x scale, per kind. */
+  private pSpeed = new Float64Array(4);
+  /** World-class sizes x scale: [snow/ash sway, spawn drop below the cloud base]. */
+  private tune = new Float64Array(2);
+  /** Flash halo radius and bolt wander clamp, px (3 x scale, whole px). */
+  private haloR = 3;
+  private wander = 3;
   private fCount = 0;
   private fX = new Float32Array(FMAX);
   private fY = new Float32Array(FMAX);
@@ -170,7 +229,17 @@ export class WeatherPainter {
   constructor(
     private lut: WeatherLut, private climate: ClimateSources,
     readonly cloudLift: number, seed: number,
+    opts: WeatherPainterOpts = {},
   ) {
+    const k = opts.scale ?? 1;
+    const pmax = this.pmax = Math.max(PMAX, Math.ceil(opts.pmax ?? PMAX));
+    this.pX = new Float32Array(pmax); this.pY = new Float32Array(pmax);
+    this.pGround = new Float32Array(pmax); this.pSpawn = new Int32Array(pmax);
+    this.pPhase = new Float32Array(pmax); this.pKind = new Uint8Array(pmax);
+    for (let i = 0; i < 4; i++) this.pSpeed[i] = P_SPEED[i] * k;
+    this.tune[0] = 1.5 * k; this.tune[1] = 2 * k;
+    this.haloR = Math.max(1, Math.round(3 * k));
+    this.wander = Math.max(1, Math.round(3 * k));
     this.rs[0] = (seed | 0) || 1;
     this.cell = new Int32Array(lut.count);
     for (let n = 0; n < lut.count; n++) this.cell[n] = fieldIndex(lut.fx[n], lut.fy[n]);
@@ -216,7 +285,7 @@ export class WeatherPainter {
   private spawn(n: number, kind: number): void {
     const q = this.pCount++;
     this.pX[q] = this.lut.px[n];
-    this.pY[q] = this.lut.py[n] - this.cloudLift + 2;
+    this.pY[q] = this.lut.py[n] - this.cloudLift + this.tune[1];
     this.pGround[q] = this.lut.ground[n];
     this.pSpawn[q] = n;
     this.roll();
@@ -236,13 +305,13 @@ export class WeatherPainter {
     for (let n = Math.floor((rs[0] >>> 0) * INV32 * stride); n < lut.count; n += stride) {
       const k = cell[n];
       const p = sim.precip[k];
-      if (p > 0.004 && this.pCount < PMAX) {
+      if (p > 0.004 && this.pCount < this.pmax) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < p * RAIN_SPAWN * stride / 4) {
           this.spawn(n, sim.snow[k] ? 2 : this.climate.acid > 0.5 ? 1 : 0);
         }
       }
-      if (sim.ash[k] > 0.35 && this.pCount < PMAX) {
+      if (sim.ash[k] > 0.35 && this.pCount < this.pmax) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < 0.05) this.spawn(n, 3);
       }
@@ -276,7 +345,7 @@ export class WeatherPainter {
         this.onStep(sim);
         for (let q = first; q < this.pCount; q++) {
           this.roll();
-          this.pY[q] += P_SPEED[this.pKind[q]] * WX_DT * (b + (this.rs[0] >>> 0) * INV32);
+          this.pY[q] += this.pSpeed[this.pKind[q]] * WX_DT * (b + (this.rs[0] >>> 0) * INV32);
         }
       }
       this.fCount = f0; this.flashesTotal = ft0;
@@ -307,7 +376,7 @@ export class WeatherPainter {
     for (let j = 0; j < WX_NY; j++) this.shift[j] = this.bandU[j] * simTime;
     for (let q = this.pCount - 1; q >= 0; q--) {
       const kind = this.pKind[q];
-      this.pY[q] += P_SPEED[kind] * dt;
+      this.pY[q] += this.pSpeed[kind] * dt;
       this.pPhase[q] += dt * 2.2;
       if (this.pY[q] >= this.pGround[q]) {
         const last = --this.pCount;
@@ -356,7 +425,7 @@ export class WeatherPainter {
 
     for (let q = 0; q < this.pCount; q++) {
       const kind = this.pKind[q];
-      const drift = kind >= 2 ? Math.sin(this.pPhase[q]) * 1.5 : 0;
+      const drift = kind >= 2 ? Math.sin(this.pPhase[q]) * this.tune[0] : 0;
       const x = Math.round(this.pX[q] + drift), y0 = Math.round(this.pY[q]);
       const o4 = kind * 4;
       const ai = (P_RGBA[o4 + 3] * intensity * A_ONE) | 0;
@@ -433,6 +502,7 @@ export class WeatherPainter {
       over(d, (y * w + x) * 4, r | 0, g | 0, bl | 0, (LEVEL_ALPHA[lv] * intensity * A_ONE) | 0);
     }
 
+    const HR = this.haloR, WA = this.wander;
     for (let f = 0; f < this.fCount; f++) {
       let s = this.fSeed[f], bx = this.fX[f];
       const x0 = this.fX[f];
@@ -441,13 +511,13 @@ export class WeatherPainter {
         s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
         const r = s * INV32;
         if (r < 0.15) bx--; else if (r > 0.85) bx++;
-        if (bx < x0 - 3) bx = x0 - 3; else if (bx > x0 + 3) bx = x0 + 3;
+        if (bx < x0 - WA) bx = x0 - WA; else if (bx > x0 + WA) bx = x0 + WA;
         if (bx >= 0 && y >= 0 && bx < w && y < h) over(d, (y * w + bx) * 4, 255, 255, 230, bolt);
       }
       const fy = Math.round(this.fY[f]);
-      for (let oy = -3; oy <= 3; oy++) for (let ox = -3; ox <= 3; ox++) {
+      for (let oy = -HR; oy <= HR; oy++) for (let ox = -HR; ox <= HR; ox++) {
         const x = x0 + ox, y = fy + oy;
-        const fall = 1 - Math.sqrt(ox * ox + oy * oy) / 3;
+        const fall = 1 - Math.sqrt(ox * ox + oy * oy) / HR;
         if (fall <= 0 || x < 0 || y < 0 || x >= w || y >= h) continue;
         over(d, (y * w + x) * 4, 230, 235, 255, (halo * fall) | 0);
       }

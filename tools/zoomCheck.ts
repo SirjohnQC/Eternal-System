@@ -666,5 +666,425 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
   }
 }
 
+console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vignette, gas rings under the camera)');
+{
+  const H = await import('./zoomHarness');
+  const { bakeEngine, renderLayers, PixelCanvas, PixelCtx, MAX_LIFT } = H;
+  const Eng = await import('../src/rendering/HabitableCutawayEngine');
+  const WP = await import('../src/rendering/weather/WeatherPainter');
+  const { WX_NX } = await import('../src/rendering/weather/WeatherClimate');
+  type Img = Uint8ClampedArray;
+  const noop = () => {};
+  const frameOf = (eng: any, g: any, over: Record<string, unknown> = {}) => eng.frame({
+    g, dt: H.DT, elapsed: H.ELAPSED, sunAzimuth: H.SUN_AZ, viewZoom: 1,
+    drawBackdrop: noop, drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop, ...over,
+  });
+
+  /**
+   * Mean length of straight crack runs ("stair steps") of a class image. A
+   * crack is the edge between two 4-neighbours of different class (class -1 =
+   * not part of the feature, never cracks). Vertical cracks chain along y,
+   * horizontal cracks along x; a run is a maximal chain. A crack only counts
+   * where one of its two pixels is `keep` (non-empty at zoom 1); runs touching
+   * the canvas border are dropped (truncated). A 4x nearest-neighbour
+   * magnification can only have runs that are multiples of 4.
+   */
+  const stairRuns = (cls: (x: number, y: number) => number, keep: (x: number, y: number) => boolean) => {
+    const W = VW, Hh = VH;
+    const C = new Int8Array(W * Hh), K = new Uint8Array(W * Hh);
+    for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) { C[y * W + x] = cls(x, y); K[y * W + x] = keep(x, y) ? 1 : 0; }
+    const crackV = (x: number, y: number) => {   // between (x,y) and (x+1,y)
+      const a = C[y * W + x], b = C[y * W + x + 1];
+      return a >= 0 && b >= 0 && a !== b && (K[y * W + x] || K[y * W + x + 1]);
+    };
+    const crackH = (x: number, y: number) => {   // between (x,y) and (x,y+1)
+      const a = C[y * W + x], b = C[(y + 1) * W + x];
+      return a >= 0 && b >= 0 && a !== b && (K[y * W + x] || K[(y + 1) * W + x]);
+    };
+    let total = 0, runs = 0;
+    for (let x = 0; x < W - 1; x++) {
+      let len = 0, start = 0;
+      for (let y = 0; y <= Hh; y++) {
+        if (y < Hh && crackV(x, y)) { if (len === 0) start = y; len++; continue; }
+        if (len > 0 && start > 0 && y < Hh && x > 0 && x < W - 2) { total += len; runs++; }
+        len = 0;
+      }
+    }
+    for (let y = 0; y < Hh - 1; y++) {
+      let len = 0, start = 0;
+      for (let x = 0; x <= W; x++) {
+        if (x < W && crackH(x, y)) { if (len === 0) start = x; len++; continue; }
+        if (len > 0 && start > 0 && x < W && y > 0 && y < Hh - 2) { total += len; runs++; }
+        len = 0;
+      }
+    }
+    return { mean: runs ? total / runs : 0, runs, cracks: total };
+  };
+  const A = (d: Img, x: number, y: number) => d[(y * VW + x) * 4 + 3];
+
+  // ── crisp, not magnified ─────────────────────────────────────────────────
+  {
+    const z = 4;
+    const g = bakeEngine('ocean', 7).engine.geom;
+    const one = renderLayers('ocean', 7, { haze: 1 });
+    // Terminator: the night veil ends where 0.38 + 0.9 (dx cos az + 0.65 sin az) = 0.94.
+    const dxT = ((0.94 - 0.38) / 0.9 - 0.65 * Math.sin(H.SUN_AZ)) / Math.cos(H.SUN_AZ);
+    const cams: Record<string, { zoom: number; fx: number; fy: number }> = {
+      // The dome limb up and to the right of the face.
+      limb: { zoom: z, fx: Math.round(g.cx + g.rx * 0.62), fy: Math.round(g.cyTop - g.rx * 0.72) },
+      // The night veil's edge where the front rim runs diagonally (dx -0.72).
+      // The terminator LINE itself is vertical by construction (the veil
+      // depends on dx only), so it has no stair steps at any zoom; its
+      // crispness is the gradient's, checked below.
+      terminator: { zoom: z, fx: Math.round(g.cx - g.rx * 0.72), fy: Math.round(g.cyTop + g.ry * 0.69) },
+      coast: { zoom: z, fx: g.cx, fy: g.cyTop },
+    };
+    const feature: Record<string, { layer: string; cls: (L: Record<string, Img>, x: number, y: number) => number; keep: (L: Record<string, Img>, x: number, y: number) => boolean }> = {
+      limb: { layer: 'atmosphere', cls: (L, x, y) => A(L.atmosphere, x, y) > 0 ? 1 : 0, keep: (L, x, y) => A(L.atmosphere, x, y) > 0 },
+      terminator: { layer: 'dayNight', cls: (L, x, y) => A(L.dayNight, x, y) > 0 ? 1 : 0, keep: (L, x, y) => A(L.dayNight, x, y) > 0 },
+      coast: {
+        layer: 'land',
+        cls: (L, x, y) => A(L.fluids, x, y) > 0 ? 1 : A(L.land, x, y) > 0 ? 0 : -1,
+        keep: (L, x, y) => A(L.fluids, x, y) > 0 || A(L.land, x, y) > 0,
+      },
+    };
+    for (const name of ['limb', 'terminator', 'coast']) {
+      const cam = cams[name], f = feature[name];
+      const four = renderLayers('ocean', 7, { cam, haze: 1 });
+      const w1 = (x: number, y: number) => {
+        const w = screenToWorld(cam, VW, VH, x, y);
+        return { x: Math.floor(w.x), y: Math.floor(w.y) };
+      };
+      const keep1 = (x: number, y: number) => { const p = w1(x, y); return p.x >= 0 && p.y >= 0 && p.x < VW && p.y < VH && f.keep(one, p.x, p.y); };
+      const r4 = stairRuns((x, y) => f.cls(four, x, y), keep1);
+      // Control: the zoom-1 render magnified 4x nearest-neighbour through the same camera.
+      const mag = (x: number, y: number) => { const p = w1(x, y); return p.x >= 0 && p.y >= 0 && p.x < VW && p.y < VH ? f.cls(one, p.x, p.y) : -1; };
+      const rc = stairRuns(mag, keep1);
+      check(`crisp: ${name === 'terminator' ? 'night veil edge' : name} (${f.layer}) at zoom 4, mean stair run <= 2 px`, r4.runs >= 20 && r4.mean <= 2,
+        `mean ${r4.mean.toFixed(2)} px over ${r4.runs} runs (${r4.cracks} crack px), camera ${cam.fx},${cam.fy}`);
+      check(`  control: ${name === 'terminator' ? 'night veil edge' : name} zoom 1 magnified 4x has runs >= 4 px`, rc.runs >= 20 && rc.mean >= 4,
+        `mean ${rc.mean.toFixed(2)} px over ${rc.runs} runs`);
+    }
+    // The terminator: where it meets the front rim (dx = dxT) the rim is
+    // shallow and the terminator a vertical line, so the stair mean there is
+    // long for a CORRECT rasterisation too. Printed for the record.
+    {
+      const cam = { zoom: z, fx: Math.round(g.cx + g.rx * dxT), fy: Math.round(g.cyTop + g.ry * 0.62) };
+      const four = renderLayers('ocean', 7, { cam });
+      const w1 = (x: number, y: number) => { const w = screenToWorld(cam, VW, VH, x, y); return { x: Math.floor(w.x), y: Math.floor(w.y) }; };
+      const keep1 = (x: number, y: number) => { const p = w1(x, y); return p.x >= 0 && p.y >= 0 && p.x < VW && p.y < VH && A(one.dayNight, p.x, p.y) > 0; };
+      const r4 = stairRuns((x, y) => A(four.dayNight, x, y) > 0 ? 1 : 0, keep1);
+      const rc = stairRuns((x, y) => { const p = w1(x, y); return p.x >= 0 && p.y >= 0 && p.x < VW && p.y < VH ? (A(one.dayNight, p.x, p.y) > 0 ? 1 : 0) : -1; }, keep1);
+      console.log(`  info  terminator meets the rim (dx ${dxT.toFixed(3)}, camera ${cam.fx},${cam.fy}): zoom 4 mean stair run ${r4.mean.toFixed(2)} px over ${r4.runs} runs; magnified ${rc.mean.toFixed(2)} over ${rc.runs}`);
+      // Terminator gradient: the veil is re-rendered per output pixel, so its
+      // alpha steps fall anywhere; a magnified veil steps only on the 4-px
+      // block lattice of the camera (fx, fy whole: blocks start at x = 0 mod 4).
+      const onLattice = (d: (x: number, y: number) => number) => {
+        let on = 0, n = 0;
+        for (let y = 0; y < VH; y++) for (let x = 1; x < VW; x++) {
+          const a = d(x - 1, y), b = d(x, y);
+          if (a <= 0 || b <= 0 || a === b) continue;
+          n++; if (x % 4 === 0) on++;
+        }
+        return { share: n ? on / n : 1, n };
+      };
+      const lg = onLattice((x, y) => A(four.dayNight, x, y));
+      const lc = onLattice((x, y) => { const p = w1(x, y); return p.x >= 0 && p.y >= 0 && p.x < VW && p.y < VH ? A(one.dayNight, p.x, p.y) : 0; });
+      check('crisp: terminator gradient steps at zoom 4 are not on the 4-px lattice (<= 50%)', lg.n >= 50 && lg.share <= 0.5,
+        `${(100 * lg.share).toFixed(1)}% of ${lg.n} alpha steps on the lattice`);
+      check('  control: the zoom-1 veil magnified 4x steps only on the lattice', !(lc.n >= 50 && lc.share <= 0.5),
+        `${(100 * lc.share).toFixed(1)}% of ${lc.n} steps`);
+    }
+  }
+
+  // ── world-anchored water: swell wavelength in world units ────────────────
+  {
+    /**
+     * The swell's phase is SWELL_K * shore distance + omega * t. Demodulate
+     * each water pixel's brightness at omega over two periods, sum per world
+     * shore-distance bin, and find the spatial wavenumber whose phase ramp
+     * best matches (a matched filter over K; no unwrapping). Independent of
+     * the painter's constants except omega (1.6 rad/s on ocean).
+     */
+    const OMEGA = 1.6, PERIODS = 2, PER = 16;
+    const measure = (eng: any, geom: any, k: number, kPaint: number) => {
+      const occ = eng.occupancy as Uint8Array, sd = eng.shoreDist as Float32Array;
+      const BIN = 0.5, NB = 120;
+      const re = new Float64Array(NB), im = new Float64Array(NB);
+      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+      const idx: number[] = [];
+      for (let i = 0; i < VW * VH; i++) if (occ[i] === 1 && sd[i] > 0 && sd[i] / k < NB * BIN) idx.push(i);
+      const T = 2 * Math.PI / OMEGA, N = PERIODS * PER;
+      for (let s = 0; s < N; s++) {
+        const t = 10 + (s / PER) * T;
+        img.data.fill(0);
+        Eng.paintFluids(img as unknown as ImageData, geom, occ, 'ocean', t, 0, sd, kPaint);
+        const c = Math.cos(OMEGA * t), sn = Math.sin(OMEGA * t);
+        for (const i of idx) {
+          const o = i * 4, lum = img.data[o] + img.data[o + 1] + img.data[o + 2];
+          const b = Math.floor(sd[i] / k / BIN);
+          re[b] += lum * c; im[b] += lum * sn;
+        }
+      }
+      let best = 0, bestK = 0;
+      const power = (K: number) => {
+        let sr = 0, si = 0;
+        for (let b = 0; b < NB; b++) {
+          const s = (b + 0.5) * BIN, c = Math.cos(K * s), sn = Math.sin(K * s);
+          // Sum A(s) e^{-iKs}: brightness(t) ~ f(K s + omega t), demodulated by e^{+i omega t}... sign-agnostic: take both.
+          sr += re[b] * c + im[b] * sn; si += im[b] * c - re[b] * sn;
+        }
+        return sr * sr + si * si;
+      };
+      const powerAbs = (K: number) => Math.max(power(K), power(-K));
+      for (let K = 0.03; K <= 2.5; K += 0.002) { const p = powerAbs(K); if (p > best) { best = p; bestK = K; } }
+      return { lambda: 2 * Math.PI / bestK, n: idx.length };
+    };
+    const B = bakeEngine('ocean', 7), eng = B.engine as any, g = B.engine.geom;
+    const m1 = measure(eng, g, 1, 1);
+    const cam = { zoom: 4, fx: g.cx - 30, fy: g.cyTop + 10 };
+    B.engine.setCamera(cam); B.engine.showCamera = true;
+    const m4 = measure(eng, B.engine.activeGeom, 4, 4);
+    const ratio = m4.lambda / m1.lambda;
+    check('world-anchored water: swell wavelength (world px) at zoom 4 = zoom 1 +/- 10%', Math.abs(ratio - 1) <= 0.10,
+      `zoom 1 ${m1.lambda.toFixed(2)} px (${m1.n} px), zoom 4 ${m4.lambda.toFixed(2)} world px (${m4.n} px), ratio ${ratio.toFixed(3)}`);
+    // Control: the same camera render with the constants left unconverted (k = 1).
+    const mc = measure(eng, B.engine.activeGeom, 4, 1);
+    const rc = mc.lambda / m1.lambda;
+    check('  control: unconverted SWELL_K (k = 1) gives a ~4x shorter wavelength', Math.abs(rc - 1) > 0.10,
+      `zoom 4 unconverted ${mc.lambda.toFixed(2)} world px, ratio ${rc.toFixed(3)}`);
+    B.engine.showCamera = false;
+  }
+
+  // ── strokes stay 1 px: water glints ──────────────────────────────────────
+  {
+    const glint = Eng.cutawayWaterSurf('ocean').glint;
+    /** Mean over glint pixels in open water (past the foam band) of min(horizontal run, vertical run) through it. */
+    const glintWidth = (eng: any, geom: any, k: number, kPaint: number) => {
+      const occ = eng.occupancy as Uint8Array, sd = eng.shoreDist as Float32Array;
+      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+      Eng.paintFluids(img as unknown as ImageData, geom, occ, 'ocean', H.ELAPSED, 0, sd, kPaint);
+      const isG = (x: number, y: number) => {
+        if (x < 0 || y < 0 || x >= VW || y >= VH) return false;
+        const o = (y * VW + x) * 4;
+        return img.data[o] === glint.r && img.data[o + 1] === glint.g && img.data[o + 2] === glint.b && img.data[o + 3] === 255;
+      };
+      const ws: number[] = [];
+      for (let y = 1; y < VH - 1; y++) for (let x = 1; x < VW - 1; x++) {
+        if (!isG(x, y) || !(sd[y * VW + x] / k > 5 * 1.2)) continue;
+        let h = 1, v = 1;
+        for (let t = x - 1; isG(t, y); t--) h++;
+        for (let t = x + 1; isG(t, y); t++) h++;
+        for (let t = y - 1; isG(x, t); t--) v++;
+        for (let t = y + 1; isG(x, t); t++) v++;
+        ws.push(Math.min(h, v));
+      }
+      ws.sort((a, b) => a - b);
+      const n = ws.length;
+      return { w: n ? ws.reduce((a, b) => a + b, 0) / n : 0, med: n ? ws[n >> 1] : 0, n };
+    };
+    const B = bakeEngine('ocean', 7), eng = B.engine as any, g = B.engine.geom;
+    const w1 = glintWidth(eng, g, 1, 1);
+    B.engine.setCamera({ zoom: 4, fx: g.cx - 30, fy: g.cyTop + 10 }); B.engine.showCamera = true;
+    const w4 = glintWidth(eng, B.engine.activeGeom, 4, 4);
+    check('strokes: water glint lines at zoom 4 are 1 px wide (median min run)', w4.n >= 50 && w4.med === 1,
+      `zoom 4 median ${w4.med} px, mean ${w4.w.toFixed(2)} px over ${w4.n} open-water glint px; zoom 1 median ${w1.med}, mean ${w1.w.toFixed(2)} over ${w1.n}`);
+    // Control: the zoom-1 glints magnified 4x nearest-neighbour (every width x 4).
+    check('  control: zoom-1 glints magnified 4x are not 1 px wide', !(w1.n >= 50 && w1.med * 4 === 1),
+      `median ${w1.med * 4} px, mean ${(w1.w * 4).toFixed(2)} px`);
+    B.engine.showCamera = false;
+  }
+
+  // ── weather painter under the camera ─────────────────────────────────────
+  {
+    const B = bakeEngine('storm', 7), eng = B.engine as any, g = B.engine.geom;
+    const id = eng.weatherPainter;
+    // A camera that sees the front rim: the face bottom at screen row 240.
+    const cam = { zoom: 4, fx: g.cx, fy: g.cyTop + g.ry - 20 };
+    B.engine.setCamera(cam);
+    const cs = eng.camSet, cp = cs.painter;
+    check('weather: the camera set has its own painter', !!cp && cp !== id, `identity lookup ${id.lut.count}, camera lookup ${cp?.lut.count}`);
+
+    // Rain streak: 3 px long, 1 px wide, at zoom 4.
+    const streak = (p: any, x: number, y: number) => {
+      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+      p.pCount = 1; p.pX[0] = x; p.pY[0] = y; p.pGround[0] = VH + 100; p.pKind[0] = 0; p.pPhase[0] = 0; p.fCount = 0;
+      p.dens.fill(0);
+      p.paintClouds(img, H.SUN_AZ, 1);
+      let n = 0, x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+      for (let yy = 0; yy < VH; yy++) for (let xx = 0; xx < VW; xx++) if (img.data[(yy * VW + xx) * 4 + 3]) {
+        n++; x0 = Math.min(x0, xx); x1 = Math.max(x1, xx); y0 = Math.min(y0, yy); y1 = Math.max(y1, yy);
+      }
+      return { n, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+    };
+    const s4 = streak(cp, 200, 100);
+    check('strokes: a rain streak is 3 px long and 1 px wide at zoom 4', s4.h === 3 && s4.w === 1,
+      `${s4.w} x ${s4.h} px (${s4.n} px)`);
+    // Control: the zoom-1 streak magnified 4x nearest-neighbour.
+    const s1 = streak(id, 200, 100);
+    check('  control: the zoom-1 streak magnified 4x is 12 px long, 4 wide', !(s1.h * 4 === 3 && s1.w * 4 === 1),
+      `${s1.w * 4} x ${s1.h * 4} px`);
+
+    // Fall speed is a world distance per second: x k on screen, so a drop's
+    // life from cloud base to ground (both x k) is the same at every zoom and
+    // spawns per screen px keep the on-screen density (Ruling 4).
+    const fall = (p: any) => { p.pCount = 1; p.pY[0] = 0; p.pGround[0] = 1e6; p.pKind[0] = 0; p.prepare(eng.weatherSim, 0.5, 0.1); return p.pY[0] / 0.1; };
+    const life = (p: any) => {
+      const lut = p.lut; let sum = 0, n = 0;
+      for (let i = 0; i < lut.count; i++) { const d = lut.ground[i] - (lut.py[i] - p.cloudLift + p.tune[1]); if (d > 0) { sum += d; n++; } }
+      return sum / n / fall(p);
+    };
+    const v1 = fall(id), v4 = fall(cp), l1 = life(id), l4 = life(cp);
+    check('weather: rain falls 4x as many screen px per second at zoom 4', Math.abs(v4 / v1 - 4) < 1e-6,
+      `${v1.toFixed(1)} -> ${v4.toFixed(1)} px/s`);
+    check('weather: mean drop life (cloud base to ground) equal at zoom 1 and 4 (+/- 15%)', Math.abs(l4 / l1 - 1) <= 0.15,
+      `${l1.toFixed(3)} s vs ${l4.toFixed(3)} s, ratio ${(l4 / l1).toFixed(3)}; particle cap ${id.pmax} -> ${cp.pmax}`);
+    const unscaled = new WP.WeatherPainter(cp.lut, eng.weatherClimate, cp.cloudLift, 7);
+    const lc = life(unscaled);
+    check('  control: an unscaled fall speed lives ~4x as long at zoom 4', !(Math.abs(lc / l1 - 1) <= 0.15), `ratio ${(lc / l1).toFixed(3)}`);
+
+    // Cloud lift: bottom of the cloud layer above the bottom of the face, measured in the painted image.
+    const liftOfPainter = (p: any) => {
+      p.prepare(eng.weatherSim, 0.5, 0);
+      p.pCount = 0; p.fCount = 0;
+      p.dens.fill(2);
+      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+      p.paintClouds(img, H.SUN_AZ, 1);
+      const x = VW / 2;
+      let face = -1, cloud = -1;
+      for (let i = 0; i < p.lut.count; i++) if (p.lut.px[i] === x) face = Math.max(face, p.lut.py[i]);
+      for (let y = VH - 1; y >= 0; y--) if (img.data[(y * VW + x) * 4 + 3]) { cloud = y; break; }
+      return face - cloud;
+    };
+    const L1 = liftOfPainter(id), L4 = liftOfPainter(cp);
+    check('weather: cloud layer sits (maxLift + 6) * 4 px above the ground at zoom 4', L4 === (MAX_LIFT + 6) * 4 && L1 === MAX_LIFT + 6,
+      `zoom 1 ${L1} px, zoom 4 ${L4} px (want ${(MAX_LIFT + 6) * 4})`);
+    const Lc = liftOfPainter(new WP.WeatherPainter(cp.lut, eng.weatherClimate, MAX_LIFT + 6, 7));
+    check('  control: a camera painter with the unscaled cloud lift', Lc !== (MAX_LIFT + 6) * 4, `${Lc} px`);
+
+    // Bounded lookup (Ruling 13: canvas plus the relief margin, here the cloud lift).
+    B.engine.setCamera({ zoom: 4, fx: g.cx, fy: g.cyTop });
+    const cq = eng.camSet.painter, bound = VW * (VH + cq.cloudLift);
+    check('bounded: weather lookup entries at zoom 4 <= VW*(VH+cloudLift)', cq.lut.count <= bound,
+      `${cq.lut.count} entries (canvas area ${VW * VH}, bound ${bound}); identity ${id.lut.count}`);
+    const o = eng.camSet.opts;
+    const unclamped = WP.buildWeatherLut(eng.camSet.geom, o.discToGrid, () => 0);
+    check('  control: an unclamped zoom-4 lookup exceeds the bound (~16x identity)', unclamped.count > bound,
+      `${unclamped.count} entries, x${(unclamped.count / id.lut.count).toFixed(1)} identity`);
+
+    // Ruling 3: fractional field coordinates, so clouds do not stair-step per planet cell.
+    const treads = (lut: any) => {
+      let eq = 0, n = 0;
+      for (let i = 1; i < lut.count; i++) {
+        if (lut.py[i] !== lut.py[i - 1] || lut.px[i] !== lut.px[i - 1] + 1) continue;
+        let d = Math.abs(lut.fx[i] - lut.fx[i - 1]); if (d > WX_NX / 2) d = WX_NX - d;
+        n++; if (d === 0 && lut.fy[i] === lut.fy[i - 1]) eq++;
+      }
+      return { share: eq / n, n };
+    };
+    const tf = treads(cq.lut);
+    check('weather: field coords change between horizontal neighbours (< 1% equal)', tf.share < 0.01,
+      `${(100 * tf.share).toFixed(2)}% equal of ${tf.n} pairs`);
+    const snapped = WP.buildWeatherLut(eng.camSet.geom, o.discToGrid, () => 0, { bounds: { w: VW, h: VH, below: cq.cloudLift } });
+    const ts = treads(snapped);
+    check('  control: the nearest-cell lookup stair-steps (most neighbours equal)', !(ts.share < 0.01),
+      `${(100 * ts.share).toFixed(2)}% equal of ${ts.n} pairs`);
+  }
+
+  // ── haze follows the rendered zoom ───────────────────────────────────────
+  {
+    const sum = (d: Img) => { let s = 0; for (let i = 3; i < d.length; i += 4) s += d[i]; return s; };
+    const B = bakeEngine('ocean', 7), g = B.engine.geom;
+    const L = renderLayers('ocean', 7, { cam: { zoom: 3, fx: g.cx, fy: g.cyTop } });
+    check('haze: at camera zoom 3 (CSS viewZoom 1) no atmosphere or cloud is drawn', sum(L.atmosphere) === 0 && sum(L.weather) === 0,
+      `atmosphere alpha sum ${sum(L.atmosphere)}, weather ${sum(L.weather)}`);
+    const C = renderLayers('ocean', 7, { cam: { zoom: 3, fx: g.cx, fy: g.cyTop }, haze: Eng.atmoHazeAmount(1) });
+    check('  control: the same frame at the CSS zoom\'s haze draws both', sum(C.atmosphere) > 0 && sum(C.weather) > 0,
+      `atmosphere ${sum(C.atmosphere)}, weather ${sum(C.weather)}`);
+  }
+
+  // ── vignette is screen-space ─────────────────────────────────────────────
+  {
+    class Rec extends PixelCtx {
+      grads: Array<{ args: number[]; stops: Array<[number, string]> }> = [];
+      createRadialGradient(...args: number[]) {
+        const gr = { args, stops: [] as Array<[number, string]> };
+        this.grads.push(gr);
+        return { addColorStop: (o: number, c: string) => { gr.stops.push([o, c]); } } as any;
+      }
+    }
+    const alphaOf = (c: string) => { const m = c.match(/rgba\([^)]*,\s*([\d.]+)\)/); return m ? +m[1] : 1; };
+    /** Alpha of a concentric two-circle radial gradient at (x, y) (Canvas spec, pad). */
+    const alphaAt = (gr: { args: number[]; stops: Array<[number, string]> }, x: number, y: number) => {
+      const [x0, y0, r0, , , r1] = gr.args;
+      const d = Math.hypot(x - x0, y - y0);
+      const w = Math.max(0, Math.min(1, (d - r0) / (r1 - r0)));
+      const a0 = alphaOf(gr.stops[0][1]), a1 = alphaOf(gr.stops[gr.stops.length - 1][1]);
+      return a0 + (a1 - a0) * w;
+    };
+    const B = bakeEngine('ocean', 7), eng = B.engine as any, g = B.engine.geom;
+    const got: string[] = [], ctl: string[] = [];
+    let worst = 0, ctlDark = Infinity;
+    for (let z = 1; z <= 4.0001; z += 0.1) {
+      const zz = Math.round(z * 10) / 10;
+      const cam = { zoom: zz, fx: g.cx, fy: g.cyTop };
+      B.engine.setCamera(cam); B.engine.showCamera = true;
+      const rec = new Rec(new PixelCanvas(VW, VH));
+      frameOf(B.engine, rec);
+      const vig = rec.grads[rec.grads.length - 1];
+      const a = alphaAt(vig, VW / 2, VH / 2);
+      worst = Math.max(worst, a);
+      // Control: the vignette drawn from the CAMERA geometry.
+      const rc = new Rec(new PixelCanvas(VW, VH));
+      eng.drawVignette(rc, B.engine.activeGeom, 0);
+      const ac = alphaAt(rc.grads[0], VW / 2, VH / 2);
+      if (ac > 0.01 && zz < ctlDark) ctlDark = zz;
+      if ([1, 2, 3, 4].includes(zz)) { got.push(`z${zz} ${a.toFixed(3)}`); ctl.push(`z${zz} ${ac.toFixed(3)}`); }
+    }
+    B.engine.showCamera = false;
+    check('vignette: alpha at the canvas centre is 0 at zoom 1..4', worst === 0, got.join(', '));
+    check('  control: a camera-geometry vignette darkens the centre when zoomed', ctlDark <= 4,
+      `${ctl.join(', ')}; first > 0.01 at zoom ${ctlDark}`);
+  }
+
+  // ── gas rings: per base-space ring, spacing x k, 1-px strokes ────────────
+  {
+    class Rec extends PixelCtx {
+      ell: Array<{ rx: number; ry: number; lw: number }> = [];
+      private cur: { rx: number; ry: number } | null = null;
+      ellipse(_x: number, _y: number, rx: number, ry: number) { this.cur = { rx, ry }; }
+      stroke() { if (this.cur) this.ell.push({ ...this.cur, lw: this.lineWidth }); this.cur = null; }
+    }
+    // Seed 32: (32 >>> 5) & 3 = 1, a ringed gas giant (seed 7 has none).
+    const B = bakeEngine('gas', 32), eng = B.engine as any, g = B.engine.geom;
+    const run = (z: number | null) => {
+      if (z) { B.engine.setCamera({ zoom: z, fx: g.cx, fy: g.cyTop }); B.engine.showCamera = true; }
+      else B.engine.showCamera = false;
+      const rec = new Rec(new PixelCanvas(VW, VH));
+      frameOf(B.engine, rec);
+      return rec.ell;
+    };
+    const e1 = run(null), e4 = run(4);
+    const half1 = e1.length / 2, half4 = e4.length / 2;
+    let worstR = 0, worstGap = 0;
+    for (let i = 0; i < Math.min(e1.length, e4.length); i++) worstR = Math.max(worstR, Math.abs(e4[i].rx - 4 * e1[i].rx));
+    for (let i = 1; i < half4; i++) {
+      // Consecutive drawn rings in base space are 1 px apart unless a faint ring was skipped.
+      const gap4 = e4[i].rx - e4[i - 1].rx, gap1 = e1[i].rx - e1[i - 1].rx;
+      worstGap = Math.max(worstGap, Math.abs(gap4 - 4 * gap1));
+    }
+    const lw = e4.every(e => e.lw === 1) && e1.every(e => e.lw === 1);
+    check('gas rings: same stroke count at zoom 4 as zoom 1, radii and spacing x 4, 1-px strokes',
+      e1.length > 0 && e4.length === e1.length && worstR < 1e-9 && worstGap < 1e-9 && lw,
+      `${e1.length} -> ${e4.length} strokes; worst radius |r4 - 4 r1| ${worstR.toExponential(1)}, worst spacing |d4 - 4 d1| ${worstGap.toExponential(1)}; 1-px ${lw}; zoom-4 spacing ${(e4[1].rx - e4[0].rx).toFixed(2)} px`);
+    // Control: the rings iterated in SCREEN px of the camera geometry (k = 1): 4x the strokes.
+    const rc = new Rec(new PixelCanvas(VW, VH));
+    eng.drawGasRings(rc, true, 0, B.engine.activeGeom, 1);
+    check('  control: rings iterated per screen px at zoom 4 exceed the zoom-1 count', !(rc.ell.length <= half1),
+      `${rc.ell.length} strokes in the back pass vs ${half1} at zoom 1 (half4 ${half4})`);
+    B.engine.showCamera = false;
+  }
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

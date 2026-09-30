@@ -1172,6 +1172,7 @@ export class IsoDioramaRenderer {
       grid: this.grid,
       planetType: this.planetType as HabitableType,
       discToGrid: (dx, dy) => this.discToGrid(dx, dy),
+      discToGridF: (dx, dy) => this.discToGridF(dx, dy),
       rimFalloff: (r) => this.rimFalloff(r),
       liftOf: (elev) => this.liftOf(elev),
       smoothElevation: (grid, row, col) => this.smoothElevation(grid, row, col),
