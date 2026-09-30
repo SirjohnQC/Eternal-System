@@ -48,7 +48,7 @@ import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
 import { orbitSky, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
-import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, type SkyLayout } from './sky/SkyPainter';
+import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -2377,7 +2377,7 @@ export class IsoDioramaRenderer {
   private drawSunWash(g: CanvasRenderingContext2D, L: SkyLayout, sky: SkyState<Planet>, sunRgb: RGB): void {
     if (sky.sun.elev <= 0) return;
     const x = trackX(sky.sun.az, L), y = trackY(sky.sun.az, L);
-    const R = L.bloom * sky.sun.sizeScale;
+    const R = L.bloom * bloomScale(sky.sun.sizeScale);
     const fade = Math.min(1, sky.sun.elev / 0.15);
     // The wash is the whole glow's BASE level: a flat alpha from the centre
     // out to BLOOM_CORE, then falling to 0 by the edge. The painter's own

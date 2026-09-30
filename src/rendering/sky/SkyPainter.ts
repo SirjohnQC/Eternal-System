@@ -26,18 +26,20 @@ export const trackY = (az: number, L: SkyLayout): number => L.horizonY - Math.co
 /**
  * The painter only rasterises the bright bloom CORE, t < BLOOM_CORE, so the
  * per-pixel loop stays a small box around the sun instead of scanning close
- * to the whole canvas. The faint outer wash beyond it (t in [BLOOM_CORE, 1))
- * is drawn by the renderer as a canvas radial gradient instead — `bloom` in
- * SkyLayout is still that gradient's full radius, only the painter's own loop
- * is restricted. The wash is also the CORE's base level (see `bloomCoreAlpha`
- * below), so the two composite into one continuous profile with no seam.
+ * to the whole canvas. The wash — the whole glow's flat BASE level,
+ * `WASH_ALPHA * fade` from the centre out to BLOOM_CORE, falling to 0 by
+ * t = 1 — is drawn by the renderer as a canvas radial gradient instead
+ * (`IsoDioramaRenderer.drawSunWash`); `bloom` in SkyLayout is that gradient's
+ * full radius, only the painter's own loop is restricted to the core. The
+ * painter's `bloomCoreAlpha` adds only the brightness ABOVE that base, so the
+ * two composite into one continuous profile with no seam at BLOOM_CORE.
  */
 export const BLOOM_CORE = 0.35;
 
 /**
- * The renderer's outer wash is a flat alpha from the centre out to
- * BLOOM_CORE, then falls to 0 by t = 1 (see `IsoDioramaRenderer.drawSunWash`).
- * WASH_ALPHA is that flat level, scaled by `fade` like everything else here.
+ * The wash's flat level from the centre out to BLOOM_CORE (see
+ * `IsoDioramaRenderer.drawSunWash`), scaled by `fade` like everything else
+ * here.
  */
 export const WASH_ALPHA = 0.07;
 
@@ -67,6 +69,17 @@ export const SUN_DIAMETER = 5;
 export function sunDiameter(sizeScale: number): number {
   const d = SUN_DIAMETER * sizeScale;
   return d < 4 ? 4 : d > 8 ? 8 : d;
+}
+
+/**
+ * The scale used for the bloom's radius, clamped to the same range as the sun
+ * disc (`sunDiameter`'s implicit 0.8-1.6): bloom cost grows with sizeScale^2,
+ * and an unclamped periapsis (home-world ~0.32 ms, over the 0.3 ms budget)
+ * blew that up. The renderer's `drawSunWash` must use this SAME clamped scale
+ * for its own radius, or the wash and the painter's core drift apart.
+ */
+export function bloomScale(sizeScale: number): number {
+  return sizeScale < 0.8 ? 0.8 : sizeScale > 1.6 ? 1.6 : sizeScale;
 }
 
 export interface SkySiblingDraw { az: number; elev: number; litFraction: number; radiusPx: number; rgb: [number, number, number] }
@@ -131,12 +144,13 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
   const cr = sky.sunRgb[0] + (255 - sky.sunRgb[0]) * 0.5 * warm;
   const cg = sky.sunRgb[1] + (150 - sky.sunRgb[1]) * 0.5 * warm;
   const cb = sky.sunRgb[2] + (70 - sky.sunRgb[2]) * 0.5 * warm;
-  const Rb = L.bloom * sky.sunSizeScale, RbCore = Rb * BLOOM_CORE;
+  const Rb = L.bloom * bloomScale(sky.sunSizeScale), RbCore = Rb * BLOOM_CORE, core2 = RbCore * RbCore;
   for (let y = Math.max(0, Math.floor(sunY - RbCore)); y <= Math.min(H - 1, Math.ceil(sunY + RbCore)); y++) {
+    const dy = y - sunY, dy2 = dy * dy;
     for (let x = Math.max(0, Math.floor(sunX - RbCore)); x <= Math.min(W - 1, Math.ceil(sunX + RbCore)); x++) {
-      const t = Math.hypot(x - sunX, y - sunY) / Rb;
-      if (t >= BLOOM_CORE) continue;
-      over(d, (y * W + x) * 4, cr, cg, cb, bloomCoreAlpha(t, f));
+      const dx = x - sunX, d2 = dx * dx + dy2;
+      if (d2 >= core2) continue;
+      over(d, (y * W + x) * 4, cr, cg, cb, bloomCoreAlpha(Math.sqrt(d2) / Rb, f));
     }
   }
   const D = opts.fixedSunSize ? SUN_DIAMETER : sunDiameter(sky.sunSizeScale), rad = D / 2;
