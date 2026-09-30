@@ -36,8 +36,9 @@ import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
 import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import {
-  planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas,
+  planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas, type DecalSite,
 } from './SurfaceDecals';
+import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import type { ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut } from './weather/WeatherPainter';
@@ -258,8 +259,28 @@ export interface CutawayBakeOpts extends CutawayGeom {
    * (Ruling 11). Biome colour, placement and picking always use the nearest cell.
    */
   elevationAt?: (dx: number, dy: number) => number | null;
-  /** Zoom of the camera this bake renders; undefined = identity. Task 4 sets it for camera bakes. */
+  /**
+   * Zoom k of the camera this bake renders; undefined = 1 (identity). World-
+   * class constants scale by k, per-px texture frequencies divide by it, 1-px
+   * line thresholds divide by it (see the zoom-camera inventory). The engine's
+   * camera bake sets it together with `camera`, the camera geometry, and a
+   * `liftOf` / `maxLift` already multiplied by k.
+   */
   cameraZoom?: number;
+  /**
+   * The camera that maps this bake's screen pixels to base-world pixels
+   * (`screenToWorld`). Hashes and noise are keyed on world coordinates through
+   * it, so panning does not shift them. Undefined = identity (screen = world).
+   */
+  camera?: Camera;
+  /**
+   * Decals to stamp, already in this bake's screen coordinates. When given, the
+   * painter stamps these instead of planning — the camera bake passes the
+   * IDENTITY plan mapped through the camera, so zooming never re-plans.
+   */
+  decalSites?: DecalSite[] | null;
+  /** Volcano chimneys to paint, in this bake's screen coordinates; same rule as `decalSites`. */
+  chimneySites?: VolcanoChimney[] | null;
   /** Tallest lift `liftOf` can return, so the bake can reserve rows above the rim. */
   maxLift: number;
 
@@ -771,28 +792,87 @@ const KEY_Y = -0.45;
 
 // ─── Top face: the biome tabletop ─────────────────────────────────────────────
 
-/**
- * Paint the cut face: an azimuthal projection of the grid as a flat living
- * board (diorama_test language) — tiered land with cliff faces. Water cells
- * leave the land canvas empty and stamp occupancy + pick for live fluids.
- * Gas giants fill the whole disc with latitude bands (no water holes).
- */
 /** The sub-cell sampler a bake may use: only camera bakes zoomed in (Ruling 11). */
 function subCellSampler(opts: Pick<CutawayBakeOpts, 'cameraZoom' | 'elevationAt'>): ((dx: number, dy: number) => number | null) | undefined {
   return opts.cameraZoom !== undefined && opts.cameraZoom > 1 ? opts.elevationAt : undefined;
 }
 
+/**
+ * Screen -> base-world mapping of a bake (`screenToWorld` of its camera).
+ * Identity (no camera) returns the pixel itself, so identity bakes key every
+ * hash exactly as before.
+ */
+function worldMapOf(opts: Pick<CutawayBakeOpts, 'camera' | 'w' | 'h'>): {
+  wx: (x: number) => number; wy: (y: number) => number;
+} {
+  const cam = opts.camera;
+  if (!cam) return { wx: x => x, wy: y => y };
+  const hw = opts.w / 2, hh = opts.h / 2, z = cam.zoom, fx = cam.fx, fy = cam.fy;
+  return { wx: x => (x - hw) / z + fx, wy: y => (y - hh) / z + fy };
+}
+
+/** Test-only iteration counters (`globalThis.__zoomIters`), read by tools/zoomCheck.ts. */
+function zoomIters(): Record<string, number> | undefined {
+  return (globalThis as { __zoomIters?: Record<string, number> }).__zoomIters;
+}
+
+/**
+ * Is the face pixel (px, py) water? The same land/water decision the surface
+ * painter makes, for pixels OUTSIDE the canvas: the camera bake's shore
+ * distance needs the coast a little beyond the view (see bakeShoreDistance).
+ * Keep in step with the classification in paintCutawaySurface.
+ */
+export function faceWaterAt(opts: CutawayBakeOpts, px: number, py: number): boolean {
+  const dx = (px - opts.cx) / opts.rx, dy = (py - opts.cyTop) / opts.ry;
+  const r = Math.hypot(dx, dy);
+  if (r > 1 || opts.planetType === 'gas') return false;
+  const grid = opts.grid;
+  if (!grid) return true;
+  const gp = opts.discToGrid(dx, dy);
+  if (!gp) return false;
+  const cell = grid[gp.row]?.[gp.col];
+  if (!cell) return false;
+  const rim = opts.rimFalloff(r);
+  let biome: BiomeType = classifyBiome(cell.elevation - rim, cell.moisture, cell.temperature, opts.planetType);
+  const elevationAt = subCellSampler(opts);
+  const smoothF = elevationAt ? elevationAt(dx, dy) : null;
+  if (smoothF !== null) {
+    const biomeF = classifyBiome(smoothF - rim, cell.moisture, cell.temperature, opts.planetType);
+    if (isWater(biomeF)) biome = biomeF;
+    else if (isWater(biome)) biome = biomeF;
+  }
+  return isWater(biome);
+}
+
+/**
+ * Paint the cut face: an azimuthal projection of the grid as a flat living
+ * board (diorama_test language) — tiered land with cliff faces. Water cells
+ * leave the land canvas empty and stamp occupancy + pick for live fluids.
+ * Gas giants fill the whole disc with latitude bands (no water holes).
+ *
+ * Camera bakes (`cameraZoom` k > 1): the loops cover the canvas plus the
+ * relief margin only; relief comes pre-scaled from the engine's wrapped
+ * `liftOf`; grain is keyed on world pixels; 1-px lines narrow by k.
+ */
 export function paintCutawaySurface(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed, grid } = opts;
   const elevationAt = subCellSampler(opts);
+  const k = opts.cameraZoom ?? 1;
+  const world = worldMapOf(opts);
   const pal = paletteFor(opts.planetType);
   g.clearRect(0, 0, VW, VH);
 
-  const x0 = Math.max(0, cx - rx), x1 = Math.min(VW - 1, cx + rx);
-  const yFace0 = cyTop - ry, yFace1 = cyTop + ry;
-  const y1 = Math.min(VH - 1, yFace1);
+  // Bounded to the view: columns on the canvas; face rows from the canvas top
+  // to the canvas bottom PLUS the relief margin (rows below the canvas whose
+  // lifted ground rises into view). At identity the face lies inside the canvas
+  // and every bound below equals the whole-face box it replaced.
+  const x0 = Math.max(0, Math.ceil(cx - rx)), x1 = Math.min(VW - 1, Math.floor(cx + rx));
+  const yFace0 = Math.ceil(cyTop - ry), yFace1 = Math.floor(cyTop + ry);
+  const y1 = Math.min(VH - 1, yFace1);                          // last stored row
+  const yScan1 = Math.min(VH - 1 + (opts.planetType === 'gas' ? 0 : opts.maxLift), yFace1);
+  const yScan0 = Math.max(0, yFace0);                            // rows above the canvas draw above it
   if (x1 <= x0 || y1 <= yFace0) return;
 
   // Raised ground draws ABOVE the point it belongs to, so peaks near the far rim
@@ -801,27 +881,12 @@ export function paintCutawaySurface(
   const bw = x1 - x0 + 1, bh = y1 - yTop + 1;
   const img = g.createImageData(bw, bh);
   const d = img.data;
+  let iters = 0;
 
   const pick = opts.pick && opts.pick.length === VW * VH ? opts.pick : null;
   if (pick) pick.fill(0);
-  if (opts.occupancy && opts.occupancy.length === VW * VH) opts.occupancy.fill(0);
-
-  const put = (
-    px: number, py: number, cr: number, cg: number, cb: number, cellId: number,
-  ): void => {
-    if (py < yTop || py > y1 || px < x0 || px > x1) return;
-    // Occupied water already stamped pick; cliffs must not overwrite it.
-    if (opts.occupancy && py >= 0 && py < VH && px >= 0 && px < VW
-        && opts.occupancy[py * VW + px]) return;
-    const o = ((py - yTop) * bw + (px - x0)) * 4;
-    d[o]     = cr < 0 ? 0 : cr > 255 ? 255 : cr;
-    d[o + 1] = cg < 0 ? 0 : cg > 255 ? 255 : cg;
-    d[o + 2] = cb < 0 ? 0 : cb > 255 ? 255 : cb;
-    d[o + 3] = 255;
-    if (pick && cellId > 0 && py >= 0 && py < VH && px >= 0 && px < VW) {
-      pick[py * VW + px] = cellId;
-    }
-  };
+  const occ = opts.occupancy && opts.occupancy.length === VW * VH ? opts.occupancy : null;
+  if (occ) occ.fill(0);
 
   // ── Gas giant: flat banded tabletop, no water holes ─────────────────────────
   if (opts.planetType === 'gas') {
@@ -829,9 +894,12 @@ export function paintCutawaySurface(
       ? opts.gasBands
       : makeGasBands(seed);
     const bandCount = bands.length;
-    for (let py = yFace0; py <= y1; py++) {
+    // The dark band-edge line is a 1-px stroke: its threshold narrows with zoom.
+    const edgeLine = k === 1 ? 0.08 : 0.08 / k;
+    for (let py = yScan0; py <= y1; py++) {
       const dy = (py - cyTop) / ry;
       for (let px = x0; px <= x1; px++) {
+        iters++;
         const dx = (px - cx) / rx;
         const r = Math.hypot(dx, dy);
         if (r > 1) continue;
@@ -849,7 +917,7 @@ export function paintCutawaySurface(
         let cr = mix(c0.r, c1.r, ft) * curl;
         let cg = mix(c0.g, c1.g, ft) * curl;
         let cb = mix(c0.b, c1.b, ft) * curl;
-        if (ft0 < 0.08) { cr *= 0.72; cg *= 0.72; cb *= 0.72; }
+        if (ft0 < edgeLine) { cr *= 0.72; cg *= 0.72; cb *= 0.72; }
 
         const key = quantise(0.88 + 0.22 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
         const ao = 1 - Math.pow(clamp01((r - 0.70) / 0.30), 2) * 0.22;
@@ -861,9 +929,16 @@ export function paintCutawaySurface(
           const gp = opts.discToGrid(dx, dy);
           if (gp) cellId = gp.row * GRID_SIZE + gp.col + 1;
         }
-        put(px, py, cr, cg, cb, cellId);
+        const o = ((py - yTop) * bw + (px - x0)) * 4;
+        d[o]     = cr < 0 ? 0 : cr > 255 ? 255 : cr;
+        d[o + 1] = cg < 0 ? 0 : cg > 255 ? 255 : cg;
+        d[o + 2] = cb < 0 ? 0 : cb > 255 ? 255 : cb;
+        d[o + 3] = 255;
+        if (pick && cellId > 0) pick[py * VW + px] = cellId;
       }
     }
+    const it = zoomIters();
+    if (it) it.surface = iters;
     g.putImageData(img, x0, yTop);
     return;
   }
@@ -871,148 +946,176 @@ export function paintCutawaySurface(
   const lush = clamp01(opts.lush ?? 0.3);
   // Cliff face under extruded land — same role as diorama_test's terrain.cliff.
   const cliff = pal.strata[1];
+  // 1-px lines stay 1 px at any zoom: their thresholds narrow by k.
+  const foamOuter = k === 1 ? 0.972 : 1 - 0.028 / k;
+  const foamInner = k === 1 ? 0.988 : 1 - 0.012 / k;
+  const coastLo = k === 1 ? SEA_LEVEL - 0.009 : SEA_LEVEL - 0.009 / k;
+  const coastHi = k === 1 ? SEA_LEVEL + 0.014 : SEA_LEVEL + 0.014 / k;
 
-  // Painter's order: far rows first, so nearer ground occludes what is behind it.
-  for (let py = yFace0; py <= y1; py++) {
-    const dy = (py - cyTop) / ry;
-    for (let px = x0; px <= x1; px++) {
+  // One column at a time, NEAR rows first. Ground drawn by a nearer face row
+  // hides whatever a farther one would draw at the same pixel, so each pixel is
+  // written once, by the first (nearest) face row that covers it: the rows a
+  // face row covers are [py - lift, py], and everything from `minTop` down is
+  // already owned by nearer rows. This is the painter's order of the old
+  // far-to-near loop (last writer wins), without its O(lift) overdraw.
+  // A farther WATER face pixel always stays empty (its pick is the water cell),
+  // which is what the old per-put occupancy test produced.
+  for (let px = x0; px <= x1; px++) {
+    let minTop = Infinity;
+    for (let py = yScan1; py >= yScan0; py--) {
+      iters++;
+      const dy = (py - cyTop) / ry;
       const dx = (px - cx) / rx;
       const r = Math.hypot(dx, dy);
       if (r > 1) continue;
-
-      let cr = 0, cg = 0, cb = 0, lift = 0, cellId = 0;
+      const inCanvas = py >= 0 && py < VH;
+      const idx = py * VW + px;
 
       if (!grid) {
         // No grid yet: treat the disc as water so fluids can fill it in frame().
-        const idx = py * VW + px;
-        if (opts.occupancy && idx >= 0 && idx < opts.occupancy.length) opts.occupancy[idx] = 1;
+        if (occ && inCanvas) occ[idx] = 1;
         continue;
-      } else {
-        const gp = opts.discToGrid(dx, dy);
-        if (!gp) continue;
-        const cell = grid[gp.row]?.[gp.col];
-        if (!cell) continue;
+      }
+      const gp = opts.discToGrid(dx, dy);
+      if (!gp) continue;
+      const cell = grid[gp.row]?.[gp.col];
+      if (!cell) continue;
 
-        const rim = opts.rimFalloff(r);
-        const elev = cell.elevation - rim;
-        let biome: BiomeType =
-          classifyBiome(elev, cell.moisture, cell.temperature, opts.planetType);
-        // Sub-cell elevation decides land vs water (and the coast outline and
-        // lift below), so the coast is a curve between cells, not a cell stair.
-        // Colour stays the nearest cell's biome — unless that cell is water and
-        // the interpolated ground here is land, when the land biome the
-        // interpolated elevation gives (the coast's own) is the only one to use.
-        const smoothF = elevationAt ? elevationAt(dx, dy) : null;
-        const elevF = smoothF === null ? elev : smoothF - rim;
-        if (smoothF !== null) {
-          const biomeF = classifyBiome(elevF, cell.moisture, cell.temperature, opts.planetType);
-          if (isWater(biomeF)) biome = biomeF;
-          else if (isWater(biome)) biome = biomeF;
-        }
+      const rim = opts.rimFalloff(r);
+      const elev = cell.elevation - rim;
+      let biome: BiomeType =
+        classifyBiome(elev, cell.moisture, cell.temperature, opts.planetType);
+      // Sub-cell elevation decides land vs water (and the coast outline and
+      // lift below), so the coast is a curve between cells, not a cell stair.
+      // Colour stays the nearest cell's biome — unless that cell is water and
+      // the interpolated ground here is land, when the land biome the
+      // interpolated elevation gives (the coast's own) is the only one to use.
+      // faceWaterAt repeats this decision for pixels beyond the canvas.
+      const smoothF = elevationAt ? elevationAt(dx, dy) : null;
+      const elevF = smoothF === null ? elev : smoothF - rim;
+      if (smoothF !== null) {
+        const biomeF = classifyBiome(elevF, cell.moisture, cell.temperature, opts.planetType);
+        if (isWater(biomeF)) biome = biomeF;
+        else if (isWater(biome)) biome = biomeF;
+      }
 
-        // Snow caps: the mockup's peaks are white-tipped regardless of latitude,
-        // which is what altitude actually does to a mountain — except molten worlds.
-        // THIS is the reclassification the decal planner cannot see: it is local
-        // to this loop and never written back to `cell.biome`, so a planner
-        // reading `cell.biome` alone would happily stamp scrub across the white
-        // cap. `DECAL_SNOW_LINE` is derived from `PAINTER_SNOW_ELEVATION` to
-        // keep decals below this line; see SurfaceDecals.ts.
-        if (opts.planetType !== 'lava'
-            && biome === 'mountain' && cell.elevation > PAINTER_SNOW_ELEVATION) biome = 'snow';
+      // Snow caps: the mockup's peaks are white-tipped regardless of latitude,
+      // which is what altitude actually does to a mountain — except molten worlds.
+      // THIS is the reclassification the decal planner cannot see: it is local
+      // to this loop and never written back to `cell.biome`, so a planner
+      // reading `cell.biome` alone would happily stamp scrub across the white
+      // cap. `DECAL_SNOW_LINE` is derived from `PAINTER_SNOW_ELEVATION` to
+      // keep decals below this line; see SurfaceDecals.ts.
+      if (opts.planetType !== 'lava'
+          && biome === 'mountain' && cell.elevation > PAINTER_SNOW_ELEVATION) biome = 'snow';
 
-        if (isWater(biome)) {
-          const idx = py * VW + px;
-          if (opts.occupancy && idx >= 0 && idx < opts.occupancy.length) opts.occupancy[idx] = 1;
+      if (isWater(biome)) {
+        if (inCanvas) {
+          if (occ) occ[idx] = 1;
           if (pick) pick[idx] = gp.row * GRID_SIZE + gp.col + 1;
-          continue; // do not call put()
         }
-
-        let base = pal.biome[biome];
-        let br = base.r, bg = base.g, bb = base.b;
-
-        if (biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
-                   && biome !== 'volcanic' && biome !== 'beach') {
-          // Vegetation responds to the living biosphere, gated on the cell's own
-          // fertility so deserts and savanna still read as themselves.
-          const veg = clamp01(cell.lifeDensity * 0.45 + lush * 0.30)
-                    * clamp01(cell.fertility * 1.6) * 0.55;
-          br = mix(br, br * 0.74, veg);
-          bg = mix(bg, Math.min(255, bg * 1.12 + 8), veg);
-          bb = mix(bb, bb * 0.76, veg);
+        // A nearer row's cliff may already cover this pixel; water wins.
+        if (py >= yTop && py <= y1) {
+          const o = ((py - yTop) * bw + (px - x0)) * 4;
+          d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; d[o + 3] = 0;
         }
-
-        // Relief from the elevation gradient, then STEPPED — the whole point of
-        // the flat-tabletop read is that shading arrives in plates.
-        const cE = grid[gp.row]?.[(gp.col + 2) % GRID_SIZE];
-        const cN = grid[Math.max(0, gp.row - 2)]?.[gp.col];
-        const slope = (cell.elevation - (cE?.elevation ?? cell.elevation)) * 0.7
-                    + (cell.elevation - (cN?.elevation ?? cell.elevation)) * 0.5;
-        const relief = quantise(1 + clamp01(slope * 6 + 0.5) * 0.34 - 0.17, 0.085);
-
-        const key = quantise(0.86 + 0.26 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
-        // Occlusion under the atmosphere shell at the rim.
-        const ao = 1 - Math.pow(clamp01((r - 0.70) / 0.30), 2) * 0.30;
-        const grain = 0.975 + hash1(px * 911 + py * 31, seed) * 0.05;
-
-        const f = relief * key * ao * grain;
-        cr = br * f; cg = bg * f; cb = bb * f;
-
-        // Foam ring at the rim, hard-edged: two steps, not a fade.
-        if (r > 0.972) {
-          const t = r > 0.988 ? 0.85 : 0.42;
-          cr = mix(cr, pal.foam.r, t);
-          cg = mix(cg, pal.foam.g, t);
-          cb = mix(cb, pal.foam.b, t);
-        }
-
-        // Coastline: a hard bright outline wherever land meets water. This is
-        // most of what makes the tabletop read as a MAP rather than a texture.
-        // Done INLINE rather than as a second pass over the face — the second
-        // pass had to re-run the azimuthal projection for every pixel, which is
-        // the most expensive thing in the bake, and coasts are at sea level so
-        // they are never displaced by the extrusion anyway.
-        if (elevF > SEA_LEVEL - 0.009 && elevF < SEA_LEVEL + 0.014) {
-          cr = mix(cr, pal.foam.r, 0.55);
-          cg = mix(cg, pal.foam.g, 0.55);
-          cb = mix(cb, pal.foam.b, 0.55);
-        }
-
-        lift = opts.liftOf((smoothF ?? opts.smoothElevation(grid, gp.row, gp.col)) - rim);
-        cellId = gp.row * GRID_SIZE + gp.col + 1;
+        continue;
       }
 
+      const base = pal.biome[biome];
+      let br = base.r, bg = base.g, bb = base.b;
+
+      if (biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
+                 && biome !== 'volcanic' && biome !== 'beach') {
+        // Vegetation responds to the living biosphere, gated on the cell's own
+        // fertility so deserts and savanna still read as themselves.
+        const veg = clamp01(cell.lifeDensity * 0.45 + lush * 0.30)
+                  * clamp01(cell.fertility * 1.6) * 0.55;
+        br = mix(br, br * 0.74, veg);
+        bg = mix(bg, Math.min(255, bg * 1.12 + 8), veg);
+        bb = mix(bb, bb * 0.76, veg);
+      }
+
+      // Relief from the elevation gradient, then STEPPED — the whole point of
+      // the flat-tabletop read is that shading arrives in plates.
+      const cE = grid[gp.row]?.[(gp.col + 2) % GRID_SIZE];
+      const cN = grid[Math.max(0, gp.row - 2)]?.[gp.col];
+      const slope = (cell.elevation - (cE?.elevation ?? cell.elevation)) * 0.7
+                  + (cell.elevation - (cN?.elevation ?? cell.elevation)) * 0.5;
+      const relief = quantise(1 + clamp01(slope * 6 + 0.5) * 0.34 - 0.17, 0.085);
+
+      const key = quantise(0.86 + 0.26 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
+      // Occlusion under the atmosphere shell at the rim.
+      const ao = 1 - Math.pow(clamp01((r - 0.70) / 0.30), 2) * 0.30;
+      // Grain keyed on the WORLD pixel (floored at base resolution), so it
+      // stays put when the camera pans.
+      const grain = 0.975 + hash1(Math.floor(world.wx(px)) * 911 + Math.floor(world.wy(py)) * 31, seed) * 0.05;
+
+      const f = relief * key * ao * grain;
+      let cr = br * f, cg = bg * f, cb = bb * f;
+
+      // Foam ring at the rim, hard-edged: two steps, not a fade.
+      if (r > foamOuter) {
+        const t = r > foamInner ? 0.85 : 0.42;
+        cr = mix(cr, pal.foam.r, t);
+        cg = mix(cg, pal.foam.g, t);
+        cb = mix(cb, pal.foam.b, t);
+      }
+
+      // Coastline: a hard bright outline wherever land meets water. This is
+      // most of what makes the tabletop read as a MAP rather than a texture.
+      // Done INLINE rather than as a second pass over the face — the second
+      // pass had to re-run the azimuthal projection for every pixel, which is
+      // the most expensive thing in the bake, and coasts are at sea level so
+      // they are never displaced by the extrusion anyway.
+      if (elevF > coastLo && elevF < coastHi) {
+        cr = mix(cr, pal.foam.r, 0.55);
+        cg = mix(cg, pal.foam.g, 0.55);
+        cb = mix(cb, pal.foam.b, 0.55);
+      }
+
+      const lift = opts.liftOf((smoothF ?? opts.smoothElevation(grid, gp.row, gp.col)) - rim);
+      const cellId = gp.row * GRID_SIZE + gp.col + 1;
       const top = py - lift;
-      if (lift > 0) {
-        // Solid cliff column under the crest (diorama_test language) — not a
-        // silt fade, so height reads as real ground you can put life on.
-        for (let k = 1; k <= lift; k++) {
-          const shadeK = 0.78 + 0.14 * (k / lift);
-          put(px, top + k,
-              cliff.r * shadeK,
-              cliff.g * shadeK,
-              cliff.b * shadeK,
-              cellId);
+      // Lit top plate — sunward side pops like the test.
+      const sun = dx > 0.05 ? 1.12 : 1.0;
+      const rEnd = Math.min(py, minTop - 1, y1);
+      const rStart = Math.max(top, yTop);
+      for (let row = rStart; row <= rEnd; row++) {
+        let vr: number, vg: number, vb: number;
+        if (row === top) {
+          if (lift > 0) {
+            vr = Math.min(255, cr * sun + 8);
+            vg = Math.min(255, cg * sun + 8);
+            vb = Math.min(255, cb * sun + 8);
+          } else {
+            vr = cr; vg = cg; vb = cb;
+          }
+        } else {
+          // Solid cliff column under the crest (diorama_test language) — not a
+          // silt fade, so height reads as real ground you can put life on.
+          const shadeK = 0.78 + 0.14 * ((row - top) / lift);
+          vr = cliff.r * shadeK; vg = cliff.g * shadeK; vb = cliff.b * shadeK;
         }
-        // Lit top plate — sunward side pops like the test.
-        const sun = dx > 0.05 ? 1.12 : 1.0;
-        put(px, top,
-            Math.min(255, cr * sun + 8),
-            Math.min(255, cg * sun + 8),
-            Math.min(255, cb * sun + 8),
-            cellId);
-      } else {
-        put(px, top, cr, cg, cb, cellId);
+        const o = ((row - yTop) * bw + (px - x0)) * 4;
+        d[o]     = vr < 0 ? 0 : vr > 255 ? 255 : vr;
+        d[o + 1] = vg < 0 ? 0 : vg > 255 ? 255 : vg;
+        d[o + 2] = vb < 0 ? 0 : vb > 255 ? 255 : vb;
+        d[o + 3] = 255;
+        if (pick) pick[row * VW + px] = cellId;
       }
+      if (top < minTop) minTop = top;
     }
   }
+  const it = zoomIters();
+  if (it) it.surface = iters;
 
   // Land cliffs can extrude onto a farther water cell's pixel. Punch those
   // back to alpha 0 so occupancy water stays empty for live fluids.
-  if (opts.occupancy) {
+  if (occ) {
     for (let py = yTop; py <= y1; py++) {
       for (let px = x0; px <= x1; px++) {
-        const idx = py * VW + px;
-        if (idx < 0 || idx >= opts.occupancy.length || !opts.occupancy[idx]) continue;
+        if (!occ[py * VW + px]) continue;
         d[((py - yTop) * bw + (px - x0)) * 4 + 3] = 0;
       }
     }
@@ -1020,7 +1123,9 @@ export function paintCutawaySurface(
 
   // Decals last: they must stand on finished terrain, and the cliff-punch above
   // has already cleared water pixels back to alpha 0 so nothing lands in the sea.
-  if (opts.decalSeed !== undefined) {
+  if (opts.decalSites) {
+    stampDecals(d, bw, bh, x0, yTop, opts.decalSites, opts.decalAtlas ?? null);
+  } else if (opts.decalSeed !== undefined) {
     const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
     stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
   }
@@ -1028,7 +1133,7 @@ export function paintCutawaySurface(
   g.putImageData(img, x0, yTop);
 
   if (opts.planetType === 'lava') {
-    paintVolcanoChimneys(g, planVolcanoChimneys(opts));
+    paintVolcanoChimneys(g, opts.chimneySites ?? planVolcanoChimneys(opts), VW, VH);
   }
 }
 
@@ -1078,10 +1183,13 @@ export function planVolcanoChimneys(opts: CutawayBakeOpts): VolcanoChimney[] {
 /** Dark basalt cone + glowing crater mouth on the lava tabletop. */
 export function paintVolcanoChimneys(
   g: CanvasRenderingContext2D, sites: VolcanoChimney[],
+  VW = Infinity, VH = Infinity,
 ): void {
   for (const v of sites) {
     const baseY = v.y;
     const tipY = v.y - v.h;
+    // Bounded to the view: a cone wholly off the canvas draws nothing.
+    if (baseY < 0 || tipY - 8 >= VH || v.x + v.w + 2 < 0 || v.x - v.w - 2 >= VW) continue;
     // Cone body — dark basalt tapering upward.
     for (let k = 0; k <= v.h; k++) {
       const t = k / Math.max(1, v.h);
@@ -1119,33 +1227,52 @@ export function paintCutawayCrust(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed } = opts;
-  const fallback = habitableGeom(VW, VH);
-  const wall = opts.wall ?? fallback.wall;
+  // The engine always passes `wall` (the camera's, on a camera bake); the
+  // fallback is for legacy callers and is only correct at identity.
+  const wall = opts.wall ?? habitableGeom(VW, VH).wall;
   const pal = paletteFor(opts.planetType);
   g.clearRect(0, 0, VW, VH);
-  if (rx < 8) return;
+  // Camera bakes: world-class sizes x k, per-px frequencies keyed on WORLD x
+  // (screenToWorld), hashes floored at base resolution. Identity: k = 1 and the
+  // world coordinate IS the pixel, so every expression reduces to the old one.
+  const k = opts.cameraZoom ?? 1;
+  const world = worldMapOf(opts);
+  if (rx < 8 * k) return;
+  const baseRx = k === 1 ? rx : Math.round(rx / k);
+  const baseWall = k === 1 ? wall : Math.round(wall / k);
+  // Column keys (cleft hash, ledge noise) count from the body's left rim in
+  // WORLD columns, not from the first canvas column.
+  const colKey0 = Math.max(0, Math.ceil(Math.round(world.wx(cx)) - baseRx));
 
-  const rimX0 = Math.max(0, Math.ceil(cx - rx));
-  const rimX1 = Math.min(VW - 1, Math.floor(cx + rx));
+  const E0 = Math.ceil(cx - rx), E1 = Math.floor(cx + rx);
+  const rimX0 = Math.max(0, E0);
+  const rimX1 = Math.min(VW - 1, E1);
   const cols = rimX1 - rimX0 + 1;
+  if (cols <= 0) return;
   const wallBottom = new Float32Array(cols);
-  const crustH = crustDepthOf(rx);
+  const crustH = k === 1 ? crustDepthOf(rx) : crustDepthOf(baseRx) * k;
+  const waterBand = k === 1 ? Math.max(6, Math.round(wall * 0.40)) : Math.max(6, Math.round(baseWall * 0.40)) * k;
+  let iters = 0;
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
   for (let x = rimX0; x <= rimX1; x++) {
     const i = x - rimX0;
+    const wx = world.wx(x);
     const faceX = (x - cx) / rx;
     const frontY = cyTop + Math.sqrt(Math.max(0, 1 - faceX * faceX)) * ry;
-    const ridge = (fbm1(x * 0.075, seed + 77, 3) - 0.5) * 5;
+    const ridge = (fbm1(wx * 0.075, seed + 77, 3) - 0.5) * 5 * k;
     const bottomY = frontY + wall + ridge;
-    const waterBand = Math.max(6, Math.round(wall * 0.40));
     wallBottom[i] = bottomY;
     const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
     const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
+    // Facet stripe every 14 WORLD px, 1 screen px wide.
+    const wk = Math.round(wx * k), period = 14 * k;
+    const facetCol = ((wk % period) + period) % period < 1;
 
-    for (let y = Math.ceil(frontY); y <= Math.floor(bottomY); y++) {
-      if (y < 0 || y >= VH) continue;
+    const ys = Math.max(0, Math.ceil(frontY)), ye = Math.min(VH - 1, Math.floor(bottomY));
+    for (let y = ys; y <= ye; y++) {
+      iters++;
       const faceY = (y - cyTop) / ry;
       if (faceX * faceX + faceY * faceY <= 1) continue;
       const depth = y - frontY;
@@ -1153,7 +1280,7 @@ export function paintCutawayCrust(
       const fluidLayer = depth < waterBand || water;
       if (fluidLayer) {
         const t = clamp01(depth / Math.max(1, water ? (bottomY - frontY) : waterBand));
-        const facet = x % 14 === 0 ? 0.20 : 0;
+        const facet = facetCol ? 0.20 : 0;
         g.fillStyle = css(shade(rgb(
           mix(pal.waterLip.r, pal.waterDeep.r, t),
           mix(pal.waterLip.g, pal.waterDeep.g, t),
@@ -1169,83 +1296,107 @@ export function paintCutawayCrust(
   }
 
   // ── Jagged hanging keel ───────────────────────────────────────────────────
-  const raw = new Float32Array(cols);
-  for (let i = 0; i < cols; i++) {
-    const x = rimX0 + i;
+  // The profile is smoothed over neighbouring columns, so on a camera bake it
+  // is computed a few kernel widths past the canvas edge (still inside the
+  // body): a column at the edge of the view gets the same profile as it does
+  // mid-view. Kernels (smoothing, median) reach round(k) columns — world
+  // class (Ruling 6).
+  const s = Math.max(1, Math.round(k));
+  const margin = k === 1 ? 0 : 3 * s;
+  const P0 = Math.max(E0, rimX0 - margin), P1 = Math.min(E1, rimX1 + margin);
+  const pcols = P1 - P0 + 1;
+  const raw = new Float32Array(pcols);
+  for (let j = 0; j < pcols; j++) {
+    const x = P0 + j;
     const dxn = (x - cx) / rx;
+    const ox = (x - cx) / k;      // world px from the body centre
     // Flatter than a circle on purpose — a (1−x²)^0.78 bowl hugged the
     // atmospheric shell and the underside read as a sphere again.
     const keel = Math.pow(Math.max(0, 1 - dxn * dxn), 1.35);
-    const jag  = fbm1((x - cx) * 0.038, seed, 4) * 0.70
-               + fbm1((x - cx) * 0.14, seed + 77, 3) * 0.38
-               + fbm1((x - cx) * 0.48,  seed + 401, 2) * 0.22;
-    const spur = Math.sin(fbm1((x - cx) * 0.048, seed + 1234, 2) * Math.PI * 2.8) * 0.28;
-    const cleft = hash1(i * 17, seed + 5) > 0.82 ? -0.22 : 0;
-    raw[i] = Math.min(
+    const jag  = fbm1(ox * 0.038, seed, 4) * 0.70
+               + fbm1(ox * 0.14, seed + 77, 3) * 0.38
+               + fbm1(ox * 0.48,  seed + 401, 2) * 0.22;
+    const spur = Math.sin(fbm1(ox * 0.048, seed + 1234, 2) * Math.PI * 2.8) * 0.28;
+    const cleft = hash1((Math.floor(world.wx(x)) - colKey0) * 17, seed + 5) > 0.82 ? -0.22 : 0;
+    raw[j] = Math.min(
       crustH,
       crustH * Math.max(0, 0.06 + keel * 0.52 + (jag - 0.5) * 0.78 + spur + cleft),
     );
   }
 
-  const prof = new Float32Array(cols);
+  const prof = new Float32Array(pcols);
   for (let pass = 0; pass < 2; pass++) {
     const src = pass === 0 ? raw : prof.slice();
-    for (let i = 0; i < cols; i++) {
-      const a = src[Math.max(0, i - 1)], b = src[i], c = src[Math.min(cols - 1, i + 1)];
-      prof[i] = (a + b * 2 + c) / 4;
+    for (let j = 0; j < pcols; j++) {
+      const a = src[Math.max(0, j - s)], b = src[j], c = src[Math.min(pcols - 1, j + s)];
+      prof[j] = (a + b * 2 + c) / 4;
     }
   }
-  for (let i = 0; i < cols; i++) {
-    const ledge = 2 + Math.round(fbm1(i * 0.035, seed + 909, 2) * 3);
-    prof[i] = Math.round(prof[i] / ledge) * ledge;
+  for (let j = 0; j < pcols; j++) {
+    const ledge = (2 + Math.round(fbm1((world.wx(P0 + j) - colKey0) * 0.035, seed + 909, 2) * 3)) * k;
+    prof[j] = Math.round(prof[j] / ledge) * ledge;
   }
   const terr = prof.slice();
-  for (let i = 1; i < cols - 1; i++) {
-    const a = terr[i - 1], b = terr[i], c = terr[i + 1];
-    prof[i] = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+  for (let j = s; j < pcols - s; j++) {
+    const a = terr[j - s], b = terr[j], c = terr[j + s];
+    prof[j] = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
   }
 
   const bands = pal.strata.length;
   const strataSpan = ry + wall + crustH;
-  for (let i = 0; i < cols; i++) {
-    const x = rimX0 + i;
-    const depth = prof[i];
-    if (depth < 2) continue;
+  const lipRows = 3 * k;
+  const glowRows = k === 1 ? 2 : Math.max(2, Math.round(2 * k));
+  for (let x = rimX0; x <= rimX1; x++) {
+    const i = x - rimX0;
+    const depth = prof[x - P0];
+    if (depth < 2 * k) continue;
     const top = wallBottom[i];
     const dxn = (x - cx) / rx;
     const lit = 0.55 + 0.62 * clamp01(dxn * 0.9 + 0.45);
+    const wx = world.wx(x);
+    const fwx = Math.floor(wx);
+    // Embers are 1-px dots: only the first screen column of their world column.
+    const firstCol = k === 1 || Math.floor(world.wx(x - 1)) !== fwx;
+    const wave = (fbm1(wx * 0.022, seed + 311, 3) - 0.5) * 0.55
+               + (fbm1(wx * 0.075, seed + 733, 2) - 0.5) * 0.22;
 
-    for (let y = 0; y < depth; y++) {
+    // Rows on the canvas only: absY = top + y in [0, VH).
+    const y0 = Math.max(0, Math.ceil(-top));
+    const yEnd = Math.min(depth, VH - top);
+    for (let y = y0; y < yEnd; y++) {
+      iters++;
       const absY = top + y;
-      if (absY < 0 || absY >= VH) continue;
       const faceX = dxn;
       const faceY = (absY - cyTop) / ry;
       if (faceX * faceX + faceY * faceY <= 1) continue;
 
       const t = y / depth;
-      const wave = (fbm1(x * 0.022, seed + 311, 3) - 0.5) * 0.55
-                 + (fbm1(x * 0.075, seed + 733, 2) - 0.5) * 0.22;
       const bandPos = clamp01((absY - cyTop) / strataSpan) * bands + wave;
       const bi = Math.max(0, Math.min(bands - 1, Math.floor(bandPos)));
-      const ao = 1 - t * 0.26 - (y < 3 ? (3 - y) / 3 : 0) * 0.28;
-      const grain = 0.90 + hash1(x * 733 + y * 13, seed) * 0.20;
-      const streak = 0.94 + fbm1(x * 0.09 + y * 1.7, seed + 55, 2) * 0.14;
+      const ao = 1 - t * 0.26 - (y < lipRows ? (lipRows - y) / lipRows : 0) * 0.28;
+      const wy = y / k;                        // world rows below the wall
+      const fwy = Math.floor(wy);
+      const grain = 0.90 + hash1(fwx * 733 + fwy * 13, seed) * 0.20;
+      const streak = 0.94 + fbm1(wx * 0.09 + wy * 1.7, seed + 55, 2) * 0.14;
       let f = lit * ao * grain * streak;
       const frac = bandPos - Math.floor(bandPos);
       if (frac < 0.07) f *= 0.68;
       else if (frac < 0.16) f *= 1.12;
-      const ember = t > 0.78 && hash1(x * 179 + y * 991, seed + 19) > 0.986;
+      const ember = t > 0.78 && hash1(fwx * 179 + fwy * 991, seed + 19) > 0.986
+        && (k === 1 || (firstCol && Math.floor((y - 1) / k) !== fwy));
       g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[bi], f));
       g.fillRect(x, Math.round(absY), 1, 1);
     }
 
     if (dxn > 0.1) {
       g.fillStyle = css(pal.ember, clamp01((dxn - 0.1) / 0.9) * 0.25);
-      g.fillRect(x, Math.round(top + depth) - 2, 1, 2);
+      g.fillRect(x, Math.round(top + depth) - glowRows, 1, glowRows);
     }
     g.fillStyle = 'rgba(2,2,6,0.55)';
     g.fillRect(x, Math.round(top + depth) - 1, 1, 1);
   }
+  const it = zoomIters();
+  if (it) it.crust = iters;
 }
 
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
@@ -1535,9 +1686,38 @@ export function cutawayWaterSurf(type: HabitableType): {
  * Distance from each water pixel to the nearest land on the pancake.
  * Land seeds occupancy===0 inside the ellipse; BFS walks only water.
  * Water that never meets land stays 0 (paintFluids falls back).
+ *
+ * Camera bakes pass `margin` (FOAM_REACH * k): the field is baked on the
+ * canvas plus that many pixels on every side, classifying the extra pixels
+ * with `waterAt`, then cropped — so water at the edge of the view measures to
+ * a coast just beyond it rather than to nothing. `blurStride` (round(k)) keeps
+ * the wavefront smoothing a world-sized kernel (Ruling 6).
  */
 export function bakeShoreDistance(
   occupancy: Uint8Array, geom: HabitableGeom, w: number, h: number,
+  margin = 0, waterAt?: (x: number, y: number) => boolean, blurStride = 1,
+): Float32Array {
+  if (margin <= 0) return shoreDistanceCore(occupancy, geom, w, h, blurStride);
+  const m = Math.ceil(margin), W = w + 2 * m, H = h + 2 * m;
+  const occ = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    const sy = y - m;
+    for (let x = 0; x < W; x++) {
+      const sx = x - m;
+      occ[y * W + x] = (sx >= 0 && sy >= 0 && sx < w && sy < h)
+        ? occupancy[sy * w + sx]
+        : (waterAt && waterAt(sx, sy) ? 1 : 0);
+    }
+  }
+  const ext = shoreDistanceCore(occ, { ...geom, cx: geom.cx + m, cyTop: geom.cyTop + m }, W, H, blurStride);
+  const dist = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) dist.set(ext.subarray((y + m) * W + m, (y + m) * W + m + w), y * w);
+  return dist;
+}
+
+function shoreDistanceCore(
+  occupancy: Uint8Array, geom: Pick<HabitableGeom, 'cx' | 'cyTop' | 'rx' | 'ry'>, w: number, h: number,
+  blurStride: number,
 ): Float32Array {
   const dist = new Float32Array(w * h);
   const seen = new Uint8Array(w * h);
@@ -1574,21 +1754,24 @@ export function bakeShoreDistance(
     }
   }
   // Two blur passes so wavefronts follow the coast instead of octagon rings.
+  const s = Math.max(1, Math.round(blurStride)), sw = s * w;
   const tmp = new Float32Array(dist);
   for (let pass = 0; pass < 2; pass++) {
     const src = pass === 0 ? dist : tmp;
     const dst = pass === 0 ? tmp : dist;
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
+    for (let y = s; y < h - s; y++) {
+      for (let x = s; x < w - s; x++) {
         const i = y * w + x;
         if (occupancy[i] !== 1) continue;
         dst[i] = (
           src[i] * 2
-          + src[i - 1] + src[i + 1] + src[i - w] + src[i + w]
+          + src[i - s] + src[i + s] + src[i - sw] + src[i + sw]
         ) / 6;
       }
     }
   }
+  const it = zoomIters();
+  if (it) it.shore = w * h;   // each pass (scan, BFS, blur) visits at most w*h pixels
   return dist;
 }
 
@@ -1848,14 +2031,47 @@ export interface HabitableFrameInput {
  * Owns static layers and composites moving habitable-world effects.
  * `drawGeom` includes bob for host-owned overlay placement.
  */
+/**
+ * The layers baked for one non-identity camera (see `setCamera`). The identity
+ * set is the engine's own fields, baked by `bake()` exactly as before zoom.
+ */
+interface CameraLayerSet {
+  camera: Camera;
+  /** `applyCamera(base geometry, camera)`. */
+  geom: HabitableGeom;
+  /** The identity bake options with this geometry, `cameraZoom`, `camera` and a k-scaled `liftOf` / `maxLift`. */
+  opts: CutawayBakeOpts;
+  crust: HTMLCanvasElement;
+  land: HTMLCanvasElement;
+  occupancy: Uint8Array;
+  shoreDist: Float32Array;
+  pick: Int32Array;
+}
+
 export class HabitableCutawayEngine {
+  /** BASE (identity) geometry. The shown geometry is `activeGeom` / `drawGeom`. */
   geom: HabitableGeom = habitableGeom(1, 1);
-  occupancy = new Uint8Array(1);
-  shoreDist = new Float32Array(1);
-  pick = new Int32Array(1);
+  /** The camera the camera layer set was baked for; identity when there is none. */
+  camera: Camera = identityCamera(1, 1);
+  /**
+   * Set by the host: draw (and pick, and expose geometry for) the camera layer
+   * set instead of the identity set. Ignored while there is no camera set.
+   */
+  showCamera = false;
+
+  private idOccupancy = new Uint8Array(1);
+  private idShoreDist: Float32Array = new Float32Array(1);
+  private idPick = new Int32Array(1);
+  private camSet: CameraLayerSet | null = null;
+  /** The identity decal / chimney plans, keyed on the options object they were planned from. */
+  private planFor: CutawayBakeOpts | null = null;
+  private planDecals: DecalSite[] | null = null;
+  private planChimneys: VolcanoChimney[] = [];
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
+  private camCrust = document.createElement('canvas');
+  private camLand = document.createElement('canvas');
   private atmoScratch = document.createElement('canvas');
   private fluidScratch = document.createElement('canvas');
   private weatherScratch = document.createElement('canvas');
@@ -1883,12 +2099,26 @@ export class HabitableCutawayEngine {
     this.resizeLayers(1, 1);
   }
 
+  /** The camera set when the host shows it, else null (identity). */
+  private get shown(): CameraLayerSet | null {
+    return this.showCamera ? this.camSet : null;
+  }
+
+  /** Land/water of the ACTIVE layer set, 1 = fluid. */
+  get occupancy(): Uint8Array { return this.shown?.occupancy ?? this.idOccupancy; }
+  /** Shore distance of the ACTIVE layer set, in its screen px. */
+  get shoreDist(): Float32Array { return this.shown?.shoreDist ?? this.idShoreDist; }
+  /** Pick buffer of the ACTIVE layer set. */
+  get pick(): Int32Array { return this.shown?.pick ?? this.idPick; }
+  /** Geometry of the ACTIVE layer set (the camera geometry while it is shown). */
+  get activeGeom(): HabitableGeom { return this.shown?.geom ?? this.geom; }
+
   get bob(): number {
     return bobOf(this.elapsed, this.geom.R);
   }
 
   get drawGeom(): HabitableGeom & { bob: number } {
-    return { ...this.geom, bob: this.bob };
+    return { ...this.activeGeom, bob: this.bob };
   }
 
   bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
@@ -1897,12 +2127,16 @@ export class HabitableCutawayEngine {
     this.w = Math.max(1, Math.round(opts.w));
     this.h = Math.max(1, Math.round(opts.h));
     this.geom = habitableGeom(this.w, this.h);
+    // A new bake is a new planet (or a new size): back to the identity view.
+    this.camera = identityCamera(this.w, this.h);
+    this.camSet = null;
+    this.showCamera = false;
     this.planetType = opts.planetType;
     this.seed = opts.seed;
     this.elapsed = 0;
-    this.occupancy = new Uint8Array(this.w * this.h);
-    this.shoreDist = new Float32Array(this.w * this.h);
-    this.pick = new Int32Array(this.w * this.h);
+    this.idOccupancy = new Uint8Array(this.w * this.h);
+    this.idShoreDist = new Float32Array(this.w * this.h);
+    this.idPick = new Int32Array(this.w * this.h);
     if (opts.planetType === 'gas') {
       this.gasBands = makeGasBands(opts.seed);
       this.hasRing = ((opts.seed >>> 5) & 3) !== 0; // ~75%
@@ -1913,7 +2147,7 @@ export class HabitableCutawayEngine {
     this.resizeLayers(this.w, this.h);
     const bakeOpts: CutawayBakeOpts = {
       ...opts, ...this.geom, w: this.w, h: this.h,
-      occupancy: this.occupancy, pick: this.pick,
+      occupancy: this.idOccupancy, pick: this.idPick,
       gasBands: this.gasBands.length ? this.gasBands : null,
     };
     this.surfaceBakeOpts = bakeOpts;
@@ -1921,7 +2155,7 @@ export class HabitableCutawayEngine {
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, bakeOpts);
-    this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
+    this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     // Weather: a fresh sim per bake — a new planet must never inherit the last
     // one's sky (the repo's recurring state-leak pattern).
     this.weatherSim = null;
@@ -1953,25 +2187,121 @@ export class HabitableCutawayEngine {
     }
   }
 
-  /** Repaint the mutable top-face data without resetting animation or crust. */
+  /**
+   * Bake the camera layer set for `cam` (distinct from `bake()`: same planet,
+   * new view). Identity drops the camera set. Keeps the weather sim and its
+   * fields, `elapsed`, the day angle and every other animation state — only
+   * the static layers are re-baked, in `bake()`'s order: zero occupancy,
+   * crust, surface, shore distance (with pick written by the surface).
+   * Decals and chimneys are the IDENTITY plans mapped through the camera,
+   * never re-planned (Task 6 moves them to stored world coordinates).
+   *
+   * Weather: the camera set has no weather painter yet (its lookup, cloud lift
+   * x k and clamp are Task 5); while the camera set is shown the sim keeps
+   * stepping and the identity painter keeps its particle state, but clouds and
+   * cloud shadows are not drawn.
+   */
+  setCamera(cam: Camera): void {
+    this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
+    const base = this.surfaceBakeOpts;
+    if (isIdentity(this.camera, this.w, this.h) || !base) {
+      this.camSet = null;
+      return;
+    }
+    const n = this.w * this.h;
+    const prev = this.camSet;
+    const geom = applyCamera(this.geom, this.camera, this.w, this.h);
+    const set: CameraLayerSet = {
+      camera: this.camera,
+      geom,
+      opts: base,   // replaced below
+      crust: this.camCrust,
+      land: this.camLand,
+      occupancy: prev && prev.occupancy.length === n ? prev.occupancy : new Uint8Array(n),
+      shoreDist: new Float32Array(0),   // baked below
+      pick: prev && prev.pick.length === n ? prev.pick : new Int32Array(n),
+    };
+    set.opts = this.cameraOpts(base, set);
+    if (set.crust.width !== this.w || set.crust.height !== this.h) {
+      set.crust.width = this.w; set.crust.height = this.h;
+      set.land.width = this.w; set.land.height = this.h;
+    }
+    set.occupancy.fill(0);
+    const crustG = set.crust.getContext('2d');
+    if (crustG) paintCutawayCrust(crustG, set.opts);
+    this.paintCameraSurface(set);
+    this.camSet = set;
+  }
+
+  /** The identity options re-targeted at a camera set: world-class values x k. */
+  private cameraOpts(base: CutawayBakeOpts, set: CameraLayerSet): CutawayBakeOpts {
+    const k = set.camera.zoom, g = set.geom, liftOf = base.liftOf;
+    return {
+      ...base,
+      cx: g.cx, cyTop: g.cyTop, rx: g.rx, ry: g.ry, R: g.R, wall: g.wall, cyBody: g.cyBody,
+      cameraZoom: k, camera: set.camera,
+      liftOf: (elev: number) => Math.round(liftOf(elev) * k),
+      maxLift: Math.ceil(base.maxLift * k),
+      occupancy: set.occupancy, pick: set.pick,
+      decalSites: null, chimneySites: null,
+    };
+  }
+
+  /** Identity decal and chimney plans (cached per identity options object). */
+  private identityPlans(): { decals: DecalSite[] | null; chimneys: VolcanoChimney[] } {
+    const base = this.surfaceBakeOpts;
+    if (base && this.planFor !== base) {
+      this.planFor = base;
+      this.planDecals = base.decalSeed !== undefined
+        ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed)
+        : null;
+      this.planChimneys = base.planetType === 'lava' ? planVolcanoChimneys(base) : [];
+    }
+    return { decals: this.planDecals, chimneys: this.planChimneys };
+  }
+
+  /** Surface + shore distance of a camera set, from its own stored options. */
+  private paintCameraSurface(set: CameraLayerSet): void {
+    const { w, h } = this, cam = set.camera, k = cam.zoom;
+    const at = (x: number, y: number) => ({ x: (x - cam.fx) * k + w / 2, y: (y - cam.fy) * k + h / 2 });
+    const plans = this.identityPlans();
+    const opts: CutawayBakeOpts = {
+      ...set.opts,
+      decalSites: plans.decals ? plans.decals.map(s => ({ ...s, ...at(s.x, s.y) })) : [],
+      chimneySites: plans.chimneys.map(c => {
+        const p = at(c.x, c.y);
+        return { ...c, x: Math.round(p.x), y: Math.round(p.y) };
+      }),
+    };
+    const landG = set.land.getContext('2d');
+    if (landG) paintCutawaySurface(landG, opts);
+    set.shoreDist = bakeShoreDistance(set.occupancy, set.geom, w, h,
+      Math.ceil(FOAM_REACH * k), (x, y) => faceWaterAt(opts, x, y), Math.round(k));
+  }
+
+  /** Repaint the mutable top-face data of BOTH layer sets without resetting animation or crust. */
   rebakeSurface(): void {
     const landG = this.land.getContext('2d');
     if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.surfaceBakeOpts);
-    this.shoreDist = bakeShoreDistance(this.occupancy, this.geom, this.w, this.h);
+    this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
+    if (this.camSet) this.paintCameraSurface(this.camSet);
   }
 
   /**
-   * Merge live values into the stored bake options.
+   * Merge live values into the stored bake options — of both layer sets.
    *
    * `rebakeSurface` repaints from `surfaceBakeOpts`, a snapshot taken at the
    * last full `bake()`. Anything that changes between full bakes — lushness as
    * the biosphere advances, the decal atlas once it finishes loading — has to
    * be merged in here first, or the repaint faithfully reproduces the old
-   * world and nothing the player did appears to matter.
+   * world and nothing the player did appears to matter. The camera set's
+   * options are re-derived from the merged identity options, so its geometry
+   * and k-scaled relief cannot go stale.
    */
   updateSurfaceOpts(patch: Partial<CutawayBakeOpts>): void {
     if (!this.surfaceBakeOpts) return;
     this.surfaceBakeOpts = { ...this.surfaceBakeOpts, ...patch };
+    if (this.camSet) this.camSet.opts = this.cameraOpts(this.surfaceBakeOpts, this.camSet);
   }
 
   /** New climate sources (lushness, civ level, stress). Keeps the current sky. */
@@ -1986,23 +2316,27 @@ export class HabitableCutawayEngine {
     this.elapsed = elapsed;
     const bob = this.bob;
     const layerBob = Math.round(bob);
+    // The active layer set: the camera set while the host shows it. Per-frame
+    // painters below take its geometry; their own constants convert in Task 5.
+    const cs = this.shown;
+    const geom = cs ? cs.geom : this.geom;
 
     input.drawBackdrop(g);
     input.drawFarSpace(g);
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob);
-    g.drawImage(this.crust, 0, layerBob);
-    g.drawImage(this.land, 0, layerBob);
+    g.drawImage(cs ? cs.crust : this.crust, 0, layerBob);
+    g.drawImage(cs ? cs.land : this.land, 0, layerBob);
     const fluids = this.fluidImage;
     if (fluids) {
       fluids.data.fill(0);
-      paintFluids(fluids, this.geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist);
+      paintFluids(fluids, geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist);
       const fluidG = this.fluidScratch.getContext('2d');
       if (fluidG) {
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
         fluids.data.fill(0);
-        paintDayNight(fluids, this.geom, sunAzimuth, layerBob);
+        paintDayNight(fluids, geom, sunAzimuth, layerBob);
         if (this.weatherSim && this.weatherPainter) {
           // At most 4 steps per frame: a refocused tab hands us seconds of dt.
           // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
@@ -2016,8 +2350,10 @@ export class HabitableCutawayEngine {
             this.weatherSim.step(WX_DT);
             this.weatherPainter.onStep(this.weatherSim);
           }
-          this.weatherPainter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
-          this.weatherPainter.paintShadows(fluids, sunAzimuth, atmoHazeAmount(input.viewZoom ?? 1));
+          if (!cs) {
+            this.weatherPainter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
+            this.weatherPainter.paintShadows(fluids, sunAzimuth, atmoHazeAmount(input.viewZoom ?? 1));
+          }
         }
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
@@ -2026,7 +2362,7 @@ export class HabitableCutawayEngine {
     input.drawSurfaceOverlays(g);
     const haze = atmoHazeAmount(input.viewZoom ?? 1);
     const weatherG = this.weatherG, weatherImage = this.weatherImage;
-    if (this.weatherPainter && weatherImage && weatherG && haze > 0.01) {
+    if (!cs && this.weatherPainter && weatherImage && weatherG && haze > 0.01) {
       // putImageData-only, like the atmosphere canvas.
       weatherImage.data.fill(0);
       this.weatherPainter.paintClouds(weatherImage, sunAzimuth, haze);
@@ -2042,7 +2378,7 @@ export class HabitableCutawayEngine {
       const gasTint = this.planetType === 'gas' && this.gasBands.length
         ? averageBands(this.gasBands)
         : undefined;
-      paintAtmosphere(atmo, this.geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air);
+      paintAtmosphere(atmo, geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air);
       atmoG.putImageData(atmo, 0, 0);
       g.drawImage(this.atmoScratch, 0, 0);
     }
@@ -2050,6 +2386,7 @@ export class HabitableCutawayEngine {
     if (this.planetType === 'gas') this.drawGasRings(g, false, bob);
     input.drawNearMoons(g);
 
+    // Screen-space: from the BASE geometry, whatever the camera.
     const vig = g.createRadialGradient(
       this.geom.cx, this.geom.cyBody + bob, this.geom.rx * 0.7,
       this.geom.cx, this.geom.cyBody + bob, Math.max(this.w, this.h) * 0.75,

@@ -259,5 +259,301 @@ console.log('\n  SUB-CELL (elevationAt is continuous and interpolates the same d
   }
 }
 
+console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a camera)');
+{
+  const H = await import('./zoomHarness');
+  const { bakeEngine, PixelCanvas, liftOf, smoothElevation, MAX_LIFT } = H;
+  const Eng = await import('../src/rendering/HabitableCutawayEngine');
+  const { classifyBiome, isWater } = await import('../src/simulation/PlanetGrid');
+  type PC = InstanceType<typeof PixelCanvas>;
+  const alphaAt = (c: PC, x: number, y: number) =>
+    (x < 0 || y < 0 || x >= c.width || y >= c.height) ? 0 : c.data[(y * c.width + x) * 4 + 3];
+  const rgbaAt = (c: PC, x: number, y: number) => {
+    const o = (y * c.width + x) * 4; return `${c.data[o]},${c.data[o + 1]},${c.data[o + 2]},${c.data[o + 3]}`;
+  };
+  const firstRow = (c: PC, x: number) => { for (let y = 0; y < c.height; y++) if (alphaAt(c, x, y)) return y; return -1; };
+  const lastRow = (c: PC, x: number) => { for (let y = c.height - 1; y >= 0; y--) if (alphaAt(c, x, y)) return y; return -1; };
+  const camSetOf = (e: any) => e.camSet as { crust: PC; land: PC; geom: any; opts: any; pick: Int32Array };
+  const fresh = () => new PixelCanvas(VW, VH);
+  const ctx = (c: PC) => c.getContext() as unknown as CanvasRenderingContext2D;
+  const tierMin: Record<number, number> = { 18: 0.80, 13: 0.70, 9: 0.62, 6: 0.54 };
+
+  // ── relief scales ────────────────────────────────────────────────────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const e = B.engine as any, g = B.engine.geom, land1 = e.land as PC;
+    // Fixture (independent of the painter): nearest-cell tier of each face pixel.
+    const faceAt = (gm: any, px: number, py: number) => {
+      const dx = (px - gm.cx) / gm.rx, dy = (py - gm.cyTop) / gm.ry, r = Math.hypot(dx, dy);
+      return r > 1 ? null : { dx, dy, r };
+    };
+    const tier1 = (px: number, py: number) => {
+      const f = faceAt(g, px, py); if (!f) return -1;
+      const gp = B.discToGrid(f.dx, f.dy); if (!gp) return -1;
+      const cell = B.grid[gp.row][gp.col];
+      if (isWater(classifyBiome(cell.elevation - B.rim(f.r), cell.moisture, cell.temperature, 'ocean'))) return -1;
+      return liftOf(smoothElevation(B.grid, gp.row, gp.col) - B.rim(f.r));
+    };
+    let maxTier = 0;
+    for (let py = g.cyTop - g.ry; py <= g.cyTop + g.ry; py++)
+      for (let px = g.cx - g.rx; px <= g.cx + g.rx; px++) maxTier = Math.max(maxTier, tier1(px, py));
+    let best: { X: number; Yf: number; T: number } | null = null;
+    for (let X = g.cx - g.rx; X <= g.cx + g.rx; X++) {
+      let Yf = -1;
+      for (let py = g.cyTop - g.ry; py <= g.cyTop + g.ry; py++) if (tier1(X, py) === maxTier) { Yf = py; break; }
+      if (Yf < 0) continue;
+      const T = firstRow(land1, X);
+      if (Yf - T === maxTier && (!best || T < best.T)) best = { X, Yf, T };
+    }
+    if (!best) { check('relief: found a peak column at zoom 1', false, `maxTier ${maxTier}`); }
+    else {
+      const lift1 = best.Yf - best.T;
+      const cam = { zoom: 4, fx: best.X, fy: best.Yf - Math.round(maxTier / 2) };
+      B.engine.setCamera(cam);
+      const cs = camSetOf(e);
+      const measure = (land: PC, gm: any) => {
+        const sx = (best!.X - cam.fx) * 4 + VW / 2;
+        let Yf4 = -1;
+        for (let sy = 0; sy < VH; sy++) {
+          const f = faceAt(gm, sx, sy); if (!f) continue;
+          const el = B.elevationAt(f.dx, f.dy); if (el === null) continue;
+          if (el - B.rim(f.r) > tierMin[maxTier]) { Yf4 = sy; break; }
+        }
+        return Yf4 - firstRow(land, sx);
+      };
+      const lift4 = measure(cs.land, cs.geom);
+      check('relief: the peak lift at zoom 4 is 4x zoom 1 (+/- 1 px)', Math.abs(lift4 - 4 * lift1) <= 1,
+        `peak x ${best.X}: zoom-1 lift ${lift1}, zoom-4 lift ${lift4}, ratio ${(lift4 / lift1).toFixed(3)}`);
+      // Control: the same camera bake with the lift wrapper disabled (base liftOf / maxLift).
+      const c = fresh();
+      Eng.paintCutawaySurface(ctx(c), { ...cs.opts, liftOf, maxLift: MAX_LIFT,
+        occupancy: new Uint8Array(VW * VH), pick: new Int32Array(VW * VH) });
+      const liftC = measure(c, cs.geom);
+      check('  control: unwrapped liftOf fails the 4x bar', !(Math.abs(liftC - 4 * lift1) <= 1), `lift ${liftC}`);
+    }
+  }
+
+  // ── crust depth scales ───────────────────────────────────────────────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const e = B.engine as any, g = B.engine.geom, crust1 = e.crust as PC;
+    const X0 = Math.ceil(g.cx - g.rx), X1 = Math.floor(g.cx + g.rx);
+    let win: { a: number; b: number; top: number; bot: number } | null = null;
+    for (const W of [20, 12, 8]) {
+      for (let a = X0 + 2; a + W - 1 <= X1 - 2 && !win; a++) {
+        let top = 1e9, bot = -1, ok = true;
+        for (let X = a; X < a + W; X++) {
+          const f = firstRow(crust1, X), l = lastRow(crust1, X);
+          if (f < 0) { ok = false; break; }
+          top = Math.min(top, f); bot = Math.max(bot, l);
+        }
+        if (ok && bot - top + 1 <= 76) win = { a, b: a + W - 1, top, bot };
+      }
+      if (win) break;
+    }
+    if (!win) check('crust: found a window that fits at zoom 4', false, '');
+    else {
+      const cam = { zoom: 4, fx: Math.round((win.a + win.b) / 2), fy: Math.round((win.top + win.bot) / 2) };
+      B.engine.setCamera(cam);
+      const cs = camSetOf(e);
+      const ext = (c: PC, X: number) => { const f = firstRow(c, X), l = lastRow(c, X); return f < 0 ? 0 : l - f + 1; };
+      const run = (c: PC) => {
+        let s1 = 0, s4 = 0, worst = 0, n = 0;
+        for (let X = win!.a; X <= win!.b; X++) {
+          const sx = (X - cam.fx) * 4 + VW / 2;
+          const e1 = ext(crust1, X), e4 = ext(c, sx);
+          s1 += e1; s4 += e4; n++; worst = Math.max(worst, Math.abs(e4 - 4 * e1));
+        }
+        return { m1: s1 / n, m4: s4 / n, worst, n };
+      };
+      const r = run(cs.crust);
+      check('crust: mean column depth at zoom 4 is 4x zoom 1 (+/- 1 px)', Math.abs(r.m4 - 4 * r.m1) <= 1,
+        `${r.n} columns x ${win.a}-${win.b}: zoom-1 ${r.m1.toFixed(2)}, zoom-4 ${r.m4.toFixed(2)}, ratio ${(r.m4 / r.m1).toFixed(3)}, worst column |d| ${r.worst}`);
+      // Control: the geometry bypass (no `wall` in the opts -> habitableGeom's base wall).
+      const c = fresh();
+      Eng.paintCutawayCrust(ctx(c), { ...cs.opts, wall: undefined, occupancy: new Uint8Array(VW * VH) });
+      const rc = run(c);
+      check('  control: base-wall fallback fails the 4x bar', !(Math.abs(rc.m4 - 4 * rc.m1) <= 1), `zoom-4 ${rc.m4.toFixed(2)} vs ${(4 * rc.m1).toFixed(2)}`);
+    }
+  }
+
+  // ── world-anchored hashes ────────────────────────────────────────────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const e = B.engine as any, g = B.engine.geom;
+    const z = 2;
+    const layersAt = (cam: { zoom: number; fx: number; fy: number }, broken: boolean) => {
+      B.engine.setCamera(cam);
+      const cs = camSetOf(e);
+      if (!broken) return { land: cs.land, crust: cs.crust };
+      // Control: the camera bake with its world mapping replaced by identity,
+      // i.e. hashes keyed on screen px (the pre-change keying).
+      const id = { zoom: 1, fx: VW / 2, fy: VH / 2 };
+      const land = fresh(), crust = fresh();
+      Eng.paintCutawayCrust(ctx(crust), { ...cs.opts, camera: id, occupancy: new Uint8Array(VW * VH) });
+      Eng.paintCutawaySurface(ctx(land), { ...cs.opts, camera: id, occupancy: new Uint8Array(VW * VH), pick: new Int32Array(VW * VH) });
+      return { land, crust };
+    };
+    const compare = (layer: 'land' | 'crust', A: any, Bc: any, broken: boolean) => {
+      const la = layersAt(A, broken)[layer].data.slice(), lb = layersAt(Bc, broken)[layer].data.slice();
+      const ca = { width: VW, height: VH, data: la } as unknown as PC, cb = { width: VW, height: VH, data: lb } as unknown as PC;
+      let s = 99, n = 0, same = 0, tries = 0;
+      const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+      while (n < 50 && tries++ < 200000) {
+        const wx = Math.floor(g.cx - g.rx + rnd() * 2 * g.rx), wy = Math.floor(g.cyTop - g.ry + rnd() * (2 * g.ry + g.wall + 60));
+        const pa = worldToScreen(A, VW, VH, wx, wy), pb = worldToScreen(Bc, VW, VH, wx, wy);
+        const inb = (p: { x: number; y: number }) => p.x >= 25 && p.y >= 25 && p.x < VW - 25 && p.y < VH - 25;
+        if (!inb(pa) || !inb(pb)) continue;
+        if (!alphaAt(ca, pa.x, pa.y) || !alphaAt(cb, pb.x, pb.y)) continue;
+        n++;
+        if (rgbaAt(ca, pa.x, pa.y) === rgbaAt(cb, pb.x, pb.y)) same++;
+      }
+      return { n, same };
+    };
+    const Af = { zoom: z, fx: g.cx - 20, fy: g.cyTop }, Bf = { zoom: z, fx: g.cx + 15, fy: g.cyTop + 10 };
+    const Ac = { zoom: z, fx: g.cx - 20, fy: g.cyTop + g.ry + 20 }, Bcr = { zoom: z, fx: g.cx + 10, fy: g.cyTop + g.ry + 30 };
+    const sf = compare('land', Af, Bf, false), sc = compare('crust', Ac, Bcr, false);
+    check('world-anchored: surface colour at 50 world points is the same after a pan', sf.n === 50 && sf.same === sf.n, `${sf.same}/${sf.n} identical`);
+    check('world-anchored: crust colour at 50 world points is the same after a pan', sc.n === 50 && sc.same === sc.n, `${sc.same}/${sc.n} identical`);
+    const cf = compare('land', Af, Bf, true), cc = compare('crust', Ac, Bcr, true);
+    check('  control: px-keyed surface grain differs after a pan', cf.same < cf.n, `${cf.same}/${cf.n} identical`);
+    check('  control: px-keyed crust differs after a pan', cc.same < cc.n, `${cc.same}/${cc.n} identical`);
+  }
+
+  // ── pick agrees ──────────────────────────────────────────────────────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const eng = B.engine, g = eng.geom;
+    const pick1 = eng.pick.slice();
+    const id1 = (x: number, y: number) => pick1[y * VW + x];
+    // "Ignoring points within 1 px (zoom 1) of a cell boundary". A grid cell is
+    // ~1.6 x 0.9 px at zoom 1, so every pixel is within 1 px of a cell-id change
+    // in the pick buffer (a literal screen-space filter keeps 0 of ~200k
+    // candidates, measured). What a camera legitimately re-resolves is the
+    // STRUCTURE boundary in face space: at a terrace lip or a coast, which face
+    // row owns a pixel depends on sub-pixel sampling (the zoomed bake samples
+    // face rows between the base rows, and sub-cell elevation moves the edge).
+    // So a point is a boundary point when the face samples that draw within
+    // 1 px of it (rows every 1/4 px, columns +/- 1 px, nearest-cell AND
+    // sub-cell) do not all share one land/water class and lift tier.
+    const { classifyBiome: cls, isWater: wat } = await import('../src/simulation/PlanetGrid');
+    const sample = (x: number, t: number, sub: boolean): string | null => {
+      const dx = (x - g.cx) / g.rx, dy = (t - g.cyTop) / g.ry, r = Math.hypot(dx, dy);
+      if (r > 1) return null;
+      const gp = B.discToGrid(dx, dy); if (!gp) return null;
+      const cell = B.grid[gp.row][gp.col], rim = B.rim(r);
+      let biome = cls(cell.elevation - rim, cell.moisture, cell.temperature, 'ocean');
+      let e = smoothElevation(B.grid, gp.row, gp.col);
+      if (sub) {
+        const f = B.elevationAt(dx, dy);
+        if (f !== null) {
+          const bf = cls(f - rim, cell.moisture, cell.temperature, 'ocean');
+          if (wat(bf) || wat(biome)) biome = bf;
+          e = f;
+        }
+      }
+      return wat(biome) ? 'w' : `l${liftOf(e - rim)}`;
+    };
+    const nearBoundary = (wx: number, wy: number) => {
+      // Samples that draw within 1 px of W, plus every sample up to 1 px in
+      // front of the nearest of them (a terrace lip or coast just in front of
+      // the owning row decides, at sub-pixel resolution, which row owns W).
+      const vals: Array<[number, string, number]> = [];
+      let tMax = -Infinity;
+      for (let x = wx - 1; x <= wx + 1; x++) for (const sub of [false, true])
+        for (let t = wy - 1; t <= wy + MAX_LIFT + 1; t += 0.25) {
+          const v = sample(x, t, sub); if (v === null) continue;
+          const top = v === 'w' ? t : t - Number(v.slice(1));
+          vals.push([t, v, top]);
+          if (top <= wy + 1 && v !== 'w') tMax = Math.max(tMax, t);
+        }
+      const front = Math.max(wy + 1, tMax + 1);
+      let seen: string | null = null;
+      for (const [t, v, top] of vals) {
+        if (top > wy + 1 && t > front) continue;
+        if (seen === null) seen = v; else if (v !== seen) return true;
+      }
+      return false;
+    };
+    let s = 4242;
+    const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    const cellOf = (id: number) => id > 0 ? { row: Math.floor((id - 1) / 256), col: (id - 1) % 256 } : null;
+    let skipped = 0;
+    for (const z of [2, 4]) {
+      let n = 0, agree = 0, ctrlAgree = 0;
+      for (let camI = 0; camI < 5; camI++) {
+        const cam = { zoom: z, fx: Math.round((g.cx + (rnd() - 0.5) * g.rx) * z) / z, fy: Math.round((g.cyTop + (rnd() - 0.5) * g.ry) * z) / z };
+        eng.setCamera(cam); eng.showCamera = true;
+        let got = 0, tries = 0;
+        while (got < 40 && tries++ < 100000) {
+          const p = { x: Math.floor(rnd() * VW), y: Math.floor(rnd() * VH) };
+          const w = screenToWorld(cam, VW, VH, p.x, p.y);
+          const wx = Math.round(w.x), wy = Math.round(w.y);
+          if (wx < 1 || wy < 1 || wx >= VW - 1 || wy >= VH - 1 || !id1(wx, wy)) continue;
+          if (nearBoundary(wx, wy)) { skipped++; continue; }
+          const sp = worldToScreen(cam, VW, VH, wx, wy);
+          if (sp.x < 0 || sp.y < 0 || sp.x >= VW || sp.y >= VH) continue;
+          got++; n++;
+          const want = JSON.stringify(cellOf(id1(wx, wy)));
+          const seenCell = JSON.stringify(eng.hitTest(Math.round(sp.x), Math.round(sp.y)));
+          if (seenCell === want) agree++;
+          else if (process.env.PICKDBG) console.log("   miss", z, wx, wy, want, seenCell);
+          // Control: the same point looked up without mapping through the camera.
+          if (JSON.stringify(eng.hitTest(wx, wy)) === want) ctrlAgree++;
+        }
+        eng.showCamera = false;
+      }
+      check(`pick at zoom ${z} returns the zoom-1 cell at 200 world points`, n === 200 && agree === n,
+        `${agree}/${n} agree (${skipped} relief/coast boundary candidates skipped)`);
+      check(`  control: zoom ${z} pick without the camera mapping disagrees`, ctrlAgree < n, `${ctrlAgree}/${n} agree`);
+    }
+  }
+
+  // ── bounded bakes ────────────────────────────────────────────────────────
+  {
+    const it = ((globalThis as any).__zoomIters = {} as Record<string, number>);
+    const B = bakeEngine('ocean', 7);
+    const id = { ...it };
+    const bound = VW * (VH + MAX_LIFT * 4);
+    const g0 = B.engine.geom;
+    B.engine.setCamera({ zoom: 4, fx: g0.cx, fy: g0.cyTop + g0.ry + Math.round(g0.wall / 2) });
+    const crust4 = it.crust;
+    B.engine.setCamera({ zoom: 4, fx: g0.cx, fy: g0.cyTop });
+    const z4 = { ...it, crust: crust4 };
+    for (const k of ['surface', 'crust', 'shore']) {
+      check(`bounded: ${k} iterations at zoom 4 <= VW*(VH+maxLift*4)`, z4[k] > 0 && z4[k] <= bound,
+        `zoom 4 ${z4[k]}, bound ${bound}, zoom 1 ${id[k]} (x${(z4[k] / id[k]).toFixed(2)} of zoom 1)`);
+    }
+    // Control: the same zoom-4 surface bake on a canvas big enough to hold the
+    // whole camera geometry — i.e. the loop bounded by the geometry, not the view.
+    const cs = camSetOf(B.engine as any), gm = cs.geom;
+    const W = Math.ceil(2 * gm.rx) + 1, Hh = Math.ceil(2 * gm.ry) + 1 + cs.opts.maxLift;
+    const big = new PixelCanvas(W, Hh);
+    Eng.paintCutawaySurface(ctx(big), { ...cs.opts, w: W, h: Hh, cx: gm.rx, cyTop: gm.ry + cs.opts.maxLift,
+      occupancy: new Uint8Array(W * Hh), pick: new Int32Array(W * Hh), decalSites: [] });
+    check('  control: an unclamped zoom-4 surface loop exceeds the bound', it.surface > bound, `${it.surface} > ${bound}`);
+    delete (globalThis as any).__zoomIters;
+  }
+
+  // ── state kept ───────────────────────────────────────────────────────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const e = B.engine as any;
+    const noop = () => {};
+    const frameC = fresh();
+    for (let i = 0; i < 3; i++) B.engine.frame({ g: ctx(frameC), dt: 0.5, elapsed: 10 + i, sunAzimuth: 0.6, viewZoom: 1,
+      drawBackdrop: noop, drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop });
+    const sim = e.weatherSim, cloud = Float32Array.from(sim.cloud), elapsed = e.elapsed;
+    B.engine.setCamera({ zoom: 3, fx: 200, fy: 150 });
+    const same = e.weatherSim === sim && e.elapsed === elapsed && sim.cloud.every((v: number, i: number) => v === cloud[i]);
+    check('state: setCamera keeps the weather sim, its clouds and elapsed', same && e.camSet !== null, `sim kept ${e.weatherSim === sim}, elapsed ${e.elapsed}`);
+    B.engine.bake({ w: VW, h: VH, seed: 7, grid: B.grid, planetType: 'ocean', discToGrid: B.discToGrid, rimFalloff: B.rim,
+      liftOf, smoothElevation, elevationAt: B.elevationAt, maxLift: MAX_LIFT, lush: 0.6, decalSeed: 7, decalAtlas: null,
+      weather: (e.weatherPainter as any)?.climate ?? null });
+    check('  control: bake() replaces the sim and resets the camera', e.weatherSim !== sim && e.camSet === null && isIdentity(B.engine.camera, VW, VH),
+      `sim replaced ${e.weatherSim !== sim}, camera ${JSON.stringify(B.engine.camera)}`);
+  }
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

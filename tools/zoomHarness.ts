@@ -299,6 +299,46 @@ export const ELAPSED = 10, DT = 1 / 60, SUN_AZ = 0.6;
 export interface RenderOpts {
   /** Added to rimFalloff — the identity check's control (default 0). */
   rimPerturb?: number;
+  /**
+   * Render through this camera: `engine.setCamera(cam)` and `showCamera = true`
+   * after the identity bake, so every returned layer is the CAMERA set
+   * (crust/land from the camera canvases; fluids/dayNight painted on the camera
+   * geometry, occupancy and shore distance). Omitted: the identity set.
+   */
+  cam?: import('../src/rendering/ZoomCamera').Camera;
+}
+
+/** The fixtures behind one bake, for checks that need more than pixels. */
+export interface BakedEngine {
+  engine: InstanceType<typeof HabitableCutawayEngine>;
+  grid: Grid;
+  focus: { lat: number; lon: number };
+  discToGrid: ReturnType<typeof makeDiscToGrid>;
+  elevationAt: ReturnType<typeof makeElevationAt>;
+  rim: (r: number) => number;
+}
+
+/** Bake the REAL engine at the identity view with the standard fixtures (see header). */
+export function bakeEngine(type: string, seed: number, ro: RenderOpts = {}): BakedEngine {
+  const planetType = type as EngineType;
+  const grid = generatePlanetGrid(type, seed * 7777, null, null);
+  const focus = computeFocus(grid);
+  const discToGrid = makeDiscToGrid(focus.lat, focus.lon);
+  const perturb = ro.rimPerturb ?? 0;
+  const rim = perturb === 0 ? rimFalloff : (r: number) => rimFalloff(r) + perturb;
+  // Passed as the renderer passes it; dormant at identity (no cameraZoom, Ruling 11).
+  const elevationAt = makeElevationAt(grid, focus.lat, focus.lon);
+  const engine = new HabitableCutawayEngine();
+  engine.bake({
+    w: VW, h: VH, seed, grid, planetType,
+    discToGrid, rimFalloff: rim, liftOf, smoothElevation, elevationAt,
+    maxLift: MAX_LIFT, lush: 0.6, decalSeed: seed, decalAtlas: null,
+    weather: type === 'gas' ? null : buildClimate({
+      grid, planetType: type, seed, lush: 0.6, extinctionPressure: 0.1,
+      oxygenLevel: 0.6, civLevel: 0, inNebula: false,
+    }),
+  });
+  return { engine, grid, focus, discToGrid, elevationAt, rim };
 }
 
 export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): Record<string, Uint8ClampedArray> {
@@ -307,25 +347,11 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
   Math.random = () => { calls++; s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
   try {
     const planetType = type as EngineType;
-    const grid = generatePlanetGrid(type, seed * 7777, null, null);
-    const focus = computeFocus(grid);
-    const discToGrid = makeDiscToGrid(focus.lat, focus.lon);
-
-    const perturb = ro.rimPerturb ?? 0;
-    const rim = perturb === 0 ? rimFalloff : (r: number) => rimFalloff(r) + perturb;
-    // Passed as the renderer passes it; dormant at identity (no cameraZoom, Ruling 11).
-    const elevationAt = makeElevationAt(grid, focus.lat, focus.lon);
-
-    const engine = new HabitableCutawayEngine();
-    engine.bake({
-      w: VW, h: VH, seed, grid, planetType,
-      discToGrid, rimFalloff: rim, liftOf, smoothElevation, elevationAt,
-      maxLift: MAX_LIFT, lush: 0.6, decalSeed: seed, decalAtlas: null,
-      weather: type === 'gas' ? null : buildClimate({
-        grid, planetType: type, seed, lush: 0.6, extinctionPressure: 0.1,
-        oxygenLevel: 0.6, civLevel: 0, inNebula: false,
-      }),
-    });
+    const { engine } = bakeEngine(type, seed, ro);
+    if (ro.cam) {
+      engine.setCamera(ro.cam);
+      engine.showCamera = true;
+    }
 
     const frameCanvas = new PixelCanvas(VW, VH);
     const noop = () => {};
@@ -337,7 +363,8 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
     });
 
     const e = engine as any;
-    const geom = engine.geom;
+    const cs = ro.cam ? e.camSet : null;
+    const geom = cs ? engine.activeGeom : engine.geom;
 
     const fluids = blank(VW, VH);
     paintFluids(fluids as unknown as ImageData, geom, engine.occupancy, planetType, ELAPSED, 0, engine.shoreDist);
@@ -359,8 +386,8 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
     bakeBackdrop(backdrop, { seed: 7, vw: VW });
 
     return {
-      crust: (e.crust as PixelCanvas).data.slice(),
-      land: (e.land as PixelCanvas).data.slice(),
+      crust: ((cs ? cs.crust : e.crust) as PixelCanvas).data.slice(),
+      land: ((cs ? cs.land : e.land) as PixelCanvas).data.slice(),
       fluids: fluids.data,
       dayNight: dayNight.data,
       shadows: (e.fluidImage as { data: Uint8ClampedArray }).data.slice(),
