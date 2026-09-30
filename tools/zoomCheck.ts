@@ -519,13 +519,13 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
     };
     const cellOf = (id: number) => id > 0 ? { row: Math.floor((id - 1) / 256), col: (id - 1) % 256 } : null;
     /**
-     * 20 cameras at zoom z (fixed-seed draws). Filtered: 10 points per camera
-     * off every relief/coast boundary must match exactly (200). Unfiltered
-     * (Ruling 15): the first 40 candidates per camera, boundary or not (800),
-     * pooled: >= 90% exact, and every miss is (a) a face-space boundary point,
-     * (b) within `maxLift` expressed in face rows of the zoom-1 cell — at a
-     * cliff the exposed terrain can legitimately be up to the lift height
-     * behind — and (c) within +/- 1 column.
+     * 20 cameras at zoom z (fixed-seed draws). Interiors: 10 points per camera
+     * off every relief/coast boundary must match exactly (200). Boundaries
+     * (Ruling 16): the first 40 candidates per camera, boundary or not (800);
+     * every miss is (a) a face-space boundary point, (b) within `maxLift`
+     * expressed in face rows of the zoom-1 cell — at a cliff the exposed
+     * terrain can legitimately be up to the lift height behind — and (c) in
+     * the same screen column +/- 1 px. The pooled exact rate is printed only.
      * `broken`: the camera surface re-painted with the base (unwrapped) liftOf.
      */
     const toF = H.makeDiscToGridF(B.focus.lat, B.focus.lon);
@@ -541,7 +541,7 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
       let s = 4242 + z;
       const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
       let n = 0, agree = 0, ctrlAgree = 0, skipped = 0, un = 0, unAgree = 0, unBad = 0, worstRows = 0, worstCols = 0, offBoundary = 0;
-      let worstRatio = 0, worstBound = 0, outsideFaceCols = 0;
+      let worstRatio = 0, worstBound = 0, outsideFaceCols = 0, overBound = 0;
       for (let camI = 0; camI < 20; camI++) {
         const cam = { zoom: z, fx: Math.round((g.cx + (rnd() - 0.5) * g.rx) * z) / z, fy: Math.round((g.cyTop + (rnd() - 0.5) * g.ry) * z) / z };
         eng.setCamera(cam);
@@ -572,16 +572,18 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
               worstRows = Math.max(worstRows, dr); worstCols = Math.max(worstCols, dc);
               if (dr / Math.max(1, bound) > worstRatio) { worstRatio = dr / Math.max(1, bound); worstBound = bound; }
               if (!nb) offBoundary++;
-              if (!(nb && dr <= bound && dc <= 1)) unBad++;
-              // Informational: is the cell one the zoom-1 projection samples in the
-              // same SCREEN column neighbourhood (face columns +/- 1 px, over the
-              // lift span)? Grid columns converge toward the grid pole and along
-              // steep face columns, so +/- 1 GRID column is stricter than that.
+              // (c) same SCREEN column +/- 1 px: the cell is one the zoom-1
+              // projection samples in face columns wx +/- 1 over the lift span.
+              // (The pick is written per screen column; grid columns converge
+              // near the grid pole, so +/- 1 GRID column is the wrong measure.)
               const set = new Set<number>();
               for (let x = wx - 1; x <= wx + 1; x++) for (let t = wy - 1; t <= wy + MAX_LIFT + 1; t += 0.25) {
                 const gp = B.discToGrid((x - g.cx) / g.rx, (t - g.cyTop) / g.ry); if (gp) set.add(gp.row * 256 + gp.col + 1);
               }
-              if (!set.has(seenId)) outsideFaceCols++;
+              const inCols = set.has(seenId);
+              if (!inCols) outsideFaceCols++;
+              if (dr > bound) overBound++;
+              if (!(nb && dr <= bound && inCols)) unBad++;
             }
           }
           if (nb) { skipped++; continue; }
@@ -593,22 +595,22 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
         }
         eng.showCamera = false;
       }
-      return { n, agree, ctrlAgree, skipped, un, unAgree, unBad, worstRows, worstCols, offBoundary, worstRatio, worstBound, outsideFaceCols };
+      return { n, agree, ctrlAgree, skipped, un, unAgree, unBad, worstRows, worstCols, offBoundary, worstRatio, worstBound, outsideFaceCols, overBound };
     };
     for (const z of [2, 4]) {
       const r = runPick(z, false);
       check(`pick at zoom ${z} returns the zoom-1 cell at 200 world points`, r.n === 200 && r.agree === r.n,
         `${r.agree}/${r.n} agree (${r.skipped} relief/coast boundary candidates skipped)`);
       const unDetail = (q: typeof r) =>
-        `${q.unAgree}/${q.un} exact (${(100 * q.unAgree / q.un).toFixed(1)}%); ${q.un - q.unAgree} misses, ${q.offBoundary} off a boundary, ${q.unBad} failing (a)-(c); worst ${q.worstRows} rows, ${q.worstCols} cols, worst row/bound ${q.worstRatio.toFixed(2)} (bound ${q.worstBound}); ${q.outsideFaceCols} misses outside the zoom-1 face-column samples`;
-      check(`pick at zoom ${z}, unfiltered (Ruling 15): >= 90% exact over 800, misses on a boundary within maxLift rows, +/- 1 col`,
-        r.un === 800 && r.unAgree / r.un >= 0.9 && r.unBad === 0, unDetail(r));
+        `pooled ${q.unAgree}/${q.un} exact (${(100 * q.unAgree / q.un).toFixed(1)}%, info); ${q.un - q.unAgree} misses: ${q.offBoundary} off a boundary, ${q.overBound} beyond the row bound, ${q.outsideFaceCols} outside the screen column +/- 1 px -> ${q.unBad} failing; worst row/bound ${q.worstRatio.toFixed(2)} (bound ${q.worstBound})`;
+      check(`pick at zoom ${z}, unfiltered (Ruling 16): every miss on a boundary, within the lift rows, same screen column`,
+        r.un === 800 && r.unBad === 0, unDetail(r));
       check(`  control: zoom ${z} pick without the camera mapping disagrees`, r.ctrlAgree < r.n, `${r.ctrlAgree}/${r.n} agree`);
       const b = runPick(z, true);
       check(`  control: zoom ${z} pick with the unwrapped liftOf fails the exact bar`, !(b.n === 200 && b.agree === b.n),
         `${b.agree}/${b.n} agree`);
-      check(`  control: zoom ${z} pick with the unwrapped liftOf fails the Ruling 15 bar`,
-        !(b.un === 800 && b.unAgree / b.un >= 0.9 && b.unBad === 0), unDetail(b));
+      check(`  control: zoom ${z} pick with the unwrapped liftOf fails the Ruling 16 bar`,
+        !(b.un === 800 && b.unBad === 0), unDetail(b));
     }
   }
 
