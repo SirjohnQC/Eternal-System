@@ -344,7 +344,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   const frameCtx = frameCanvas.getContext() as RecordingCtx;
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
-    dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
+    dt: 1 / 60, elapsed: 1, drawBackdrop: () => {},
     drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
@@ -355,7 +355,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   const imageAllocations = frameCtx.createImageDataCalls;
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
-    dt: 1 / 60, elapsed: 1.1, bg: makeCanvas(VW, VH),
+    dt: 1 / 60, elapsed: 1.1, drawBackdrop: () => {},
     drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('frame reuses live ImageData', frameCtx.createImageDataCalls === imageAllocations,
@@ -371,7 +371,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
 
     // Review focus 1: a huge dt (tab refocused) runs at most 4 steps.
     const t0 = wx.weatherSim?.time ?? 0;
-    engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 30, elapsed: 40, bg: makeCanvas(VW, VH),
+    engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 30, elapsed: 40, drawBackdrop: () => {},
       drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
     const ran = Math.round(((wx.weatherSim?.time ?? 0) - t0) / 0.25);
     check('refocus runs at most 4 sim steps', ran >= 1 && ran <= 4, `${ran} steps`);
@@ -386,10 +386,20 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     const applied = wx.weatherSim?.climate === next && wx.weatherPainter?.climate === next;
     check('climate update keeps the sky', kept && applied, `sky kept ${kept}, sources applied ${applied}`);
 
+    // Seasons: the bake's sunLat reaches the sim BEFORE warm-up, and the frame's after.
+    engine.bake({ w: VW, h: VH, seed: opts.seed, grid, planetType, discToGrid, rimFalloff, liftOf, smoothElevation,
+      maxLift: MAX_LIFT, lush: 0.6, sunLat: 0.4,
+      weather: buildClimate({ grid, planetType, seed: 0xbeef, lush: 0.6, extinctionPressure: 0.1, oxygenLevel: 0.6, civLevel: 0, inNebula: false }) } as any);
+    const bakedLat = wx.weatherSim?.sunLat;
+    engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 1 / 60, elapsed: 60, sunLat: -0.3,
+      drawBackdrop: () => {}, drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
+    check('seasons reach the weather sim', bakedLat === 0.4 && wx.weatherSim?.sunLat === -0.3,
+      `after bake ${bakedLat}, after frame ${wx.weatherSim?.sunLat}`);
+
     // The sim's sun is the one on screen: azimuth 0 lights the +x limb, so the
     // subsolar longitude is the grid longitude seen near disc (+0.9, 0).
     const sunAt = (az: number) => {
-      engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 1 / 60, elapsed: 50, bg: makeCanvas(VW, VH),
+      engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 1 / 60, elapsed: 50, drawBackdrop: () => {},
         sunAzimuth: az, drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
       return wx.weatherSim.sunLon as number;
     };
@@ -406,7 +416,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     const limbOf = (air: unknown) => {
       engine.frame({
         g: frameCtx as unknown as CanvasRenderingContext2D,
-        dt: 1 / 60, elapsed: 1.2, bg: makeCanvas(VW, VH),
+        dt: 1 / 60, elapsed: 1.2, drawBackdrop: () => {},
         drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
         air,
       } as any);
@@ -765,7 +775,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
 
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
-    dt: 1 / 60, elapsed: Math.PI / 1.4, bg: makeCanvas(VW, VH),
+    dt: 1 / 60, elapsed: Math.PI / 1.4, drawBackdrop: () => {},
     drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check('hitTest stays on planted surface',
@@ -835,7 +845,7 @@ for (const planetType of SMOKE_TYPES) {
   const frameCtx = frameCanvas.getContext() as RecordingCtx;
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
-    dt: 1 / 60, elapsed: 1, bg: makeCanvas(VW, VH),
+    dt: 1 / 60, elapsed: 1, drawBackdrop: () => {},
     drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {},
   });
   check(`${planetType} frame composites`, frameCtx.putImageDataCalls === 0,
@@ -920,7 +930,7 @@ for (const planetType of SMOKE_TYPES) {
     extinctionPressure: 0.1, oxygenLevel: 0.6, civLevel: 0, inNebula: false });
   const noop = () => {};
   const frameIn = (f: number) => ({ g: makeCanvas(VW, VH).getContext(), dt: 1 / 60, elapsed: f / 60,
-    bg: makeCanvas(VW, VH), drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop }) as any;
+    drawBackdrop: () => {}, drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop }) as any;
 
   // Review focus 2: planet A's sky must not survive into planet B.
   const a = new HabitableCutawayEngine();

@@ -41,6 +41,7 @@ import {
 import type { ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut } from './weather/WeatherPainter';
+import { ELEV_LIGHT } from './sky/SunLight';
 //
 // COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
 // threshold (used at the reclassification site below), but it LIVES in
@@ -1376,7 +1377,7 @@ export function paintAtmosphere(
   const dens = chan.density;
   const d = img.data;
   const w = img.width, h = img.height;
-  const sunX = Math.cos(sunAzimuth);
+  const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
   const fade = chan.thicknessPx;
   // A constant-thickness ring reads as a geometric annulus — an outline rather
   // than a volume. Perturb it slowly around the limb; see WOBBLE_AMP.
@@ -1423,7 +1424,7 @@ export function paintAtmosphere(
       const inside = Math.max(0, rx - hit.distPx);
       const sigmaL = localFade * 1.15;
       const limb = Math.exp(-(inside * inside) / (2 * sigmaL * sigmaL)) * edge;
-      const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, 0.5 + hit.dx * sunX));
+      const lit = 0.55 + 0.45 * Math.max(0, Math.min(1, 0.5 + hit.dx * sunX + sunUp));
       const domeGlow  = (0.07 + limb * 0.52) * lit * intensity * dens;
       const faceGlow  = (0.03 + limb * 0.10) * lit * intensity * dens;
       const blend     = Math.max(0, Math.min(1, (hit.face - 0.82) / 0.36));
@@ -1462,14 +1463,15 @@ export function paintAtmosphere(
 }
 
 /**
- * Night veil on the pancake. `sunAzimuth` 0 lights the +x side; π flips it.
+ * Night veil on the pancake. See sky/SunLight: noon lights the whole face,
+ * midnight veils it, capped at NIGHT_MAX.
  */
 export function paintDayNight(
   img: ImageData, geom: HabitableGeom, sunAzimuth: number, layerBob: number,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
-  const sunX = Math.cos(sunAzimuth);
+  const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
   const d = img.data;
   const w = img.width, h = img.height;
   const y0 = Math.max(0, Math.floor(cy - ry));
@@ -1481,7 +1483,7 @@ export function paintDayNight(
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
       if (dx * dx + dy * dy > 1) continue;
-      const day = clamp01(0.38 + dx * sunX * 0.90);
+      const day = clamp01(0.38 + 0.9 * (dx * sunX + sunUp));   // sky/SunLight.sunLit, inlined
       const night = 1 - day;
       if (night < 0.06) continue;
       const o = (py * w + px) * 4;
@@ -1793,7 +1795,8 @@ export interface HabitableFrameInput {
   g: CanvasRenderingContext2D;
   dt: number;
   elapsed: number;
-  bg: HTMLCanvasElement;
+  /** Space behind everything; the host slides a panorama with the year. */
+  drawBackdrop: (g: CanvasRenderingContext2D) => void;
   drawFarSpace: (g: CanvasRenderingContext2D) => void;
   /** Drawn on the ground, under the weather: city lights, inhabitants. */
   drawSurfaceOverlays: (g: CanvasRenderingContext2D) => void;
@@ -1802,6 +1805,8 @@ export interface HabitableFrameInput {
   drawNearMoons: (g: CanvasRenderingContext2D) => void;
   /** Local day angle in radians; 0 lights the +x limb. */
   sunAzimuth?: number;
+  /** Subsolar latitude, radians (seasons). Omitted: 0. */
+  sunLat?: number;
   /** CSS camera zoom; atmosphere dissolves as this rises. */
   viewZoom?: number;
   /** This world's air. Omitted: the shipped per-type air. */
@@ -1856,7 +1861,7 @@ export class HabitableCutawayEngine {
   }
 
   bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
-    w: number; h: number; weather?: ClimateSources | null;
+    w: number; h: number; weather?: ClimateSources | null; sunLat?: number;
   }): void {
     this.w = Math.max(1, Math.round(opts.w));
     this.h = Math.max(1, Math.round(opts.h));
@@ -1907,6 +1912,7 @@ export class HabitableCutawayEngine {
         this.weatherEast = 1;
       }
       this.weatherSim = new WeatherSim(opts.weather);
+      this.weatherSim.sunLat = opts.sunLat ?? 0;   // before warm-up, or the first frames jump
       this.weatherSim.warmUp(WX_WARMUP);
       this.weatherPainter = new WeatherPainter(lut, opts.weather, (opts.maxLift ?? 18) + 6, opts.seed);
     }
@@ -1946,7 +1952,7 @@ export class HabitableCutawayEngine {
     const bob = this.bob;
     const layerBob = Math.round(bob);
 
-    g.drawImage(input.bg, 0, 0);
+    input.drawBackdrop(g);
     input.drawFarSpace(g);
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob);
@@ -1968,6 +1974,7 @@ export class HabitableCutawayEngine {
           // the subsolar point is a quarter turn from the centre toward +x, and
           // it moves toward -x as the day turns.
           this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
+          this.weatherSim.sunLat = input.sunLat ?? 0;
           this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
           while (this.weatherAcc >= WX_DT) {
             this.weatherAcc -= WX_DT;

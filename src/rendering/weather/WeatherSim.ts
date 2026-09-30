@@ -43,14 +43,28 @@ export const VAPOUR_START = 0.6;
 export const RAIN_DRY = 0.8;
 /**
  * Day cycle. Rising air is scaled by local solar heating, weak at night and
- * strong in the afternoon, averaging 1 over a day. Without it the equatorial
- * rising band never let up and its cells rained for the whole hour. Weighted
- * to the tropics (1 at the equator, 0 from 30 degrees): tropical convection
- * follows the sun; mid-latitude weather is frontal and rides the band wind.
+ * strong in the afternoon, averaging 1 over a day AT THE EQUATOR AT EQUINOX
+ * (sunLat = 0) — off the equator, or away from equinox, the row's own
+ * subsolar geometry (rowCos/rowSin against sunLat) shifts that mean. Without
+ * it the equatorial rising band never let up and its cells rained for the
+ * whole hour. Weighted to the tropics around the subsolar latitude (1 there,
+ * 0 from 30 degrees away): tropical convection follows the sun; mid-latitude
+ * weather is frontal and rides the band wind.
  */
 export const DIURNAL = 0.6;
 /** Seconds per day when nothing drives the sun (headless runs); the host sets `sunLon`. */
 export const WX_DAY = 45;
+
+/**
+ * Seasons. The weather's subsolar point sits at latitude `sunLat` (the host sets
+ * it from the orbit's declination). Snow decides on a temperature shifted by
+ * SEASON_T at full tilt — the winter hemisphere colder, the summer one warmer.
+ */
+export const SEASON_T = 0.15;
+/** Tilt at which the snow shift reaches SEASON_T (the largest tilt a world rolls). */
+export const SEASON_REF = (35 * Math.PI) / 180;
+/** The tropical rain belt follows the subsolar latitude at half its swing, like Earth's. */
+export const ITCZ_FOLLOW = 0.5;
 
 export interface SimAblation {
   uplift?: boolean; vertical?: boolean; cold?: boolean;
@@ -59,6 +73,8 @@ export interface SimAblation {
   cycle?: boolean;
   /** No day cycle: rising air is the same at noon and midnight. */
   diurnal?: boolean;
+  /** No seasons: sunLat is ignored — the tropics, Hadley cell, solar heating and snow line behave as at equinox. */
+  seasons?: boolean;
 }
 
 export const WK = { CLEAR: 0, CUMULUS: 1, STORM: 2, ICE: 3, ASH: 4, SMOG: 5 } as const;
@@ -110,6 +126,8 @@ export class WeatherSim {
   time = 0;
   /** Grid longitude of the subsolar point, radians. The host sets it each frame. */
   sunLon = 0;
+  /** Subsolar latitude, radians. The host sets it from the orbit; 0 standalone. */
+  sunLat = 0;
   anomaly: Anomaly | null = null;
   anomalyCount = 0;
 
@@ -127,6 +145,9 @@ export class WeatherSim {
   private rowCell = new Float64Array(WX_NY);
   private rowCos = new Float64Array(WX_NY);
   private rowTrop = new Float64Array(WX_NY);
+  private rowSin = new Float64Array(WX_NY);
+  private rowLat = new Float64Array(WX_NY);
+  private rowSnow = new Float64Array(WX_NY);
   private rowFor: ClimateSources | null = null;
   private anomalyRng: () => number = Math.random;
 
@@ -147,6 +168,7 @@ export class WeatherSim {
     this.time = 0;
     // Each world's day starts at its own hour, so two seeds do not share a sky.
     this.sunLon = (this.climate.personality.detailOffset / WX_NX) * Math.PI * 2;
+    this.sunLat = 0;
     this.anomaly = null;
     this.anomalyCount = 0;
     this.anomalyRng = weatherRng(this.climate.personality.anomalySeed);
@@ -184,12 +206,13 @@ export class WeatherSim {
   }
 
   /**
-   * Row constants: band wind, drift, and the latitude parts of vertical motion.
-   * Rising (+) / sinking (-) air is Hadley/Ferrel cells (cellTerm) plus weather
-   * systems (env x a wave whose longitude is the advected coordinate i - u*t,
-   * so weather systems ride the band wind). A short-wavelength detail term was
+   * Row constants: band wind, drift, and the latitude part of weather systems
+   * (env x a wave whose longitude is the advected coordinate i - u*t, so
+   * weather systems ride the band wind). A short-wavelength detail term was
    * removed: its 7-cell wavelength aliased against the trades' ~6.6-cell travel
-   * per 10 s, so tropical cloud read as stationary.
+   * per 10 s, so tropical cloud read as stationary. rowCell (the Hadley/Ferrel
+   * rising/sinking term) is NOT built here: it follows the sun and is
+   * recomputed every step, in the season-terms loop.
    */
   private buildRows(): void {
     for (let j = 0; j < WX_NY; j++) {
@@ -197,11 +220,9 @@ export class WeatherSim {
       this.rowV[j] = this.windV(j);
       const lat = latOf(j), alat = Math.abs(lat);
       this.rowEnv[j] = Math.max(0, 1 - Math.abs(alat - 0.95) / 0.4);
-      this.rowCell[j] = 0.85 * Math.cos(6 * lat);
       this.rowCos[j] = Math.cos(lat);
-      // Tropics only, fading to nothing at 30 degrees.
-      const tr = 1 - alat / (Math.PI / 6);
-      this.rowTrop[j] = tr > 0 ? tr : 0;
+      this.rowSin[j] = Math.sin(lat);
+      this.rowLat[j] = lat;
     }
     this.rowFor = this.climate;
   }
@@ -215,6 +236,9 @@ export class WeatherSim {
 
   step(dt = WX_DT): void {
     this.time += dt;
+    // No-seasons ablation: sunLat is ignored, so the tropics, Hadley cell,
+    // solar heating and snow line behave as at equinox (SimAblation.seasons).
+    const sunLat = this.ablate.seasons ? 0 : this.sunLat;
     this.sunLon -= (Math.PI * 2 / WX_DAY) * dt;   // the sun moves west
     const c = this.climate;
     const { nv, nc, na, ns, nr, nd } = this;
@@ -263,6 +287,20 @@ export class WeatherSim {
     // them sooner instead drained cloud before it could build into storms.
     const showerDecay = 1 / (SHOWER_LIFE * (1 + STORM_SHOWER * pressure));
     const sunLon = this.sunLon, lonStep = Math.PI * 2 / WX_NX;
+    // Season terms follow sunLat EVERY step — buildRows only reruns when the
+    // climate object changes, so caching them there would freeze the seasons.
+    // (sunLat itself is the top-of-step local, already zeroed under the
+    // `seasons` ablation.)
+    const cosSL = Math.cos(sunLat), sinSL = Math.sin(sunLat);
+    const snowGain = (SEASON_T * sinSL) / Math.sin(SEASON_REF);
+    for (let j = 0; j < WX_NY; j++) {
+      const dl = this.rowLat[j] - sunLat;
+      const tr = 1 - (dl < 0 ? -dl : dl) / (Math.PI / 6);   // tropics centred on the sun, fading at 30 deg
+      this.rowTrop[j] = tr > 0 ? tr : 0;
+      this.rowSnow[j] = snowGain * this.rowSin[j];
+      // The Hadley rising branch follows the sun too, at half its swing (ITCZ_FOLLOW).
+      this.rowCell[j] = 0.85 * Math.cos(6 * (this.rowLat[j] - ITCZ_FOLLOW * sunLat));
+    }
     const waveNumber = c.personality.waveNumber, noVertical = !!this.ablate.vertical;
     // Clamps in the cell loop are ternaries, not Math.min/max: V8's mid tier
     // (Maglev) boxes Math.min/max results, ~60 KB of garbage per step whenever
@@ -297,10 +335,15 @@ export class WeatherSim {
         const vm = noVertical ? 0
           : cellTerm + 0.9 * env * Math.sin((i - baseU * this.time) * Math.PI * 2 / WX_NX * waveNumber + j * 0.35);
         // Local solar heating: 0 at night, peak at noon; mean over a day 1/pi.
-        const sunCos = Math.cos(i * lonStep - sunLon) * this.rowCos[j];
+        const sunCos = this.rowCos[j] * cosSL * Math.cos(i * lonStep - sunLon) + this.rowSin[j] * sinSL;
         const heat = noDiurnal ? 1
           : 1 + this.rowTrop[j] * DIURNAL * (Math.PI * (sunCos > 0 ? sunCos : 0) - 1);
-        const rawLift = (0.8 * vm + oro + conv * 0.3) * heat;
+        // Solar heating drives convection; it must not deepen subsidence (it
+        // did, and at sunLat 35 deg the westerlies stopped raining entirely —
+        // the synthetic rain-shadow check went NaN under --solstice). Named
+        // riseTerm, not `up`: that name is already the orographic wind sign above.
+        const riseTerm = 0.8 * vm + oro + conv * 0.3;
+        const rawLift = riseTerm > 0 ? riseTerm * heat : riseTerm;
         const lift = rawLift > 0.8 ? 0.8 : rawLift < -0.6 ? -0.6 : rawLift;
         const rawCap = (0.18 + 0.7 * T) * (1 - lift);
         const cap = rawCap > 0.05 ? rawCap : 0.05;
@@ -339,7 +382,7 @@ export class WeatherSim {
           nr[k] = r;
         }
         this.precip[k] = p / dt;
-        this.snow[k] = !this.ablate.cold && T < COLD ? 1 : 0;
+        this.snow[k] = !this.ablate.cold && T + this.rowSnow[j] < COLD ? 1 : 0;
         if (this.anomaly?.kind === 'clearing' && this.near(i, j, 3)) nc[k] *= clearing;
 
         const v2 = nv[k] * (1 - 0.01 * dt);

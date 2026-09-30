@@ -1043,6 +1043,8 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
     if (!_dioramaRenderer) {
       _dioramaRenderer = new IsoDioramaRenderer();
       await _dioramaRenderer.init(diMount);
+      // Live binding: a new game replaces `engine`, and its animTick restarts.
+      _dioramaRenderer.setClock(() => engine?.currentAnimTick ?? 0);
     }
 
     if (runtimeState.playerPlanetGrid && planet) {
