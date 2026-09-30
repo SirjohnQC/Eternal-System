@@ -61,6 +61,8 @@ export const WX_DAY = 45;
 export const SEASON_T = 0.15;
 /** Tilt at which the snow shift reaches SEASON_T (the largest tilt a world rolls). */
 export const SEASON_REF = (35 * Math.PI) / 180;
+/** The tropical rain belt follows the subsolar latitude at half its swing, like Earth's. */
+export const ITCZ_FOLLOW = 0.5;
 
 export interface SimAblation {
   uplift?: boolean; vertical?: boolean; cold?: boolean;
@@ -200,12 +202,13 @@ export class WeatherSim {
   }
 
   /**
-   * Row constants: band wind, drift, and the latitude parts of vertical motion.
-   * Rising (+) / sinking (-) air is Hadley/Ferrel cells (cellTerm) plus weather
-   * systems (env x a wave whose longitude is the advected coordinate i - u*t,
-   * so weather systems ride the band wind). A short-wavelength detail term was
+   * Row constants: band wind, drift, and the latitude part of weather systems
+   * (env x a wave whose longitude is the advected coordinate i - u*t, so
+   * weather systems ride the band wind). A short-wavelength detail term was
    * removed: its 7-cell wavelength aliased against the trades' ~6.6-cell travel
-   * per 10 s, so tropical cloud read as stationary.
+   * per 10 s, so tropical cloud read as stationary. rowCell (the Hadley/Ferrel
+   * rising/sinking term) is NOT built here: it follows the sun and is
+   * recomputed every step, in the season-terms loop.
    */
   private buildRows(): void {
     for (let j = 0; j < WX_NY; j++) {
@@ -213,7 +216,6 @@ export class WeatherSim {
       this.rowV[j] = this.windV(j);
       const lat = latOf(j), alat = Math.abs(lat);
       this.rowEnv[j] = Math.max(0, 1 - Math.abs(alat - 0.95) / 0.4);
-      this.rowCell[j] = 0.85 * Math.cos(6 * lat);
       this.rowCos[j] = Math.cos(lat);
       this.rowSin[j] = Math.sin(lat);
       this.rowLat[j] = lat;
@@ -287,6 +289,8 @@ export class WeatherSim {
       const tr = 1 - (dl < 0 ? -dl : dl) / (Math.PI / 6);   // tropics centred on the sun, fading at 30 deg
       this.rowTrop[j] = tr > 0 ? tr : 0;
       this.rowSnow[j] = snowGain * this.rowSin[j];
+      // The Hadley rising branch follows the sun too, at half its swing (ITCZ_FOLLOW).
+      this.rowCell[j] = 0.85 * Math.cos(6 * (this.rowLat[j] - ITCZ_FOLLOW * sunLat));
     }
     const waveNumber = c.personality.waveNumber, noVertical = !!this.ablate.vertical;
     // Clamps in the cell loop are ternaries, not Math.min/max: V8's mid tier
@@ -325,7 +329,12 @@ export class WeatherSim {
         const sunCos = this.rowCos[j] * cosSL * Math.cos(i * lonStep - sunLon) + this.rowSin[j] * sinSL;
         const heat = noDiurnal ? 1
           : 1 + this.rowTrop[j] * DIURNAL * (Math.PI * (sunCos > 0 ? sunCos : 0) - 1);
-        const rawLift = (0.8 * vm + oro + conv * 0.3) * heat;
+        // Solar heating drives convection; it must not deepen subsidence (it
+        // did, and at sunLat 35 deg the westerlies stopped raining entirely —
+        // the synthetic rain-shadow check went NaN under --solstice). Named
+        // riseTerm, not `up`: that name is already the orographic wind sign above.
+        const riseTerm = 0.8 * vm + oro + conv * 0.3;
+        const rawLift = riseTerm > 0 ? riseTerm * heat : riseTerm;
         const lift = rawLift > 0.8 ? 0.8 : rawLift < -0.6 ? -0.6 : rawLift;
         const rawCap = (0.18 + 0.7 * T) * (1 - lift);
         const cap = rawCap > 0.05 ? rawCap : 0.05;
