@@ -75,7 +75,11 @@ export class PixelCtx {
       }
   }
   clearRect(): void { this.canvas.data.fill(0); }
-  createImageData(w: number, h: number) { return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }; }
+  createImageData(w: number, h: number) {
+    // Browsers throw IndexSizeError on an empty image; so does the shim.
+    if (!(w > 0) || !(h > 0)) throw new Error(`IndexSizeError: createImageData(${w}, ${h})`);
+    return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
+  }
   getImageData(x = 0, y = 0, w = this.canvas.width, h = this.canvas.height) {
     const out = this.createImageData(w, h), W = this.canvas.width;
     for (let yy = 0; yy < h; yy++) out.data.set(this.canvas.data.subarray(((y + yy) * W + x) * 4, ((y + yy) * W + x + w) * 4), yy * w * 4);

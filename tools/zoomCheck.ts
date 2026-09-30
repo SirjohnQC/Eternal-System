@@ -333,48 +333,90 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
     }
   }
 
-  // ── crust depth scales ───────────────────────────────────────────────────
+  // ── crust depth scales (the KEEL, at mid-body) ──────────────────────────
   {
     const B = bakeEngine('ocean', 7);
     const e = B.engine as any, g = B.engine.geom, crust1 = e.crust as PC;
-    const X0 = Math.ceil(g.cx - g.rx), X1 = Math.floor(g.cx + g.rx);
-    let win: { a: number; b: number; top: number; bot: number } | null = null;
-    for (const W of [20, 12, 8]) {
-      for (let a = X0 + 2; a + W - 1 <= X1 - 2 && !win; a++) {
-        let top = 1e9, bot = -1, ok = true;
-        for (let X = a; X < a + W; X++) {
-          const f = firstRow(crust1, X), l = lastRow(crust1, X);
-          if (f < 0) { ok = false; break; }
-          top = Math.min(top, f); bot = Math.max(bot, l);
-        }
-        if (ok && bot - top + 1 <= 76) win = { a, b: a + W - 1, top, bot };
+    // Mid-body columns, where the keel hangs deepest: 20 columns centred on
+    // the body. At zoom 2 a full column (rim -> keel bottom, ~130 px at zoom 1)
+    // fits the 320-px canvas.
+    const a = g.cx - 10, bEnd = g.cx + 9, z = 2;
+    let top = 1e9, bot = -1;
+    for (let X = a; X <= bEnd; X++) { top = Math.min(top, firstRow(crust1, X)); bot = Math.max(bot, lastRow(crust1, X)); }
+    const cam = { zoom: z, fx: g.cx, fy: Math.round((top + bot) / 2) };
+    B.engine.setCamera(cam);
+    const cs = camSetOf(e);
+    const ext = (c: PC, X: number) => { const f = firstRow(c, X), l = lastRow(c, X); return f < 0 ? 0 : l - f + 1; };
+    const run = (c: PC) => {
+      let s1 = 0, s2 = 0, worst = 0, n = 0, clipped = 0;
+      for (let X = a; X <= bEnd; X++) {
+        const sx = (X - cam.fx) * z + VW / 2;
+        if (firstRow(c, sx) === 0 || lastRow(c, sx) === VH - 1) clipped++;
+        const e1 = ext(crust1, X), e2 = ext(c, sx);
+        s1 += e1; s2 += e2; n++; worst = Math.max(worst, Math.abs(e2 - z * e1));
       }
-      if (win) break;
-    }
-    if (!win) check('crust: found a window that fits at zoom 4', false, '');
-    else {
-      const cam = { zoom: 4, fx: Math.round((win.a + win.b) / 2), fy: Math.round((win.top + win.bot) / 2) };
-      B.engine.setCamera(cam);
-      const cs = camSetOf(e);
-      const ext = (c: PC, X: number) => { const f = firstRow(c, X), l = lastRow(c, X); return f < 0 ? 0 : l - f + 1; };
-      const run = (c: PC) => {
-        let s1 = 0, s4 = 0, worst = 0, n = 0;
-        for (let X = win!.a; X <= win!.b; X++) {
-          const sx = (X - cam.fx) * 4 + VW / 2;
-          const e1 = ext(crust1, X), e4 = ext(c, sx);
-          s1 += e1; s4 += e4; n++; worst = Math.max(worst, Math.abs(e4 - 4 * e1));
-        }
-        return { m1: s1 / n, m4: s4 / n, worst, n };
-      };
-      const r = run(cs.crust);
-      check('crust: mean column depth at zoom 4 is 4x zoom 1 (+/- 1 px)', Math.abs(r.m4 - 4 * r.m1) <= 1,
-        `${r.n} columns x ${win.a}-${win.b}: zoom-1 ${r.m1.toFixed(2)}, zoom-4 ${r.m4.toFixed(2)}, ratio ${(r.m4 / r.m1).toFixed(3)}, worst column |d| ${r.worst}`);
-      // Control: the geometry bypass (no `wall` in the opts -> habitableGeom's base wall).
-      const c = fresh();
-      Eng.paintCutawayCrust(ctx(c), { ...cs.opts, wall: undefined, occupancy: new Uint8Array(VW * VH) });
-      const rc = run(c);
-      check('  control: base-wall fallback fails the 4x bar', !(Math.abs(rc.m4 - 4 * rc.m1) <= 1), `zoom-4 ${rc.m4.toFixed(2)} vs ${(4 * rc.m1).toFixed(2)}`);
-    }
+      return { m1: s1 / n, m2: s2 / n, worst, n, clipped };
+    };
+    const r = run(cs.crust);
+    const keel1 = r.m1 - g.wall;
+    check('crust: mid-body columns are keel-dominated and wholly in view at zoom 2', keel1 >= 20 && r.clipped === 0,
+      `zoom-1 mean depth ${r.m1.toFixed(2)} = wall ${g.wall} + keel/ridge ${keel1.toFixed(2)}, clipped columns ${r.clipped}`);
+    check('crust: mean column depth at zoom 2 is 2x zoom 1 (+/- 1 px)', Math.abs(r.m2 - z * r.m1) <= 1,
+      `${r.n} columns x ${a}-${bEnd}: zoom-1 ${r.m1.toFixed(2)}, zoom-2 ${r.m2.toFixed(2)}, ratio ${(r.m2 / r.m1).toFixed(3)}, worst column |d| ${r.worst}`);
+    // Control: the same camera bake with the keel depth NOT scaled (crustDepthOf(base rx)).
+    const c = fresh();
+    Eng.paintCutawayCrust(ctx(c), { ...cs.opts, crustDepthPx: Eng.crustDepthOf(g.rx), occupancy: new Uint8Array(VW * VH) });
+    const rc = run(c);
+    check('  control: unscaled keel depth fails the 2x bar', !(Math.abs(rc.m2 - z * rc.m1) <= 1), `zoom-2 ${rc.m2.toFixed(2)} vs ${(z * rc.m1).toFixed(2)}`);
+    // Control: the geometry bypass (no `wall` in the opts -> habitableGeom's base wall).
+    const c2 = fresh();
+    Eng.paintCutawayCrust(ctx(c2), { ...cs.opts, wall: undefined, occupancy: new Uint8Array(VW * VH) });
+    const rw = run(c2);
+    check('  control: base-wall fallback fails the 2x bar', !(Math.abs(rw.m2 - z * rw.m1) <= 1), `zoom-2 ${rw.m2.toFixed(2)} vs ${(z * rw.m1).toFixed(2)}`);
+  }
+
+  // ── view edges: face rim below the canvas, face wholly above it ─────────
+  {
+    const B = bakeEngine('ocean', 7);
+    const eng = B.engine, e = eng as any, g = eng.geom, land1 = e.land as PC;
+    // A camera at zoom 4 whose face top (the far rim, centre column) sits 2 px
+    // BELOW the canvas: only lifted ground from below-canvas rows can show.
+    // Pick the column whose zoom-1 relief rises highest above the face top.
+    let bestX = g.cx, bestT = 1e9;
+    for (let X = g.cx - g.rx; X <= g.cx + g.rx; X++) { const t = firstRow(land1, X); if (t >= 0 && t < bestT) { bestT = t; bestX = X; } }
+    const z = 4, faceTop = Math.ceil(g.cyTop - g.ry);
+    const fy = faceTop - (VH + 2 - VH / 2) / z;
+    const camA = { zoom: z, fx: g.cx, fy: g.cyTop };               // a normal view first: fills the pick
+    eng.setCamera(camA);
+    const pickA = e.camSet.pick.slice();
+    const camB = { zoom: z, fx: Math.round(bestX * z) / z, fy };
+    eng.setCamera(camB);
+    const cs = camSetOf(e);
+    const faceTopB = Math.ceil(cs.geom.cyTop - cs.geom.ry);
+    let lit = 0;
+    for (let i = 3; i < cs.land.data.length; i += 4) if (cs.land.data[i]) lit++;
+    check('view edge: face top below the canvas, lifted peaks still show', faceTopB >= VH && lit > 0,
+      `zoom-1 highest land row ${bestT} (face top ${faceTop}); camera face top at screen ${faceTopB}; ${lit} land px in view`);
+    // Control: the same bake without the relief margin (maxLift 0 -> rows below the canvas unscanned).
+    const cm = fresh();
+    Eng.paintCutawaySurface(ctx(cm), { ...cs.opts, maxLift: 0, occupancy: new Uint8Array(VW * VH), pick: new Int32Array(VW * VH) });
+    let litC = 0;
+    for (let i = 3; i < cm.data.length; i += 4) if (cm.data[i]) litC++;
+    check('  control: no relief margin shows nothing', litC === 0, `${litC} land px`);
+    // Pick holds only what this camera drew: every picked pixel is drawn land or water.
+    const stale = (p: Int32Array) => { let n = 0; for (let i = 0; i < p.length; i++) if (p[i] && !cs.land.data[i * 4 + 3] && !cs.occupancy[i]) n++; return n; };
+    check('view edge: the pick holds no cell from the previous camera', stale(cs.pick) === 0, `${stale(cs.pick)} stale px`);
+    check('  control: the previous camera pick fails the same test', stale(pickA) > 0, `${stale(pickA)} stale px`);
+    // Face wholly above the view: no throw (browsers throw on createImageData(w, 0)).
+    let threw = '';
+    try { eng.setCamera({ zoom: z, fx: g.cx, fy: g.cyTop + g.ry + 45 }); } catch (err) { threw = String(err); }
+    const csUp = camSetOf(e);
+    const pickedUp = threw ? -1 : csUp.pick.reduce((n: number, v: number) => n + (v ? 1 : 0), 0);
+    check('view edge: face wholly above the view bakes without throwing, empty pick', !threw && pickedUp === 0,
+      threw || `face bottom at screen ${Math.floor(csUp.geom.cyTop + csUp.geom.ry)}, ${pickedUp} picked px`);
+    let shimThrows = false;
+    try { ctx(fresh()).createImageData(10, 0); } catch { shimThrows = true; }
+    check('  control: the canvas shim throws on an empty image, as browsers do', shimThrows, '');
   }
 
   // ── world-anchored hashes ────────────────────────────────────────────────
@@ -475,37 +517,70 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
       }
       return false;
     };
-    let s = 4242;
-    const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
     const cellOf = (id: number) => id > 0 ? { row: Math.floor((id - 1) / 256), col: (id - 1) % 256 } : null;
-    let skipped = 0;
-    for (const z of [2, 4]) {
-      let n = 0, agree = 0, ctrlAgree = 0;
+    /**
+     * 5 random cameras at zoom z, 40 points each. Filtered: points off every
+     * relief/coast boundary must match exactly. Unfiltered (the first 40
+     * candidates per camera, boundary or not): >= 90% exact, and every miss is
+     * a boundary point whose cell is within 3 rows / 1 column of the zoom-1 cell.
+     * `broken`: the camera surface re-painted with the base (unwrapped) liftOf.
+     */
+    const runPick = (z: number, broken: boolean) => {
+      let s = 4242 + z;
+      const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+      let n = 0, agree = 0, ctrlAgree = 0, skipped = 0, un = 0, unAgree = 0, unBad = 0, worstRows = 0, worstCols = 0, offBoundary = 0;
       for (let camI = 0; camI < 5; camI++) {
         const cam = { zoom: z, fx: Math.round((g.cx + (rnd() - 0.5) * g.rx) * z) / z, fy: Math.round((g.cyTop + (rnd() - 0.5) * g.ry) * z) / z };
-        eng.setCamera(cam); eng.showCamera = true;
-        let got = 0, tries = 0;
+        eng.setCamera(cam);
+        if (broken) {
+          const cs = (eng as any).camSet;
+          cs.opts = { ...cs.opts, liftOf, maxLift: MAX_LIFT };
+          (eng as any).paintCameraSurface(cs);
+        }
+        eng.showCamera = true;
+        let got = 0, unCam = 0, tries = 0;
         while (got < 40 && tries++ < 100000) {
           const p = { x: Math.floor(rnd() * VW), y: Math.floor(rnd() * VH) };
           const w = screenToWorld(cam, VW, VH, p.x, p.y);
           const wx = Math.round(w.x), wy = Math.round(w.y);
           if (wx < 1 || wy < 1 || wx >= VW - 1 || wy >= VH - 1 || !id1(wx, wy)) continue;
-          if (nearBoundary(wx, wy)) { skipped++; continue; }
           const sp = worldToScreen(cam, VW, VH, wx, wy);
           if (sp.x < 0 || sp.y < 0 || sp.x >= VW || sp.y >= VH) continue;
+          const want = id1(wx, wy), seenId = eng.pick[Math.round(sp.y) * VW + Math.round(sp.x)];
+          const nb = nearBoundary(wx, wy);
+          if (unCam < 40) {
+            unCam++; un++;
+            if (seenId === want) unAgree++;
+            else {
+              const a = cellOf(want)!, c = cellOf(seenId);
+              let dc = c ? Math.abs(c.col - a.col) : 999; if (dc > 128) dc = 256 - dc;
+              const dr = c ? Math.abs(c.row - a.row) : 999;
+              worstRows = Math.max(worstRows, dr); worstCols = Math.max(worstCols, dc);
+              if (!nb) offBoundary++;
+              if (!(nb && dr <= 3 && dc <= 1)) unBad++;
+            }
+          }
+          if (nb) { skipped++; continue; }
           got++; n++;
-          const want = JSON.stringify(cellOf(id1(wx, wy)));
-          const seenCell = JSON.stringify(eng.hitTest(Math.round(sp.x), Math.round(sp.y)));
-          if (seenCell === want) agree++;
-          else if (process.env.PICKDBG) console.log("   miss", z, wx, wy, want, seenCell);
+          if (JSON.stringify(eng.hitTest(Math.round(sp.x), Math.round(sp.y))) === JSON.stringify(cellOf(want))) agree++;
           // Control: the same point looked up without mapping through the camera.
-          if (JSON.stringify(eng.hitTest(wx, wy)) === want) ctrlAgree++;
+          if (JSON.stringify(eng.hitTest(wx, wy)) === JSON.stringify(cellOf(want))) ctrlAgree++;
         }
         eng.showCamera = false;
       }
-      check(`pick at zoom ${z} returns the zoom-1 cell at 200 world points`, n === 200 && agree === n,
-        `${agree}/${n} agree (${skipped} relief/coast boundary candidates skipped)`);
-      check(`  control: zoom ${z} pick without the camera mapping disagrees`, ctrlAgree < n, `${ctrlAgree}/${n} agree`);
+      return { n, agree, ctrlAgree, skipped, un, unAgree, unBad, worstRows, worstCols, offBoundary };
+    };
+    for (const z of [2, 4]) {
+      const r = runPick(z, false);
+      check(`pick at zoom ${z} returns the zoom-1 cell at 200 world points`, r.n === 200 && r.agree === r.n,
+        `${r.agree}/${r.n} agree (${r.skipped} relief/coast boundary candidates skipped)`);
+      check(`pick at zoom ${z}, unfiltered: >= 90% exact, every miss a boundary point within 3 rows`,
+        r.un === 200 && r.unAgree / r.un >= 0.9 && r.unBad === 0,
+        `${r.unAgree}/${r.un} exact; ${r.un - r.unAgree} misses, ${r.offBoundary} off a boundary, ${r.unBad} off-boundary or beyond 3 rows / 1 col (worst ${r.worstRows} rows, ${r.worstCols} cols)`);
+      check(`  control: zoom ${z} pick without the camera mapping disagrees`, r.ctrlAgree < r.n, `${r.ctrlAgree}/${r.n} agree`);
+      const b = runPick(z, true);
+      check(`  control: zoom ${z} pick with the unwrapped liftOf fails the exact bar`, !(b.n === 200 && b.agree === b.n),
+        `${b.agree}/${b.n} agree; unfiltered ${b.unAgree}/${b.un} exact, ${b.unBad} off-boundary or far`);
     }
   }
 
@@ -532,6 +607,12 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
     Eng.paintCutawaySurface(ctx(big), { ...cs.opts, w: W, h: Hh, cx: gm.rx, cyTop: gm.ry + cs.opts.maxLift,
       occupancy: new Uint8Array(W * Hh), pick: new Int32Array(W * Hh), decalSites: [] });
     check('  control: an unclamped zoom-4 surface loop exceeds the bound', it.surface > bound, `${it.surface} > ${bound}`);
+    console.log(`        shore passes at zoom 4: scan ${z4.shoreScan}, BFS ${z4.shoreBfs}, blur ${z4.shoreBlur} per pass (zoom 1: ${id.shoreScan}, ${id.shoreBfs}, ${id.shoreBlur})`);
+    // Control: the shore bake with a margin reaching the whole camera geometry
+    // instead of FOAM_REACH * k — the view no longer bounds it.
+    const m = Math.ceil(Math.max(gm.rx, gm.ry));
+    Eng.bakeShoreDistance(cs.occupancy, gm, VW, VH, m, () => false, 4);
+    check('  control: an unclamped zoom-4 shore bake exceeds the bound', it.shore > bound, `${it.shore} > ${bound}`);
     delete (globalThis as any).__zoomIters;
   }
 

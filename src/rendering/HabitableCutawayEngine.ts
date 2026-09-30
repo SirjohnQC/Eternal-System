@@ -279,6 +279,12 @@ export interface CutawayBakeOpts extends CutawayGeom {
    * IDENTITY plan mapped through the camera, so zooming never re-plans.
    */
   decalSites?: DecalSite[] | null;
+  /**
+   * Deepest the hanging keel may drop, in this bake's px. Omitted:
+   * `crustDepthOf(base rx) * k`. The camera bake passes it explicitly, so the
+   * keel depth is one world value scaled once.
+   */
+  crustDepthPx?: number;
   /** Volcano chimneys to paint, in this bake's screen coordinates; same rule as `decalSites`. */
   chimneySites?: VolcanoChimney[] | null;
   /** Tallest lift `liftOf` can return, so the bake can reserve rows above the rim. */
@@ -868,25 +874,27 @@ export function paintCutawaySurface(
   // to the canvas bottom PLUS the relief margin (rows below the canvas whose
   // lifted ground rises into view). At identity the face lies inside the canvas
   // and every bound below equals the whole-face box it replaced.
+  // Clear pick and occupancy FIRST: a camera bake reuses the previous
+  // camera's buffers, and must not keep its cells when nothing is in view.
+  const pick = opts.pick && opts.pick.length === VW * VH ? opts.pick : null;
+  if (pick) pick.fill(0);
+  const occ = opts.occupancy && opts.occupancy.length === VW * VH ? opts.occupancy : null;
+  if (occ) occ.fill(0);
+
   const x0 = Math.max(0, Math.ceil(cx - rx)), x1 = Math.min(VW - 1, Math.floor(cx + rx));
   const yFace0 = Math.ceil(cyTop - ry), yFace1 = Math.floor(cyTop + ry);
   const y1 = Math.min(VH - 1, yFace1);                          // last stored row
   const yScan1 = Math.min(VH - 1 + (opts.planetType === 'gas' ? 0 : opts.maxLift), yFace1);
   const yScan0 = Math.max(0, yFace0);                            // rows above the canvas draw above it
-  if (x1 <= x0 || y1 <= yFace0) return;
-
   // Raised ground draws ABOVE the point it belongs to, so peaks near the far rim
-  // need rows reserved above the ellipse.
+  // need rows reserved above the ellipse. A face whose far rim is below the
+  // canvas still shows the peaks that rise into view (rows up to yScan1).
   const yTop = Math.max(0, yFace0 - opts.maxLift);
   const bw = x1 - x0 + 1, bh = y1 - yTop + 1;
+  if (x1 < x0 || yScan1 < yScan0 || bh <= 0) return;   // nothing of the face can reach the view
   const img = g.createImageData(bw, bh);
   const d = img.data;
   let iters = 0;
-
-  const pick = opts.pick && opts.pick.length === VW * VH ? opts.pick : null;
-  if (pick) pick.fill(0);
-  const occ = opts.occupancy && opts.occupancy.length === VW * VH ? opts.occupancy : null;
-  if (occ) occ.fill(0);
 
   // ── Gas giant: flat banded tabletop, no water holes ─────────────────────────
   if (opts.planetType === 'gas') {
@@ -1250,7 +1258,7 @@ export function paintCutawayCrust(
   const cols = rimX1 - rimX0 + 1;
   if (cols <= 0) return;
   const wallBottom = new Float32Array(cols);
-  const crustH = k === 1 ? crustDepthOf(rx) : crustDepthOf(baseRx) * k;
+  const crustH = opts.crustDepthPx ?? (k === 1 ? crustDepthOf(rx) : crustDepthOf(baseRx) * k);
   const waterBand = k === 1 ? Math.max(6, Math.round(wall * 0.40)) : Math.max(6, Math.round(baseWall * 0.40)) * k;
   let iters = 0;
 
@@ -1719,6 +1727,7 @@ function shoreDistanceCore(
   occupancy: Uint8Array, geom: Pick<HabitableGeom, 'cx' | 'cyTop' | 'rx' | 'ry'>, w: number, h: number,
   blurStride: number,
 ): Float32Array {
+  let scan = 0, bfs = 0, blurMax = 0;   // visits per pass, for the bounded-work check
   const dist = new Float32Array(w * h);
   const seen = new Uint8Array(w * h);
   const q = new Int32Array(w * h);
@@ -1727,6 +1736,7 @@ function shoreDistanceCore(
   for (let y = 0; y < h; y++) {
     const dy = (y - cyTop) / ry;
     for (let x = 0; x < w; x++) {
+      scan++;
       const i = y * w + x;
       if (occupancy[i] !== 0) continue;
       const dx = (x - cx) / rx;
@@ -1736,6 +1746,7 @@ function shoreDistanceCore(
     }
   }
   while (head < tail) {
+    bfs++;
     const i = q[head++];
     const x = i % w, y = (i / w) | 0;
     for (let oy = -1; oy <= 1; oy++) {
@@ -1759,8 +1770,10 @@ function shoreDistanceCore(
   for (let pass = 0; pass < 2; pass++) {
     const src = pass === 0 ? dist : tmp;
     const dst = pass === 0 ? tmp : dist;
+    let blur = 0;
     for (let y = s; y < h - s; y++) {
       for (let x = s; x < w - s; x++) {
+        blur++;
         const i = y * w + x;
         if (occupancy[i] !== 1) continue;
         dst[i] = (
@@ -1769,9 +1782,10 @@ function shoreDistanceCore(
         ) / 6;
       }
     }
+    if (blur > blurMax) blurMax = blur;
   }
   const it = zoomIters();
-  if (it) it.shore = w * h;   // each pass (scan, BFS, blur) visits at most w*h pixels
+  if (it) { it.shoreScan = scan; it.shoreBfs = bfs; it.shoreBlur = blurMax; it.shore = Math.max(scan, bfs, blurMax); }
   return dist;
 }
 
@@ -2242,6 +2256,7 @@ export class HabitableCutawayEngine {
       cameraZoom: k, camera: set.camera,
       liftOf: (elev: number) => Math.round(liftOf(elev) * k),
       maxLift: Math.ceil(base.maxLift * k),
+      crustDepthPx: crustDepthOf(this.geom.rx) * k,
       occupancy: set.occupancy, pick: set.pick,
       decalSites: null, chimneySites: null,
     };
