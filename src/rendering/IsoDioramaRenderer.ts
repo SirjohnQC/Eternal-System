@@ -1138,6 +1138,7 @@ export class IsoDioramaRenderer {
       maxLift: this.maxLift,
       lush: this.lushFor(bio),
       weather: this.climateFor(),
+      sunLat: this.skyNow().declination,
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
     });
@@ -2241,6 +2242,7 @@ export class IsoDioramaRenderer {
         elapsed: this.elapsed,
         drawBackdrop: (g) => this.drawBackdropPanorama(g),
         sunAzimuth: this.dayAngle,
+        sunLat: this.sky?.declination ?? 0,
         viewZoom: this.viewZoom,
         air: this.air,
         drawFarSpace: (g) => {

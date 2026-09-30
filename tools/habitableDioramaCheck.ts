@@ -386,6 +386,16 @@ for (const planetType of ['ocean', 'rocky'] as const) {
     const applied = wx.weatherSim?.climate === next && wx.weatherPainter?.climate === next;
     check('climate update keeps the sky', kept && applied, `sky kept ${kept}, sources applied ${applied}`);
 
+    // Seasons: the bake's sunLat reaches the sim BEFORE warm-up, and the frame's after.
+    engine.bake({ w: VW, h: VH, seed: opts.seed, grid, planetType, discToGrid, rimFalloff, liftOf, smoothElevation,
+      maxLift: MAX_LIFT, lush: 0.6, sunLat: 0.4,
+      weather: buildClimate({ grid, planetType, seed: 0xbeef, lush: 0.6, extinctionPressure: 0.1, oxygenLevel: 0.6, civLevel: 0, inNebula: false }) } as any);
+    const bakedLat = wx.weatherSim?.sunLat;
+    engine.frame({ g: frameCtx as unknown as CanvasRenderingContext2D, dt: 1 / 60, elapsed: 60, sunLat: -0.3,
+      drawBackdrop: () => {}, drawFarSpace: () => {}, drawSurfaceOverlays: () => {}, drawUiOverlays: () => {}, drawNearMoons: () => {} } as any);
+    check('seasons reach the weather sim', bakedLat === 0.4 && wx.weatherSim?.sunLat === -0.3,
+      `after bake ${bakedLat}, after frame ${wx.weatherSim?.sunLat}`);
+
     // The sim's sun is the one on screen: azimuth 0 lights the +x limb, so the
     // subsolar longitude is the grid longitude seen near disc (+0.9, 0).
     const sunAt = (az: number) => {

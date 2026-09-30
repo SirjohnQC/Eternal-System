@@ -1805,6 +1805,8 @@ export interface HabitableFrameInput {
   drawNearMoons: (g: CanvasRenderingContext2D) => void;
   /** Local day angle in radians; 0 lights the +x limb. */
   sunAzimuth?: number;
+  /** Subsolar latitude, radians (seasons). Omitted: 0. */
+  sunLat?: number;
   /** CSS camera zoom; atmosphere dissolves as this rises. */
   viewZoom?: number;
   /** This world's air. Omitted: the shipped per-type air. */
@@ -1859,7 +1861,7 @@ export class HabitableCutawayEngine {
   }
 
   bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
-    w: number; h: number; weather?: ClimateSources | null;
+    w: number; h: number; weather?: ClimateSources | null; sunLat?: number;
   }): void {
     this.w = Math.max(1, Math.round(opts.w));
     this.h = Math.max(1, Math.round(opts.h));
@@ -1910,6 +1912,7 @@ export class HabitableCutawayEngine {
         this.weatherEast = 1;
       }
       this.weatherSim = new WeatherSim(opts.weather);
+      this.weatherSim.sunLat = opts.sunLat ?? 0;   // before warm-up, or the first frames jump
       this.weatherSim.warmUp(WX_WARMUP);
       this.weatherPainter = new WeatherPainter(lut, opts.weather, (opts.maxLift ?? 18) + 6, opts.seed);
     }
@@ -1971,6 +1974,7 @@ export class HabitableCutawayEngine {
           // the subsolar point is a quarter turn from the centre toward +x, and
           // it moves toward -x as the day turns.
           this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
+          this.weatherSim.sunLat = input.sunLat ?? 0;
           this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
           while (this.weatherAcc >= WX_DT) {
             this.weatherAcc -= WX_DT;

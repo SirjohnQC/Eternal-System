@@ -16,7 +16,7 @@ import {
 import { SEA_LEVEL } from '../src/simulation/PlanetGrid';
 import type { ClimateSources } from '../src/rendering/weather/WeatherClimate';
 import {
-  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, type SimAblation,
+  WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
 import {
   WeatherPainter, buildWeatherLut, type WeatherLut,
@@ -29,6 +29,13 @@ function check(name: string, ok: boolean, detail: string): void {
   if (!ok) failed++;
 }
 const SEEDS = QUICK ? [1, 7, 42] : [1, 7, 42, 99, 123, 256, 511, 777, 1001, 2024, 4242, 9001];
+
+// --solstice: rerun the whole suite with every sim at maximum tilt, northern
+// summer (spec check 10). Test-only: patches reset(), which runs before warmUp.
+if (process.argv.includes('--solstice')) {
+  const base = WeatherSim.prototype.reset;
+  WeatherSim.prototype.reset = function (this: WeatherSim) { base.call(this); this.sunLat = (35 * Math.PI) / 180; };
+}
 
 function input(grid: PlanetGrid, planetType: string, seed: number, over: Partial<ClimateInput> = {}): ClimateInput {
   return {
@@ -405,6 +412,58 @@ console.log('\n  PHYSICS');
   const fmt = (r: typeof rc) => `median wet share ${(r.worstShare * 100).toFixed(0)}%, wet >80% of the time ${(r.worstSoaked * 100).toFixed(1)}% of planet, least rained-on ${(r.leastEver * 100).toFixed(0)}% (longest spell ${r.worstSpell.toFixed(0)} s)`;
   check('rain comes and goes', cycles(rc), fmt(rc));
   check('  control: no shower cycle', !cycles(rcAbl), fmt(rcAbl));
+}
+
+// ─── Seasons ──────────────────────────────────────────────────────────────────
+console.log('\n  SEASONS');
+{
+  const TILT = (35 * Math.PI) / 180;
+  const SEASON_SEEDS = SEEDS.slice(0, QUICK ? 3 : 6);
+  const WIN = QUICK ? 480 : 960;
+  // Worlds with snow in play: >= 5% of cells within 0.1 of COLD.
+  const worlds = ['ocean', 'rocky', 'ice'].flatMap(t => SEASON_SEEDS.map(seed =>
+    buildClimate(input(generatePlanetGrid(t, seed * 7777, null, null), t, seed))))
+    .filter(c => { let n = 0; for (let k = 0; k < WX_N; k++) if (Math.abs(c.temp[k] - COLD) < 0.1) n++; return n / WX_N >= 0.05; });
+  /** Northern snow share of precipitation, and the precip-weighted mean latitude of rain within 45 deg, over one window. */
+  const measure = (c: ClimateSources, sunLat: number, skip: number) => {
+    const s = new WeatherSim(c); s.sunLat = sunLat; s.warmUp(WX_WARMUP);
+    for (let n = 0; n < skip; n++) s.step(WX_DT);
+    let sn = 0, pn = 0, latSum = 0, latW = 0;
+    for (let n = 0; n < WIN; n++) {
+      s.step(WX_DT);
+      for (let j = 0; j < WX_NY; j++) {
+        const lat = latOf(j);
+        for (let i = 0; i < WX_NX; i++) {
+          const k = j * WX_NX + i, p = s.precip[k];
+          if (p <= 0.004) continue;
+          if (lat > 0) { pn += p; if (s.snow[k]) sn += p; }
+          if (Math.abs(lat) < Math.PI / 4) { latSum += lat * p; latW += p; }
+        }
+      }
+    }
+    return { snowN: pn > 0 ? sn / pn : 0, rainLat: latW > 0 ? latSum / latW : 0 };
+  };
+  let snowSeason = 0, snowNoise = 0, beltShift = 0, beltNoise = 0, ctlSnow = 0, ctlBelt = 0;
+  for (const c of worlds) {
+    const winterN = measure(c, -TILT, 0), summerN = measure(c, TILT, 0);
+    const a = measure(c, 0, 0), b = measure(c, 0, WIN);           // tilt 0, two windows: the noise floor
+    snowSeason += winterN.snowN - summerN.snowN; snowNoise += Math.abs(a.snowN - b.snowN);
+    beltShift += summerN.rainLat - winterN.rainLat; beltNoise += Math.abs(a.rainLat - b.rainLat);
+    // Control: the SAME winter-minus-summer measurement, but with sunLat 0 at
+    // both "solstices" — two separate calls through the real sim path, not a
+    // hardcoded literal.
+    const a2 = measure(c, 0, 0);
+    ctlSnow += a.snowN - a2.snowN; ctlBelt += a.rainLat - a2.rainLat;
+  }
+  const n = Math.max(1, worlds.length);
+  snowSeason /= n; snowNoise /= n; beltShift /= n; beltNoise /= n; ctlSnow /= n; ctlBelt /= n;
+  const deg = (r: number) => ((r * 180) / Math.PI).toFixed(1);
+  check('snow follows the seasons', worlds.length >= 3 && snowSeason >= 3 * snowNoise && snowSeason >= 0.05,
+    `north winter - summer ${snowSeason.toFixed(3)} (noise ${snowNoise.toFixed(3)}) over ${worlds.length} worlds`);
+  check('  control: tilt 0', !(ctlSnow >= 3 * snowNoise && ctlSnow >= 0.05), `ctlSnow ${ctlSnow.toFixed(3)}`);
+  check('storm belt follows the sun', beltShift >= 3 * beltNoise && beltShift >= (2 * Math.PI) / 180,
+    `rain latitude shifts ${deg(beltShift)} deg (noise ${deg(beltNoise)})`);
+  check('  control: tilt 0 belt', !(ctlBelt >= 3 * beltNoise && ctlBelt >= (2 * Math.PI) / 180), `ctlBelt ${deg(ctlBelt)} deg`);
 }
 
 // ─── 3. Anomalies ─────────────────────────────────────────────────────────────
