@@ -605,7 +605,7 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   const c = buildClimate(input(grid, type, seed, over), opts);
   const sim = new WeatherSim(c); sim.warmUp(WX_WARMUP);
   const painter = zoom === 1 ? new WeatherPainter(lut, c, 24, seed)
-    : new WeatherPainter(lut, c, cloudLift, seed, { scale: zoom, pmax: 320 * zoom * zoom });
+    : new WeatherPainter(lut, c, cloudLift, seed, { scale: zoom, pmax: 320 * zoom * zoom, area: zoom * zoom });
   const img = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   const shadow = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   let acc = 0;

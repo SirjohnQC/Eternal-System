@@ -860,10 +860,10 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
   {
     const glint = Eng.cutawayWaterSurf('ocean').glint;
     /** Mean over glint pixels in open water (past the foam band) of min(horizontal run, vertical run) through it. */
-    const glintWidth = (eng: any, geom: any, k: number, kPaint: number) => {
+    const glintWidth = (eng: any, geom: any, k: number, kPaint: number, lineK = kPaint) => {
       const occ = eng.occupancy as Uint8Array, sd = eng.shoreDist as Float32Array;
       const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
-      Eng.paintFluids(img as unknown as ImageData, geom, occ, 'ocean', H.ELAPSED, 0, sd, kPaint);
+      Eng.paintFluids(img as unknown as ImageData, geom, occ, 'ocean', H.ELAPSED, 0, sd, kPaint, lineK);
       const isG = (x: number, y: number) => {
         if (x < 0 || y < 0 || x >= VW || y >= VH) return false;
         const o = (y * VW + x) * 4;
@@ -887,11 +887,14 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
     const w1 = glintWidth(eng, g, 1, 1);
     B.engine.setCamera({ zoom: 4, fx: g.cx - 30, fy: g.cyTop + 10 }); B.engine.showCamera = true;
     const w4 = glintWidth(eng, B.engine.activeGeom, 4, 4);
-    check('strokes: water glint lines at zoom 4 are 1 px wide (median min run)', w4.n >= 50 && w4.med === 1,
+    const onePx = (r: { n: number; med: number }) => r.n >= 50 && r.med === 1;
+    check('strokes: water glint lines at zoom 4 are 1 px wide (median min run)', onePx(w4),
       `zoom 4 median ${w4.med} px, mean ${w4.w.toFixed(2)} px over ${w4.n} open-water glint px; zoom 1 median ${w1.med}, mean ${w1.w.toFixed(2)} over ${w1.n}`);
-    // Control: the zoom-1 glints magnified 4x nearest-neighbour (every width x 4).
-    check('  control: zoom-1 glints magnified 4x are not 1 px wide', !(w1.n >= 50 && w1.med * 4 === 1),
-      `median ${w1.med * 4} px, mean ${(w1.w * 4).toFixed(2)} px`);
+    // Control: the same camera render with the line thresholds left unscaled
+    // (lineK = 1; world anchoring kept) — the glint grows to world width.
+    const wc = glintWidth(eng, B.engine.activeGeom, 4, 4, 1);
+    check('  control: glint width unscaled (lineK = 1) fails the 1-px bar', !onePx(wc),
+      `median ${wc.med} px, mean ${wc.w.toFixed(2)} px over ${wc.n} glint px`);
     B.engine.showCamera = false;
   }
 
@@ -918,12 +921,13 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
       return { n, w: x1 - x0 + 1, h: y1 - y0 + 1 };
     };
     const s4 = streak(cp, 200, 100);
-    check('strokes: a rain streak is 3 px long and 1 px wide at zoom 4', s4.h === 3 && s4.w === 1,
+    const stroke = (r: { w: number; h: number }) => r.h === 3 && r.w === 1;
+    check('strokes: a rain streak is 3 px long and 1 px wide at zoom 4', stroke(s4),
       `${s4.w} x ${s4.h} px (${s4.n} px)`);
-    // Control: the zoom-1 streak magnified 4x nearest-neighbour.
-    const s1 = streak(id, 200, 100);
-    check('  control: the zoom-1 streak magnified 4x is 12 px long, 4 wide', !(s1.h * 4 === 3 && s1.w * 4 === 1),
-      `${s1.w * 4} x ${s1.h * 4} px`);
+    // Control: a camera painter whose streak length is scaled x k (P_LEN x 4).
+    const sp = new WP.WeatherPainter(cp.lut, eng.weatherClimate, cp.cloudLift, 7, { scale: 4, streakScale: 4 });
+    const sc = streak(sp, 200, 100);
+    check('  control: a streak scaled x k fails the stroke bar', !stroke(sc), `${sc.w} x ${sc.h} px`);
 
     // Fall speed is a world distance per second: x k on screen, so a drop's
     // life from cloud base to ground (both x k) is the same at every zoom and
@@ -961,6 +965,39 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
       `zoom 1 ${L1} px, zoom 4 ${L4} px (want ${(MAX_LIFT + 6) * 4})`);
     const Lc = liftOfPainter(new WP.WeatherPainter(cp.lut, eng.weatherClimate, MAX_LIFT + 6, 7));
     check('  control: a camera painter with the unscaled cloud lift', Lc !== (MAX_LIFT + 6) * 4, `${Lc} px`);
+
+    // Lightning density per screen area (Ruling 4), pooled over storm seeds.
+    // The sim steps once; the identity and camera painters both see every
+    // step. Bolts per step per 10k lookup px (the sky a painter can flash in).
+    {
+      const STEPS = 1500;
+      const flashRun = (broken: boolean) => {
+        let b1 = 0, b4 = 0, a1 = 0, a4 = 0;
+        for (const sd of [7, 11, 3]) {
+          const Bs = bakeEngine('storm', sd), es = Bs.engine as any, gs = Bs.engine.geom;
+          Bs.engine.setCamera({ zoom: 4, fx: gs.cx, fy: gs.cyTop });
+          const p1 = es.weatherPainter;
+          let p4 = es.camSet.painter;
+          if (broken) p4 = new WP.WeatherPainter(p4.lut, es.weatherClimate, p4.cloudLift, sd, { scale: 4, pmax: p4.pmax });
+          const sim = es.weatherSim, f1 = p1.flashesTotal, f4 = p4.flashesTotal;
+          for (let s = 0; s < STEPS; s++) {
+            sim.step(0.25); p1.onStep(sim); p4.onStep(sim);
+            p1.prepare(sim, 1, 0.25); p4.prepare(sim, 1, 0.25);
+          }
+          b1 += p1.flashesTotal - f1; b4 += p4.flashesTotal - f4;
+          a1 += p1.lut.count; a4 += p4.lut.count;
+        }
+        const d1 = b1 / STEPS / (a1 / 3) * 1e4, d4 = b4 / STEPS / (a4 / 3) * 1e4;
+        return { d1, d4, ratio: d4 / d1, b1, b4 };
+      };
+      const r = flashRun(false);
+      const ok = (q: { ratio: number }) => q.ratio >= 0.5 && q.ratio <= 2;
+      check('weather: lightning per screen area at zoom 4 within 2x of zoom 1 (storm 7/11/3 pooled)', ok(r),
+        `bolts per step per 10k px: zoom 1 ${r.d1.toFixed(3)}, zoom 4 ${r.d4.toFixed(3)}, ratio ${r.ratio.toFixed(2)} (${r.b1} vs ${r.b4} bolts)`);
+      const c = flashRun(true);
+      check('  control: the identity bolt cap (1 per step, FMAX 8) at zoom 4', !ok(c),
+        `zoom 4 ${c.d4.toFixed(3)} vs zoom 1 ${c.d1.toFixed(3)}, ratio ${c.ratio.toFixed(2)}`);
+    }
 
     // Bounded lookup (Ruling 13: canvas plus the relief margin, here the cloud lift).
     B.engine.setCamera({ zoom: 4, fx: g.cx, fy: g.cyTop });

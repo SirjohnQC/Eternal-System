@@ -119,7 +119,23 @@ export const WEATHER_PMAX = PMAX;
  * on-screen density (Ruling 4); `pmax` lets the particle cap grow with the
  * lookup so that density is not clipped by the identity cap.
  */
-export interface WeatherPainterOpts { scale?: number; pmax?: number }
+export interface WeatherPainterOpts {
+  scale?: number;
+  pmax?: number;
+  /**
+   * Visible screen area of this painter's lookup relative to the identity
+   * lookup (camera painter: camera lookup count / identity count). The
+   * one-new-bolt-per-step flicker cap and the live-bolt cap FMAX scale with it,
+   * so lightning keeps its density per screen area (Ruling 4); the identity
+   * cap would otherwise make a zoomed storm ~area-times sparser. Default 1.
+   */
+  area?: number;
+  /**
+   * TEST HOOK (tools/zoomCheck control only): multiplies the streak length
+   * P_LEN. Rain streaks are a 1-px stroke class and never scale in the game.
+   */
+  streakScale?: number;
+}
 /** Steps of fall simulated when a painter first comes up (snow takes ~8). */
 const PRIME_STEPS = 8;
 /**
@@ -195,11 +211,16 @@ export class WeatherPainter {
   private haloR = 3;
   private wander = 3;
   private fCount = 0;
-  private fX = new Float32Array(FMAX);
-  private fY = new Float32Array(FMAX);
-  private fGround = new Float32Array(FMAX);
-  private fLife = new Float32Array(FMAX);
-  private fSeed = new Uint32Array(FMAX);
+  private fX: Float32Array;
+  private fY: Float32Array;
+  private fGround: Float32Array;
+  private fLife: Float32Array;
+  private fSeed: Uint32Array;
+  /** Live-bolt cap (FMAX x area) and new bolts per step (1 x area, whole). */
+  readonly fmax: number;
+  readonly boltsPerStep: number;
+  /** Streak length per kind (P_LEN; x streakScale in the test control only). */
+  private pLen = new Int32Array(4);
   flashesTotal = 0;
   readonly stats = { drawn: 0, midOrDense: 0 };
 
@@ -236,6 +257,13 @@ export class WeatherPainter {
     this.pX = new Float32Array(pmax); this.pY = new Float32Array(pmax);
     this.pGround = new Float32Array(pmax); this.pSpawn = new Int32Array(pmax);
     this.pPhase = new Float32Array(pmax); this.pKind = new Uint8Array(pmax);
+    const area = Math.max(1, opts.area ?? 1);
+    const fmax = this.fmax = Math.max(FMAX, Math.ceil(FMAX * area));
+    this.boltsPerStep = Math.max(1, Math.round(area));
+    this.fX = new Float32Array(fmax); this.fY = new Float32Array(fmax);
+    this.fGround = new Float32Array(fmax); this.fLife = new Float32Array(fmax);
+    this.fSeed = new Uint32Array(fmax);
+    for (let i = 0; i < 4; i++) this.pLen[i] = Math.max(1, Math.round(P_LEN[i] * (opts.streakScale ?? 1)));
     for (let i = 0; i < 4; i++) this.pSpeed[i] = P_SPEED[i] * k;
     this.tune[0] = 1.5 * k; this.tune[1] = 2 * k;
     this.haloR = Math.max(1, Math.round(3 * k));
@@ -299,8 +327,11 @@ export class WeatherPainter {
     this.primed = true;
     const lut = this.lut, cell = this.cell, rs = this.rs;
     const stride = 29;
-    // At most one new bolt per step: several at once read as a strobe.
-    let flashed = false;
+    // At most one new bolt per step per identity-view area: several at once in
+    // the same area read as a strobe. A zoomed view shows `area` times the
+    // screen area of that sky, so it gets that many (Ruling 4).
+    let flashes = 0;
+    const boltCap = this.boltsPerStep, fmax = this.fmax;
     this.roll();
     for (let n = Math.floor((rs[0] >>> 0) * INV32 * stride); n < lut.count; n += stride) {
       const k = cell[n];
@@ -315,7 +346,7 @@ export class WeatherPainter {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < 0.05) this.spawn(n, 3);
       }
-      if (!flashed && this.fCount < FMAX && (kindAt(sim, k) === WK.STORM || sim.ash[k] > 0.7)) {
+      if (flashes < boltCap && this.fCount < fmax && (kindAt(sim, k) === WK.STORM || sim.ash[k] > 0.7)) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < FLASH_CHANCE) {
           const f = this.fCount++;
@@ -324,7 +355,7 @@ export class WeatherPainter {
           this.roll();
           this.fSeed[f] = rs[0] >>> 0;
           this.flashesTotal++;
-          flashed = true;
+          flashes++;
         }
       }
     }
@@ -429,7 +460,8 @@ export class WeatherPainter {
       const x = Math.round(this.pX[q] + drift), y0 = Math.round(this.pY[q]);
       const o4 = kind * 4;
       const ai = (P_RGBA[o4 + 3] * intensity * A_ONE) | 0;
-      for (let l = 0; l < P_LEN[kind]; l++) {
+      const len = this.pLen[kind];
+      for (let l = 0; l < len; l++) {
         const y = y0 + l;
         if (x < 0 || y < 0 || x >= w || y >= h || y > this.pGround[q]) continue;
         over(d, (y * w + x) * 4, P_RGBA[o4], P_RGBA[o4 + 1], P_RGBA[o4 + 2], ai);

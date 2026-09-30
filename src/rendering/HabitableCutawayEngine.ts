@@ -1868,6 +1868,12 @@ export function paintFluids(
   planetType: HabitableType, elapsed: number, layerBob: number,
   shoreDist?: Float32Array | null,
   k = 1,
+  /**
+   * Scale of the web's 1-px line thresholds; always `k` in the game. A
+   * separate argument only so tools/zoomCheck's control can render the
+   * camera set with the glint width left unscaled.
+   */
+  lineK = k,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
@@ -1880,7 +1886,7 @@ export function paintFluids(
   // depth ramp, cellScale, grain/blob, magma drift) keeps its world size. The
   // web's line thresholds (glint, halo, whisper) are 1-px strokes: the ridge
   // distance is scaled by k so a line stays one screen px wide.
-  const invK = 1 / k;
+  const invK = 1 / k, invL = 1 / lineK;
   const rimCut = k === 1 ? 0.94 : (1 - (1 - Math.sqrt(0.94)) / k) ** 2;
   const d = img.data;
   const w = img.width, h = img.height;
@@ -1981,10 +1987,10 @@ export function paintFluids(
         // the two walls coincide in most places and braid apart elsewhere.
         const warp2 = noise2(bx * 0.9 + wob2X + 7.7, by * 0.9 + wob2Y, seed + 5);
         const b1 = cellRidge(qx, qy, seed);
-        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02 * invK;
+        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02 * invL;
         // Ridge distance in screen terms (x k): the thresholds below then cut
         // the same 1-px-wide lines at any zoom.
-        let b = (b1 < b2 ? b1 : b2) * k;
+        let b = (b1 < b2 ? b1 : b2) * lineK;
         const grain = noise2(lx * 0.23, ly * 0.23, seed + 11);
         b += (grain - 0.5) * 0.035;
         const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
@@ -2315,6 +2321,7 @@ export class HabitableCutawayEngine {
       { bounds: { w: this.w, h: this.h, below: cloudLift }, projectF: o.discToGridF });
     const painter = new WeatherPainter(lut, climate, cloudLift, base.seed, {
       scale: k, pmax: WEATHER_PMAX * Math.max(1, lut.count / this.idLutCount),
+      area: lut.count / this.idLutCount,
     });
     painter.prepare(sim, this.weatherAcc / WX_DT, 0);
     return painter;
