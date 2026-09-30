@@ -936,15 +936,20 @@ export class IsoDioramaRenderer {
    * the 4 cell centres around the pixel's fractional grid position (columns
    * wrap, rows clamp). Coastlines and terrace edges follow it, so they become
    * curves when the view is re-rendered zoomed in instead of cell-sized stair
-   * steps. Bake-time only — never called per frame. The caller subtracts
-   * rimFalloff as it does for smoothElevation.
+   * steps. Bake-time only — never called per frame, and only camera bakes
+   * (cameraZoom > 1) use it; the identity bake stays nearest-cell. The caller
+   * subtracts rimFalloff as it does for smoothElevation.
    */
   private elevationAt(grid: PlanetGrid, dx: number, dy: number): number | null {
     const f = this.discToGridF(dx, dy);
-    if (!f) return null;
-    const rr = Math.max(0, Math.min(GRID_SIZE - 1, f.row));
+    return f ? this.elevationAtGrid(grid, f.row, f.col) : null;
+  }
+
+  /** {@link elevationAt} at a fractional grid position (discToGridF units). */
+  private elevationAtGrid(grid: PlanetGrid, row: number, col: number): number {
+    const rr = Math.max(0, Math.min(GRID_SIZE - 1, row));
     const r0 = Math.min(GRID_SIZE - 2, Math.floor(rr)), tr = rr - r0;
-    const cc = f.col - 0.5;
+    const cc = col - 0.5;
     const c0f = Math.floor(cc), tc = cc - c0f;
     const c0 = ((c0f % GRID_SIZE) + GRID_SIZE) % GRID_SIZE, c1 = (c0 + 1) % GRID_SIZE;
     const e00 = this.smoothElevation(grid, r0, c0), e01 = this.smoothElevation(grid, r0, c1);

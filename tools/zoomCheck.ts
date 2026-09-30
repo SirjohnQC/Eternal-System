@@ -180,53 +180,82 @@ console.log('\n  CONTROLLER — pan, resize, supersede (Ruling 9 fix round 1)');
   check('  control: settled() without the supersede guard shows the stale camera', ns.showCamera === true, `showCamera ${ns.showCamera}`);
 }
 
-console.log('\n  IDENTITY (Task 3: sub-cell elevation is the one declared difference)');
+console.log('\n  IDENTITY (Ruling 11: zoom 1 is byte-identical to the pre-change render)');
 {
-  const { renderLayers, hashImage, nearestClassMap, boundaryBand, LAYERS } = await import('./zoomHarness');
+  const { renderLayers, hashImage, LAYERS } = await import('./zoomHarness');
   const goldens = (await import('./zoomGoldens.json')).default as Record<string, Record<string, string>>;
-  // Layers the sub-cell change may touch: the surface and occupancy readers,
-  // and the weather (its ground lift). Everything else must hash identical.
-  const MAY_DIFFER = new Set(['crust', 'land', 'fluids', 'dayNight', 'weather']);
-  const SHARE_MAX = 0.02;
-
-  interface Verdict { ok: boolean; lines: string[] }
-  /** Compare `got` to the nearest-cell render `ref` (which must equal the goldens). */
-  const judge = (type: string, got: Record<string, Uint8ClampedArray>, ref: Record<string, Uint8ClampedArray>, band: Uint8Array): Verdict => {
-    let ok = true; const lines: string[] = [];
-    for (const layer of LAYERS) {
-      const g = got[layer], r = ref[layer];
-      if (hashImage(g) === goldens[type][layer]) { lines.push(`${layer}: identical`); continue; }
-      if (!MAY_DIFFER.has(layer) || g.length !== r.length || r.length !== band.length * 4) {
-        ok = false; lines.push(`${layer}: DIFFERS (not allowed to)`); continue;
-      }
-      let nonEmpty = 0, diff = 0, outside = 0;
-      for (let i = 0, p = 0; i < r.length; i += 4, p++) {
-        if (r[i + 3] > 0) nonEmpty++;
-        if (r[i] !== g[i] || r[i + 1] !== g[i + 1] || r[i + 2] !== g[i + 2] || r[i + 3] !== g[i + 3]) {
-          diff++; if (!band[p]) outside++;
-        }
-      }
-      const share = nonEmpty ? diff / nonEmpty : Infinity;
-      const good = share < SHARE_MAX && outside === 0;
-      if (!good) ok = false;
-      lines.push(`${layer}: ${diff} px differ = ${(share * 100).toFixed(3)}% of ${nonEmpty} non-empty, ${outside} outside the 2 px boundary band${good ? '' : '  <-- FAIL'}`);
-    }
-    return { ok, lines };
-  };
-
   for (const type of Object.keys(goldens)) {
-    const ref = renderLayers(type, 7, { subCell: false });
-    const refSame = LAYERS.filter(l => hashImage(ref[l]) === goldens[type][l]).length;
-    check(`${type}: nearest-cell path hashes identical to the goldens`, refSame === LAYERS.length, `${refSame}/${LAYERS.length} layers`);
-    const band = boundaryBand(nearestClassMap(type, 7));
-    const v = judge(type, renderLayers(type, 7), ref, band);
-    check(`${type}: identity render differs only on coast/terrace edges`, v.ok, '');
-    for (const l of v.lines) console.log(`          ${l}`);
+    const got = renderLayers(type, 7);
+    const differ = LAYERS.filter(l => hashImage(got[l]) !== goldens[type][l]);
+    check(`${type}: all ${LAYERS.length} layers hash identical to the goldens`, differ.length === 0,
+      differ.length ? `differ: ${differ.join(', ')}` : `${LAYERS.length}/${LAYERS.length}`);
     if (type !== 'gas') {  // gas never reads rimFalloff
-      const c = judge(type, renderLayers(type, 7, { rimPerturb: 0.02 }), ref, band);
-      check(`  control: ${type} rimFalloff + 0.02 fails the same bar`, !c.ok, '');
-      for (const l of c.lines) console.log(`          ${l}`);
+      const c = renderLayers(type, 7, { rimPerturb: 0.02 });
+      const cd = LAYERS.filter(l => hashImage(c[l]) !== goldens[type][l]);
+      check(`  control: ${type} rimFalloff + 0.02 differs from the goldens`, cd.length > 0, `differ: ${cd.join(', ')}`);
     }
+  }
+}
+
+console.log('\n  SUB-CELL (elevationAt is continuous and interpolates the same data)');
+{
+  const { makeDiscToGrid, makeDiscToGridF, makeElevationAt, makeElevationAtGrid, smoothElevation, computeFocus } = await import('./zoomHarness');
+  const { generatePlanetGrid, GRID_SIZE } = await import('../src/simulation/PlanetGrid');
+  let s = 12345;
+  const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+  type Sampler = (dx: number, dy: number) => number | null;
+  type ToF = (dx: number, dy: number) => { row: number; col: number } | null;
+  const gridDist = (p: { row: number; col: number }, q: { row: number; col: number }) => {
+    let dc = Math.abs(p.col - q.col); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc;
+    return Math.hypot(p.row - q.row, dc);
+  };
+  /**
+   * Largest step between consecutive samples of `a` and of `b` along 200
+   * random lines across the face, one sample every 0.25 cell (grid units).
+   */
+  const walk = (toF: ToF, a: Sampler, b: Sampler, lines = 200, samples = 48) => {
+    let maxA = 0, maxB = 0;
+    for (let l = 0; l < lines; l++) {
+      const r0 = Math.sqrt(rnd()) * 0.8, t0 = rnd() * Math.PI * 2, dir = rnd() * Math.PI * 2;
+      let x = r0 * Math.cos(t0), y = r0 * Math.sin(t0);
+      const ux = Math.cos(dir), uy = Math.sin(dir);
+      let pa: number | null = null, pb: number | null = null;
+      for (let k = 0; k < samples; k++) {
+        if (Math.hypot(x, y) > 0.97) break;
+        const va = a(x, y), vb = b(x, y);
+        if (va === null || vb === null) break;
+        if (pa !== null && pb !== null) { maxA = Math.max(maxA, Math.abs(va - pa)); maxB = Math.max(maxB, Math.abs(vb - pb)); }
+        pa = va; pb = vb;
+        // Disc step that moves 0.25 of a cell in grid units, from the local scale.
+        const h = 1e-4, p = toF(x, y), q = toF(x + ux * h, y + uy * h);
+        if (!p || !q) break;
+        const step = 0.25 * h / Math.max(1e-12, gridDist(p, q));
+        x += ux * step; y += uy * step;
+      }
+    }
+    return { maxA, maxB };
+  };
+  for (const type of ['ocean', 'lava']) {
+    const grid = generatePlanetGrid(type, 7 * 7777, null, null);
+    const f = computeFocus(grid);
+    const toF = makeDiscToGridF(f.lat, f.lon), toN = makeDiscToGrid(f.lat, f.lon);
+    const sub = makeElevationAt(grid, f.lat, f.lon);
+    const nearest: Sampler = (dx, dy) => { const g = toN(dx, dy); return g ? smoothElevation(grid, g.row, g.col) : null; };
+    const w = walk(toF, sub, nearest);
+    const ratio = w.maxA / w.maxB;
+    check(`${type}: largest elevationAt step <= 0.3x nearest-cell step`, ratio <= 0.3,
+      `ratio ${ratio.toFixed(3)} (sub-cell ${w.maxA.toFixed(4)}, nearest ${w.maxB.toFixed(4)})`);
+    // At cell centres (row i, col j + 0.5) it returns the nearest-cell smoothed value.
+    const atGrid = makeElevationAtGrid(grid);
+    let worst = 0;
+    const at = (i: number, j: number) => { worst = Math.max(worst, Math.abs(atGrid(i, j + 0.5) - smoothElevation(grid, i, j))); };
+    for (let i = 0; i < GRID_SIZE; i += 3) for (let j = 0; j < GRID_SIZE; j += 3) at(i, j);
+    for (const i of [0, GRID_SIZE - 1]) for (const j of [0, GRID_SIZE - 1]) at(i, j);
+    check(`${type}: elevationAt at cell centres equals smoothElevation`, worst <= 1e-9, `worst ${worst.toExponential(1)}`);
+    // Control: the nearest-cell sampler measured against itself (ratio 1.0).
+    const c = walk(toF, nearest, nearest);
+    const cr = c.maxA / c.maxB;
+    check(`  control: ${type} nearest vs itself fails the 0.3x bar`, !(cr <= 0.3), `ratio ${cr.toFixed(3)}`);
   }
 }
 

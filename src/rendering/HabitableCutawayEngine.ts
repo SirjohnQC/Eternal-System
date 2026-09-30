@@ -251,11 +251,15 @@ export interface CutawayBakeOpts extends CutawayGeom {
   /**
    * Sub-cell elevation: `smoothElevation` interpolated bilinearly at the disc
    * point's FRACTIONAL grid position, null off-face (the caller subtracts
-   * rimFalloff). When present the land/water test, the coast outline, the relief
-   * lift and the weather's ground lift use it, so edges resolve between cells;
-   * biome colour, placement and picking stay on the nearest cell.
+   * rimFalloff). Used only by camera bakes (`cameraZoom > 1`): there the
+   * land/water test, the coast outline, the relief lift and the weather's
+   * ground lift follow it, so edges resolve between cells. The identity bake
+   * ignores it and stays nearest-cell, byte-identical to the pre-zoom render
+   * (Ruling 11). Biome colour, placement and picking always use the nearest cell.
    */
   elevationAt?: (dx: number, dy: number) => number | null;
+  /** Zoom of the camera this bake renders; undefined = identity. Task 4 sets it for camera bakes. */
+  cameraZoom?: number;
   /** Tallest lift `liftOf` can return, so the bake can reserve rows above the rim. */
   maxLift: number;
 
@@ -773,10 +777,16 @@ const KEY_Y = -0.45;
  * leave the land canvas empty and stamp occupancy + pick for live fluids.
  * Gas giants fill the whole disc with latitude bands (no water holes).
  */
+/** The sub-cell sampler a bake may use: only camera bakes zoomed in (Ruling 11). */
+function subCellSampler(opts: Pick<CutawayBakeOpts, 'cameraZoom' | 'elevationAt'>): ((dx: number, dy: number) => number | null) | undefined {
+  return opts.cameraZoom !== undefined && opts.cameraZoom > 1 ? opts.elevationAt : undefined;
+}
+
 export function paintCutawaySurface(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed, grid } = opts;
+  const elevationAt = subCellSampler(opts);
   const pal = paletteFor(opts.planetType);
   g.clearRect(0, 0, VW, VH);
 
@@ -892,7 +902,7 @@ export function paintCutawaySurface(
         // Colour stays the nearest cell's biome — unless that cell is water and
         // the interpolated ground here is land, when the land biome the
         // interpolated elevation gives (the coast's own) is the only one to use.
-        const smoothF = opts.elevationAt ? opts.elevationAt(dx, dy) : null;
+        const smoothF = elevationAt ? elevationAt(dx, dy) : null;
         const elevF = smoothF === null ? elev : smoothF - rim;
         if (smoothF !== null) {
           const biomeF = classifyBiome(elevF, cell.moisture, cell.temperature, opts.planetType);
@@ -1921,7 +1931,7 @@ export class HabitableCutawayEngine {
     if (opts.weather && grid && opts.planetType !== 'gas') {
       // Ground lift follows the sub-cell elevation like the surface does; the
       // lookup's field coordinates (fx/fy) stay per cell.
-      const elevAt = opts.elevationAt;
+      const elevAt = subCellSampler(opts);
       const lut = buildWeatherLut(this.geom, opts.discToGrid,
         (row, col, r, dx, dy) => opts.liftOf(
           (elevAt?.(dx, dy) ?? opts.smoothElevation(grid, row, col)) - opts.rimFalloff(r)));
