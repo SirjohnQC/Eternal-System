@@ -7,8 +7,16 @@
  */
 import type { ImageDataLike } from '../weather/WeatherPainter';
 import { wrapPi } from './OrbitSky';
+import { farScale, isIdentity, type Camera } from '../ZoomCamera';
 
-export interface SkyLayout { cx: number; horizonY: number; A: number; B: number; bloom: number }
+export interface SkyLayout {
+  cx: number; horizonY: number; A: number; B: number; bloom: number;
+  /**
+   * Far scale this layout was transformed by (`farLayout`); the sun disc and
+   * the sibling discs scale by it. Omitted = 1 (the identity view).
+   */
+  far?: number;
+}
 
 export function skyLayout(geom: { cx: number; cyTop: number; rx: number }, vw: number, vh: number): SkyLayout {
   return {
@@ -17,6 +25,23 @@ export function skyLayout(geom: { cx: number; cyTop: number; rx: number }, vw: n
     A: Math.min(vw / 2 - 8, Math.max(1.25 * geom.rx, 0.42 * vw)),
     B: Math.max(8, geom.cyTop - 12),
     bloom: 0.42 * Math.min(vw, vh),
+  };
+}
+
+/**
+ * The sky seen through a zoom camera: a FAR layer, so it moves by
+ * `farScale(zoom)` (a mild parallax), not by the zoom. `A`, `B` and `bloom`
+ * scale by it and the track's centre maps about the camera focus:
+ * x' = (x - fx) * s + VW/2. The identity camera returns `L` itself, so zoom 1
+ * is exactly today's sky. `L` must come from the BASE geometry.
+ */
+export function farLayout(L: SkyLayout, cam: Camera, VW: number, VH: number): SkyLayout {
+  if (isIdentity(cam, VW, VH)) return L;
+  const s = farScale(cam.zoom);
+  return {
+    cx: (L.cx - cam.fx) * s + VW / 2,
+    horizonY: (L.horizonY - cam.fy) * s + VH / 2,
+    A: L.A * s, B: L.B * s, bloom: L.bloom * s, far: s,
   };
 }
 
@@ -153,7 +178,8 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
       over(d, (y * W + x) * 4, cr, cg, cb, bloomCoreAlpha(Math.sqrt(d2) / Rb, f));
     }
   }
-  const D = opts.fixedSunSize ? SUN_DIAMETER : sunDiameter(sky.sunSizeScale), rad = D / 2;
+  // Far class: the disc (and with it the flare arms) grows by the far scale.
+  const D = (opts.fixedSunSize ? SUN_DIAMETER : sunDiameter(sky.sunSizeScale)) * (L.far ?? 1), rad = D / 2;
   const arm = Math.round(6 + D);
   for (let k = -arm; k <= arm; k++) {
     const xs = Math.round(sunX) + k, ys = Math.round(sunY) + k;

@@ -37,9 +37,19 @@ function blend(d: Uint8ClampedArray, o: number, r: number, g: number, b: number,
   d[o + 2] = d[o + 2] + (b - d[o + 2]) * a;
 }
 
+/**
+ * Bake the panorama. `scale` (a zoom camera's `farScale`) re-bakes the SAME
+ * backdrop seen through the far transform: `img` is then
+ * `round(backdropWidth(vw) * scale)` wide and `VH` tall, feature sizes and
+ * spacing (gradient span, nebula line and blobs, star spacing) are x scale,
+ * vertically about `fy` (the camera focus, base px; default the canvas
+ * centre), and every star stays a 1-px point with 1-px cross arms. Omitted or
+ * 1: today's bake, untouched.
+ */
 export function bakeBackdrop(
-  img: ImageDataLike, opts: { seed: number; vw: number; periodic?: boolean },
+  img: ImageDataLike, opts: { seed: number; vw: number; periodic?: boolean; scale?: number; fy?: number },
 ): void {
+  if (opts.scale !== undefined && opts.scale !== 1) { bakeBackdropFar(img, opts.seed, opts.vw, opts.scale, opts.fy); return; }
   const periodic = opts.periodic ?? true;
   const W = img.width, H = img.height, d = img.data, vw = opts.vw;
   const s = rng(opts.seed);
@@ -102,6 +112,86 @@ export function bakeBackdrop(
       put(x, y, [255, 250, 240], 0.55 + s() * 0.35);
     } else {
       put(x, y, [200, 215, 255], 0.14 + s() * 0.28);
+    }
+  }
+}
+
+/**
+ * The far-scaled bake (see `bakeBackdrop`). Same random stream in the same
+ * order as the identity bake, so every feature is the same feature: world
+ * (identity panorama) point (x, y) lands at X = x * sx, Y = (y - fy) * s + H/2,
+ * with sx = img.width / W so the panorama still tiles exactly. Periodic only.
+ * Stars also repeat one panorama height above and below, so a focus near the
+ * top or bottom does not show a starless band where the identity panorama ends.
+ */
+function bakeBackdropFar(img: ImageDataLike, seed: number, vw: number, scale: number, fyIn?: number): void {
+  const Wi = img.width, H = img.height, d = img.data;
+  const W = backdropWidth(vw), sx = Wi / W, sy = scale, fy = fyIn ?? H / 2;
+  const s = rng(seed);
+  const worldY = (Y: number) => (Y - H / 2) / sy + fy;
+  const imgY = (y: number) => (y - fy) * sy + H / 2;
+
+  // Gradient over the world rows each image row shows (clamped past the ends).
+  const STOP_A = [8, 10, 28, 5, 6, 20], STOP_B = [5, 6, 20, 2, 3, 12];
+  for (let Y = 0; Y < H; Y++) {
+    let t = worldY(Y) / Math.max(1, H - 1);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
+    const stop = t < 0.55 ? STOP_A : STOP_B;
+    const r = stop[0] + (stop[3] - stop[0]) * u, g = stop[1] + (stop[4] - stop[1]) * u, b = stop[2] + (stop[5] - stop[2]) * u;
+    for (let X = 0; X < Wi; X++) {
+      const o = (Y * Wi + X) * 4;
+      d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+    }
+  }
+
+  // Nebula: the same five blobs on the same sine line, in image px.
+  const y0 = H * (0.25 + s() * 0.35), amp = H * (0.08 + s() * 0.10), ph = s() * TAU;
+  s();   // the non-periodic slope draw, kept so the stream stays in step
+  for (let i = 0; i < 5; i++) {
+    const bx = (i + s()) * (W / 5);
+    const by = y0 + amp * Math.sin((TAU * bx) / W + ph);
+    const bw = vw * (0.5 + s() * 0.45), bh = bw * (0.30 + s() * 0.25);
+    const tint = s() > 0.5 ? [90, 110, 200] : [120, 90, 180];
+    const hw = (bw / 2) * sx, hh = (bh / 2) * sy, cyI = imgY(by);
+    for (const shift of [-Wi, 0, Wi]) {
+      const cxI = bx * sx + shift;
+      const xa = Math.max(0, Math.floor(cxI - hw)), xb = Math.min(Wi - 1, Math.ceil(cxI + hw));
+      const ya = Math.max(0, Math.floor(cyI - hh)), yb = Math.min(H - 1, Math.ceil(cyI + hh));
+      for (let Y = ya; Y <= yb; Y++) for (let X = xa; X <= xb; X++) {
+        const nx = (X - cxI) / hw, ny = (Y - cyI) / hh, r = Math.sqrt(nx * nx + ny * ny);
+        if (r >= 1) continue;
+        const a = r < 0.5 ? 0.07 + (0.028 - 0.07) * (r / 0.5) : 0.028 * (1 - (r - 0.5) / 0.5);
+        blend(d, (Y * Wi + X) * 4, tint[0], tint[1], tint[2], a);
+      }
+    }
+  }
+
+  // Stars: the same stars at their far-transformed spots, 1 px each.
+  const count = Math.round((W * H) / 900);
+  const put = (X: number, Y: number, c: number[], a: number) => {
+    if (Y < 0 || Y >= H) return;
+    X = ((X % Wi) + Wi) % Wi;
+    blend(d, (Y * Wi + X) * 4, c[0], c[1], c[2], a);
+  };
+  const star = (x: number, y: number, draw: (X: number, Y: number) => void) => {
+    const X = Math.round(x * sx);
+    for (const dy of [-H, 0, H]) draw(X, Math.round(imgY(y + dy)));
+  };
+  for (let i = 0; i < count; i++) {
+    const x = Math.floor(s() * W), y = Math.floor(s() * H), t = s();
+    if (t > 0.965) {
+      const c = s() > 0.5 ? [255, 240, 210] : [210, 230, 255];
+      star(x, y, (X, Y) => {
+        put(X, Y, c, 0.95);
+        put(X - 1, Y, c, 0.35); put(X + 1, Y, c, 0.35); put(X, Y - 1, c, 0.35); put(X, Y + 1, c, 0.35);
+      });
+    } else if (t > 0.80) {
+      const a = 0.55 + s() * 0.35;
+      star(x, y, (X, Y) => put(X, Y, [255, 250, 240], a));
+    } else {
+      const a = 0.14 + s() * 0.28;
+      star(x, y, (X, Y) => put(X, Y, [200, 215, 255], a));
     }
   }
 }

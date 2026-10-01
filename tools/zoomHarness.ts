@@ -409,3 +409,51 @@ export function renderLayers(type: string, seed: number, ro: RenderOpts = {}): R
   }
 }
 
+
+// ─── The real IsoDioramaRenderer, headless ───────────────────────────────────
+//
+// For the Task 6 placement checks (city lights, settlements, creatures, divine
+// effects, moons, tile markers, sky). `init` runs against a stub mount of
+// 960x640 CSS px (virtual 480x320); the decal atlas fetch fails in node and the
+// procedural decal fallback is used, as in the engine fixture. The grid gets a
+// civilisation on ~30% of its land cells and one founding species on the rest,
+// so every placement kind has candidates. Fixed clock (animTick 1000).
+
+const { IsoDioramaRenderer } = await import('../src/rendering/IsoDioramaRenderer');
+const { initPlayerSpecies } = await import('../src/simulation/EvolutionEngine');
+const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
+const { SeedRNG } = await import('../src/utils/SeedRNG');
+
+export const RENDERER_MOONS = [
+  { name: 'm0', radius: 0.8, orbitalRadius: 4, orbitalAngle: 0.4, orbitalSpeed: 0, color: '#c8c0b0', kind: 'rock', habitability: 0, colonised: true, colonisedTick: 0 },
+  { name: 'm1', radius: 0.5, orbitalRadius: 6, orbitalAngle: 3.6, orbitalSpeed: 0, color: '#b0d8f0', kind: 'ice', habitability: 0, colonised: false, colonisedTick: null },
+];
+
+/** A headless IsoDioramaRenderer baked for `type`/`seed` (see above). Returns it as `any` for private access. */
+export async function makeRenderer(type: string, seed: number): Promise<any> {
+  const grid = generatePlanetGrid(type, seed * 7777, null, null);
+  const species = initPlayerSpecies(0, new SeedRNG(`founder_zoom_${seed}`));
+  const sid = species[0].id;
+  for (let row = 0; row < GRID_SIZE; row++) for (let col = 0; col < GRID_SIZE; col++) {
+    const cell = grid[row][col];
+    if (isWater(cell.biome)) continue;
+    const h = ((Math.imul(row * 928371 + col * 12345 + seed, 2654435761) >>> 0) % 1000) / 1000;
+    if (h < 0.3) cell.civId = 'civ0';
+    else { cell.dominantSpeciesId = sid; cell.lifeDensity = 0.6; }
+  }
+  const home: any = { ...P(40, 0.3), radius: 5, type, name: `Zoomworld${seed}`, moons: RENDERER_MOONS, hasLife: true, biosphere: 0.5, color: '#fff', genomeSeed: seed };
+  const sibling: any = { ...P(70, 1.2), radius: 7, type: 'gas', name: 'Sib', moons: [], hasLife: false, biosphere: 0, color: '#fff' };
+  const star: any = { x: 0, y: 0, temperature: 5800, civLevel: 3, biologyPhase: 'intelligent', planets: [home, sibling] };
+  const mount: any = {
+    style: {}, clientWidth: 960, clientHeight: 640,
+    appendChild() {}, addEventListener() {}, removeEventListener() {}, setPointerCapture() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 960, height: 640 }),
+  };
+  const r: any = new IsoDioramaRenderer();
+  r.setClock(() => 1000);
+  await r.init(mount);
+  r.refreshData(grid, { ...DEFAULT_BIOSPHERE }, species, home, star, 0);
+  r.elapsed = ELAPSED;
+  r.sky = r.skyNow();
+  return r;
+}

@@ -14,10 +14,23 @@ import { isWater } from '../simulation/PlanetGrid';
 export type DecalKind = 'conifer' | 'broadleaf' | 'scrub' | 'cactus' | 'rock';
 
 export interface DecalSite {
-  /** Screen x, in virtual pixels. */
+  /** Screen x, in virtual pixels (the planner's: at the identity view this IS base world x). */
   x: number;
   /** Screen y, ALREADY raised by the cell's terrace lift. */
   y: number;
+  /**
+   * Base-world position (the identity plan's x, y), set by the engine when it
+   * stores its plan; a camera bake maps these to screen and never re-plans.
+   */
+  wx?: number;
+  wy?: number;
+  /**
+   * The ground colour (packed 0xRRGGBB) this decal was stamped on in the
+   * identity bake, or -1 when it was not stamped (no footing). Written by
+   * `stampDecals` when asked to `record`; a camera stamp uses it for a decal
+   * whose anchor is off its buffer but whose sprite reaches into it.
+   */
+  foot?: number;
   kind: DecalKind;
   /** Size multiplier, larger toward the centre of the face. */
   scale: number;
@@ -279,31 +292,55 @@ export interface DecalAtlas {
  * `d` is the sub-rect buffer the surface painter builds; `x0`/`yTop` are its
  * offset on screen, so site coordinates convert with `x - x0`, `y - yTop`.
  *
+ * `scale` (a camera bake: round(k)) blows every sprite pixel up to a
+ * scale x scale block, nearest-neighbour, anchored on the same base pixel.
+ * Sprites are CLIPPED to the buffer, not culled by their anchor: a decal whose
+ * anchor is off the buffer but whose sprite reaches into it is stamped on the
+ * ground colour its identity stamp recorded (`site.foot`); without that
+ * record its footing cannot be tested and it is skipped. `record` (the
+ * identity bake) writes `site.foot` for every site.
+ *
  * Returns the number of decals actually drawn.
  */
 export function stampDecals(
   d: Uint8ClampedArray, bw: number, bh: number,
   x0: number, yTop: number,
   sites: DecalSite[], atlas: DecalAtlas | null,
+  scale = 1, record = false,
 ): number {
   let drawn = 0;
+  const S = Math.max(1, Math.round(scale)), half = S >> 1;
+  const reach = ((atlas?.cell ?? 16) + 2) * S;
   for (const s of sites) {
     const bx = Math.round(s.x) - x0, by = Math.round(s.y) - yTop;
+    let ur: number, ug: number, ub: number;
     // bx needs room for the bx-1/bx+1 reads below; by only needs to be a valid
     // row (by-1 is never read — see the note at the vertical guard).
-    if (bx < 1 || bx >= bw - 1 || by < 0 || by >= bh) continue;
-    const foot = (by * bw + bx) * 4;
-    // Its own footprint must stand on painted land, or decals hang off coasts.
-    if (d[foot + 3] === 0) continue;
-    if (d[((by * bw) + bx - 1) * 4 + 3] === 0) continue;
-    if (d[((by * bw) + bx + 1) * 4 + 3] === 0) continue;
-    // The footprint is the decal's BASE, so the pixel it rests on must be
-    // painted too, or the decal reads as floating on nothing. Deliberately
-    // NOT checking the pixel above: decals draw upward from their base, and
-    // at the top rim the terrain silhouette ends with space above it — trees
-    // breaking the skyline there are the correct look, not a bug.
-    if (by + 1 < bh && d[((by + 1) * bw + bx) * 4 + 3] === 0) continue;
-    const ur = d[foot], ug = d[foot + 1], ub = d[foot + 2];
+    if (bx >= 1 && bx < bw - 1 && by >= 0 && by < bh) {
+      const foot = (by * bw + bx) * 4;
+      // Its own footprint must stand on painted land, or decals hang off coasts.
+      // The footprint is the decal's BASE, so the pixel it rests on must be
+      // painted too, or the decal reads as floating on nothing. Deliberately
+      // NOT checking the pixel above: decals draw upward from their base, and
+      // at the top rim the terrain silhouette ends with space above it — trees
+      // breaking the skyline there are the correct look, not a bug.
+      if (d[foot + 3] === 0
+        || d[((by * bw) + bx - 1) * 4 + 3] === 0
+        || d[((by * bw) + bx + 1) * 4 + 3] === 0
+        || (by + 1 < bh && d[((by + 1) * bw + bx) * 4 + 3] === 0)) {
+        if (record) s.foot = -1;
+        continue;
+      }
+      ur = d[foot]; ug = d[foot + 1]; ub = d[foot + 2];
+      if (record) s.foot = (ur << 16) | (ug << 8) | ub;
+    } else {
+      // Anchor off the buffer: stamp the part of the sprite that reaches in,
+      // on the ground its identity stamp stood on. No record, no footing: skip.
+      if (record) s.foot = -1;
+      if (s.foot === undefined || s.foot < 0) continue;
+      if (bx + reach < 0 || bx - reach >= bw || by - reach >= bh || by + 2 * S < 0) continue;
+      ur = (s.foot >> 16) & 255; ug = (s.foot >> 8) & 255; ub = s.foot & 255;
+    }
 
     // lit 0..255 from the atlas mask -> a multiplier plus a small hue push, so
     // foliage reads greener than the ground without leaving its family.
@@ -317,11 +354,19 @@ export function stampDecals(
         Math.max(0, Math.min(255, ub * m + (push ? -10 : 10))),
       ];
     };
-    const px = (x: number, y: number, c: [number, number, number]) => {
+    const px1 = (x: number, y: number, c: [number, number, number]) => {
       if (x < 0 || y < 0 || x >= bw || y >= bh) return;
       const o = (y * bw + x) * 4;
       d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
     };
+    // One sprite pixel at sprite offset (ox, oy) from the anchor: an S x S
+    // block whose bottom row sits on the anchor row's scaled position.
+    const px = S === 1
+      ? (ox: number, oy: number, c: [number, number, number]) => px1(bx + ox, by + oy, c)
+      : (ox: number, oy: number, c: [number, number, number]) => {
+        const X = bx + ox * S - half, Y = by + oy * S - (S - 1);
+        for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) px1(X + i, Y + j, c);
+      };
 
     const row = atlas ? atlas.rows[s.kind] ?? 0 : 0;
     const variant = atlas ? Math.abs((s.row * 31 + s.col * 17)) % Math.max(1, atlas.variants) : 0;
@@ -336,9 +381,7 @@ export function stampDecals(
         for (let ax = 0; ax < atlas.cell; ax++) {
           const ao = ((sy0 + ay) * atlas.width + (sx0 + ax)) * 4;
           if (atlas.data[ao + 3] === 0) continue;
-          const tx = bx + ax - (atlas.cell >> 1);
-          const ty = by + ay - (atlas.cell - 2);
-          px(tx, ty, shade(atlas.data[ao]));
+          px(ax - (atlas.cell >> 1), ay - (atlas.cell - 2), shade(atlas.data[ao]));
         }
       }
     } else {
@@ -346,8 +389,8 @@ export function stampDecals(
       // has not loaded yet. Deliberately crude: a marker, not art.
       const h = Math.round((s.kind === 'scrub' || s.kind === 'rock' ? 4 : 10) * s.scale);
       for (let i = 0; i < h; i++) {
-        const half = Math.max(0, Math.round((1 - i / h) * h * 0.4));
-        for (let dx = -half; dx <= half; dx++) px(bx + dx, by - i, shade(dx < 0 ? 210 : 70));
+        const hw = Math.max(0, Math.round((1 - i / h) * h * 0.4));
+        for (let dx = -hw; dx <= hw; dx++) px(dx, -i, shade(dx < 0 ? 210 : 70));
       }
     }
     drawn++;

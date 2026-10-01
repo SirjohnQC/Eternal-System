@@ -1139,8 +1139,11 @@ export function paintCutawaySurface(
 
   // Decals last: they must stand on finished terrain, and the cliff-punch above
   // has already cleared water pixels back to alpha 0 so nothing lands in the sea.
+  // Given sites are a stored plan: the identity bake stamps them 1:1 and
+  // records each one's footing; a camera bake stamps them x round(k), clipped.
   if (opts.decalSites) {
-    stampDecals(d, bw, bh, x0, yTop, opts.decalSites, opts.decalAtlas ?? null);
+    stampDecals(d, bw, bh, x0, yTop, opts.decalSites, opts.decalAtlas ?? null,
+      Math.round(k), opts.cameraZoom === undefined);
   } else if (opts.decalSeed !== undefined) {
     const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
     stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
@@ -1149,17 +1152,24 @@ export function paintCutawaySurface(
   g.putImageData(img, x0, yTop);
 
   if (opts.planetType === 'lava') {
-    paintVolcanoChimneys(g, opts.chimneySites ?? planVolcanoChimneys(opts), VW, VH);
+    paintVolcanoChimneys(g, opts.chimneySites ?? planVolcanoChimneys(opts), VW, VH, k);
   }
 }
 
 export interface VolcanoChimney {
+  /** Base centre in the painter's screen px (the planner's: at identity, base world px). */
   x: number;
   y: number;
-  /** Cone height in virtual pixels. */
+  /** Cone height in BASE virtual pixels (world class: painted x k). */
   h: number;
-  /** Base half-width. */
+  /** Base half-width, base px (world class). */
   w: number;
+  /** The grid cell it stands on. */
+  row?: number;
+  col?: number;
+  /** Base-world position, set by the engine when it stores its plan. */
+  wx?: number;
+  wy?: number;
 }
 
 /**
@@ -1189,46 +1199,55 @@ export function planVolcanoChimneys(opts: CutawayBakeOpts): VolcanoChimney[] {
       const lift = opts.liftOf(opts.smoothElevation(grid, gp.row, gp.col) - opts.rimFalloff(r));
       const h = Math.max(6, 5 + Math.floor(lift * 0.7) + Math.floor(hash1(px + py, seed) * 4));
       const w = 2 + Math.floor(hash1(px * 3 + py, seed + 9) * 2);
-      sites.push({ x: px, y: py - lift, h, w });
+      sites.push({ x: px, y: py - lift, h, w, row: gp.row, col: gp.col });
       if (sites.length >= 10) return sites;
     }
   }
   return sites;
 }
 
-/** Dark basalt cone + glowing crater mouth on the lava tabletop. */
+/**
+ * Dark basalt cone + glowing crater mouth on the lava tabletop.
+ *
+ * `k` (a camera bake's zoom): the cone is world-sized — height and width x k,
+ * one 1-px row per scaled row, the lit flank stays a 1-px stroke; the crater,
+ * throat, core and plume stubs are a sprite, x round(k) about the tip.
+ */
 export function paintVolcanoChimneys(
   g: CanvasRenderingContext2D, sites: VolcanoChimney[],
-  VW = Infinity, VH = Infinity,
+  VW = Infinity, VH = Infinity, k = 1,
 ): void {
+  const S = Math.max(1, Math.round(k)), half = S >> 1;
   for (const v of sites) {
+    const hS = k === 1 ? v.h : Math.round(v.h * k), wS = v.w * k;
     const baseY = v.y;
-    const tipY = v.y - v.h;
+    const tipY = v.y - hS;
     // Bounded to the view: a cone wholly off the canvas draws nothing.
-    if (baseY < 0 || tipY - 8 >= VH || v.x + v.w + 2 < 0 || v.x - v.w - 2 >= VW) continue;
+    if (baseY < 0 || tipY - 8 * S >= VH || v.x + wS + 2 * S < 0 || v.x - wS - 2 * S >= VW) continue;
     // Cone body — dark basalt tapering upward.
-    for (let k = 0; k <= v.h; k++) {
-      const t = k / Math.max(1, v.h);
-      const half = Math.max(1, Math.round(v.w * (1 - t * 0.85)));
-      const y = baseY - k;
+    for (let kk = 0; kk <= hS; kk++) {
+      const t = kk / Math.max(1, hS);
+      const halfW = Math.max(1, Math.round(wS * (1 - t * 0.85)));
+      const y = baseY - kk;
       g.fillStyle = `rgb(${28 + Math.round(t * 18)},${12 + Math.round(t * 8)},${10 + Math.round(t * 6)})`;
-      g.fillRect(v.x - half, y, half * 2 + 1, 1);
+      g.fillRect(v.x - halfW, y, halfW * 2 + 1, 1);
       // Lit right flank.
       g.fillStyle = `rgba(90,40,25,${0.35 + t * 0.25})`;
-      g.fillRect(v.x + half - 1, y, 1, 1);
+      g.fillRect(v.x + halfW - 1, y, 1, 1);
     }
-    // Crater rim + magma throat.
+    // Crater rim + magma throat (sprite pixels, x S about the tip).
+    const X = v.x - half, T = tipY;
     g.fillStyle = 'rgb(22,10,8)';
-    g.fillRect(v.x - 2, tipY - 1, 5, 2);
+    g.fillRect(X - 2 * S, T - 1 * S, 5 * S, 2 * S);
     g.fillStyle = 'rgb(255,140,40)';
-    g.fillRect(v.x - 1, tipY - 2, 3, 2);
+    g.fillRect(X - 1 * S, T - 2 * S, 3 * S, 2 * S);
     g.fillStyle = 'rgb(255,220,120)';
-    g.fillRect(v.x, tipY - 3, 1, 2);
+    g.fillRect(X, T - 3 * S, 1 * S, 2 * S);
     // Thin ash plume stub (static — live embers are host overlays).
     g.fillStyle = 'rgba(90,80,75,0.55)';
-    g.fillRect(v.x, tipY - 6, 1, 3);
+    g.fillRect(X, T - 6 * S, 1 * S, 3 * S);
     g.fillStyle = 'rgba(70,65,60,0.35)';
-    g.fillRect(v.x + 1, tipY - 8, 1, 2);
+    g.fillRect(X + 1 * S, T - 8 * S, 1 * S, 2 * S);
   }
 }
 
@@ -2121,8 +2140,15 @@ export class HabitableCutawayEngine {
   private idShoreDist: Float32Array = new Float32Array(1);
   private idPick = new Int32Array(1);
   private camSet: CameraLayerSet | null = null;
-  /** The identity decal / chimney plans, keyed on the options object they were planned from. */
-  private planFor: CutawayBakeOpts | null = null;
+  /** `identityCamera(w, h)`, kept so `activeCamera` never allocates per frame. */
+  private idCamera: Camera = identityCamera(1, 1);
+  /**
+   * Stable placement (spec 3): the decal and chimney plans, made ONCE per
+   * identity bake (`bake`, `rebakeSurface`) from the identity options and
+   * stored in base-world px (`wx, wy`, plus the cell). Every layer set stamps
+   * them — the identity set 1:1, a camera set through its camera — and a
+   * camera change never re-plans, so nothing appears, vanishes or moves on zoom.
+   */
   private planDecals: DecalSite[] | null = null;
   private planChimneys: VolcanoChimney[] = [];
 
@@ -2174,6 +2200,8 @@ export class HabitableCutawayEngine {
   get pick(): Int32Array { return this.shown?.pick ?? this.idPick; }
   /** Geometry of the ACTIVE layer set (the camera geometry while it is shown). */
   get activeGeom(): HabitableGeom { return this.shown?.geom ?? this.geom; }
+  /** Camera of the ACTIVE layer set; the identity camera while none is shown. Never allocates. */
+  get activeCamera(): Camera { return this.shown?.camera ?? this.idCamera; }
 
   get bob(): number {
     return bobOf(this.elapsed, this.geom.R);
@@ -2191,6 +2219,7 @@ export class HabitableCutawayEngine {
     this.geom = habitableGeom(this.w, this.h);
     // A new bake is a new planet (or a new size): back to the identity view.
     this.camera = identityCamera(this.w, this.h);
+    this.idCamera = identityCamera(this.w, this.h);
     this.camSet = null;
     this.showCamera = false;
     this.planetType = opts.planetType;
@@ -2213,10 +2242,11 @@ export class HabitableCutawayEngine {
       gasBands: this.gasBands.length ? this.gasBands : null,
     };
     this.surfaceBakeOpts = bakeOpts;
+    this.planIdentity();
     const crustG = this.crust.getContext('2d');
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
-    if (landG) paintCutawaySurface(landG, bakeOpts);
+    if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     // Weather: a fresh sim per bake — a new planet must never inherit the last
     // one's sky (the repo's recurring state-leak pattern).
@@ -2258,8 +2288,8 @@ export class HabitableCutawayEngine {
    * fields, `elapsed`, the day angle and every other animation state — only
    * the static layers are re-baked, in `bake()`'s order: zero occupancy,
    * crust, surface, shore distance (with pick written by the surface).
-   * Decals and chimneys are the IDENTITY plans mapped through the camera,
-   * never re-planned (Task 6 moves them to stored world coordinates).
+   * Decals and chimneys are the stored IDENTITY plans (base-world px) mapped
+   * through the camera and stamped x round(k) / x k, never re-planned.
    *
    * Weather: the set gets its own painter (see `cameraPainter`) over the SAME
    * sim; while the set is shown only its painter spawns and moves particles,
@@ -2342,29 +2372,43 @@ export class HabitableCutawayEngine {
     };
   }
 
-  /** Identity decal and chimney plans (cached per identity options object). */
-  private identityPlans(): { decals: DecalSite[] | null; chimneys: VolcanoChimney[] } {
+  /**
+   * Plan decals and chimneys at the identity view, from the identity options,
+   * and store them in base-world px. The identity bake's screen px ARE base
+   * world px, so `wx, wy` are the planner's own `x, y`.
+   */
+  private planIdentity(): void {
     const base = this.surfaceBakeOpts;
-    if (base && this.planFor !== base) {
-      this.planFor = base;
-      this.planDecals = base.decalSeed !== undefined
-        ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed)
-        : null;
-      this.planChimneys = base.planetType === 'lava' ? planVolcanoChimneys(base) : [];
-    }
-    return { decals: this.planDecals, chimneys: this.planChimneys };
+    if (!base) { this.planDecals = null; this.planChimneys = []; return; }
+    this.planDecals = base.decalSeed !== undefined
+      ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed).map(d => ({ ...d, wx: d.x, wy: d.y }))
+      : null;
+    this.planChimneys = base.planetType === 'lava'
+      ? planVolcanoChimneys(base).map(c => ({ ...c, wx: c.x, wy: c.y }))
+      : [];
+  }
+
+  /** The identity options with the stored plans to stamp (1:1; the stamp records footing). */
+  private identityPaintOpts(): CutawayBakeOpts {
+    const base = this.surfaceBakeOpts!;
+    return {
+      ...base,
+      decalSites: this.planDecals ?? (base.decalSeed !== undefined ? [] : null),
+      chimneySites: this.planChimneys,
+    };
   }
 
   /** Surface + shore distance of a camera set, from its own stored options. */
   private paintCameraSurface(set: CameraLayerSet): void {
     const { w, h } = this, cam = set.camera, k = cam.zoom;
+    // The stored world plans through this camera: positions mapped, sizes
+    // left in base px (the painters scale them by k / round(k)).
     const at = (x: number, y: number) => ({ x: (x - cam.fx) * k + w / 2, y: (y - cam.fy) * k + h / 2 });
-    const plans = this.identityPlans();
     const opts: CutawayBakeOpts = {
       ...set.opts,
-      decalSites: plans.decals ? plans.decals.map(s => ({ ...s, ...at(s.x, s.y) })) : [],
-      chimneySites: plans.chimneys.map(c => {
-        const p = at(c.x, c.y);
+      decalSites: this.planDecals ? this.planDecals.map(s => ({ ...s, ...at(s.wx ?? s.x, s.wy ?? s.y) })) : [],
+      chimneySites: this.planChimneys.map(c => {
+        const p = at(c.wx ?? c.x, c.wy ?? c.y);
         return { ...c, x: Math.round(p.x), y: Math.round(p.y) };
       }),
     };
@@ -2377,7 +2421,8 @@ export class HabitableCutawayEngine {
   /** Repaint the mutable top-face data of BOTH layer sets without resetting animation or crust. */
   rebakeSurface(): void {
     const landG = this.land.getContext('2d');
-    if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.surfaceBakeOpts);
+    this.planIdentity();
+    if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.identityPaintOpts());
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     if (this.camSet) this.paintCameraSurface(this.camSet);
   }

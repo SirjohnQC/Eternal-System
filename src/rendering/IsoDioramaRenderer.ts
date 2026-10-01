@@ -48,7 +48,8 @@ import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
 import { orbitSky, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
-import { paintSky, skyLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
+import { paintSky, skyLayout, farLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
+import { farScale, isIdentity, type Camera } from './ZoomCamera';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -333,19 +334,26 @@ const EFFECT_STYLES: Record<DivineEffectKind, EffectStyle> = {
   sight:      { color: rgb(190, 220, 255), life: 1.8, rings: 3, motes:   0, beam: false, wash: 0.05 },
 };
 
+/** A mote: start position (base-world px) and velocity (base-world px/s). */
 interface Mote { x: number; y: number; vx: number; vy: number; born: number; swirl: number }
 
+/**
+ * A divine act. Stored in BASE-WORLD units at cast time (spec 3): an act cast
+ * while zoomed stays on its world spot when the camera changes; drawing maps
+ * it through the active camera (sizes x k, 1-px strokes stay 1 px).
+ */
 interface DivineEffect {
   kind:  DivineEffectKind;
-  /** Centre in virtual pixels. */
-  x: number; y: number;
-  /** Radius the rings expand to. */
+  /** Centre in base-world virtual pixels. */
+  wx: number; wy: number;
+  /** Radius the rings expand to, base-world px. */
   reach: number;
   age:   number;
   motes: Mote[];
 }
 
-interface CityDot { x: number; y: number; phase: number; rate: number }
+/** An outlying city light: base-world position (lift included) and the cell it stands on. */
+interface CityDot { wx: number; wy: number; row: number; col: number; phase: number; rate: number }
 interface Ripple  { x: number; y: number; rx: number; phase: number; speed: number }
 interface Ember   { x: number; y: number; vy: number; life: number; maxLife: number }
 
@@ -360,6 +368,13 @@ export class IsoDioramaRenderer {
 
   // Baked static layers
   private bgLayer!:      HTMLCanvasElement;   // space, nebula, stars
+  /**
+   * The backdrop re-baked at `farScale(k)` about a camera's focus (far class):
+   * baked on settle by `setCamera`, never per frame; the identity view keeps
+   * `bgLayer`. `bgFarFor` is the camera and panorama it was baked for.
+   */
+  private bgFar: HTMLCanvasElement | null = null;
+  private bgFarFor: { zoom: number; fy: number; W: number; H: number; seed: number } | null = null;
   private skyCanvas!:    HTMLCanvasElement;   // sun, arc, siblings (putImageData only)
   private skyImage:      ImageData | null = null;
   /** This frame's sky, from the real orbits. Read by the weather seasons. */
@@ -417,10 +432,12 @@ export class IsoDioramaRenderer {
 
   /**
    * Creatures and settlements standing on the surface, rebuilt with the terrain.
-   * Positions are in virtual pixels, already projected.
+   * Planned at the identity view: `wx, wy` are BASE-WORLD virtual px (the foot
+   * of the sprite, lift included) plus the cell; drawing maps them through the
+   * active camera and blits the sprite x round(k).
    */
   private inhabitants: Array<{
-    x: number; y: number; sprite: HTMLCanvasElement;
+    wx: number; wy: number; row: number; col: number; sprite: HTMLCanvasElement;
     w: number; h: number; phase: number; sway: number; depth: number;
     /** 0 = fully above the surface, 1 = fully under. See waterSubmersion(). */
     submersion: number;
@@ -428,7 +445,7 @@ export class IsoDioramaRenderer {
   /** Scratch for compositing a submerged creature without tinting the sea. */
   private subScratch: HTMLCanvasElement | null = null;
   private settlements: Array<{
-    x: number; y: number; sprite: HTMLCanvasElement; w: number; h: number; depth: number;
+    wx: number; wy: number; row: number; col: number; sprite: HTMLCanvasElement; w: number; h: number; depth: number;
   }> = [];
 
   /**
@@ -482,6 +499,11 @@ export class IsoDioramaRenderer {
     return this.usesCutaway;
   }
 
+  // Ruling 7: `cx`, `cy`, `rx`, `ry`, `bodyCy` are the ACTIVE geometry — the
+  // camera geometry while a camera layer set is shown — and are for DRAWING
+  // only. Anything placed by sampling reads `placeGeom` (the BASE geometry)
+  // and stores base-world px; drawing maps those through `wsx` / `wsy`.
+
   private get cx(): number {
     return this.habitable ? this.cutaway.drawGeom.cx : Math.round(this.VW / 2);
   }
@@ -524,6 +546,41 @@ export class IsoDioramaRenderer {
       return geom.cyBody + geom.bob;
     }
     return this.cy;
+  }
+
+  /**
+   * BASE geometry (the identity view's), for placement: city lights,
+   * settlements, creatures and divine effects are planned and stored in these
+   * coordinates, never in a camera's.
+   */
+  private get placeGeom(): { cx: number; cy: number; rx: number; ry: number } {
+    if (this.habitable) {
+      const g = this.cutaway.geom;
+      return { cx: g.cx, cy: g.cyTop + this.cutaway.bob, rx: g.rx, ry: g.ry };
+    }
+    return { cx: this.cx, cy: this.cy, rx: this.rx, ry: this.ry };
+  }
+
+  /** The camera the active layer set was baked for (identity when none is shown). */
+  private get cam(): Camera {
+    return this.cutaway.activeCamera;
+  }
+
+  /** Zoom k of the active camera (1 at identity). */
+  private get camZoom(): number {
+    return this.cutaway.activeCamera.zoom;
+  }
+
+  /** Base-world x -> active screen x. Exactly `x` at identity (no float round trip). */
+  private wsx(x: number): number {
+    const c = this.cutaway.activeCamera;
+    return isIdentity(c, this.VW, this.VH) ? x : (x - c.fx) * c.zoom + this.VW / 2;
+  }
+
+  /** Base-world y -> active screen y. Exactly `y` at identity. */
+  private wsy(y: number): number {
+    const c = this.cutaway.activeCamera;
+    return isIdentity(c, this.VW, this.VH) ? y : (y - c.fy) * c.zoom + this.VH / 2;
   }
 
   /** Seconds for one local day. Bigger worlds spin slower. */
@@ -1229,6 +1286,45 @@ export class IsoDioramaRenderer {
     const img = g.createImageData(this.bgLayer.width, this.VH);
     bakeBackdrop(img, { seed: this.planetSeed ^ 0x9e3779b9, vw: this.VW });
     g.putImageData(img, 0, 0);
+    this.bgFarFor = null;   // a new planet or size: any far panorama is stale
+  }
+
+  /**
+   * The far panorama for `cam`: the same backdrop re-baked at `farScale(k)`
+   * about the focus (stars stay 1 px). Skipped when the one baked already
+   * matches. Settle-time only.
+   */
+  private bakeFarBackdrop(cam: Camera): void {
+    const s = farScale(cam.zoom), W = backdropWidth(this.VW), H = this.VH;
+    const seed = this.planetSeed ^ 0x9e3779b9;
+    const f = this.bgFarFor;
+    if (f && f.zoom === cam.zoom && f.fy === cam.fy && f.W === W && f.H === H && f.seed === seed) return;
+    if (!this.bgFar) this.bgFar = document.createElement('canvas');
+    const Ws = Math.round(W * s);
+    this.bgFar.width = Ws; this.bgFar.height = H;
+    const g = this.bgFar.getContext('2d');
+    if (!g) return;
+    const img = g.createImageData(Ws, H);
+    bakeBackdrop(img, { seed, vw: this.VW, scale: s, fy: cam.fy });
+    g.putImageData(img, 0, 0);
+    this.bgFarFor = { zoom: cam.zoom, fy: cam.fy, W, H, seed };
+  }
+
+  /**
+   * Show the scene through `cam` — the settle step (Task 7's controller calls
+   * it; zoomCheck drives it headless). Bakes the engine's camera layer set and
+   * shows it (the identity camera drops it), and re-bakes the far backdrop at
+   * `farScale(k)`. Never re-plans placement: city lights, settlements,
+   * creatures, decals, chimneys and divine effects are stored in base world
+   * and only their draw positions follow the camera.
+   */
+  setCamera(cam: Camera): void {
+    if (!this.habitable) return;
+    this.cutaway.setCamera(cam);
+    const id = isIdentity(cam, this.VW, this.VH);
+    this.cutaway.showCamera = !id;
+    this.pickBuf = this.cutaway.pick;
+    if (!id) this.bakeFarBackdrop(cam);
   }
 
   /**
@@ -1934,17 +2030,23 @@ export class IsoDioramaRenderer {
     return Math.abs(st.y) < 260 && d > 40;
   }
 
-  private buildCityDots(): void {
+  /**
+   * Plan the outlying city lights. Placement samples a screen lattice, so it
+   * runs on the BASE geometry only and stores base-world px (spec 3): a camera
+   * change never re-plans. `geom` exists for zoomCheck's control (re-planning
+   * on a camera's geometry, the pre-Task-6 behaviour); the game never passes it.
+   */
+  private buildCityDots(geom = this.placeGeom): void {
     this.cityDots = [];
     const grid = this.grid;
     if (!grid || this.planetType === 'gas') return;
 
-    const { cx, cy, rx, ry } = this;
+    const { cx, cy, rx, ry } = geom;
     const s = new Stream(this.planetSeed ^ 0x1b873593);
     const MAX = 55;   // settlements carry the main read; these are outlying lights
     const step = 2;
 
-    const candidates: Array<{ x: number; y: number }> = [];
+    const candidates: Array<{ x: number; y: number; row: number; col: number }> = [];
     for (let py = cy - ry; py <= cy + ry; py += step) {
       const dy = (py - cy) / ry;
       for (let px = cx - rx; px <= cx + rx; px += step) {
@@ -1957,7 +2059,7 @@ export class IsoDioramaRenderer {
         const rr = Math.hypot(dx, dy);
         if (cell.elevation - this.rimFalloff(rr) < SEA_LEVEL) continue;
         // Sit the light on the raised terrain, not inside it.
-        candidates.push({ x: px, y: py - this.liftAtCell(cell, rr) });
+        candidates.push({ x: px, y: py - this.liftAtCell(cell, rr), row: gp.row, col: gp.col });
       }
     }
 
@@ -1966,7 +2068,7 @@ export class IsoDioramaRenderer {
     for (let i = 0; i < candidates.length; i += stride) {
       const c = candidates[i];
       this.cityDots.push({
-        x: c.x, y: c.y,
+        wx: c.x, wy: c.y, row: c.row, col: c.col,
         phase: s.range(0, Math.PI * 2),
         rate:  s.range(0.5, 2.2),
       });
@@ -1981,7 +2083,12 @@ export class IsoDioramaRenderer {
    * random, so what the player sees is what the simulation actually holds —
    * a species only appears where `dominantSpeciesId` says it lives.
    */
-  private buildInhabitants(): void {
+  /**
+   * Plan creatures and settlements on the BASE geometry, stored in base-world
+   * px + cell (spec 3; see `buildCityDots` for `geom`). Sprites are baked at
+   * their identity on-screen size; a camera blits them x round(k).
+   */
+  private buildInhabitants(geom = this.placeGeom): void {
     this.inhabitants = [];
     this.settlements = [];
 
@@ -1996,7 +2103,7 @@ export class IsoDioramaRenderer {
     const byId = new Map<string, SpeciesGenome>();
     for (const sp of this.species) byId.set(sp.id, sp);
 
-    const { cx, cy, rx, ry } = this;
+    const { cx, cy, rx, ry } = geom;
     const s = new Stream(this.planetSeed ^ 0x5bf03635);
 
     // Deliberately sparse. The simulation marks almost every habitable cell as
@@ -2008,7 +2115,7 @@ export class IsoDioramaRenderer {
     // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
     // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
 
-    const creatureSpots: Array<{ x: number; y: number; id: string; onWater: boolean }> = [];
+    const creatureSpots: Array<{ x: number; y: number; row: number; col: number; id: string; onWater: boolean }> = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
       fertility: number; row: number; col: number;
@@ -2056,7 +2163,7 @@ export class IsoDioramaRenderer {
           const occupant = byId.get(cell.dominantSpeciesId);
           if (this.habitable && !onLand && !(occupant && inhabitsWater(occupant))) continue;
           creatureSpots.push({
-            x: px, y: py - lift, id: cell.dominantSpeciesId,
+            x: px, y: py - lift, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
             onWater: this.habitable && !onLand,
           });
         }
@@ -2104,7 +2211,7 @@ export class IsoDioramaRenderer {
       const depth = (spot.y - (cy - ry)) / (ry * 2);
       const sprite = dioramaCreatureSprite(genome, phase ?? 'intelligent', depth);
       this.inhabitants.push({
-        x: spot.x, y: spot.y, sprite,
+        wx: spot.x, wy: spot.y, row: spot.row, col: spot.col, sprite,
         w: sprite.width,
         h: sprite.height,
         phase: s.range(0, Math.PI * 2),
@@ -2133,7 +2240,7 @@ export class IsoDioramaRenderer {
     // One entry per grid cell (screen oversampling otherwise floods the pool
     // with the same coastal shelf pixel), scored for inland depth × fertility.
     const byCell = new Map<string, {
-      x: number; y: number; fertility: number; score: number; dCoast: number;
+      x: number; y: number; row: number; col: number; fertility: number; score: number; dCoast: number;
     }>();
     for (const spot of settlementSpots) {
       const dCoast = distToVisualCoast(spot.sx, spot.sy);
@@ -2143,7 +2250,7 @@ export class IsoDioramaRenderer {
       const prev = byCell.get(key);
       if (!prev || score > prev.score) {
         byCell.set(key, {
-          x: spot.x, y: spot.y, fertility: spot.fertility, score, dCoast,
+          x: spot.x, y: spot.y, row: spot.row, col: spot.col, fertility: spot.fertility, score, dCoast,
         });
       }
     }
@@ -2163,7 +2270,7 @@ export class IsoDioramaRenderer {
       const target = (5 + Math.min(civLevel, 6) * 0.7) * (0.85 + depth * 0.3);
       const aspect = sprite.height / sprite.width;
       this.settlements.push({
-        x: spot.x, y: spot.y, sprite,
+        wx: spot.x, wy: spot.y, row: spot.row, col: spot.col, sprite,
         w: Math.max(3, target),
         h: Math.max(3, target * aspect),
         depth,
@@ -2187,15 +2294,19 @@ export class IsoDioramaRenderer {
     g.clip();
 
     const surf = this.habitable ? cutawayWaterSurf(this.planetType as HabitableType) : null;
+    // Sprite class: positions through the camera, sprite pixels x round(k),
+    // nearest-neighbour (the backbuffer has smoothing off). S = 1 at identity.
+    const S = Math.max(1, Math.round(this.camZoom));
 
     for (const c of this.inhabitants) {
       // A small idle bob keeps the world alive without implying real movement.
-      const bob = Math.sin(t * c.sway + c.phase) * 0.6;
-      const dx = Math.round(c.x - c.w / 2);
-      const dy = Math.round(c.y + layerBob - c.h + bob);
+      const bob = Math.sin(t * c.sway + c.phase) * 0.6 * S;
+      const ax = this.wsx(c.wx), ay = this.wsy(c.wy);
+      const dx = Math.round(ax - c.w * S / 2);
+      const dy = Math.round(ay + layerBob - c.h * S + bob);
 
       if (c.submersion <= 0 || !surf) {
-        g.drawImage(c.sprite, dx, dy, Math.round(c.w), Math.round(c.h));
+        g.drawImage(c.sprite, dx, dy, Math.round(c.w) * S, Math.round(c.h) * S);
         continue;
       }
 
@@ -2203,7 +2314,7 @@ export class IsoDioramaRenderer {
       // then tint what is under. The tint is applied INSIDE a scratch with
       // 'source-atop', so it lands on the animal's own pixels and never on the
       // sea — filling a rect straight onto the frame would leave a coloured box.
-      const w = Math.max(1, Math.round(c.w)), h = Math.max(1, Math.round(c.h));
+      const w = Math.max(1, Math.round(c.w)) * S, h = Math.max(1, Math.round(c.h)) * S;
       if (!this.subScratch) this.subScratch = document.createElement('canvas');
       const sc = this.subScratch;
       if (sc.width < w || sc.height < h) { sc.width = Math.max(sc.width, w); sc.height = Math.max(sc.height, h); }
@@ -2211,6 +2322,7 @@ export class IsoDioramaRenderer {
       if (!sg) { g.drawImage(c.sprite, dx, dy, w, h); continue; }
 
       sg.clearRect(0, 0, w, h);
+      sg.imageSmoothingEnabled = false;
       sg.globalCompositeOperation = 'source-over';
       sg.drawImage(c.sprite, 0, 0, w, h);
 
@@ -2242,8 +2354,8 @@ export class IsoDioramaRenderer {
 
     for (const st of this.settlements) {
       g.drawImage(st.sprite,
-        Math.round(st.x - st.w / 2), Math.round(st.y + layerBob - st.h),
-        Math.round(st.w), Math.round(st.h));
+        Math.round(this.wsx(st.wx) - st.w * S / 2), Math.round(this.wsy(st.wy) + layerBob - st.h * S),
+        Math.round(st.w) * S, Math.round(st.h) * S);
     }
 
     g.restore();
@@ -2402,10 +2514,26 @@ export class IsoDioramaRenderer {
     this.displayCtx.drawImage(this.buf, 0, 0);
   }
 
-  /** Backdrop panorama, slid left by the sun's true longitude (one turn a year). */
+  /**
+   * Backdrop panorama, slid left by the sun's true longitude (one turn a year).
+   *
+   * Under a camera the far panorama (`bgFar`, re-baked at `farScale(k)` about
+   * the focus on settle) is drawn instead: a panorama point at identity screen
+   * x lands at (x - fx) * s + VW/2, so the scaled image is offset by
+   * (off + fx) * s - VW/2. Identity: today's panorama and offset.
+   */
   private drawBackdropPanorama(g: CanvasRenderingContext2D): void {
     const W = this.bgLayer.width;
     const off = backdropOffset(this.sky?.sunLongitude ?? 0, W);
+    const cam = this.cam, far = this.bgFar;
+    if (far && this.bgFarFor && this.bgFarFor.zoom === cam.zoom && this.bgFarFor.fy === cam.fy
+        && !isIdentity(cam, this.VW, this.VH)) {
+      const Ws = far.width, s = farScale(cam.zoom);
+      const D = ((Math.round((off + cam.fx) * s - this.VW / 2) % Ws) + Ws) % Ws;
+      g.drawImage(far, -D, 0);
+      if (Ws - D < this.VW) g.drawImage(far, Ws - D, 0);
+      return;
+    }
     g.drawImage(this.bgLayer, -off, 0);
     if (W - off < this.VW) g.drawImage(this.bgLayer, W - off, 0);
   }
@@ -2447,10 +2575,13 @@ export class IsoDioramaRenderer {
   private drawSky(g: CanvasRenderingContext2D): void {
     const sky = this.sky, img = this.skyImage;
     if (!sky || !img) return;
-    const geom = this.habitable ? this.cutaway.drawGeom : { cx: this.cx, cyTop: this.cy, rx: this.rx };
+    // Far layer: laid out on the BASE geometry, then through the far transform
+    // (farScale about the camera focus). Identity returns the base layout.
+    const geom = this.habitable ? this.cutaway.geom : { cx: this.cx, cyTop: this.cy, rx: this.rx };
     const homeR = this.planet?.orbitalRadius ?? 40;
     const sun = this.star ? tempToRGB(this.star.temperature) : rgb(255, 236, 180);
-    const L = skyLayout(geom, this.VW, this.VH);
+    const L = farLayout(skyLayout(geom, this.VW, this.VH), this.cam, this.VW, this.VH);
+    const far = L.far ?? 1;
     img.data.fill(0);
     paintSky(img, L, {
       sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale,
@@ -2460,7 +2591,7 @@ export class IsoDioramaRenderer {
         const c = planetTypeRGB(s.planet.type);
         return {
           az: s.az, elev: s.elev, litFraction: s.litFraction,
-          radiusPx: Math.max(1.2, (2.2 + s.planet.radius * 0.20) / (1 + distN * 0.7)),
+          radiusPx: Math.max(1.2, (2.2 + s.planet.radius * 0.20) / (1 + distN * 0.7)) * far,
           rgb: [c.r, c.g, c.b] as [number, number, number],
         };
       }),
@@ -2505,7 +2636,10 @@ export class IsoDioramaRenderer {
           + Math.sin(a) * this.cutaway.drawGeom.R * 0.38
         : cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
       // Scaled off the moon's real radius, floored so the smallest still reads.
-      const r = Math.max(2, rx * 0.05 + m.radius * 3.2);
+      // World class: the orbit follows the active geometry (x k via rx, ry, R);
+      // the floor and the per-unit term scale by k too.
+      const k = this.camZoom;
+      const r = Math.max(2 * k, rx * 0.05 + m.radius * 3.2 * k);
       const tint = hexToRGB(m.color);
 
       // Halo
@@ -2523,7 +2657,7 @@ export class IsoDioramaRenderer {
       if (m.kind === 'volcanic') {
         g.fillStyle = 'rgba(255,150,60,0.7)';
         for (const [dx, dy] of [[-0.25, -0.2], [0.3, 0.18], [0.05, 0.35]]) {
-          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6, r * 0.15), 0, Math.PI * 2); g.fill();
+          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6 * k, r * 0.15), 0, Math.PI * 2); g.fill();
         }
       } else if (m.kind === 'ice' || m.kind === 'ocean') {
         g.strokeStyle = css(shade(tint, 0.7), 0.7);
@@ -2536,7 +2670,7 @@ export class IsoDioramaRenderer {
         const craters = [[-0.30, -0.28, 0.19], [0.22, 0.30, 0.14], [-0.06, 0.12, 0.11]];
         for (const [dx, dy, cr] of craters) {
           g.fillStyle = css(shade(tint, 0.6), 0.6);
-          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6, cr * r), 0, Math.PI * 2); g.fill();
+          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6 * k, cr * r), 0, Math.PI * 2); g.fill();
         }
       }
 
@@ -2596,18 +2730,22 @@ export class IsoDioramaRenderer {
     if (this.cityDots.length === 0) return;
     const layerBob = this.habitable ? this.cutaway.drawGeom.bob : 0;
     // Night side of the disc — lights read strongest away from the key light.
+    // Disc position from the stored base-world point and the BASE geometry;
+    // the light itself is a 1-px stroke at its camera position.
+    const pg = this.placeGeom;
     for (const dot of this.cityDots) {
       const flicker = 0.55 + 0.45 * Math.sin(t * dot.rate + dot.phase);
       if (flicker < 0.35) continue;
-      const dx = (dot.x - this.cx) / this.rx;
+      const dx = (dot.wx - pg.cx) / pg.rx;
       const nightBias = clamp01(0.55 - sunFacing(dx, this.dayAngle) * 0.85);
       const a = flicker * (0.35 + nightBias * 0.65);
+      const x = this.wsx(dot.wx), y = this.wsy(dot.wy) + layerBob;
       g.fillStyle = `rgba(255,226,150,${a})`;
-      g.fillRect(dot.x, dot.y + layerBob, 1, 1);
+      g.fillRect(x, y, 1, 1);
       if (a > 0.75) {
         g.fillStyle = `rgba(255,200,110,${a * 0.25})`;
-        g.fillRect(dot.x - 1, dot.y + layerBob, 3, 1);
-        g.fillRect(dot.x, dot.y + layerBob - 1, 1, 3);
+        g.fillRect(x - 1, y, 3, 1);
+        g.fillRect(x, y - 1, 1, 3);
       }
     }
   }
@@ -2623,16 +2761,19 @@ export class IsoDioramaRenderer {
    */
   playDivineEffect(kind: DivineEffectKind, cell?: { row: number; col: number } | null): void {
     const style = EFFECT_STYLES[kind];
-    let x = this.cx, y = this.cy, reach = this.rx * 0.85;
+    // Cast in BASE-WORLD units (spec 3), whatever the camera: centre, reach,
+    // mote positions and velocities. Drawing maps them through the camera.
+    const pg = this.placeGeom;
+    let x = pg.cx, y = pg.cy, reach = pg.rx * 0.85;
 
     if (cell) {
       const d = this.gridToDisc(cell.row, cell.col);
       if (d) {
-        x = this.cx + d.dx * this.rx;
-        y = this.cy + d.dy * this.ry;
+        x = pg.cx + d.dx * pg.rx;
+        y = pg.cy + d.dy * pg.ry;
         const gc = this.grid?.[cell.row]?.[cell.col];
         if (gc) y -= this.liftAtCell(gc, Math.hypot(d.dx, d.dy));
-        reach = this.rx * 0.28;
+        reach = pg.rx * 0.28;
       }
     }
 
@@ -2655,7 +2796,7 @@ export class IsoDioramaRenderer {
       });
     }
 
-    this.effects.push({ kind, x, y, reach, age: 0, motes });
+    this.effects.push({ kind, wx: x, wy: y, reach, age: 0, motes });
     // Bound the queue: spamming a power should not stack unbounded work.
     if (this.effects.length > 6) this.effects.shift();
   }
@@ -2665,6 +2806,9 @@ export class IsoDioramaRenderer {
     if (this.effects.length === 0) return;
     const { cx, cy, rx, ry } = this;
     const bodyRadius = this.habitable ? this.cutaway.drawGeom.R : rx;
+    // World class: the stored world centre, reach and mote paths go through
+    // the camera (lengths x k); ring and mote strokes stay 1-2 px.
+    const k = this.camZoom;
 
     for (let i = this.effects.length - 1; i >= 0; i--) {
       const fx = this.effects[i];
@@ -2674,6 +2818,7 @@ export class IsoDioramaRenderer {
 
       const t = fx.age / style.life;          // 0 → 1 over the effect's life
       const fade = 1 - t * t;                 // holds bright, then drops away
+      const ex = this.wsx(fx.wx), ey = this.wsy(fx.wy), reach = fx.reach * k;
 
       g.save();
       g.beginPath();
@@ -2689,26 +2834,26 @@ export class IsoDioramaRenderer {
       // whole disc at this strength blows the entire dome to white; a radial
       // falloff reads as light spreading from the act instead.
       if (style.wash > 0) {
-        const wr = fx.reach * (1 + t * 1.6);
-        const wash = g.createRadialGradient(fx.x, fx.y, 0, fx.x, fx.y, wr);
+        const wr = reach * (1 + t * 1.6);
+        const wash = g.createRadialGradient(ex, ey, 0, ex, ey, wr);
         wash.addColorStop(0, css(style.color, style.wash * fade));
         wash.addColorStop(0.55, css(style.color, style.wash * fade * 0.45));
         wash.addColorStop(1, css(style.color, 0));
         g.fillStyle = wash;
-        g.beginPath(); g.arc(fx.x, fx.y, wr, 0, Math.PI * 2); g.fill();
+        g.beginPath(); g.arc(ex, ey, wr, 0, Math.PI * 2); g.fill();
       }
 
       // A shaft of light from the top of the atmosphere down onto the target.
       // The habitable body has no dome above the face — its ceiling IS the face
       // rim — so the beam has to start there or it hangs in space.
       if (style.beam) {
-        const beamW = Math.max(3, fx.reach * 0.28);
+        const beamW = Math.max(3 * k, reach * 0.28);
         const beamTop = this.habitable ? this.bodyCy - bodyRadius + 1 : cy - rx;
-        const grad = g.createLinearGradient(fx.x, beamTop, fx.x, fx.y);
+        const grad = g.createLinearGradient(ex, beamTop, ex, ey);
         grad.addColorStop(0, css(style.color, 0));
         grad.addColorStop(1, css(style.color, 0.55 * fade));
         g.fillStyle = grad;
-        g.fillRect(fx.x - beamW / 2, beamTop, beamW, fx.y - beamTop);
+        g.fillRect(ex - beamW / 2, beamTop, beamW, ey - beamTop);
       }
 
       // Rings expanding outward along the ground plane, so they read as lying on
@@ -2717,12 +2862,12 @@ export class IsoDioramaRenderer {
         const offset = k / Math.max(1, style.rings) * 0.45;
         const rt = t + offset;
         if (rt > 1) continue;
-        const rr = fx.reach * rt;
+        const rr = reach * rt;
         g.globalAlpha = (1 - rt) * 0.85 * fade;
         g.strokeStyle = css(style.color, 1);
         g.lineWidth = Math.max(1, 2 * (1 - rt));
         g.beginPath();
-        g.ellipse(fx.x, fx.y, rr, rr * (ry / rx), 0, 0, Math.PI * 2);
+        g.ellipse(ex, ey, rr, rr * (ry / rx), 0, 0, Math.PI * 2);
         g.stroke();
       }
 
@@ -2732,8 +2877,8 @@ export class IsoDioramaRenderer {
       for (const m of fx.motes) {
         if (fx.age < m.born) continue;
         const mt = fx.age - m.born;
-        const px = m.x + m.vx * mt + Math.sin(mt * 3 + m.swirl) * 3;
-        const py = m.y + m.vy * mt;
+        const px = this.wsx(m.x + m.vx * mt + Math.sin(mt * 3 + m.swirl) * 3);
+        const py = this.wsy(m.y + m.vy * mt);
         const a = clamp01(1 - mt / (style.life - m.born)) * fade;
         if (a <= 0.02) continue;
         g.globalAlpha = a;
@@ -2779,6 +2924,7 @@ export class IsoDioramaRenderer {
    */
   private drawTileMarkers(g: CanvasRenderingContext2D, t: number): void {
     const { cx, cy, rx, ry } = this;
+    const k = this.camZoom;
 
     const draw = (cell: { row: number; col: number }, colour: string, width: number) => {
       const p = this.gridToDisc(cell.row, cell.col);
@@ -2787,11 +2933,12 @@ export class IsoDioramaRenderer {
       const py = cy + p.dy * ry;
 
       // Size the marker from the projected spacing of neighbouring cells so it
-      // stays roughly one tile across wherever it lands on the disc.
+      // stays roughly one tile across wherever it lands on the disc. World
+      // class: the span follows the active rx; the floors and cap scale by k.
       const n = this.gridToDisc(cell.row, (cell.col + 3) % GRID_SIZE);
-      const span = n ? Math.max(2, Math.abs((n.dx - p.dx) * rx) * 1.2) : 3;
-      const w = Math.min(14, Math.max(2.5, span));
-      const h = Math.max(1.5, w * 0.42);
+      const span = n ? Math.max(2 * k, Math.abs((n.dx - p.dx) * rx) * 1.2) : 3 * k;
+      const w = Math.min(14 * k, Math.max(2.5 * k, span));
+      const h = Math.max(1.5 * k, w * 0.42);
 
       g.strokeStyle = colour;
       g.lineWidth = width;

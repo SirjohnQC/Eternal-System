@@ -1123,5 +1123,367 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
   }
 }
 
+console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons, markers, backdrop)');
+{
+  const H = await import('./zoomHarness');
+  const { PixelCanvas, PixelCtx } = H;
+  const SkyP = await import('../src/rendering/sky/SkyPainter') as any;
+  const Bd = await import('../src/rendering/sky/Backdrop') as any;
+  const Eng = await import('../src/rendering/HabitableCutawayEngine') as any;
+  const SD = await import('../src/rendering/SurfaceDecals') as any;
+  /** The moons' orbit phase the game passes at elapsed = H.ELAPSED. */
+  const ELAPSED_MOON = H.ELAPSED * (Math.PI * 2 / 60);
+  /**
+   * Hash of every overlay drawing call at the identity view (backdrop, sky,
+   * moons, city lights, inhabitants, tile markers, two divine effects) plus the
+   * sky image, for ocean 3 and lava 4 — captured from the pre-Task-6 code
+   * (1c76aa4). Zoom 1 must stay exactly today's.
+   */
+  const OVERLAY_GOLDEN = '39ae35c0/bd2a126f c0c7e6ed/bd2a126f';
+
+  /** Records every drawing call with its arguments (numbers as given, no rounding). */
+  class Rec extends PixelCtx {
+    log: Array<any[]> = [];
+    private note(name: string, args: unknown[]) {
+      this.log.push([name, ...args.map(a => (a && typeof a === 'object' && 'width' in (a as any)) ? `img${(a as any).width}x${(a as any).height}` : a)]);
+    }
+    fillRect(x: number, y: number, w: number, h: number) { this.note('fillRect', [x, y, w, h, String(this.fillStyle), this.globalAlpha]); }
+    drawImage(...a: any[]) { this.note('drawImage', a); }
+    arc(...a: number[]) { this.note('arc', [...a, String(this.fillStyle)]); }
+    ellipse(...a: number[]) { this.note('ellipse', [...a, this.lineWidth]); }
+    moveTo(...a: number[]) { this.note('moveTo', a); }
+    lineTo(...a: number[]) { this.note('lineTo', a); }
+    rect(...a: number[]) { this.note('rect', a); }
+    fill() { this.note('fill', [String(this.fillStyle)]); }
+    stroke() { this.note('stroke', [String(this.strokeStyle), this.lineWidth]); }
+    clip() { this.note('clip', []); }
+    createRadialGradient(...a: number[]) { this.note('radial', a); return { addColorStop: (o: number, c: string) => this.note('stop', [o, c]) } as any; }
+    createLinearGradient(...a: number[]) { this.note('linear', a); return { addColorStop: (o: number, c: string) => this.note('stop', [o, c]) } as any; }
+  }
+  const rec = () => new Rec(new PixelCanvas(VW, VH));
+  /** The renderer's settle entry point (Task 6); before it existed, the engine's camera shown directly. */
+  const setCam = (r: any, cam: any) => {
+    if (typeof r.setCamera === 'function') r.setCamera(cam);
+    else { r.cutaway.setCamera(cam); r.cutaway.showCamera = !isIdentity(cam, VW, VH); }
+  };
+  const ID = identityCamera(VW, VH);
+  /** A placement record's stored position (world after Task 6; screen before it). */
+  const W = (p: any) => [p.wx ?? p.x, p.wy ?? p.y] as [number, number];
+  const key = (a: any[], f: (p: any) => [number, number]) => a.map(f).map(p => `${p[0]},${p[1]}`).sort().join(';');
+  const records = (r: any) => ({
+    dots: key(r.cityDots, W), creatures: key(r.inhabitants, W), towns: key(r.settlements, W),
+    decals: key(r.cutaway.planDecals ?? [], W), chimneys: key(r.cutaway.planChimneys ?? [], W),
+  });
+  const counts = (r: any) => `${r.cityDots.length} dots, ${r.inhabitants.length} creatures, ${r.settlements.length} towns, ${(r.cutaway.planDecals ?? []).length} decals, ${(r.cutaway.planChimneys ?? []).length} chimneys`;
+
+  const ocean = await H.makeRenderer('ocean', 3), lava = await H.makeRenderer('lava', 4);
+  // Materialise the engine's identity plans (Task 4 builds them lazily at the first camera).
+  for (const r of [ocean, lava]) { setCam(r, { zoom: 2, fx: 240, fy: 150 }); setCam(r, ID); }
+
+  // ── identity overlays are today's (call-log golden from the pre-Task-6 code) ──
+  {
+    const overlayLog = (r: any) => {
+      const g = rec();
+      r.setHighlight(r.discToGrid(0.12, 0.05)); r.setSelection(r.discToGrid(-0.2, 0.1));
+      r.effects = [];
+      r.playDivineEffect('smite', r.discToGrid(0.1, -0.05)); r.playDivineEffect('revelation', null);
+      r.drawBackdropPanorama(g); r.drawSky(g);
+      r.drawMoons(g, ELAPSED_MOON, false); r.drawCityLights(g, H.ELAPSED); r.drawInhabitants(g, H.ELAPSED);
+      r.drawTileMarkers(g, H.ELAPSED); r.drawDivineEffects(g, 0.3); r.drawMoons(g, ELAPSED_MOON, true);
+      r.effects = []; r.setHighlight(null); r.setSelection(null);
+      return H.hashImage(new TextEncoder().encode(JSON.stringify(g.log)) as any) + '/' + H.hashImage(r.skyImage.data);
+    };
+    const got = [overlayLog(ocean), overlayLog(lava)].join(' ');
+    check('identity overlays unchanged (call-log golden, pre-Task-6)', got === OVERLAY_GOLDEN, `${got} vs ${OVERLAY_GOLDEN}`);
+  }
+
+  // ── stable placement: world positions identical at zoom 1, 2, 4 and after a pan ──
+  {
+    const g = ocean.cutaway.geom;
+    const cams = [{ zoom: 2, fx: g.cx - 20, fy: g.cyTop - 10 }, { zoom: 4, fx: g.cx + 20, fy: g.cyTop }, { zoom: 4, fx: g.cx - 40, fy: g.cyTop + 12 }];
+    const lines: string[] = [];
+    let ok = true, carry = true;
+    for (const r of [ocean, lava]) {
+      setCam(r, ID); r.markSurfaceDirty(true);
+      const ref = records(r);
+      for (const cam of cams) {
+        setCam(r, cam); r.markSurfaceDirty(true);   // the game's rebake path, taken under the camera
+        const got = records(r);
+        const bad = Object.keys(ref).filter(k => (ref as any)[k] !== (got as any)[k]);
+        if (bad.length) { ok = false; lines.push(`${r.planetType} z${cam.zoom}@${cam.fx},${cam.fy}: ${bad.join('/')} moved`); }
+      }
+      const all = [...r.cityDots, ...r.inhabitants, ...r.settlements, ...(r.cutaway.planDecals ?? []), ...(r.cutaway.planChimneys ?? [])];
+      carry &&= all.length > 0 && all.every((p: any) => Number.isFinite(p.wx) && Number.isFinite(p.wy) && Number.isInteger(p.row) && Number.isInteger(p.col));
+      setCam(r, ID); r.markSurfaceDirty(true);
+    }
+    check('stable placement: world sets identical at zoom 1, 2, 4 and after a pan', ok,
+      lines.length ? lines.join('; ') : `ocean ${counts(ocean)}; lava ${counts(lava)}`);
+    check('placement records carry wx, wy (base world) and row, col', carry, '');
+
+    // Control: re-plan AT the camera (the pre-change path: the planners fed the
+    // camera geometry), and map the plan back to world through the camera.
+    const cam = cams[1];
+    const rG = ocean; setCam(rG, cam);
+    const ref = records(rG);
+    const A = rG.cutaway.activeGeom;
+    const act = { cx: A.cx, cy: A.cyTop + rG.cutaway.bob, rx: A.rx, ry: A.ry };
+    rG.buildCityDots(act); rG.buildInhabitants(act);
+    const back = (p: any) => { const w = screenToWorld(cam, VW, VH, ...W(p)); return [w.x, w.y] as [number, number]; };
+    const reDots = key(rG.cityDots, back), reTowns = key(rG.settlements, back);
+    const camOpts = rG.cutaway.camSet.opts;
+    const reDecals = key(SD.planSurfaceDecals(camOpts, 0.6, camOpts.decalSeed ?? 3), back);
+    setCam(lava, cam);
+    const reChim = key(Eng.planVolcanoChimneys(lava.cutaway.camSet.opts), back);
+    const lref = records(lava);
+    check('  control: re-planning at the camera moves dots, towns, decals and chimneys',
+      reDots !== ref.dots && reTowns !== ref.towns && reDecals !== ref.decals && reChim !== lref.chimneys,
+      `dots ${reDots !== ref.dots}, towns ${reTowns !== ref.towns}, decals ${reDecals !== ref.decals}, chimneys ${reChim !== lref.chimneys}`);
+    setCam(rG, ID); rG.markSurfaceDirty(true); setCam(lava, ID); lava.markSurfaceDirty(true);
+  }
+
+  // ── overlays draw through the camera: lights 1 px at worldToScreen, sprites x round(k) ──
+  {
+    const r = ocean, g = r.cutaway.geom, cam = { zoom: 4, fx: g.cx + 12, fy: g.cyTop + 4 }, s = 4;
+    setCam(r, cam);
+    const gl = rec(); r.drawCityLights(gl, H.ELAPSED);
+    const lights = gl.log.filter(e => e[0] === 'fillRect' && e[3] === 1 && e[4] === 1 && String(e[5]).startsWith('rgba(255,226,150'));
+    let worstL = 0;
+    for (const e of lights) {
+      const w = screenToWorld(cam, VW, VH, e[1], e[2]);
+      let best = Infinity;
+      for (const d of r.cityDots) best = Math.min(best, Math.hypot(W(d)[0] - w.x, W(d)[1] - w.y));
+      worstL = Math.max(worstL, best);
+    }
+    const gi = rec(); r.drawInhabitants(gi, H.ELAPSED);
+    const imgs = gi.log.filter(e => e[0] === 'drawImage' && e.length === 6);
+    const ents = [...r.inhabitants, ...r.settlements].filter((c: any) => !(c.submersion > 0));
+    let worstS = 0, sized = imgs.length === ents.length && imgs.length > 0;
+    for (let i = 0; i < Math.min(imgs.length, ents.length); i++) {
+      const [, , dx, dy, w, h] = imgs[i];
+      const c = ents[i], p = worldToScreen(cam, VW, VH, ...W(c));
+      if (w !== Math.round(c.w) * s || h !== Math.round(c.h) * s) sized = false;
+      worstS = Math.max(worstS, Math.abs(dx + w / 2 - p.x), Math.abs(dy + h - p.y) - 0.6 * s);
+    }
+    check('overlays through the camera: lights at worldToScreen, sprites x round(k)', lights.length > 0 && worstL <= 0.5 + 1e-9 && sized && worstS <= 1,
+      `${lights.length} lights, worst ${worstL.toFixed(3)} world px; ${imgs.length}/${ents.length} sprites, sized x${s} ${sized}, worst anchor ${worstS.toFixed(2)} px`);
+    setCam(r, ID);
+  }
+
+  // ── effect stays on its world spot (Review focus 5) ──
+  {
+    const r = ocean, g = r.cutaway.geom, cam = { zoom: 3, fx: g.cx + 10, fy: g.cyTop + 5 };
+    setCam(r, cam);
+    const cell = r.discToGrid(0.15, 0.1), d = r.gridToDisc(cell.row, cell.col), gc = r.grid[cell.row][cell.col];
+    const A = r.cutaway.activeGeom, bob = r.cutaway.bob;
+    const lift = r.liftAtCell(gc, Math.hypot(d.dx, d.dy)) * cam.zoom;
+    const sp = { x: A.cx + d.dx * A.rx, y: A.cyTop + bob + d.dy * A.ry - lift };   // where the tile is on screen
+    const want = screenToWorld(cam, VW, VH, sp.x, sp.y);
+    r.effects = [];
+    r.playDivineEffect('water', cell);
+    const fx = r.effects[0], stored = W(fx);
+    const err = Math.hypot(stored[0] - want.x, stored[1] - want.y);
+    const snap = JSON.parse(JSON.stringify(fx));
+    const ringAt = (e: any, c: any) => {
+      r.effects = [JSON.parse(JSON.stringify(e))]; setCam(r, c);
+      const gg = rec(); r.drawDivineEffects(gg, 0.3);
+      const ell = gg.log.find(x => x[0] === 'ellipse');
+      // A bright mote adds a 1-px stroke on the row above (screen px, not world):
+      // keep only each mote's own pixel, the rect not stacked on the one before it.
+      const rects = gg.log.filter(x => x[0] === 'fillRect' && x[3] === 1 && x[4] === 1);
+      const motes = rects.filter((x, i) => !(i > 0 && rects[i - 1][1] === x[1] && rects[i - 1][2] === x[2] + 1))
+        .map(x => [x[1], x[2]] as [number, number]);
+      return { ell, motes };
+    };
+    const z1 = ringAt(snap, ID), z3 = ringAt(snap, cam);
+    const at1 = worldToScreen(ID, VW, VH, stored[0], stored[1]);
+    const drift = z1.ell ? Math.hypot(z1.ell[1] - at1.x, z1.ell[2] - at1.y) : Infinity;
+    check('effect: stored world centre = screenToWorld of its screen point (zoom 3)', err < 1e-6,
+      `|stored - want| ${err.toExponential(1)} (stored ${stored.map(v => v.toFixed(2))}, want ${want.x.toFixed(2)},${want.y.toFixed(2)})`);
+    check('effect: back at zoom 1 it draws on that world spot (+/- 0.5 px)', drift <= 0.5, `ring centre off by ${drift.toFixed(3)} px`);
+    let worstM = 0;
+    for (let i = 0; i < Math.min(z1.motes.length, z3.motes.length); i++) {
+      const w3 = screenToWorld(cam, VW, VH, z3.motes[i][0], z3.motes[i][1]);
+      worstM = Math.max(worstM, Math.hypot(w3.x - z1.motes[i][0], w3.y - z1.motes[i][1]));
+    }
+    const reach = z1.ell && z3.ell ? z3.ell[3] / z1.ell[3] : NaN;
+    check('effect: reach x k, motes on the same world paths (zoom 3 vs 1)',
+      Math.abs(reach - 3) < 1e-9 && z1.motes.length > 0 && z1.motes.length === z3.motes.length && worstM <= 0.5 + 0.5 / 3 + 1e-9,
+      `ring radius ratio ${reach.toFixed(4)}; ${z1.motes.length}/${z3.motes.length} motes, worst ${worstM.toFixed(3)} world px`);
+    // Control: the same effect with its centre stored in SCREEN px (the pre-change record).
+    const bad = { ...snap, wx: sp.x, wy: sp.y, x: sp.x, y: sp.y };
+    const zb = ringAt(bad, ID);
+    const driftB = zb.ell ? Math.hypot(zb.ell[1] - at1.x, zb.ell[2] - at1.y) : Infinity;
+    check('  control: a centre stored in screen px drifts at zoom 1', !(driftB <= 0.5), `drift ${driftB.toFixed(2)} px`);
+    r.effects = []; setCam(r, ID);
+  }
+
+  // ── far layers: the sun sits at the far transform of its zoom-1 position ──
+  {
+    const r = ocean, g = r.cutaway.geom;
+    const sunCentre = (d: Uint8ClampedArray) => {
+      let sx = 0, sy = 0, n = 0, x0 = Infinity, x1 = -Infinity;
+      for (let i = 0; i < VW * VH; i++) if (d[i * 4 + 3] === 255) { const x = i % VW, y = (i / VW) | 0; sx += x; sy += y; n++; x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
+      return { x: sx / n + 0.5, y: sy / n + 0.5, n, w: x1 - x0 + 1 };
+    };
+    setCam(r, ID); r.drawSky(rec());
+    const s1 = sunCentre(r.skyImage.data);
+    const cam = { zoom: 4, fx: g.cx + 6, fy: 60 };
+    setCam(r, cam); r.drawSky(rec());
+    const s4 = sunCentre(r.skyImage.data);
+    const f = farScale(4), want = { x: (s1.x - cam.fx) * f + VW / 2, y: (s1.y - cam.fy) * f + VH / 2 };
+    const err = Math.hypot(s4.x - want.x, s4.y - want.y);
+    check('far layers: sun at zoom 4 = far transform (x1.3 about the focus) of zoom 1 (+/- 1 px)', s1.n > 0 && s4.n > 0 && err <= 1,
+      `zoom 1 (${s1.x.toFixed(1)},${s1.y.toFixed(1)}) -> zoom 4 (${s4.x.toFixed(1)},${s4.y.toFixed(1)}), want (${want.x.toFixed(1)},${want.y.toFixed(1)}), err ${err.toFixed(2)}`);
+    check('far layers: sun disc x farScale, not x k', s4.w >= Math.round(s1.w * f) - 1 && s4.w <= Math.round(s1.w * f) + 1,
+      `${s1.w} -> ${s4.w} px wide (want ~${(s1.w * f).toFixed(1)})`);
+    // Control: the pre-change layout, skyLayout(camera geometry).
+    const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+    const sky = r.sky;
+    SkyP.paintSky(img, SkyP.skyLayout(r.cutaway.activeGeom, VW, VH), { sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale, sunRgb: [255, 236, 180], siblings: [] });
+    const sc = sunCentre(img.data);
+    const errC = Math.hypot(sc.x - want.x, sc.y - want.y);
+    check('  control: skyLayout(camera geometry) puts the sun elsewhere', !(errC <= 1), `err ${errC.toFixed(1)} px`);
+    setCam(r, ID);
+  }
+
+  // ── moons: orbit and size x k ──
+  {
+    const r = ocean, g = r.cutaway.geom;
+    const moonsAt = (cam: any) => {
+      setCam(r, cam);
+      const gg = rec(); r.drawMoons(gg, ELAPSED_MOON, false); r.drawMoons(gg, ELAPSED_MOON, true);
+      const arcs = gg.log.filter(e => e[0] === 'arc');
+      const out: Array<{ x: number; y: number; r: number }> = [];
+      for (let i = 0; i + 1 < arcs.length; i++) {
+        const a = arcs[i], b = arcs[i + 1];
+        if (a[1] === b[1] && a[2] === b[2] && Math.abs(a[3] - 1.9 * b[3]) < 1e-9) out.push({ x: b[1], y: b[2], r: b[3] });
+      }
+      const A = r.cutaway.activeGeom;
+      return { moons: out, ox: A.cx, oy: A.cyTop - A.ry * 1.35 };
+    };
+    const m1 = moonsAt(ID), m4 = moonsAt({ zoom: 4, fx: g.cx + 30, fy: g.cyTop - 40 });
+    let worstO = 0, worstR = 0;
+    for (let i = 0; i < Math.min(m1.moons.length, m4.moons.length); i++) {
+      worstO = Math.max(worstO, Math.abs((m4.moons[i].x - m4.ox) - 4 * (m1.moons[i].x - m1.ox)), Math.abs((m4.moons[i].y - m4.oy) - 4 * (m1.moons[i].y - m1.oy)));
+      worstR = Math.max(worstR, Math.abs(m4.moons[i].r - 4 * m1.moons[i].r));
+    }
+    check('moons: orbit radius and moon size on screen x4 at zoom 4 (+/- 1 px)', m1.moons.length === 2 && m4.moons.length === 2 && worstO <= 1 && worstR <= 1,
+      `${m1.moons.length}/${m4.moons.length} moons; worst orbit offset ${worstO.toFixed(2)} px, worst radius ${worstR.toFixed(2)} px (r ${m1.moons.map(m => m.r.toFixed(2))} -> ${m4.moons.map(m => m.r.toFixed(2))})`);
+    setCam(r, ID);
+  }
+
+  // ── tile markers: size cap and floors x k ──
+  {
+    const r = ocean, g = r.cutaway.geom;
+    const markAt = (cam: any) => {
+      setCam(r, cam); r.setHighlight(r.discToGrid(0.05, 0.02));
+      const gg = rec(); r.drawTileMarkers(gg, H.ELAPSED); r.setHighlight(null);
+      const mv = gg.log.find(e => e[0] === 'moveTo')!, ln = gg.log.find(e => e[0] === 'lineTo')!;
+      return { cx: mv[1], cy: ln[2], w: ln[1] - mv[1], h: ln[2] - mv[2] };
+    };
+    const cam = { zoom: 4, fx: g.cx + 8, fy: g.cyTop + 2 };
+    const a = markAt(ID), b = markAt(cam), c = worldToScreen(cam, VW, VH, a.cx, a.cy);
+    const off = Math.hypot(b.cx - c.x, b.cy - c.y);
+    check('tile marker: size x k (cap and floors), centre through the camera', Math.abs(b.w - 4 * a.w) < 1e-6 && Math.abs(b.h - 4 * a.h) < 1e-6 && off < 1e-6,
+      `w ${a.w.toFixed(2)} -> ${b.w.toFixed(2)}, h ${a.h.toFixed(2)} -> ${b.h.toFixed(2)}, centre off ${off.toFixed(3)}`);
+    setCam(r, ID);
+  }
+
+  // ── backdrop: re-baked at the far scale, stars stay 1 px ──
+  {
+    const Wp = Bd.backdropWidth(VW), f = farScale(4), Ws = Math.round(Wp * f);
+    const A = { width: Wp, height: VH, data: new Uint8ClampedArray(Wp * VH * 4) };
+    Bd.bakeBackdrop(A, { seed: 7, vw: VW });
+    const B = { width: Ws, height: VH, data: new Uint8ClampedArray(Ws * VH * 4) };
+    Bd.bakeBackdrop(B, { seed: 7, vw: VW, scale: f, fy: VH / 2 });
+    /** Star pixels: brighter than the median of their 8 neighbours by > 25. */
+    const stars = (img: { width: number; height: number; data: Uint8ClampedArray }) => {
+      const w = img.width, h = img.height, d = img.data, L = new Float32Array(w * h), S = new Uint8Array(w * h);
+      for (let i = 0; i < w * h; i++) L[i] = Math.max(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
+      const nb = new Float32Array(8);
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        let n = 0;
+        for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) if (i || j) nb[n++] = L[(y + j) * w + x + i];
+        nb.sort();
+        if (L[y * w + x] > (nb[3] + nb[4]) / 2 + 25) S[y * w + x] = 1;
+      }
+      return S;
+    };
+    const adj = (S: Uint8Array, w: number) => { let n = 0, a = 0; for (let i = 0; i < S.length; i++) if (S[i]) { n++; if (S[i - 1] || S[i + 1] || S[i - w] || S[i + w]) a++; } return { n, frac: a / Math.max(1, n) }; };
+    const SA = stars(A), SB = stars(B), aA = adj(SA, Wp), aB = adj(SB, Ws);
+    // Every zoom-1 star whose far-transformed spot is on the scaled image finds a star there (+/- 1 px).
+    let tot = 0, hit = 0;
+    for (let y = 1; y < VH - 1; y++) for (let x = 1; x < Wp - 1; x++) {
+      if (!SA[y * Wp + x]) continue;
+      const X = Math.round(x * Ws / Wp), Y = Math.round((y - VH / 2) * f + VH / 2);
+      if (Y < 2 || Y >= VH - 2 || X < 2 || X >= Ws - 2) continue;
+      tot++;
+      let found = false;
+      for (let j = -1; j <= 1 && !found; j++) for (let i = -1; i <= 1; i++) if (SB[(Y + j) * Ws + X + i]) { found = true; break; }
+      if (found) hit++;
+    }
+    check('backdrop: far-scaled bake keeps the stars at far-transformed spots, 1 px',
+      tot > 50 && hit / tot >= 0.95 && aB.frac <= aA.frac + 0.02,
+      `${hit}/${tot} stars found; adjacent-star-pixel share ${aA.frac.toFixed(3)} (zoom 1) -> ${aB.frac.toFixed(3)} (x${f})`);
+    // Control: the zoom-1 panorama drawImage-scaled (nearest neighbour) by the far scale.
+    const C = { width: Ws, height: VH, data: new Uint8ClampedArray(Ws * VH * 4) };
+    for (let Y = 0; Y < VH; Y++) for (let X = 0; X < Ws; X++) {
+      const x = Math.min(Wp - 1, Math.floor(X * Wp / Ws)), y = Math.max(0, Math.min(VH - 1, Math.floor((Y - VH / 2) / f + VH / 2)));
+      for (let c = 0; c < 4; c++) C.data[(Y * Ws + X) * 4 + c] = A.data[(y * Wp + x) * 4 + c];
+    }
+    const aC = adj(stars(C), Ws);
+    check('  control: a magnified panorama grows its stars past 1 px', !(aC.frac <= aA.frac + 0.02), `adjacent share ${aC.frac.toFixed(3)}`);
+    // The renderer draws the far panorama about the focus.
+    const r = ocean, g = r.cutaway.geom, cam = { zoom: 4, fx: g.cx - 30, fy: g.cyTop };
+    setCam(r, cam);
+    const gg = rec(); r.drawBackdropPanorama(gg);
+    const first = gg.log.find(e => e[0] === 'drawImage');
+    const off = Bd.backdropOffset(r.sky?.sunLongitude ?? 0, Wp);
+    const dxWant = -((((off + cam.fx) * f - VW / 2) % Ws + Ws) % Ws);
+    check('backdrop: panorama drawn at the far scale about the focus', !!first && first[1] === `img${Ws}x${VH}` && Math.abs(first[2] - dxWant) <= 1,
+      `drew ${first?.[1]} at ${first?.[2]} (want img${Ws}x${VH} at ${dxWant.toFixed(1)})`);
+    setCam(r, ID);
+  }
+
+  // ── decals partly on screen are stamped (clip, don't cull by anchor) ──
+  {
+    const r = ocean, e = r.cutaway, g = e.geom, k = 4, reachPx = 6 * k;
+    setCam(r, ID);
+    const plan: any[] = e.planDecals ?? [];
+    // A camera whose left edge cuts through decals that were stamped at identity.
+    let cam: any = null, edge: any[] = [];
+    for (let fx = g.cx - 90; fx <= g.cx + 90 && !cam; fx += 0.25) {
+      const c = { zoom: k, fx, fy: g.cyTop };
+      const es = plan.filter(s => { const p = worldToScreen(c, VW, VH, ...W(s)); return p.x < 1 && p.x > -reachPx && p.y > 0 && p.y < VH && (s.foot === undefined || s.foot >= 0); });
+      if (es.length >= 3) { cam = c; edge = es; }
+    }
+    /** How many of `edgeSites` change the camera land layer when present in the plan. */
+    const stampedEdge = (sites: any[], edgeSites: any[]) => {
+      e.planDecals = sites; e.setCamera(cam);
+      const withD = e.camSet.land.data.slice();
+      e.planDecals = sites.filter(s => !edgeSites.includes(s)); e.setCamera(cam);
+      const without = e.camSet.land.data;
+      let drawn = 0;
+      for (const s of edgeSites) {
+        const p = worldToScreen(cam, VW, VH, ...W(s));
+        let diff = 0;
+        for (let y = Math.max(0, Math.round(p.y) - 16 * k); y <= Math.min(VH - 1, Math.round(p.y) + 2 * k); y++)
+          for (let x = 0; x < Math.min(VW, Math.round(p.x) + reachPx); x++) { const o = (y * VW + x) * 4; if (withD[o] !== without[o] || withD[o + 3] !== without[o + 3]) diff++; }
+        if (diff > 0) drawn++;
+      }
+      e.planDecals = plan;
+      return drawn;
+    };
+    const drawn = cam ? stampedEdge(plan, edge) : 0;
+    check('decals whose anchor is just off the canvas are stamped (clipped)', !!cam && drawn === edge.length,
+      cam ? `${drawn}/${edge.length} edge decals stamped at zoom ${k}, fx ${cam.fx}` : 'no camera with edge decals found');
+    // Control: the same sites without their identity footing (the pre-change record shape) are culled.
+    const bare = edge.map(s => { const c = { ...s }; delete c.foot; return c; });
+    const ctl = cam ? stampedEdge(plan.map(s => (edge.includes(s) ? bare[edge.indexOf(s)] : s)), bare) : 0;
+    check('  control: sites without identity footing are culled at the edge', !(cam && ctl === edge.length), `${ctl}/${edge.length}`);
+    e.planDecals = plan; setCam(r, ID);
+  }
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);
