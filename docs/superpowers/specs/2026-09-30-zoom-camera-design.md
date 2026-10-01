@@ -158,6 +158,30 @@ variant; the nearest-cell one stays for picking.
   correct distances), chimneys and decal stamping clamp likewise.
 - Atmosphere haze uses the RENDERED camera zoom (`atmoHazeAmount(rendered.zoom)`).
 
+### 5b. Smooth pan (amendment, 2026-10-01, from Sirjohn's review)
+
+"Dragging around after zooming should be smooth and not feel like it is reloading
+the terrain." Section 5's gesture rule (identity layers under CSS, sharp swap on
+settle) is replaced for gestures that START while the camera set is shown:
+
+- **Pan at a fixed zoom stays sharp.** The frame keeps drawing the camera layers,
+  offset by the live pan in whole virtual px. No CSS transform, no switch to the
+  identity layers. Per-frame layers (water, day/night, atmosphere, weather) follow
+  the live focus every frame, still bounded to the view and allocation-free.
+- **Overscan.** The camera set is baked for the view plus a pan margin on every side,
+  so a normal drag never reaches an edge. If a drag outruns the margin, the
+  uncovered strip shows the identity layers scaled by k (nearest-neighbour, drawn in
+  the canvas). It shows a soft strip, never a blank one.
+- **Wheel zoom while zoomed** scales the current sharp set by the zoom ratio
+  (nearest-neighbour, in the canvas) instead of falling back to the identity layers.
+  The re-bake still lands on settle.
+- **Re-centre without a visible swap.** After the pan settles, the next camera set
+  is baked around the new focus while the current one keeps being drawn. They swap
+  when it is complete. Every pixel of the overlap is identical across the swap
+  (world-anchored texture and placement make this possible).
+- **Frame budget, measured in the browser:** during a scripted drag at zoom 4, and
+  through the settle and swap that follow, no frame exceeds 33 ms.
+
 ## Checks
 
 New `tools/zoomCheck.ts`; each claim against an independent fixture or rendered
