@@ -409,6 +409,8 @@ export class IsoDioramaRenderer {
   private drag = { active: false, panning: false, x: 0, y: 0 };
   /** The view state the display's CSS transform was last written for. */
   private cssFor = { zoom: NaN, x: NaN, y: NaN, shown: false };
+  /** True once `resize` has sized the layers (a later zero-sized mount is ignored). */
+  private sized = false;
   /** The 4 s surface rebake is due this frame (read by the settle hook). */
   private rebakeDue = false;
   /** Settle hooks, allocated once: `updateView` runs every frame. */
@@ -692,6 +694,12 @@ export class IsoDioramaRenderer {
    */
   private resize(): void {
     if (!this.mount) return;
+    // A hidden mount (display:none — e.g. an NPC planet is open) reports a
+    // 0x0 box. Once the layers exist, ignore it and keep every layer and the
+    // zoom state: a zero rect would make the camera NaN (cameraFromView
+    // divides by it). The resize when the mount shows again restores it.
+    const box = this.mount.getBoundingClientRect();
+    if (this.sized && (!(box.width > 0) || !(box.height > 0))) return;
     const w = Math.max(320, this.mount.clientWidth  || 960);
     const h = Math.max(220, this.mount.clientHeight || 640);
 
@@ -720,8 +728,11 @@ export class IsoDioramaRenderer {
     this.skyImage = this.skyCanvas.getContext('2d')?.createImageData(this.VW, this.VH) ?? null;
 
     this.bakeAll(true);
-    this.zoom.resize(this.mount.getBoundingClientRect(), this.VW, this.VH);
+    // First sizing of a hidden mount: the same fallback size the layers use.
+    const shown = box.width > 0 && box.height > 0;
+    this.zoom.resize(shown ? box : { width: w, height: h }, this.VW, this.VH);
     this.updateView(performance.now());
+    this.sized = true;
   }
 
   /**
@@ -756,28 +767,34 @@ export class IsoDioramaRenderer {
       }
       this.zoom.panMove(e.clientX, e.clientY, now);
     };
-    const onUp = () => {
+    /** `click`: a pointer-up may be followed by a click; a pointercancel never is. */
+    const endDrag = (click: boolean) => {
       const d = this.drag;
       if (!d.active) return;
       d.active = false;
       if (!d.panning) return;
       d.panning = false;
       this.zoom.panEnd(performance.now());
-      // A real drag must not also count as a tile click.
+      // A real drag must not also count as a tile click. A cancelled pointer
+      // gets no click, so arming the once-only swallow there would eat the
+      // next real tap.
+      if (!click) return;
       const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); };
       mount.addEventListener('click', swallow, { capture: true, once: true });
     };
+    const onUp = () => endDrag(true);
+    const onCancel = () => endDrag(false);
     mount.addEventListener('wheel', onWheel, { passive: false });
     mount.addEventListener('pointerdown', onDown);
     mount.addEventListener('pointermove', onMove);
     mount.addEventListener('pointerup', onUp);
-    mount.addEventListener('pointercancel', onUp);
+    mount.addEventListener('pointercancel', onCancel);
     this.unbindView = [
       () => mount.removeEventListener('wheel', onWheel),
       () => mount.removeEventListener('pointerdown', onDown),
       () => mount.removeEventListener('pointermove', onMove),
       () => mount.removeEventListener('pointerup', onUp),
-      () => mount.removeEventListener('pointercancel', onUp),
+      () => mount.removeEventListener('pointercancel', onCancel),
     ];
   }
 

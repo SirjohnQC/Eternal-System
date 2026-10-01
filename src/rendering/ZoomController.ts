@@ -14,6 +14,8 @@ export class ZoomController {
   private zoom = 1; private px = 0; private py = 0;
   private lastInput = -Infinity; private panning = false; private pending = false;
   private panOrigin = { x: 0, y: 0, px: 0, py: 0 };
+  /** Last pointer position of the active pan (CSS px). */
+  private panAt = { x: 0, y: 0 };
   private cam: Camera; private camShown = false;
   private issued: Camera | null = null;
 
@@ -56,18 +58,22 @@ export class ZoomController {
     const wx = (mx - this.px) / prev, wy = (my - this.py) / prev;
     this.zoom = next; this.px = mx - wx * next; this.py = my - wy * next;
     this.clamp();
+    // A wheel during a drag: the drag continues from the zoomed pan, or the
+    // next panMove would rebuild the pan from the pre-wheel origin.
+    if (this.panning) this.panOrigin = { x: this.panAt.x, y: this.panAt.y, px: this.px, py: this.py };
   }
 
   // Drag-vs-click deadzone is deliberately not this controller's job — the host
   // (IsoDioramaRenderer) decides when a pointer-down turns into a pan gesture
   // before calling panStart/panMove.
   panStart(x: number, y: number, t: number): void {
-    this.panning = true; this.panOrigin = { x, y, px: this.px, py: this.py }; this.beginInput(t);
+    this.panning = true; this.panOrigin = { x, y, px: this.px, py: this.py }; this.panAt = { x, y }; this.beginInput(t);
   }
 
   panMove(x: number, y: number, t: number): void {
     if (!this.panning) return;
     this.beginInput(t);
+    this.panAt.x = x; this.panAt.y = y;
     this.px = this.panOrigin.px + (x - this.panOrigin.x);
     this.py = this.panOrigin.py + (y - this.panOrigin.y);
     this.clamp();

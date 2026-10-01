@@ -1645,10 +1645,14 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
         && e.camSet === null && !!e.weatherSim && e.weatherSim !== sim0 && r.planetType === 'lava';
       return [ok, `zoom ${r.zoom.viewZoom}, shown ${e.showCamera}, camera ${JSON.stringify(e.camera)}, css ${r.display.style.transform}, fresh sim ${e.weatherSim !== sim0}`];
     });
-    tryCheck('  control: the pre-change refresh (bake only) leaves the view zoomed', () => {
+    tryCheck('  control: refreshData without the controller reset leaves the view zoomed', () => {
       wheel(r, 10, -1); settleFrame(r);
-      r.bakeAll();
-      return [!(r.zoom.viewZoom === 1 && !r.zoom.showCamera), `zoom ${r.zoom.viewZoom}, controller shows camera ${r.zoom.showCamera}`];
+      // The real refreshData with its controller reset disabled (the pre-change refresh).
+      const reset = r.zoom.reset;
+      r.zoom.reset = () => {};
+      try { r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0); } finally { r.zoom.reset = reset; }
+      const ok = r.zoom.viewZoom === 1 && !r.zoom.showCamera && r.display.style.transform === 'none' && e.showCamera === false;
+      return [!ok, `zoom ${r.zoom.viewZoom}, controller shows camera ${r.zoom.showCamera}, engine camera set ${e.camSet ? 'kept' : 'dropped'}`];
     });
     r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
   }
@@ -1693,7 +1697,13 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
   // ── the identity weather painter re-primes on return to identity ─────────
   {
     // Engine + controller only, driven exactly as the renderer drives them.
-    const runRet = (bypass: boolean) => {
+    /**
+     * `back`: 'zoom1' zooms out to 1 and settles (re-prime via clearCamera);
+     * 'gesture' starts a new gesture at zoom > 1 (re-prime via the showCamera
+     * setter; the camera set is kept). `off`: the re-prime disabled in the
+     * painter, or in the engine's setter path.
+     */
+    const runRet = (back: 'zoom1' | 'gesture', off: 'none' | 'painter' | 'setter') => {
       const B = H.bakeEngine('ocean', 7);
       const e: any = B.engine, c = new ZoomController({ width: 960, height: 640 }, VW, VH);
       const g = new H.PixelCanvas(VW, VH).getContext() as unknown as CanvasRenderingContext2D;
@@ -1710,21 +1720,36 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       for (let q = 0; q < idp.pCount; q++) frozen.add(`${idp.pX[q]},${idp.pY[q]}`);
       for (let i = 0; i < 12; i++) frame();         // 3 s under the camera: the identity painter is frozen
       const frozenN = frozen.size;
-      for (let i = 0; i < 40; i++) c.wheel(0, 0, +1, tt += 4);
-      // Control: the same return with the painter's re-prime disabled (the pre-change painter).
-      if (bypass) idp.reprime = () => {};
-      applySettle(e, c, tt += SETTLE_MS + 1);
+      // Controls: the same return with the re-prime disabled (the pre-change painter / setter).
+      if (off === 'painter') idp.reprime = () => {};
+      if (off === 'setter') e.reprimeIdentityPainter = () => {};
+      if (back === 'zoom1') {
+        for (let i = 0; i < 40; i++) c.wheel(0, 0, +1, tt += 4);
+        applySettle(e, c, tt += SETTLE_MS + 1);
+      } else {
+        c.wheel(0, 0, +1, tt += 4);            // one notch out: still zoomed, a gesture starts
+        applySettle(e, c, tt += 1);            // the next frame, no settle due
+      }
       let survivors = 0;
       for (let q = 0; q < idp.pCount; q++) if (frozen.has(`${idp.pX[q]},${idp.pY[q]}`)) survivors++;
-      return { frozenN, survivors, live: idp.pCount, shown: e.showCamera, zoom: c.viewZoom, same: e.weatherPainter === idp };
+      return { frozenN, survivors, live: idp.pCount, shown: e.showCamera, zoom: c.viewZoom, same: e.weatherPainter === idp, camSet: !!e.camSet };
     };
     tryCheck('back at zoom 1 the identity painter re-primes: no frozen drop survives', () => {
-      const a = runRet(false);
+      const a = runRet('zoom1', 'none');
       return [a.frozenN >= 20 && a.survivors === 0 && a.live > 0 && !a.shown && a.zoom === 1 && a.same,
         `${a.frozenN} frozen drops, ${a.survivors} survive, ${a.live} live after re-prime`];
     });
     tryCheck('  control: without the re-prime the frozen drops show again', () => {
-      const b = runRet(true);
+      const b = runRet('zoom1', 'painter');
+      return [!(b.frozenN >= 20 && b.survivors === 0), `${b.frozenN} frozen, ${b.survivors} survive`];
+    });
+    tryCheck('new gesture at zoom > 1 (showCamera setter) re-primes the identity painter', () => {
+      const a = runRet('gesture', 'none');
+      return [a.frozenN >= 20 && a.survivors === 0 && a.live > 0 && !a.shown && a.zoom > 1 && a.camSet && a.same,
+        `zoom ${a.zoom.toFixed(2)}, camera set kept ${a.camSet}; ${a.frozenN} frozen drops, ${a.survivors} survive, ${a.live} live`];
+    });
+    tryCheck('  control: the setter without the re-prime shows the frozen drops', () => {
+      const b = runRet('gesture', 'setter');
       return [!(b.frozenN >= 20 && b.survivors === 0), `${b.frozenN} frozen, ${b.survivors} survive`];
     });
   }
@@ -1795,6 +1820,117 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       if (!gc) return [false, 'run with node --expose-gc'];
       const g1 = measure(true);
       return [g1 >= 64 * 1024, `heap +${(g1 / 1024).toFixed(1)} KB`];
+    });
+  }
+
+  // ── fix round 1: a hidden (0x0) mount while zoomed ───────────────────────
+  {
+    const e = r.cutaway;
+    const finite = (c: any) => !!c && [c.zoom, c.fx, c.fy].every(Number.isFinite);
+    const camsFinite = () => [e.camera, r.zoom.rendered, e.activeCamera].every(finite);
+    const zoomedFresh = () => {
+      sizeMount(r, 960, 640); r.resize();
+      r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+      wheel(r, 10, -1); settleFrame(r);
+    };
+    tryCheck('hide (0x0 mount) while zoomed: no throw, every camera field finite, zoom kept', () => {
+      zoomedFresh();
+      sizeMount(r, 0, 0);                    // display:none — the ResizeObserver reports 0x0
+      let threw = '';
+      try { r.resize(); settleFrame(r); } catch (err) { threw = (err as Error).message; }
+      const ok = !threw && camsFinite() && r.zoom.viewZoom === 4 && Number.isFinite(r.zoom.panX) && Number.isFinite(r.zoom.panY);
+      return [ok, `threw ${threw || 'nothing'}, cameras finite ${camsFinite()}, zoom ${r.zoom.viewZoom}`];
+    });
+    tryCheck('  show again: the camera layers are correct for the restored size', () => {
+      sizeMount(r, 960, 640);
+      r.resize();
+      const cs = e.camSet, cam = e.activeCamera, b = r.bgFarFor;
+      const ok = !!cs && e.showCamera && finite(cam) && cam.zoom === 4 && r.zoom.viewZoom === 4
+        && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered)
+        && cs.crust.width === r.VW && cs.crust.height === r.VH
+        && JSON.stringify(cs.geom) === JSON.stringify(applyCamera(e.geom, cam, r.VW, r.VH))
+        && !!b && b.zoom === cam.zoom && b.fy === cam.fy && b.H === r.VH && r.display.style.transform === 'none';
+      return [ok, `camera ${JSON.stringify(cam)}, camSet ${cs ? `${cs.crust.width}x${cs.crust.height}` : 'none'}, backdrop ${JSON.stringify(b)}`];
+    });
+    tryCheck('  control: the unguarded resize tail on a 0x0 box throws or makes a NaN camera', () => {
+      zoomedFresh();
+      sizeMount(r, 0, 0);
+      let threw = '';
+      try {
+        // The pre-fix resize tail, fed the zero box.
+        r.bakeAll(true);
+        r.zoom.resize(r.mount.getBoundingClientRect(), r.VW, r.VH);
+        r.updateView(t += SETTLE_MS + 1);
+      } catch (err) { threw = (err as Error).message; }
+      const bad = !!threw || !camsFinite();
+      const detail = `threw ${threw || 'nothing'}, cameras finite ${camsFinite()}`;
+      sizeMount(r, 960, 640);
+      r.zoom.resize(r.mount.getBoundingClientRect(), r.VW, r.VH);   // undo for the blocks below
+      return [bad, detail];
+    });
+    r.resize(); r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+  }
+
+  // ── fix round 1: pointercancel and wheel-during-drag ─────────────────────
+  {
+    /** A stub mount that records listeners, bound to the real handlers. */
+    const fakeMount = () => {
+      const ls: Record<string, Array<(e: any) => void>> = {};
+      const m: any = {
+        ls, clicks: 0,
+        addEventListener(type: string, fn: any) { (ls[type] ??= []).push(fn); if (type === 'click') m.clicks++; },
+        removeEventListener() {}, setPointerCapture() {},
+        getBoundingClientRect: () => rectOf(960, 640),
+      };
+      return m;
+    };
+    const fire = (m: any, type: string, ev: any) => {
+      for (const fn of m.ls[type] ?? []) fn({ preventDefault() {}, stopPropagation() {}, pointerId: 1, button: 0, type, ...ev });
+    };
+    /** Down, a move past the 6 px slop (a pan), then `endType` delivered to the `via` listeners. */
+    const dragThen = (endType: string, via: string) => {
+      const m = fakeMount();
+      r.unbindView?.forEach((off: () => void) => off());
+      r.bindViewInput(m);
+      fire(m, 'pointerdown', { clientX: 100, clientY: 100 });
+      fire(m, 'pointermove', { clientX: 140, clientY: 110 });
+      fire(m, via, { clientX: 140, clientY: 110, type: endType });
+      return { clicks: m.clicks, active: r.drag.active };
+    };
+    tryCheck('pointercancel after a pan does not arm the click swallow', () => {
+      const a = dragThen('pointercancel', 'pointercancel');
+      const up = dragThen('pointerup', 'pointerup');
+      return [a.clicks === 0 && !a.active && up.clicks === 1, `cancel arms ${a.clicks}, up arms ${up.clicks}`];
+    });
+    tryCheck('  control: a cancel routed to the pointer-up handler (pre-fix binding) arms it', () => {
+      const b = dragThen('pointercancel', 'pointerup');
+      return [b.clicks !== 0, `cancel arms ${b.clicks}`];
+    });
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+
+    /** Drag, a wheel mid-drag about another point, then a panMove that does not move the pointer. */
+    const wheelMidDrag = (stale: boolean) => {
+      const c = new ZoomController({ width: 960, height: 640 }, VW, VH);
+      let tt = T0;
+      for (let i = 0; i < 5; i++) c.wheel(0, 0, -1, tt += 4);       // zoom ~2.1 about the centre
+      c.panStart(0, 0, tt += 4);
+      c.panMove(40, 20, tt += 4);
+      const origin = { ...(c as any).panOrigin };
+      c.wheel(200, -100, -1, tt += 4);
+      const after = { x: c.panX, y: c.panY };
+      if (stale) (c as any).panOrigin = origin;                     // the pre-fix: origin not re-based
+      c.panMove(40, 20, tt += 4);                                  // same pointer position
+      return { after, now: { x: c.panX, y: c.panY } };
+    };
+    tryCheck('wheel during a drag: the drag continues from the zoomed pan', () => {
+      const a = wheelMidDrag(false);
+      const d = Math.hypot(a.now.x - a.after.x, a.now.y - a.after.y);
+      return [d < 1e-9, `pan after wheel ${a.after.x.toFixed(1)},${a.after.y.toFixed(1)} -> next move ${a.now.x.toFixed(1)},${a.now.y.toFixed(1)}`];
+    });
+    tryCheck('  control: a stale pan origin overwrites the wheel', () => {
+      const b = wheelMidDrag(true);
+      const d = Math.hypot(b.now.x - b.after.x, b.now.y - b.after.y);
+      return [!(d < 1e-9), `jump ${d.toFixed(1)} CSS px`];
     });
   }
 }
