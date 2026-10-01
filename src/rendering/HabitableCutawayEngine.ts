@@ -2119,6 +2119,11 @@ interface CameraLayerSet {
   painter: WeatherPainter | null;
 }
 
+/** What the host passes to `bake` / `resize`: the geometry is the engine's own. */
+export type EngineBakeOpts = Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
+  w: number; h: number; weather?: ClimateSources | null; sunLat?: number;
+};
+
 export class HabitableCutawayEngine {
   /** BASE (identity) geometry. The shown geometry is `activeGeom` / `drawGeom`. */
   geom: HabitableGeom = habitableGeom(1, 1);
@@ -2127,8 +2132,19 @@ export class HabitableCutawayEngine {
   /**
    * Set by the host: draw (and pick, and expose geometry for) the camera layer
    * set instead of the identity set. Ignored while there is no camera set.
+   *
+   * The identity weather painter is frozen while the camera set is shown; on
+   * the way back to the identity set (zoom back to 1, a new gesture, resize)
+   * it re-primes from the running sim, or its frozen drops would show for
+   * ~0.3 s over a sky that has moved on.
    */
-  showCamera = false;
+  get showCamera(): boolean { return this.camShown; }
+  set showCamera(v: boolean) {
+    const was = this.shown !== null;
+    this.camShown = v;
+    if (was && this.shown === null) this.reprimeIdentityPainter();
+  }
+  private camShown = false;
   /**
    * Test hook (tools/zoomCheck): when set, atmosphere, clouds and cloud
    * shadows use this intensity instead of `atmoHazeAmount(zoom)`. Never set in
@@ -2189,7 +2205,11 @@ export class HabitableCutawayEngine {
 
   /** The camera set when the host shows it, else null (identity). */
   private get shown(): CameraLayerSet | null {
-    return this.showCamera ? this.camSet : null;
+    return this.camShown ? this.camSet : null;
+  }
+
+  private reprimeIdentityPainter(): void {
+    if (this.weatherPainter && this.weatherSim) this.weatherPainter.reprime(this.weatherSim, this.weatherAcc / WX_DT);
   }
 
   /** Land/water of the ACTIVE layer set, 1 = fluid. */
@@ -2211,9 +2231,25 @@ export class HabitableCutawayEngine {
     return { ...this.activeGeom, bob: this.bob };
   }
 
-  bake(opts: Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'> & {
-    w: number; h: number; weather?: ClimateSources | null; sunLat?: number;
-  }): void {
+  /** A new planet: identity layers, the identity view and a fresh weather sim. */
+  bake(opts: EngineBakeOpts): void {
+    this.bakeIdentity(opts, false);
+  }
+
+  /**
+   * A new SIZE for the same planet (spec 5, Resize): the base geometry and the
+   * identity layers are recomputed, the camera set is dropped (the host
+   * re-bakes it for the re-clamped camera at the new size), and the weather
+   * sim, its fields, clock and `elapsed` are KEPT — the planet has not changed.
+   * The identity painter is rebuilt for the new lookup and primed from the
+   * running sim. Without a sim to keep (none yet, or a gas giant) it is `bake`.
+   */
+  resize(opts: EngineBakeOpts): void {
+    this.bakeIdentity(opts, true);
+  }
+
+  private bakeIdentity(opts: EngineBakeOpts, keepSim: boolean): void {
+    const sim = keepSim && opts.weather && opts.grid && opts.planetType !== 'gas' ? this.weatherSim : null;
     this.w = Math.max(1, Math.round(opts.w));
     this.h = Math.max(1, Math.round(opts.h));
     this.geom = habitableGeom(this.w, this.h);
@@ -2221,10 +2257,10 @@ export class HabitableCutawayEngine {
     this.camera = identityCamera(this.w, this.h);
     this.idCamera = identityCamera(this.w, this.h);
     this.camSet = null;
-    this.showCamera = false;
+    this.camShown = false;
     this.planetType = opts.planetType;
     this.seed = opts.seed;
-    this.elapsed = 0;
+    if (!sim) this.elapsed = 0;
     this.idOccupancy = new Uint8Array(this.w * this.h);
     this.idShoreDist = new Float32Array(this.w * this.h);
     this.idPick = new Int32Array(this.w * this.h);
@@ -2249,13 +2285,24 @@ export class HabitableCutawayEngine {
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     // Weather: a fresh sim per bake — a new planet must never inherit the last
-    // one's sky (the repo's recurring state-leak pattern).
+    // one's sky (the repo's recurring state-leak pattern). A resize keeps it.
+    const keptClimate = this.weatherClimate;
     this.weatherSim = null;
     this.weatherPainter = null;
     this.weatherClimate = null;
-    this.weatherAcc = 0;
+    if (!sim) this.weatherAcc = 0;
     const grid = opts.grid;
-    if (opts.weather && grid && opts.planetType !== 'gas') {
+    if (sim && grid && keptClimate) {
+      const elevAt = subCellSampler(opts);
+      const lut = buildWeatherLut(this.geom, opts.discToGrid,
+        (row, col, r, dx, dy) => opts.liftOf(
+          (elevAt?.(dx, dy) ?? opts.smoothElevation(grid, row, col)) - opts.rimFalloff(r)));
+      this.weatherSim = sim;
+      this.weatherPainter = new WeatherPainter(lut, keptClimate, (opts.maxLift ?? 18) + 6, opts.seed);
+      this.weatherPainter.prepare(sim, this.weatherAcc / WX_DT, 0);   // primes over the running sky
+      this.weatherClimate = keptClimate;
+      this.idLutCount = Math.max(1, lut.count);
+    } else if (opts.weather && grid && opts.planetType !== 'gas') {
       // Ground lift follows the sub-cell elevation like the surface does; the
       // lookup's field coordinates (fx/fy) stay per cell.
       const elevAt = subCellSampler(opts);
@@ -2292,15 +2339,23 @@ export class HabitableCutawayEngine {
    * through the camera and stamped x round(k) / x k, never re-planned.
    *
    * Weather: the set gets its own painter (see `cameraPainter`) over the SAME
-   * sim; while the set is shown only its painter spawns and moves particles,
-   * and the identity painter keeps its particle state for when it is shown
-   * again.
+   * sim; while the set is shown only its painter spawns and moves particles.
+   * The identity painter is frozen meanwhile and re-primes when the identity
+   * set is shown again (see `showCamera`).
+   *
+   * Allocation per call (it runs once per settle, never per frame): the
+   * occupancy and pick buffers are reused; the shore distance, the weather
+   * lookup and the painter (pmax up to ~3.3k at zoom 4) are rebuilt, and the
+   * previous ones become garbage at once — tools/zoomCheck measures that 50
+   * settles retain less heap than a single camera set.
    */
   setCamera(cam: Camera): void {
     this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
     const base = this.surfaceBakeOpts;
     if (isIdentity(this.camera, this.w, this.h) || !base) {
+      const was = this.shown !== null;
       this.camSet = null;
+      if (was) this.reprimeIdentityPainter();
       return;
     }
     const n = this.w * this.h;
@@ -2328,6 +2383,11 @@ export class HabitableCutawayEngine {
     this.paintCameraSurface(set);
     set.painter = this.cameraPainter(set, base);
     this.camSet = set;
+  }
+
+  /** Back to the identity view: drop the camera layer set (zoom back to 1). */
+  clearCamera(): void {
+    this.setCamera(this.idCamera);
   }
 
   /**
@@ -2418,13 +2478,19 @@ export class HabitableCutawayEngine {
       Math.ceil(FOAM_REACH * k), (x, y) => faceWaterAt(opts, x, y), Math.round(k));
   }
 
-  /** Repaint the mutable top-face data of BOTH layer sets without resetting animation or crust. */
-  rebakeSurface(): void {
+  /**
+   * Repaint the mutable top-face data of BOTH layer sets without resetting
+   * animation or crust. `includeCamera: false` repaints the identity set only:
+   * the host passes it when a settle re-bakes the camera set in the same frame
+   * (spec 5: the two merge into one re-bake), so the camera set is painted
+   * once, from the fresh plans.
+   */
+  rebakeSurface(includeCamera = true): void {
     const landG = this.land.getContext('2d');
     this.planIdentity();
     if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.identityPaintOpts());
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
-    if (this.camSet) this.paintCameraSurface(this.camSet);
+    if (includeCamera && this.camSet) this.paintCameraSurface(this.camSet);
   }
 
   /**

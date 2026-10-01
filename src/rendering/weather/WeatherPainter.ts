@@ -280,6 +280,19 @@ export class WeatherPainter {
 
   setClimate(c: ClimateSources): void { this.climate = c; }
 
+  /**
+   * Drop every live drop and bolt and prime again from `sim` at once, as a
+   * fresh painter would. For a painter that was frozen while another one was
+   * shown (the zoom camera's identity painter): its particles belong to a sky
+   * that has since moved on, and would show as stale drops for ~0.3 s.
+   */
+  reprime(sim: WeatherSim, t: number): void {
+    this.pCount = 0;
+    this.fCount = 0;
+    this.primed = false;
+    this.prepare(sim, t, 0);
+  }
+
   /** Advance the LCG; the draw is then (this.rs[0] >>> 0) * INV32. */
   private roll(): void {
     this.rs[0] = (Math.imul(this.rs[0], 1664525) + 1013904223) | 0;

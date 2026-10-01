@@ -1485,5 +1485,319 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
   }
 }
 
+console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, planet change)');
+{
+  const H = await import('./zoomHarness');
+  const { applySettle } = await import('../src/rendering/zoomSettle');
+  const { isWater, GRID_SIZE } = await import('../src/simulation/PlanetGrid');
+  const { backdropWidth } = await import('../src/rendering/sky/Backdrop') as any;
+  /** A check whose body may throw on code that does not exist yet: a throw is a FAIL, not a crash. */
+  const tryCheck = (name: string, fn: () => [boolean, string]) => {
+    try { const [ok, d] = fn(); check(name, ok, d); } catch (err) { check(name, false, `threw: ${(err as Error).message}`); }
+  };
+  const rectOf = (w: number, h: number) => ({ left: 0, top: 0, width: w, height: h, right: w, bottom: h, x: 0, y: 0 });
+  /** Resize the stub mount (CSS px). The display fills the mount, as in the game. */
+  const sizeMount = (r: any, w: number, h: number) => {
+    r.mount.clientWidth = w; r.mount.clientHeight = h;
+    r.mount.getBoundingClientRect = () => rectOf(w, h);
+    r.display.getBoundingClientRect = () => rectOf(w, h);
+  };
+  /** Recorder: the first drawImage of the backdrop (what, where). */
+  class BgRec extends H.PixelCtx {
+    first: any[] | null = null;
+    drawImage(src: any, dx = 0, dy = 0) { if (!this.first) this.first = [`img${src.width}x${src.height}`, dx, dy]; }
+  }
+  const idOf = (c: { row: number; col: number } | null) => c ? c.row * GRID_SIZE + c.col + 1 : 0;
+  const T0 = 1e6;
+  let t = T0;
+  /** n wheel notches (deltaY < 0 zooms in) at CSS offset (mx, my) from the mount centre. */
+  const wheel = (r: any, n: number, dir: number, mx = 60, my = 30) => { for (let i = 0; i < n; i++) r.zoom.wheel(mx, my, dir, t += 4); };
+  /** One renderer frame's view step, SETTLE_MS after the last input. */
+  const settleFrame = (r: any) => { r.updateView(t += SETTLE_MS + 1); };
+
+  const r: any = await H.makeRenderer('ocean', 3);
+  sizeMount(r, 960, 640);
+
+  // ── click after settle maps through the camera (Review focus 2) ──────────
+  let stalePick: Int32Array | null = null;
+  tryCheck('settle: one frame step shows the camera set with CSS identity', () => {
+    stalePick = r.pickBuf;           // what a renderer that never re-reads its cached buffer would hold
+    wheel(r, 10, -1, -220, 20);      // 1.16^10 > 4: clamped to MAX_ZOOM; toward the rim's open sea
+    settleFrame(r);
+    const cam = r.cutaway.activeCamera;
+    const ok = r.zoom.viewZoom === 4 && cam.zoom === 4 && r.zoom.showCamera && r.cutaway.showCamera
+      && r.display.style.transform === 'none' && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered);
+    return [ok, `zoom ${r.zoom.viewZoom}, camera ${JSON.stringify(cam)}, shown ${r.cutaway.showCamera}, css ${r.display.style.transform}`];
+  });
+  {
+    // Fixture: the harness's own projection (copied verbatim from the renderer).
+    const D = H.makeDiscToGrid(r.focusLat, r.focusLon);
+    const e = r.cutaway, g = e.geom, cam = e.activeCamera, bob = Math.round(e.bob);
+    const flat = (x: number, y: number) => idOf(D((x - g.cx) / g.rx, (y - g.cyTop) / g.ry));
+    const waterAround = (id: number) => {
+      const row = Math.floor((id - 1) / GRID_SIZE), col = (id - 1) % GRID_SIZE;
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+        const c = r.grid[row + dr]?.[(col + dc + GRID_SIZE) % GRID_SIZE];
+        if (!c || !isWater(c.biome)) return false;
+      }
+      return true;
+    };
+    const lookup = (buf: Int32Array | null, sx: number, sy: number) => buf ? buf[sy * VW + sx] ?? 0 : -1;
+    let n = 0, viaTile = 0, viaCache = 0, viaStale = 0, cands = 0;
+    const rej = { bnd: 0, water: 0 };
+    const misses: string[] = [];
+    // Integer world points; at zoom 4 with a 1/4-px focus each maps to a whole screen pixel.
+    for (let wy = 1; wy < VH - 1 && n < 200; wy += 1) for (let wx = 1; wx < VW - 1 && n < 200; wx += 3) {
+      const sp = worldToScreen(cam, VW, VH, wx, wy);
+      if (sp.x < 0 || sp.y < 0 || sp.x >= VW || sp.y >= VH || !Number.isInteger(sp.x) || !Number.isInteger(sp.y)) continue;
+      const want = flat(wx, wy);
+      if (!want) continue;
+      cands++;
+      // Open sea (the cell and two rings around it are water, so the
+      // sub-cell elevation is water too): the bake writes a water face
+      // pixel's own cell to the pick whatever stands in front, so the flat
+      // projection is the exact answer there. Off a cell boundary by a
+      // float-rounding margin only.
+      if (!waterAround(want)) continue;
+      rej.water++;
+      const q = 1e-3;
+      if (flat(wx - q, wy) !== want || flat(wx + q, wy) !== want || flat(wx, wy - q) !== want || flat(wx, wy + q) !== want) continue;
+      rej.bnd++;
+      n++;
+      // A real click: client px of the screen virtual pixel (CSS none after settle), bob included.
+      const got = idOf(r.pickTile(sp.x * 960 / VW, (sp.y + bob) * 640 / VH));
+      if (got === want) viaTile++; else if (misses.length < 3) misses.push(`w${wx},${wy}->s${sp.x},${sp.y}: ${got} vs ${want}`);
+      if (lookup(r.pickBuf, sp.x, sp.y) === want) viaCache++;
+      if (lookup(stalePick, sp.x, sp.y) === want) viaStale++;
+    }
+    check('click after settle at zoom 4 picks discToGrid(screenToWorld(p)) (200 pts)', n === 200 && viaTile === n,
+      `${viaTile}/${n} agree (${cands} candidates, ${rej.water} in open sea, ${rej.bnd} of them off a boundary) ${misses.join('; ')}`);
+    check('  the renderer\'s cached pick buffer is the active one after settle', n === 200 && viaCache === n && r.pickBuf === e.pick,
+      `${viaCache}/${n} via the cached buffer`);
+    check('  control: a stale cached (pre-settle) buffer resolves elsewhere', !(n === 200 && viaStale === n), `${viaStale}/${n} agree`);
+  }
+
+  // ── resize keeps camera and sim (Review focus 3) ─────────────────────────
+  {
+    const e = r.cutaway;
+    let sim: any = null, cloud: Float32Array | null = null;
+    tryCheck('resize: setup — pan saturated at the 960x640 clamp, camera shown', () => {
+      r.zoom.panStart(0, 0, t += 4); r.zoom.panMove(0, 5000, t += 4); r.zoom.panEnd(t += 4);
+      settleFrame(r);
+      sim = e.weatherSim; cloud = Float32Array.from(sim.cloud);
+      return [Math.abs(r.zoom.panY - 3 * 640 / 2) < 1e-9 && e.showCamera && !!sim, `panY ${r.zoom.panY}, shown ${e.showCamera}`];
+    });
+    tryCheck('resize while zoomed keeps the zoom, re-clamps the focus, keeps the sim', () => {
+      sizeMount(r, 960, 400);
+      r.resize();
+      const z = r.zoom.viewZoom, bound = (z - 1) * 400 / 2, cam = e.activeCamera, half = r.VH / (2 * z);
+      const simKept = e.weatherSim === sim && sim.cloud.every((v: number, i: number) => v === cloud![i]);
+      const ok = z === 4 && r.VH === 200 && Math.abs(Math.abs(r.zoom.panY) - bound) < 1e-9
+        && cam.zoom === 4 && cam.fy >= half - 1e-9 && cam.fy <= r.VH - half + 1e-9 && simKept;
+      return [ok, `zoom ${z}, VH ${r.VH}, panY ${r.zoom.panY} (bound ${bound}), focus ${cam.fx},${cam.fy} (fy in [${half}, ${r.VH - half}]), sim kept ${simKept}`];
+    });
+    tryCheck('  after resize the camera layers are re-baked at the new size and shown', () => {
+      const cs = e.camSet, cam = e.activeCamera;
+      const want = applyCamera(e.geom, cam, r.VW, r.VH);
+      const ok = !!cs && e.showCamera && cs.crust.width === r.VW && cs.crust.height === r.VH && cs.land.height === r.VH
+        && cs.pick.length === r.VW * r.VH && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered) && JSON.stringify(cs.geom) === JSON.stringify(want)
+        && r.zoom.cssTransform() === 'none' && r.display.style.transform === 'none' && r.pickBuf === e.pick;
+      return [ok, `camSet ${cs ? `${cs.crust.width}x${cs.crust.height}` : 'none'}, shown ${e.showCamera}, css ${r.display.style.transform}`];
+    });
+    const farDrawn = () => {
+      const gg = new BgRec(new H.PixelCanvas(r.VW, r.VH));
+      r.drawBackdropPanorama(gg);
+      const Ws = Math.round(backdropWidth(r.VW) * farScale(e.activeCamera.zoom));
+      return { ok: !!gg.first && gg.first[0] === `img${Ws}x${r.VH}`, got: gg.first?.[0], want: `img${Ws}x${r.VH}` };
+    };
+    tryCheck('  after resize the backdrop is the far panorama for this camera and size', () => {
+      const f = farDrawn(), b = r.bgFarFor, cam = e.activeCamera;
+      const ok = f.ok && !!b && b.zoom === cam.zoom && b.fy === cam.fy && b.H === r.VH;
+      return [ok, `drew ${f.got} (want ${f.want}), baked for ${JSON.stringify(b)}`];
+    });
+    tryCheck('  control: the pre-change resize backdrop step alone draws the identity panorama', () => {
+      r.bakeBackground();              // clears bgFarFor; nothing re-settles
+      const f = farDrawn();
+      return [!f.ok, `drew ${f.got}`];
+    });
+    tryCheck('  control: the pre-change resize path (bake()) replaces the sim', () => {
+      r.bakeAll();
+      return [e.weatherSim !== sim, `sim replaced ${e.weatherSim !== sim}`];
+    });
+  }
+
+  // ── new planet resets the camera (Review focus 4) ───────────────────────
+  {
+    const e = r.cutaway;
+    sizeMount(r, 960, 640); r.resize();
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);   // a clean start for this block
+    const other: any = await H.makeRenderer('lava', 4);
+    let sim0: any = null;
+    tryCheck('new planet: setup — zoomed and settled', () => {
+      wheel(r, 10, -1); settleFrame(r);
+      sim0 = e.weatherSim;
+      return [e.showCamera && r.zoom.viewZoom === 4 && !!sim0, `shown ${e.showCamera}, zoom ${r.zoom.viewZoom}`];
+    });
+    tryCheck('refreshData for a new planet while zoomed resets the camera, fresh sim', () => {
+      r.refreshData(other.grid, other.biosphere, other.species, other.planet, other.star, 0);
+      const ok = r.zoom.viewZoom === 1 && !r.zoom.showCamera && r.zoom.cssTransform() === 'none'
+        && r.display.style.transform === 'none' && e.showCamera === false && isIdentity(e.camera, r.VW, r.VH)
+        && e.camSet === null && !!e.weatherSim && e.weatherSim !== sim0 && r.planetType === 'lava';
+      return [ok, `zoom ${r.zoom.viewZoom}, shown ${e.showCamera}, camera ${JSON.stringify(e.camera)}, css ${r.display.style.transform}, fresh sim ${e.weatherSim !== sim0}`];
+    });
+    tryCheck('  control: the pre-change refresh (bake only) leaves the view zoomed', () => {
+      wheel(r, 10, -1); settleFrame(r);
+      r.bakeAll();
+      return [!(r.zoom.viewZoom === 1 && !r.zoom.showCamera), `zoom ${r.zoom.viewZoom}, controller shows camera ${r.zoom.showCamera}`];
+    });
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+  }
+
+  // ── merged rebake: the 4 s surface rebake and a due settle, one frame ────
+  {
+    const e = r.cutaway;
+    const order: string[] = [];
+    const origCam = e.paintCameraSurface, origPlan = e.planIdentity;
+    e.paintCameraSurface = function (this: any, s: any) { order.push('cam'); return origCam.call(this, s); };
+    e.planIdentity = function (this: any) { order.push('id'); return origPlan.call(this); };
+    /** Zoomed + settled, then a new gesture with the rebake due at the settle frame. */
+    const arm = () => {
+      wheel(r, 10, -1); settleFrame(r);
+      wheel(r, 1, +1);                       // a new gesture (zoom out one notch)
+      r.updateView(t += 1);                  // a mid-gesture frame: identity layers + CSS
+      r.surfaceDirty = true; r.lastSurfaceBake = r.elapsed - 10;
+      order.length = 0;
+    };
+    tryCheck('mid-gesture frame shows the identity layers under CSS', () => {
+      wheel(r, 10, -1); settleFrame(r);
+      wheel(r, 1, +1); r.updateView(t += 1);
+      return [!e.showCamera && r.display.style.transform !== 'none' && r.pickBuf === e.pick,
+        `shown ${e.showCamera}, css ${r.display.style.transform}`];
+    });
+    tryCheck('rebake + settle in one frame: one camera re-bake, after the identity re-plan', () => {
+      arm();
+      settleFrame(r);
+      const ok = order.join(',') === 'id,cam' && !r.surfaceDirty && e.showCamera;
+      return [ok, `paints [${order.join(',')}], dirty ${r.surfaceDirty}, shown ${e.showCamera}`];
+    });
+    tryCheck('  control: rebake then settle as separate steps re-bakes the camera set twice', () => {
+      arm();
+      r.bakeSurface();                       // the 4 s rebake on its own
+      applySettle(e, r.zoom, t += SETTLE_MS + 1);
+      const cams = order.filter(o => o === 'cam').length;
+      return [!(cams === 1), `paints [${order.join(',')}]`];
+    });
+    e.paintCameraSurface = origCam; e.planIdentity = origPlan;
+  }
+
+  // ── the identity weather painter re-primes on return to identity ─────────
+  {
+    // Engine + controller only, driven exactly as the renderer drives them.
+    const runRet = (bypass: boolean) => {
+      const B = H.bakeEngine('ocean', 7);
+      const e: any = B.engine, c = new ZoomController({ width: 960, height: 640 }, VW, VH);
+      const g = new H.PixelCanvas(VW, VH).getContext() as unknown as CanvasRenderingContext2D;
+      const noop = () => {};
+      let el = 10;
+      const frame = () => e.frame({ g, dt: 0.25, elapsed: el += 0.25, sunAzimuth: 0.6, sunLat: 0, viewZoom: c.viewZoom,
+        drawBackdrop: noop, drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop });
+      let tt = T0;
+      for (let i = 0; i < 8; i++) frame();
+      for (let i = 0; i < 10; i++) c.wheel(0, 0, -1, tt += 4);
+      applySettle(e, c, tt += SETTLE_MS + 1);
+      const idp = e.weatherPainter;
+      const frozen = new Set<string>();
+      for (let q = 0; q < idp.pCount; q++) frozen.add(`${idp.pX[q]},${idp.pY[q]}`);
+      for (let i = 0; i < 12; i++) frame();         // 3 s under the camera: the identity painter is frozen
+      const frozenN = frozen.size;
+      for (let i = 0; i < 40; i++) c.wheel(0, 0, +1, tt += 4);
+      // Control: the same return with the painter's re-prime disabled (the pre-change painter).
+      if (bypass) idp.reprime = () => {};
+      applySettle(e, c, tt += SETTLE_MS + 1);
+      let survivors = 0;
+      for (let q = 0; q < idp.pCount; q++) if (frozen.has(`${idp.pX[q]},${idp.pY[q]}`)) survivors++;
+      return { frozenN, survivors, live: idp.pCount, shown: e.showCamera, zoom: c.viewZoom, same: e.weatherPainter === idp };
+    };
+    tryCheck('back at zoom 1 the identity painter re-primes: no frozen drop survives', () => {
+      const a = runRet(false);
+      return [a.frozenN >= 20 && a.survivors === 0 && a.live > 0 && !a.shown && a.zoom === 1 && a.same,
+        `${a.frozenN} frozen drops, ${a.survivors} survive, ${a.live} live after re-prime`];
+    });
+    tryCheck('  control: without the re-prime the frozen drops show again', () => {
+      const b = runRet(true);
+      return [!(b.frozenN >= 20 && b.survivors === 0), `${b.frozenN} frozen, ${b.survivors} survive`];
+    });
+  }
+
+  // ── settle churn: 50 settles retain no camera set ────────────────────────
+  {
+    const gc = (globalThis as any).gc as (() => void) | undefined;
+    const churn = (leak: unknown[] | null) => {
+      const B = H.bakeEngine('ocean', 7);
+      const e: any = B.engine, c = new ZoomController({ width: 960, height: 640 }, VW, VH);
+      let tt = T0;
+      const one = (i: number) => {
+        c.wheel(0, 0, +1, tt += 4);
+        for (let k = 0; k < 12; k++) c.wheel((i % 5) * 40 - 80, (i % 3) * 30 - 30, -1, tt += 4);
+        applySettle(e, c, tt += SETTLE_MS + 1);
+        if (leak) leak.push(e.camSet);
+      };
+      one(0); one(1);
+      // Typed-array backing stores live outside the JS heap: count both.
+      const mem = () => { const m = process.memoryUsage(); return m.heapUsed + m.arrayBuffers; };
+      gc?.(); const h0 = mem();
+      for (let i = 2; i < 52; i++) one(i);
+      gc?.(); const h1 = mem();
+      const cs = e.camSet, p = cs.painter;
+      // One camera set's own typed arrays: what leaking a single settle would retain.
+      const arrays = [cs.occupancy, cs.pick, cs.shoreDist, p?.pX, p?.pY, p?.pGround, p?.pSpawn, p?.lut?.px, p?.lut?.py,
+        p?.lut?.ground, p?.lut?.fx, p?.lut?.fy, p?.cell].filter(Boolean) as ArrayBufferView[];
+      const setBytes = arrays.reduce((s, a) => s + a.byteLength, 0);
+      return { grew: h1 - h0, setBytes, pmax: p?.pmax ?? 0, zoom: cs.camera.zoom };
+    };
+    tryCheck('settle churn: heap retained over 50 settles < one camera set', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const a = churn(null);
+      return [a.grew < a.setBytes, `+${(a.grew / 1048576).toFixed(2)} MB over 50 settles; one camera set ${(a.setBytes / 1048576).toFixed(2)} MB (pmax ${a.pmax}, zoom ${a.zoom.toFixed(2)})`];
+    });
+    tryCheck('  control: keeping every camera set exceeds it', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const leak: unknown[] = [];
+      const b = churn(leak);
+      return [!(b.grew < b.setBytes), `+${(b.grew / 1048576).toFixed(2)} MB retained`];
+    });
+  }
+
+  // ── the per-frame view step allocates nothing ────────────────────────────
+  {
+    const gc = (globalThis as any).gc as (() => void) | undefined;
+    sizeMount(r, 960, 640);
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+    wheel(r, 10, -1); settleFrame(r);
+    const sink: unknown[] = [];
+    const measure = (extra: boolean) => {
+      let best = Infinity;
+      for (let rep = 0; rep < 3; rep++) {
+        gc?.(); const h0 = process.memoryUsage().heapUsed;
+        for (let i = 0; i < 1000; i++) { r.updateView(t += 16); if (extra) sink.push(new Float64Array(8)); }
+        best = Math.min(best, process.memoryUsage().heapUsed - h0);
+        sink.length = 0;
+      }
+      return best;
+    };
+    tryCheck('view step: no per-frame allocation while settled', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      measure(false);   // warm-up
+      const g0 = measure(false);
+      return [g0 < 64 * 1024, `heap +${(g0 / 1024).toFixed(1)} KB per 1000 frames, best of 3`];
+    });
+    tryCheck('  control: one small array per frame is detected', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const g1 = measure(true);
+      return [g1 >= 64 * 1024, `heap +${(g1 / 1024).toFixed(1)} KB`];
+    });
+  }
+}
+
 console.log(failed === 0 ? '\n  all zoom checks passed\n' : `\n  ${failed} zoom check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

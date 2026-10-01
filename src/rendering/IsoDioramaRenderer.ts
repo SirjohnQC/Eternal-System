@@ -50,6 +50,8 @@ import { orbitSky, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
 import { paintSky, skyLayout, farLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
 import { farScale, isIdentity, type Camera } from './ZoomCamera';
+import { ZoomController } from './ZoomController';
+import { applySettle, type SettleHooks } from './zoomSettle';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
@@ -396,14 +398,32 @@ export class IsoDioramaRenderer {
   private VW = 480;
   private VH = 320;
 
-  private viewZoom = 1;
-  private viewPanX = 0;
-  private viewPanY = 0;
-  private isPanning = false;
-  private panStart = { x: 0, y: 0, panX: 0, panY: 0 };
+  /**
+   * Progressive zoom (spec 5): during a wheel/drag gesture the identity layers
+   * are shown under a CSS transform; SETTLE_MS after the last input the frame
+   * re-bakes the camera layer set and shows it with no CSS transform. The
+   * controller owns zoom and pan; `updateView` applies it once per frame.
+   */
+  private zoom = new ZoomController({ width: 960, height: 640 }, 480, 320);
+  /** Pointer state: down, and whether it has turned into a pan (past the 6 px slop). */
+  private drag = { active: false, panning: false, x: 0, y: 0 };
+  /** The view state the display's CSS transform was last written for. */
+  private cssFor = { zoom: NaN, x: NaN, y: NaN, shown: false };
+  /** The 4 s surface rebake is due this frame (read by the settle hook). */
+  private rebakeDue = false;
+  /** Settle hooks, allocated once: `updateView` runs every frame. */
+  private readonly settleHooks: SettleHooks = {
+    // A settle and a due 4 s rebake in one frame merge: the identity rebake
+    // (fresh plans) runs first and skips the camera set, which the settle
+    // then re-bakes once from those plans.
+    beforeCamera: () => {
+      if (!this.rebakeDue) return;
+      this.rebakeDue = false;
+      this.rebakeSurfaceAndPlacement(false);
+    },
+    afterCamera: (cam) => this.bakeFarBackdrop(cam),
+  };
   private unbindView: Array<() => void> = [];
-  private static readonly MIN_ZOOM = 1;
-  private static readonly MAX_ZOOM = 4;
   private lastDecalState: { lush: number; biodiversity: number } | null = null;
 
   // Data
@@ -660,7 +680,16 @@ export class IsoDioramaRenderer {
     }
   }
 
-  /** Recompute virtual resolution from the mount size and rebake every layer. */
+  /**
+   * Recompute virtual resolution from the mount size and rebake every layer.
+   *
+   * Its own path (spec 5, Resize), not a new planet: the base geometry and
+   * identity layers are rebuilt (placement re-planned on the new base), the
+   * weather sim is KEPT, the controller keeps its zoom and re-clamps the
+   * focus, and the camera layers (and far backdrop) are re-baked at the new
+   * size at once — so no frame ever shows the camera set over a stale
+   * backdrop, and mid-gesture the gesture simply continues.
+   */
   private resize(): void {
     if (!this.mount) return;
     const w = Math.max(320, this.mount.clientWidth  || 960);
@@ -690,11 +719,16 @@ export class IsoDioramaRenderer {
     this.skyCanvas.width = this.VW; this.skyCanvas.height = this.VH;
     this.skyImage = this.skyCanvas.getContext('2d')?.createImageData(this.VW, this.VH) ?? null;
 
-    this.bakeAll();
-    this.clampViewPan(this.mount.getBoundingClientRect());
-    this.applyViewTransform();
+    this.bakeAll(true);
+    this.zoom.resize(this.mount.getBoundingClientRect(), this.VW, this.VH);
+    this.updateView(performance.now());
   }
 
+  /**
+   * Wheel and drag forward to the zoom controller; nothing is drawn or baked
+   * here. A pointer-down turns into a pan only past a 6 px slop, and a real
+   * drag must not also count as a tile click.
+   */
   private bindViewInput(mount: HTMLElement): void {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -702,47 +736,36 @@ export class IsoDioramaRenderer {
       const rect = mount.getBoundingClientRect();
       const mx = e.clientX - rect.left - rect.width / 2;
       const my = e.clientY - rect.top - rect.height / 2;
-      const prev = this.viewZoom;
-      const factor = e.deltaY > 0 ? 0.86 : 1.16;
-      const next = Math.max(
-        IsoDioramaRenderer.MIN_ZOOM,
-        Math.min(IsoDioramaRenderer.MAX_ZOOM, prev * factor),
-      );
-      if (next === prev) return;
-      const wx = (mx - this.viewPanX) / prev;
-      const wy = (my - this.viewPanY) / prev;
-      this.viewZoom = next;
-      this.viewPanX = mx - wx * next;
-      this.viewPanY = my - wy * next;
-      this.clampViewPan(rect);
-      this.applyViewTransform();
+      this.zoom.wheel(mx, my, e.deltaY, performance.now());
     };
     const onDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
-      this.isPanning = true;
-      this.panStart = { x: e.clientX, y: e.clientY, panX: this.viewPanX, panY: this.viewPanY };
+      this.drag.active = true; this.drag.panning = false;
+      this.drag.x = e.clientX; this.drag.y = e.clientY;
       mount.setPointerCapture(e.pointerId);
     };
     const onMove = (e: PointerEvent) => {
-      if (!this.isPanning) return;
-      const dx = e.clientX - this.panStart.x;
-      const dy = e.clientY - this.panStart.y;
-      if (dx * dx + dy * dy < 36) return;
-      this.viewPanX = this.panStart.panX + dx;
-      this.viewPanY = this.panStart.panY + dy;
-      this.clampViewPan(mount.getBoundingClientRect());
-      this.applyViewTransform();
-    };
-    const onUp = (e: PointerEvent) => {
-      if (!this.isPanning) return;
-      const dx = e.clientX - this.panStart.x;
-      const dy = e.clientY - this.panStart.y;
-      this.isPanning = false;
-      // A real drag must not also count as a tile click.
-      if (dx * dx + dy * dy >= 36) {
-        const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); };
-        mount.addEventListener('click', swallow, { capture: true, once: true });
+      const d = this.drag;
+      if (!d.active) return;
+      const now = performance.now();
+      if (!d.panning) {
+        const dx = e.clientX - d.x, dy = e.clientY - d.y;
+        if (dx * dx + dy * dy < 36) return;
+        d.panning = true;
+        this.zoom.panStart(d.x, d.y, now);
       }
+      this.zoom.panMove(e.clientX, e.clientY, now);
+    };
+    const onUp = () => {
+      const d = this.drag;
+      if (!d.active) return;
+      d.active = false;
+      if (!d.panning) return;
+      d.panning = false;
+      this.zoom.panEnd(performance.now());
+      // A real drag must not also count as a tile click.
+      const swallow = (ev: Event) => { ev.stopPropagation(); ev.preventDefault(); };
+      mount.addEventListener('click', swallow, { capture: true, once: true });
     };
     mount.addEventListener('wheel', onWheel, { passive: false });
     mount.addEventListener('pointerdown', onDown);
@@ -758,22 +781,39 @@ export class IsoDioramaRenderer {
     ];
   }
 
-  private clampViewPan(rect: DOMRect): void {
-    if (this.viewZoom <= IsoDioramaRenderer.MIN_ZOOM + 0.001) {
-      this.viewZoom = IsoDioramaRenderer.MIN_ZOOM;
-      this.viewPanX = 0;
-      this.viewPanY = 0;
-      return;
-    }
-    const maxX = (this.viewZoom - 1) * rect.width * 0.5;
-    const maxY = (this.viewZoom - 1) * rect.height * 0.5;
-    this.viewPanX = Math.max(-maxX, Math.min(maxX, this.viewPanX));
-    this.viewPanY = Math.max(-maxY, Math.min(maxY, this.viewPanY));
+  /** Write the controller's CSS transform to the display, only when the view state changed. */
+  private applyViewTransform(): void {
+    const z = this.zoom, c = this.cssFor;
+    if (c.zoom === z.viewZoom && c.x === z.panX && c.y === z.panY && c.shown === z.showCamera) return;
+    c.zoom = z.viewZoom; c.x = z.panX; c.y = z.panY; c.shown = z.showCamera;
+    this.display.style.transform = z.cssTransform();
   }
 
-  private applyViewTransform(): void {
-    this.display.style.transform =
-      `translate(${this.viewPanX}px, ${this.viewPanY}px) scale(${this.viewZoom})`;
+  /**
+   * The per-frame view step, before anything is drawn: the settle (re-bake
+   * the camera set, show it) and the throttled surface rebake, merged into
+   * one camera re-bake when both fall in this frame; then the cached pick
+   * buffer is re-read (the active set may have changed) and the CSS transform
+   * written, so the CSS reset and the sharp camera frame land together.
+   */
+  private updateView(now: number): void {
+    if (this.habitable) {
+      this.rebakeDue = this.surfaceDirty &&
+        this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL;
+      applySettle(this.cutaway, this.zoom, now, this.settleHooks);
+      if (this.rebakeDue) {
+        this.rebakeDue = false;
+        this.rebakeSurfaceAndPlacement(true);
+      }
+      this.pickBuf = this.cutaway.pick;
+    }
+    this.applyViewTransform();
+  }
+
+  private rebakeSurfaceAndPlacement(includeCamera: boolean): void {
+    this.rebakeHabitableSurface(includeCamera);
+    this.buildCityDots();
+    this.buildInhabitants();
   }
 
   /**
@@ -811,7 +851,13 @@ export class IsoDioramaRenderer {
     // a re-bake this world has never actually painted.
     this.lastDecalState = null;
     this.computeFocus();
+    // A (re)entered or new planet starts at the identity view: bake() drops
+    // the camera layers and the sim, so the controller must not still think
+    // it is zoomed (it would show CSS 'none' over identity layers at zoom k).
+    this.zoom.reset();
     this.bakeAll();
+    this.pickBuf = this.cutaway.pick;
+    this.applyViewTransform();
   }
 
   /**
@@ -870,7 +916,7 @@ export class IsoDioramaRenderer {
       this.lastT = t;
       this.elapsed += dt;
       try {
-        this.frame(dt);
+        this.frame(dt, t);
       } catch (err) {
         // A single bad draw call must never blank the planet view — log once,
         // keep whatever was already painted, and carry on.
@@ -1220,10 +1266,12 @@ export class IsoDioramaRenderer {
    * tile markers, settlements and divine effects all still go through
    * `discToGrid` / `gridToDisc` here, so they stay in register with the terrain.
    */
-  private bakeHabitableCutaway(): void {
+  private bakeHabitableCutaway(keepSim = false): void {
     const bio = this.biosphere;
     const grid = this.grid;
-    this.cutaway.bake({
+    // keepSim: a resize of the same planet (the engine keeps the weather sim).
+    const engine = this.cutaway;
+    (keepSim ? engine.resize : engine.bake).call(engine, {
       w: this.VW, h: this.VH,
       seed: this.planetSeed,
       grid: this.grid,
@@ -1246,15 +1294,18 @@ export class IsoDioramaRenderer {
     this.surfaceDirty = false;
   }
 
-  /** Repaint only habitable terrain; animation-owned cutaway state remains live. */
-  private rebakeHabitableSurface(): void {
+  /**
+   * Repaint only habitable terrain; animation-owned cutaway state remains live.
+   * `includeCamera: false` when a settle re-bakes the camera set this frame.
+   */
+  private rebakeHabitableSurface(includeCamera = true): void {
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
       lush: this.lushFor(bio),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
     });
-    this.cutaway.rebakeSurface();
+    this.cutaway.rebakeSurface(includeCamera);
     // Sources follow the world (industry, stress, lushness); the sky is kept.
     this.cutaway.setWeatherClimate(this.climateFor());
     this.pickBuf = this.cutaway.pick;
@@ -1262,10 +1313,11 @@ export class IsoDioramaRenderer {
     this.surfaceDirty = false;
   }
 
-  private bakeAll(): void {
+  /** `keepSim`: the resize path (same planet, new size) — see `resize`. */
+  private bakeAll(keepSim = false): void {
     this.bakeBackground();
     if (this.habitable) {
-      this.bakeHabitableCutaway();
+      this.bakeHabitableCutaway(keepSim);
       this.buildCityDots();
       this.buildRipples();
       this.buildInhabitants();
@@ -2381,15 +2433,11 @@ export class IsoDioramaRenderer {
 
   // ─── Frame ─────────────────────────────────────────────────────────────────
 
-  private frame(dt: number): void {
+  private frame(dt: number, now = performance.now()): void {
     if (this.habitable) {
       this.sky = this.skyNow();
-      if (this.surfaceDirty &&
-          this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL) {
-        this.bakeSurface();
-        this.buildCityDots();
-        this.buildInhabitants();
-      }
+      // Settle + throttled rebake, before drawing (see updateView).
+      this.updateView(now);
       this.cutaway.frame({
         g: this.ctx,
         dt,
@@ -2397,7 +2445,8 @@ export class IsoDioramaRenderer {
         drawBackdrop: (g) => this.drawBackdropPanorama(g),
         sunAzimuth: this.dayAngle,
         sunLat: this.sky?.declination ?? 0,
-        viewZoom: this.viewZoom,
+        // During a gesture the identity layers are CSS-scaled by this zoom.
+        viewZoom: this.zoom.viewZoom,
         air: this.air,
         drawFarSpace: (g) => {
           this.drawSky(g);
@@ -2420,6 +2469,7 @@ export class IsoDioramaRenderer {
     }
 
     this.sky = this.skyNow();
+    this.updateView(now);   // legacy path: CSS zoom only, never a camera
     const g = this.ctx;
     const { VW, VH, cx, cy, rx, ry } = this;
     const t = this.elapsed;
