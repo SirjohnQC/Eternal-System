@@ -5,40 +5,50 @@
  *
  * Every frame:
  *  - `controller.tick(t)` -> when a settle is due it returns the camera to
- *    re-bake: `hooks.beforeCamera(cam)` (the host's merged 4 s rebake),
- *    `engine.setCamera(cam)`, `hooks.afterCamera(cam)` (far backdrop, cached
- *    buffers), then `controller.settled(cam)`;
- *  - back at zoom 1 the camera layers are dropped (`setCamera(identity)`);
- *  - `engine.showCamera` follows `controller.showCamera`: false while a
- *    gesture runs (identity layers under the CSS transform), true from the
- *    settle frame on. The host applies `controller.cssTransform()` after this
- *    call, so the CSS reset and the sharp camera frame land in the same frame.
+ *    bake: `hooks.beforeCamera(cam)` (the host's merged 4 s rebake), then
+ *    `engine.requestCamera(cam)` starts (or queues) its bake;
+ *  - `engine.stepBake(budgetMs)` advances the pending bake (spec 5b: time-
+ *    sliced, the current set or the identity view keeps being drawn); when it
+ *    completes, its set is swapped in, `hooks.afterCamera(cam)` runs (far
+ *    backdrop) and `controller.settled(cam)`;
+ *  - back at zoom 1 the camera layers are dropped (`clearCamera`);
+ *  - `engine.showCamera` follows `controller.showCamera`, and the engine draws
+ *    the shown set through `controller.liveCamera()` (a pan slides it, a wheel
+ *    scales it). The host applies `controller.cssTransform()` after this call,
+ *    so the CSS reset and the sharp camera frame land in the same frame.
+ * `budgetMs` Infinity (the default) bakes to completion in this call.
  */
 import type { HabitableCutawayEngine } from './HabitableCutawayEngine';
 import type { ZoomController } from './ZoomController';
 import type { Camera } from './ZoomCamera';
 
 export interface SettleHooks {
-  /** Runs after a settle is decided and before the camera re-bake. */
+  /** Runs after a settle is decided and before the camera bake is requested. */
   beforeCamera?(cam: Camera): void;
-  /** Runs right after `engine.setCamera(cam)`, before the camera set is shown. */
+  /** Runs when a camera bake has completed and its set is swapped in, before it is drawn. */
   afterCamera?(cam: Camera): void;
 }
 
-/** Returns the camera re-baked this frame, or null. Allocates nothing when no settle is due. */
+/** Returns the camera whose set was swapped in this frame, or null. Allocates nothing when no settle is due. */
 export function applySettle(
   engine: HabitableCutawayEngine, controller: ZoomController, t: number, hooks?: SettleHooks,
+  budgetMs = Infinity,
 ): Camera | null {
   const cam = controller.tick(t);
   if (cam) {
     hooks?.beforeCamera?.(cam);
-    engine.setCamera(cam);
-    hooks?.afterCamera?.(cam);
-    controller.settled(cam);
-  } else if (controller.viewZoom === 1 && engine.camera.zoom !== 1) {
-    // Zoomed back out to 1: drop the camera layers (identity path).
+    // Nothing to bake (the set already shows `cam`): settled at once.
+    if (!engine.requestCamera(cam)) controller.settled(cam);
+  } else if (controller.viewZoom === 1 && (engine.camera.zoom !== 1 || engine.bakePending)) {
+    // Zoomed back out to 1: drop the camera layers and any bake in flight (identity path).
     engine.clearCamera();
   }
+  const done = engine.stepBake(budgetMs);
+  if (done) {
+    hooks?.afterCamera?.(done);
+    controller.settled(done);
+  }
   if (engine.showCamera !== controller.showCamera) engine.showCamera = controller.showCamera;
-  return cam;
+  engine.setView(controller.liveCamera());
+  return done;
 }

@@ -45,11 +45,19 @@ function blend(d: Uint8ClampedArray, o: number, r: number, g: number, b: number,
  * vertically about `fy` (the camera focus, base px; default the canvas
  * centre), and every star stays a 1-px point with 1-px cross arms. Omitted or
  * 1: today's bake, untouched.
+ *
+ * Far bake with vertical overscan (spec 5b): `vh` is the view height the
+ * panorama belongs to (default `img.height`) and `oy` the image row of view
+ * row 0, so a taller image holds the rows above and below the view that a
+ * vertical pan brings in: view row y is image row y + oy.
  */
 export function bakeBackdrop(
-  img: ImageDataLike, opts: { seed: number; vw: number; periodic?: boolean; scale?: number; fy?: number },
+  img: ImageDataLike, opts: { seed: number; vw: number; periodic?: boolean; scale?: number; fy?: number; vh?: number; oy?: number },
 ): void {
-  if (opts.scale !== undefined && opts.scale !== 1) { bakeBackdropFar(img, opts.seed, opts.vw, opts.scale, opts.fy); return; }
+  if (opts.scale !== undefined && opts.scale !== 1) {
+    bakeBackdropFar(img, opts.seed, opts.vw, opts.scale, opts.fy, opts.vh, opts.oy);
+    return;
+  }
   const periodic = opts.periodic ?? true;
   const W = img.width, H = img.height, d = img.data, vw = opts.vw;
   const s = rng(opts.seed);
@@ -124,16 +132,20 @@ export function bakeBackdrop(
  * Stars also repeat one panorama height above and below, so a focus near the
  * top or bottom does not show a starless band where the identity panorama ends.
  */
-function bakeBackdropFar(img: ImageDataLike, seed: number, vw: number, scale: number, fyIn?: number): void {
-  const Wi = img.width, H = img.height, d = img.data;
+function bakeBackdropFar(
+  img: ImageDataLike, seed: number, vw: number, scale: number, fyIn?: number, vhIn?: number, oyIn?: number,
+): void {
+  // H: the view height the panorama belongs to; Hi: image rows (H plus the
+  // vertical overscan, view row 0 at image row oy).
+  const Wi = img.width, Hi = img.height, H = vhIn ?? Hi, oy = oyIn ?? 0, d = img.data;
   const W = backdropWidth(vw), sx = Wi / W, sy = scale, fy = fyIn ?? H / 2;
   const s = rng(seed);
-  const worldY = (Y: number) => (Y - H / 2) / sy + fy;
-  const imgY = (y: number) => (y - fy) * sy + H / 2;
+  const worldY = (Y: number) => (Y - oy - H / 2) / sy + fy;
+  const imgY = (y: number) => (y - fy) * sy + H / 2 + oy;
 
   // Gradient over the world rows each image row shows (clamped past the ends).
   const STOP_A = [8, 10, 28, 5, 6, 20], STOP_B = [5, 6, 20, 2, 3, 12];
-  for (let Y = 0; Y < H; Y++) {
+  for (let Y = 0; Y < Hi; Y++) {
     let t = worldY(Y) / Math.max(1, H - 1);
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     const u = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45;
@@ -157,7 +169,7 @@ function bakeBackdropFar(img: ImageDataLike, seed: number, vw: number, scale: nu
     for (const shift of [-Wi, 0, Wi]) {
       const cxI = bx * sx + shift;
       const xa = Math.max(0, Math.floor(cxI - hw)), xb = Math.min(Wi - 1, Math.ceil(cxI + hw));
-      const ya = Math.max(0, Math.floor(cyI - hh)), yb = Math.min(H - 1, Math.ceil(cyI + hh));
+      const ya = Math.max(0, Math.floor(cyI - hh)), yb = Math.min(Hi - 1, Math.ceil(cyI + hh));
       for (let Y = ya; Y <= yb; Y++) for (let X = xa; X <= xb; X++) {
         const nx = (X - cxI) / hw, ny = (Y - cyI) / hh, r = Math.sqrt(nx * nx + ny * ny);
         if (r >= 1) continue;
@@ -170,7 +182,7 @@ function bakeBackdropFar(img: ImageDataLike, seed: number, vw: number, scale: nu
   // Stars: the same stars at their far-transformed spots, 1 px each.
   const count = Math.round((W * H) / 900);
   const put = (X: number, Y: number, c: number[], a: number) => {
-    if (Y < 0 || Y >= H) return;
+    if (Y < 0 || Y >= Hi) return;
     X = ((X % Wi) + Wi) % Wi;
     blend(d, (Y * Wi + X) * 4, c[0], c[1], c[2], a);
   };

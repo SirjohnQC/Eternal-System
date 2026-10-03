@@ -96,8 +96,32 @@ export class PixelCtx {
       }
     }
   }
-  drawImage(src: unknown, dx = 0, dy = 0): void {
+  drawImage(src: unknown, ...a: number[]): void {
     if (!(src instanceof PixelCanvas)) return;
+    // Scaled forms (5 and 9 arguments): nearest-neighbour, sampled at each
+    // destination pixel's centre — what imageSmoothingEnabled = false draws.
+    if (a.length === 4 || a.length === 8) {
+      const [sx, sy, sw, sh, ddx, ddy, dw, dh] = a.length === 4
+        ? [0, 0, src.width, src.height, a[0], a[1], a[2], a[3]] : a;
+      const W = this.canvas.width, H = this.canvas.height, d = this.canvas.data, s = src.data;
+      for (let Y = Math.max(0, Math.floor(ddy)); Y < Math.min(H, Math.ceil(ddy + dh)); Y++) {
+        if (Y + 0.5 < ddy || Y + 0.5 >= ddy + dh) continue;
+        const syi = Math.floor(sy + (Y + 0.5 - ddy) * (sh / dh));
+        if (syi < 0 || syi >= src.height) continue;
+        for (let X = Math.max(0, Math.floor(ddx)); X < Math.min(W, Math.ceil(ddx + dw)); X++) {
+          if (X + 0.5 < ddx || X + 0.5 >= ddx + dw) continue;
+          const sxi = Math.floor(sx + (X + 0.5 - ddx) * (sw / dw));
+          if (sxi < 0 || sxi >= src.width) continue;
+          const si = (syi * src.width + sxi) * 4, o = (Y * W + X) * 4, al = s[si + 3] / 255;
+          if (al <= 0) continue;
+          const da = d[o + 3] / 255, oa = al + da * (1 - al);
+          for (let c = 0; c < 3; c++) d[o + c] = (s[si + c] * al + d[o + c] * da * (1 - al)) / oa;
+          d[o + 3] = oa * 255;
+        }
+      }
+      return;
+    }
+    const dx = a[0] ?? 0, dy = a[1] ?? 0;
     const img = { width: src.width, height: src.height, data: src.data };
     // Source-over composite of a same-size or smaller canvas.
     const W = this.canvas.width, H = this.canvas.height, d = this.canvas.data;

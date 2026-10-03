@@ -1,0 +1,7 @@
+{
+  "plugins": {
+    "pixel-plugin/pixel-plugin": {
+      "enabled": true
+    }
+  }
+}

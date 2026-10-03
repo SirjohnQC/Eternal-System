@@ -629,6 +629,12 @@ export class BigBangEngine {
   pixiMode = false;
   /** Called at end of each frame when pixiMode is true. */
   onPixiFrame: ((engine: BigBangEngine) => void) | null = null;
+  /**
+   * When true, advance animTick / fog pacing but skip Pixi + canvas world draws.
+   * Used while the planet diorama owns the screen so a 240Hz display isn't
+   * paying for two full renderers every vsync.
+   */
+  suspendWorldDraw = false;
   /** Optional FPS HUD / diagnostics (avg over ~0.5s windows). */
   onFpsSample: ((fps: number, frameMs: number) => void) | null = null;
   private fpsWindowStart = performance.now();
@@ -2892,6 +2898,7 @@ export class BigBangEngine {
       ? (dtMs ?? 1000 / 60) / (1000 / 60)
       : 1;
     this.animTick += nominalFrames;
+    if (this.suspendWorldDraw) return;
     const { width: W, height: H } = this.canvas;
     const ctx = this.ctx;
 

@@ -1059,6 +1059,9 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
     }
     attachTileInteraction(diMount);
     showTileInfo(null);          // a selection from a previous visit is stale
+    _dioramaRenderer.setTargetFps(pendingFrameRateCap);
+    // Galaxy/Pixi draws fight the diorama for the frame budget — pause them.
+    if (engine) engine.suspendWorldDraw = true;
     _dioramaRenderer.resume();
 
   } else {
@@ -1093,6 +1096,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
     planetRenderer.bioOverlayVisible = false;
     planetRenderer.bioData = null;
     showTileInfo(null);          // tile actions are for the player's world only
+    if (engine) engine.suspendWorldDraw = true;
   }
 
   // Reset to Overview tab on each open
@@ -1922,6 +1926,7 @@ function closePlanetView(): void {
   planetRenderer?.stop();
   _dioramaRenderer?.pause();
   _dioramaRenderer?.setHighlight(null);
+  if (engine) engine.suspendWorldDraw = false;
 }
 
 function updateHUDTick(tick: number): void {
@@ -3749,6 +3754,8 @@ type FrameRateCap = 0 | 30 | 60 | 120;
 
 function loadFrameRateCap(): FrameRateCap {
   const raw = localStorage.getItem(FRAME_RATE_KEY);
+  // Legacy "240" soft-cap → Unlimited (match display refresh).
+  if (raw === '240') return 0;
   if (raw === '30' || raw === '60' || raw === '120') return Number(raw) as FrameRateCap;
   return 0;
 }
@@ -3758,6 +3765,7 @@ let pendingFrameRateCap: FrameRateCap = loadFrameRateCap();
 function applyFrameRateCap(cap: FrameRateCap): void {
   pendingFrameRateCap = cap;
   engine?.setTargetFps(cap);
+  _dioramaRenderer?.setTargetFps(cap);
 }
 
 function syncFrameRateButtons(cap: FrameRateCap): void {
@@ -4219,6 +4227,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const v = Number(btn.dataset.fps);
     const cap: FrameRateCap = (v === 30 || v === 60 || v === 120) ? v : 0;
     syncFrameRateButtons(cap);
+    applyFrameRateCap(cap);
   });
   syncFrameRateButtons(pendingFrameRateCap);
   document.getElementById('settings-overlay')?.addEventListener('click', (e) => {

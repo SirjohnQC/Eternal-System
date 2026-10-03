@@ -1,0 +1,19 @@
+{
+  "atlas": "ships.png",
+  "frameWidth": 64,
+  "frameHeight": 64,
+  "ships": {
+    "scout":   { "row": 0 },
+    "cargo":   { "row": 1 },
+    "capital": { "row": 2 },
+    "pirate":  { "row": 3 },
+    "divine":  { "row": 4 },
+    "colony":  { "row": 5 }
+  },
+  "states": {
+    "idle":      { "colStart": 0,  "frameCount": 2, "fps": 2  },
+    "thrust":    { "colStart": 2,  "frameCount": 4, "fps": 8  },
+    "attack":    { "colStart": 6,  "frameCount": 4, "fps": 12 },
+    "destroyed": { "colStart": 10, "frameCount": 6, "fps": 10 }
+  }
+}

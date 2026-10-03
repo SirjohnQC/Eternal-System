@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "game-asset-generation": {
+      "source": "eachlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/game-asset-generation/SKILL.md",
+      "computedHash": "bdeb188d2340b8ad41c8bbaea0f381b5a261f55b74b6f1699f20ab2e9881d557"
+    }
+  }
+}

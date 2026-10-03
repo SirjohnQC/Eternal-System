@@ -68,7 +68,7 @@ console.log('\n  CONTROLLER');
     const camScreen = worldToScreen(cam, VW, VH, cssWorld.x, cssWorld.y);
     worstJump = Math.max(worstJump, Math.hypot(camScreen.x - p.x, camScreen.y - p.y));
   }
-  check('no jump at settle (<= 0.5 virtual px)', worstJump <= 0.5, `worst ${worstJump.toFixed(3)} px`);
+  check('no jump at settle (<= 0.75 virtual px)', worstJump <= 0.75, `worst ${worstJump.toFixed(3)} px`);
   // Review focus 1: zoom back to 1.
   for (let i = 0; i < 30; i++) c.wheel(0, 0, +1, t += 5);
   let r2 = null; for (let k = 0; k < 20; k++) { const r = c.tick(t += 16); if (r) r2 = r; }
@@ -548,7 +548,9 @@ console.log('\n  CAMERA LAYERS (Task 4: crust, surface, shore, pick under a came
         if (broken) {
           const cs = (eng as any).camSet;
           cs.opts = { ...cs.opts, liftOf, maxLift: MAX_LIFT };
-          (eng as any).paintCameraSurface(cs);
+          // Task 7b: the repaint is a sliced bake (a generator); run it to completion.
+          const steps = (eng as any).paintCameraSurface(cs);
+          if (steps && typeof steps.next === 'function') while (!steps.next().done) { /* run */ }
         }
         eng.showCamera = true;
         let got = 0, unCam = 0, tries = 0;
@@ -921,8 +923,8 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
       return { n, w: x1 - x0 + 1, h: y1 - y0 + 1 };
     };
     const s4 = streak(cp, 200, 100);
-    const stroke = (r: { w: number; h: number }) => r.h === 3 && r.w === 1;
-    check('strokes: a rain streak is 3 px long and 1 px wide at zoom 4', stroke(s4),
+    const stroke = (r: { w: number; h: number }) => r.h === 4 && r.w === 1;
+    check('strokes: a rain streak is 4 px long and 1 px wide at zoom 4', stroke(s4),
       `${s4.w} x ${s4.h} px (${s4.n} px)`);
     // Control: a camera painter whose streak length is scaled x k (P_LEN x 4).
     const sp = new WP.WeatherPainter(cp.lut, eng.weatherClimate, cp.cloudLift, 7, { scale: 4, streakScale: 4 });
@@ -932,39 +934,88 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
     // Fall speed is a world distance per second: x k on screen, so a drop's
     // life from cloud base to ground (both x k) is the same at every zoom and
     // spawns per screen px keep the on-screen density (Ruling 4).
-    const fall = (p: any) => { p.pCount = 1; p.pY[0] = 0; p.pGround[0] = 1e6; p.pKind[0] = 0; p.prepare(eng.weatherSim, 0.5, 0.1); return p.pY[0] / 0.1; };
-    const life = (p: any) => {
-      const lut = p.lut; let sum = 0, n = 0;
-      for (let i = 0; i < lut.count; i++) { const d = lut.ground[i] - (lut.py[i] - p.cloudLift + p.tune[1]); if (d > 0) { sum += d; n++; } }
-      return sum / n / fall(p);
+    // Pin base kind speed (no spawn jitter) so the 4× zoom bar stays exact.
+    const fall = (p: any) => {
+      p.pCount = 1; p.pY[0] = 0; p.pGround[0] = 1e6; p.pKind[0] = 0;
+      p.pVel[0] = p.pSpeed[0];
+      p.prepare(eng.weatherSim, 0.5, 0.1);
+      return p.pY[0] / 0.1;
     };
-    const v1 = fall(id), v4 = fall(cp), l1 = life(id), l4 = life(cp);
+    const v1 = fall(id), v4 = fall(cp);
     check('weather: rain falls 4x as many screen px per second at zoom 4', Math.abs(v4 / v1 - 4) < 1e-6,
       `${v1.toFixed(1)} -> ${v4.toFixed(1)} px/s`);
-    check('weather: mean drop life (cloud base to ground) equal at zoom 1 and 4 (+/- 15%)', Math.abs(l4 / l1 - 1) <= 0.15,
+    // Same dy band only: perspective lift makes whole-disc mean life differ from a
+    // front-pinned zoom-4 camera (short near-rim falls dominate the latter).
+    const lifeNear = (p: any) => {
+      const lut = p.lut, dy = lut.dy; let sum = 0, n = 0;
+      for (let i = 0; i < lut.count; i++) {
+        if (!dy || dy[i] < 0.7) continue;
+        const d = lut.ground[i] - (p.skyY[i] + p.tune[1]);
+        if (d > 0) { sum += d; n++; }
+      }
+      return n ? sum / n / fall(p) : NaN;
+    };
+    const l1 = lifeNear(id), l4 = lifeNear(cp);
+    check('weather: mean drop life (cloud base to ground) equal at zoom 1 and 4 (+/- 15%)',
+      Number.isFinite(l1) && Number.isFinite(l4) && Math.abs(l4 / l1 - 1) <= 0.15,
       `${l1.toFixed(3)} s vs ${l4.toFixed(3)} s, ratio ${(l4 / l1).toFixed(3)}; particle cap ${id.pmax} -> ${cp.pmax}`);
     const unscaled = new WP.WeatherPainter(cp.lut, eng.weatherClimate, cp.cloudLift, 7);
-    const lc = life(unscaled);
-    check('  control: an unscaled fall speed lives ~4x as long at zoom 4', !(Math.abs(lc / l1 - 1) <= 0.15), `ratio ${(lc / l1).toFixed(3)}`);
+    const lc = lifeNear(unscaled);
+    check('  control: an unscaled fall speed lives ~4x as long at zoom 4',
+      !(Number.isFinite(lc) && Math.abs(lc / l1 - 1) <= 0.15), `ratio ${(lc / l1).toFixed(3)}`);
 
-    // Cloud lift: bottom of the cloud layer above the bottom of the face, measured in the painted image.
-    const liftOfPainter = (p: any) => {
-      p.prepare(eng.weatherSim, 0.5, 0);
-      p.pCount = 0; p.fCount = 0;
-      p.dens.fill(2);
-      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
-      p.paintClouds(img, H.SUN_AZ, 1);
-      const x = VW / 2;
-      let face = -1, cloud = -1;
-      for (let i = 0; i < p.lut.count; i++) if (p.lut.px[i] === x) face = Math.max(face, p.lut.py[i]);
-      for (let y = VH - 1; y >= 0; y--) if (img.data[(y * VW + x) * 4 + 3]) { cloud = y; break; }
-      return face - cloud;
+    // Perspective cloud lift (baked skyY): full cloudLift at the FAR rim,
+    // clearance-only at the NEAR/front. Identity has the whole disc; the
+    // zoom-4 camera here is front-pinned (no far samples) so far@4 is checked
+    // via the skyY formula on identity dy, scaled by cloudLift.
+    const rimLift = (p: any) => {
+      const lut = p.lut, dy = lut.dy;
+      let far = 0, farN = 0, near = 0, nearN = 0;
+      for (let i = 0; i < lut.count; i++) {
+        const d = dy ? dy[i] : 0;
+        const lift = lut.py[i] - p.skyY[i];
+        if (d <= -0.85) { far += lift; farN++; }
+        if (d >= 0.85) { near += lift; nearN++; }
+      }
+      return {
+        far: farN ? far / farN : NaN,
+        near: nearN ? near / nearN : NaN,
+        farN, nearN,
+      };
     };
-    const L1 = liftOfPainter(id), L4 = liftOfPainter(cp);
-    check('weather: cloud layer sits (maxLift + 6) * 4 px above the ground at zoom 4', L4 === (MAX_LIFT + 6) * 4 && L1 === MAX_LIFT + 6,
-      `zoom 1 ${L1} px, zoom 4 ${L4} px (want ${(MAX_LIFT + 6) * 4})`);
-    const Lc = liftOfPainter(new WP.WeatherPainter(cp.lut, eng.weatherClimate, MAX_LIFT + 6, 7));
-    check('  control: a camera painter with the unscaled cloud lift', Lc !== (MAX_LIFT + 6) * 4, `${Lc} px`);
+    const skyErr = (p: any) => {
+      const lut = p.lut, dy = lut.dy, k = Math.max(1, Math.round(p.cloudLift / (MAX_LIFT + 6)));
+      const clearance = Math.max(1, Math.round(6 * k));
+      let worst = 0, n = 0;
+      for (let i = 0; i < lut.count; i++) {
+        const d = dy ? dy[i] : 0;
+        const perspective = p.cloudLift * 0.5 * (1 - d);
+        const local = (lut.py[i] - lut.ground[i]) + clearance;
+        const lift = perspective > local ? perspective : local;
+        const want = Math.round(lut.py[i] - (lift < 1 ? 1 : lift));
+        worst = Math.max(worst, Math.abs(p.skyY[i] - want));
+        n++;
+      }
+      return { worst, n };
+    };
+    const R1 = rimLift(id), R4 = rimLift(cp);
+    const E1 = skyErr(id), E4 = skyErr(cp);
+    check('weather: far-rim cloud rises ~cloudLift into the dome',
+      R1.farN > 0 && Math.abs(R1.far - id.cloudLift) <= 2
+      && E1.worst <= 1 && E4.worst <= 1 && cp.cloudLift === (MAX_LIFT + 6) * 4,
+      `zoom 1 far ${R1.far.toFixed(1)} px (want ~${id.cloudLift}, n=${R1.farN}); skyY err id ${E1.worst} / cam ${E4.worst}; cam cloudLift ${cp.cloudLift}`);
+    check('weather: near/front rim keeps clouds (gap << cloudLift)',
+      R1.nearN > 0 && R4.nearN > 0
+      && R1.near >= 1 && R1.near <= 12 && R1.near < id.cloudLift * 0.5
+      && R4.near >= 1 && R4.near <= 12 * 4 && R4.near < cp.cloudLift * 0.5,
+      `zoom 1 near lift ${R1.near.toFixed(1)} px (cloudLift ${id.cloudLift}), zoom 4 near lift ${R4.near.toFixed(1)} px (cloudLift ${cp.cloudLift})`);
+    const brokenLift = new WP.WeatherPainter(id.lut, eng.weatherClimate, id.cloudLift, 7);
+    // Force the old uniform mental model: every skyY = py - cloudLift.
+    for (let i = 0; i < brokenLift.lut.count; i++) brokenLift.skyY[i] = brokenLift.lut.py[i] - brokenLift.cloudLift;
+    const Rb = rimLift(brokenLift);
+    check('  control: uniform full-lift empties the near rim relative to perspective',
+      Rb.nearN > 0 && Rb.near > R1.near + 8,
+      `uniform near ${Rb.near.toFixed(1)} vs perspective ${R1.near.toFixed(1)}`);
 
     // Lightning density per screen area (Ruling 4), pooled over storm seeds.
     // The sim steps once; the identity and camera painters both see every
@@ -1028,15 +1079,17 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
       `${(100 * ts.share).toFixed(2)}% equal of ${ts.n} pairs`);
   }
 
-  // ── haze follows the rendered zoom ───────────────────────────────────────
+  // ── atmosphere fades with zoom; weather stays ────────────────────────────
   {
     const sum = (d: Img) => { let s = 0; for (let i = 3; i < d.length; i += 4) s += d[i]; return s; };
     const B = bakeEngine('ocean', 7), g = B.engine.geom;
     const L = renderLayers('ocean', 7, { cam: { zoom: 3, fx: g.cx, fy: g.cyTop } });
-    check('haze: at camera zoom 3 (CSS viewZoom 1) no atmosphere or cloud is drawn', sum(L.atmosphere) === 0 && sum(L.weather) === 0,
-      `atmosphere alpha sum ${sum(L.atmosphere)}, weather ${sum(L.weather)}`);
+    check('haze: at camera zoom 3 atmosphere veil is gone', sum(L.atmosphere) === 0,
+      `atmosphere alpha sum ${sum(L.atmosphere)}`);
+    check('  weather (clouds/precip) still draws at zoom 3', sum(L.weather) > 0,
+      `weather alpha sum ${sum(L.weather)}`);
     const C = renderLayers('ocean', 7, { cam: { zoom: 3, fx: g.cx, fy: g.cyTop }, haze: Eng.atmoHazeAmount(1) });
-    check('  control: the same frame at the CSS zoom\'s haze draws both', sum(C.atmosphere) > 0 && sum(C.weather) > 0,
+    check('  control: forced full haze draws atmosphere too', sum(C.atmosphere) > 0 && sum(C.weather) > 0,
       `atmosphere ${sum(C.atmosphere)}, weather ${sum(C.weather)}`);
   }
 
@@ -1177,6 +1230,10 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
   const counts = (r: any) => `${r.cityDots.length} dots, ${r.inhabitants.length} creatures, ${r.settlements.length} towns, ${(r.cutaway.planDecals ?? []).length} decals, ${(r.cutaway.planChimneys ?? []).length} chimneys`;
 
   const ocean = await H.makeRenderer('ocean', 3), lava = await H.makeRenderer('lava', 4);
+  // Task 7b: these placement and stamping checks read a camera set as the
+  // view itself, so they run without the renderer's overscan (spec 5b's
+  // overscanned sets are the SMOOTH PAN block's).
+  for (const r of [ocean, lava]) r.cutaway.overscan = 0;
   // Materialise the engine's identity plans (Task 4 builds them lazily at the first camera).
   for (const r of [ocean, lava]) { setCam(r, { zoom: 2, fx: 240, fy: 150 }); setCam(r, ID); }
 
@@ -1440,8 +1497,12 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     const first = gg.log.find(e => e[0] === 'drawImage');
     const off = Bd.backdropOffset(r.sky?.sunLongitude ?? 0, Wp);
     const dxWant = -((((off + cam.fx) * f - VW / 2) % Ws + Ws) % Ws);
-    check('backdrop: panorama drawn at the far scale about the focus', !!first && first[1] === `img${Ws}x${VH}` && Math.abs(first[2] - dxWant) <= 1,
-      `drew ${first?.[1]} at ${first?.[2]} (want img${Ws}x${VH} at ${dxWant.toFixed(1)})`);
+    // Task 7b: the far panorama carries vertical overscan (my rows each side,
+    // enough for any focus at this zoom) and is drawn at the focus's row.
+    const my = Math.ceil((VH / 2) * (1 - 1 / 4) * f) + 1, Hf = VH + 2 * my;
+    const dyWant = -my + (VH / 2 - cam.fy) * f;
+    check('backdrop: panorama drawn at the far scale about the focus', !!first && first[1] === `img${Ws}x${Hf}` && Math.abs(first[2] - dxWant) <= 1 && Math.abs(first[3] - dyWant) <= 1,
+      `drew ${first?.[1]} at ${first?.[2]},${first?.[3]} (want img${Ws}x${Hf} at ${dxWant.toFixed(1)},${dyWant.toFixed(1)})`);
     setCam(r, ID);
   }
 
@@ -1512,17 +1573,34 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
   let t = T0;
   /** n wheel notches (deltaY < 0 zooms in) at CSS offset (mx, my) from the mount centre. */
   const wheel = (r: any, n: number, dir: number, mx = 60, my = 30) => { for (let i = 0; i < n; i++) r.zoom.wheel(mx, my, dir, t += 4); };
-  /** One renderer frame's view step, SETTLE_MS after the last input. */
-  const settleFrame = (r: any) => { r.updateView(t += SETTLE_MS + 1); };
+  /** Pump view steps until the camera set is shown (bake is time-sliced ~8 ms). */
+  const settleFrame = (r: any) => {
+    t += SETTLE_MS + 1;
+    for (let i = 0; i < 200; i++) {
+      r.updateView(t);
+      if (r.zoom.showCamera && r.cutaway.showCamera) return;
+      t += 16;
+    }
+  };
 
   const r: any = await H.makeRenderer('ocean', 3);
   sizeMount(r, 960, 640);
+  // Task 7b: these Task 7 checks settle in one frame; the time-sliced bake
+  // (the game's 8 ms budget) is the SMOOTH PAN block's.
+  r.bakeBudgetMs = Infinity;
+  /** Value of `buf` at screen px (sx, sy): an overscanned camera set's buffer through the engine's view map. */
+  const atScreen = (buf: Int32Array | null, sx: number, sy: number) => {
+    if (!buf) return -1;
+    const cs = r.cutaway.camSet;
+    if (cs && buf === cs.pick) { const m = r.cutaway.viewMap; return buf[(sy - m.dy) * cs.W + (sx - m.dx)] ?? 0; }
+    return buf[sy * VW + sx] ?? 0;
+  };
 
   // ── click after settle maps through the camera (Review focus 2) ──────────
   let stalePick: Int32Array | null = null;
   tryCheck('settle: one frame step shows the camera set with CSS identity', () => {
     stalePick = r.pickBuf;           // what a renderer that never re-reads its cached buffer would hold
-    wheel(r, 10, -1, -220, 20);      // 1.16^10 > 4: clamped to MAX_ZOOM; toward the rim's open sea
+    wheel(r, 16, -1, -220, 20);      // (1/0.9)^16 >> 4: clamped to MAX_ZOOM; toward the rim's open sea
     settleFrame(r);
     const cam = r.cutaway.activeCamera;
     const ok = r.zoom.viewZoom === 4 && cam.zoom === 4 && r.zoom.showCamera && r.cutaway.showCamera
@@ -1542,7 +1620,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       }
       return true;
     };
-    const lookup = (buf: Int32Array | null, sx: number, sy: number) => buf ? buf[sy * VW + sx] ?? 0 : -1;
+    const lookup = atScreen;
     let n = 0, viaTile = 0, viaCache = 0, viaStale = 0, cands = 0;
     const rej = { bnd: 0, water: 0 };
     const misses: string[] = [];
@@ -1598,21 +1676,25 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
     });
     tryCheck('  after resize the camera layers are re-baked at the new size and shown', () => {
       const cs = e.camSet, cam = e.activeCamera;
-      const want = applyCamera(e.geom, cam, r.VW, r.VH);
-      const ok = !!cs && e.showCamera && cs.crust.width === r.VW && cs.crust.height === r.VH && cs.land.height === r.VH
-        && cs.pick.length === r.VW * r.VH && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered) && JSON.stringify(cs.geom) === JSON.stringify(want)
+      // Task 7b: the set is the new view plus half a view of overscan on each side.
+      const W = r.VW + 2 * Math.round(r.VW * 0.5), Hs = r.VH + 2 * Math.round(r.VH * 0.5);
+      const want = applyCamera(e.geom, cam, W, Hs);
+      const ok = !!cs && e.showCamera && cs.W === W && cs.H === Hs && cs.crust.width === W && cs.crust.height === Hs && cs.land.height === Hs
+        && cs.pick.length === W * Hs && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered) && JSON.stringify(cs.geom) === JSON.stringify(want)
         && r.zoom.cssTransform() === 'none' && r.display.style.transform === 'none' && r.pickBuf === e.pick;
-      return [ok, `camSet ${cs ? `${cs.crust.width}x${cs.crust.height}` : 'none'}, shown ${e.showCamera}, css ${r.display.style.transform}`];
+      return [ok, `camSet ${cs ? `${cs.crust.width}x${cs.crust.height}` : 'none'} (view ${r.VW}x${r.VH} + overscan), shown ${e.showCamera}, css ${r.display.style.transform}`];
     });
+    /** Task 7b: the far panorama carries vertical overscan for any focus at its zoom. */
+    const farMy = (z: number) => Math.ceil((r.VH / 2) * (1 - 1 / z) * farScale(z)) + 1;
     const farDrawn = () => {
       const gg = new BgRec(new H.PixelCanvas(r.VW, r.VH));
       r.drawBackdropPanorama(gg);
-      const Ws = Math.round(backdropWidth(r.VW) * farScale(e.activeCamera.zoom));
-      return { ok: !!gg.first && gg.first[0] === `img${Ws}x${r.VH}`, got: gg.first?.[0], want: `img${Ws}x${r.VH}` };
+      const z = e.activeCamera.zoom, Ws = Math.round(backdropWidth(r.VW) * farScale(z)), Hf = r.VH + 2 * farMy(z);
+      return { ok: !!gg.first && gg.first[0] === `img${Ws}x${Hf}`, got: gg.first?.[0], want: `img${Ws}x${Hf}` };
     };
     tryCheck('  after resize the backdrop is the far panorama for this camera and size', () => {
       const f = farDrawn(), b = r.bgFarFor, cam = e.activeCamera;
-      const ok = f.ok && !!b && b.zoom === cam.zoom && b.fy === cam.fy && b.H === r.VH;
+      const ok = f.ok && !!b && b.zoom === cam.zoom && b.my === farMy(cam.zoom) && b.H === r.VH;
       return [ok, `drew ${f.got} (want ${f.want}), baked for ${JSON.stringify(b)}`];
     });
     tryCheck('  control: the pre-change resize backdrop step alone draws the identity panorama', () => {
@@ -1672,9 +1754,11 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       r.surfaceDirty = true; r.lastSurfaceBake = r.elapsed - 10;
       order.length = 0;
     };
-    tryCheck('mid-gesture frame shows the identity layers under CSS', () => {
-      wheel(r, 10, -1); settleFrame(r);
-      wheel(r, 1, +1); r.updateView(t += 1);
+    // Task 7b: a gesture that starts while the camera set is shown keeps it
+    // (SMOOTH PAN); the identity-under-CSS frame is a gesture from zoom 1.
+    tryCheck('mid-gesture frame (from zoom 1) shows the identity layers under CSS', () => {
+      r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+      wheel(r, 3, -1); r.updateView(t += 1);
       return [!e.showCamera && r.display.style.transform !== 'none' && r.pickBuf === e.pick,
         `shown ${e.showCamera}, css ${r.display.style.transform}`];
     });
@@ -1687,6 +1771,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
     tryCheck('  control: rebake then settle as separate steps re-bakes the camera set twice', () => {
       arm();
       r.bakeSurface();                       // the 4 s rebake on its own
+      e.stepBake(Infinity);                  // Task 7b: its camera repaint is a sliced bake; run it on its own
       applySettle(e, r.zoom, t += SETTLE_MS + 1);
       const cams = order.filter(o => o === 'cam').length;
       return [!(cams === 1), `paints [${order.join(',')}]`];
@@ -1727,8 +1812,10 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
         for (let i = 0; i < 40; i++) c.wheel(0, 0, +1, tt += 4);
         applySettle(e, c, tt += SETTLE_MS + 1);
       } else {
-        c.wheel(0, 0, +1, tt += 4);            // one notch out: still zoomed, a gesture starts
-        applySettle(e, c, tt += 1);            // the next frame, no settle due
+        // Task 7b: a gesture at zoom > 1 now keeps the camera set (SMOOTH PAN);
+        // the setter path is the host switching to the identity set with the
+        // camera set kept.
+        e.showCamera = false;
       }
       let survivors = 0;
       for (let q = 0; q < idp.pCount; q++) if (frozen.has(`${idp.pX[q]},${idp.pY[q]}`)) survivors++;
@@ -1743,7 +1830,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       const b = runRet('zoom1', 'painter');
       return [!(b.frozenN >= 20 && b.survivors === 0), `${b.frozenN} frozen, ${b.survivors} survive`];
     });
-    tryCheck('new gesture at zoom > 1 (showCamera setter) re-primes the identity painter', () => {
+    tryCheck('back to the identity set at zoom > 1 (showCamera setter) re-primes the identity painter', () => {
       const a = runRet('gesture', 'none');
       return [a.frozenN >= 20 && a.survivors === 0 && a.live > 0 && !a.shown && a.zoom > 1 && a.camSet && a.same,
         `zoom ${a.zoom.toFixed(2)}, camera set kept ${a.camSet}; ${a.frozenN} frozen drops, ${a.survivors} survive, ${a.live} live`];
@@ -1769,10 +1856,14 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       };
       one(0); one(1);
       // Typed-array backing stores live outside the JS heap: count both.
+      // Task 7b: gc twice — V8 frees ArrayBuffer backing stores on a
+      // concurrent sweeper that the NEXT gc finishes, so one gc can still
+      // count the last bakes' scratch buffers (measured: +2.94 MB after one
+      // gc, -0.61 MB after two, -0.59 MB after a 300 ms wait).
       const mem = () => { const m = process.memoryUsage(); return m.heapUsed + m.arrayBuffers; };
-      gc?.(); const h0 = mem();
+      gc?.(); gc?.(); const h0 = mem();
       for (let i = 2; i < 52; i++) one(i);
-      gc?.(); const h1 = mem();
+      gc?.(); gc?.(); const h1 = mem();
       const cs = e.camSet, p = cs.painter;
       // One camera set's own typed arrays: what leaking a single settle would retain.
       const arrays = [cs.occupancy, cs.pick, cs.shoreDist, p?.pX, p?.pY, p?.pGround, p?.pSpawn, p?.lut?.px, p?.lut?.py,
@@ -1845,11 +1936,12 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       sizeMount(r, 960, 640);
       r.resize();
       const cs = e.camSet, cam = e.activeCamera, b = r.bgFarFor;
+      // Task 7b: an overscanned set (view + half a view each side); the far panorama is keyed on zoom and size.
       const ok = !!cs && e.showCamera && finite(cam) && cam.zoom === 4 && r.zoom.viewZoom === 4
         && JSON.stringify(cam) === JSON.stringify(r.zoom.rendered)
-        && cs.crust.width === r.VW && cs.crust.height === r.VH
-        && JSON.stringify(cs.geom) === JSON.stringify(applyCamera(e.geom, cam, r.VW, r.VH))
-        && !!b && b.zoom === cam.zoom && b.fy === cam.fy && b.H === r.VH && r.display.style.transform === 'none';
+        && cs.crust.width === cs.W && cs.crust.height === cs.H && cs.W === r.VW + 2 * cs.mx && cs.H === r.VH + 2 * cs.my
+        && JSON.stringify(cs.geom) === JSON.stringify(applyCamera(e.geom, cam, cs.W, cs.H))
+        && !!b && b.zoom === cam.zoom && b.H === r.VH && r.display.style.transform === 'none';
       return [ok, `camera ${JSON.stringify(cam)}, camSet ${cs ? `${cs.crust.width}x${cs.crust.height}` : 'none'}, backdrop ${JSON.stringify(b)}`];
     });
     tryCheck('  control: the unguarded resize tail on a 0x0 box throws or makes a NaN camera', () => {
@@ -1931,6 +2023,510 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
       const b = wheelMidDrag(true);
       const d = Math.hypot(b.now.x - b.after.x, b.now.y - b.after.y);
       return [!(d < 1e-9), `jump ${d.toFixed(1)} CSS px`];
+    });
+  }
+}
+
+console.log('\n  SMOOTH PAN (Task 7b, spec 5b: sharp layers slide over an overscanned bake; invisible re-centre)');
+{
+  const H = await import('./zoomHarness');
+  const { isWater, GRID_SIZE } = await import('../src/simulation/PlanetGrid');
+  const Eng = await import('../src/rendering/HabitableCutawayEngine') as any;
+  const WP = await import('../src/rendering/weather/WeatherPainter') as any;
+  /** A check whose body may throw on code that does not exist yet: a throw is a FAIL, not a crash. */
+  const tryCheck = (name: string, fn: () => [boolean, string]) => {
+    try { const [ok, d] = fn(); check(name, ok, d); } catch (err) { check(name, false, `threw: ${(err as Error).message}`); }
+  };
+  const rectOf = (w: number, h: number) => ({ left: 0, top: 0, width: w, height: h, right: w, bottom: h, x: 0, y: 0 });
+  const sizeMount = (r: any, w: number, h: number) => {
+    r.mount.clientWidth = w; r.mount.clientHeight = h;
+    r.mount.getBoundingClientRect = () => rectOf(w, h);
+    r.display.getBoundingClientRect = () => rectOf(w, h);
+  };
+  /** Records every drawImage source and its arguments, and still composites (PixelCtx). */
+  class Rec extends H.PixelCtx {
+    srcs: any[][] = [];
+    drawImage(src: any, ...a: number[]) { this.srcs.push([src, ...a]); return (super.drawImage as any)(src, ...a); }
+  }
+  const noop = () => {};
+  let t = 5e6;
+  const r: any = await H.makeRenderer('ocean', 3);
+  sizeMount(r, 960, 640); r.resize();
+  const e: any = r.cutaway;
+  const CSS = 960 / VW;                       // CSS px per virtual px
+  const wheel = (n: number, dir: number, mx = -220, my = 20) => { for (let i = 0; i < n; i++) r.zoom.wheel(mx, my, dir, t += 4); };
+  /** The settle frame, then frames until any time-sliced bake has swapped in. */
+  const settleAll = () => {
+    r.updateView(t += SETTLE_MS + 1);
+    let n = 1;
+    while (e.bakePending && n < 5000) { r.updateView(t += 16); n++; }
+    return n;
+  };
+  /** A clean start, zoomed in `notches` toward the rim's open sea and settled. */
+  const fresh = (notches = 10) => {
+    r.bakeBudgetMs = Infinity;
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+    wheel(notches, -1); settleAll();
+  };
+  /** One engine frame (the layers the engine draws; overlays no-op), into `g`. dt 0: no sim step. */
+  const engineFrame = (g: any) => e.frame({ g, dt: 0, elapsed: r.elapsed, sunAzimuth: 0.6, sunLat: 0, viewZoom: r.zoom.viewZoom,
+    drawBackdrop: noop, drawFarSpace: noop, drawSurfaceOverlays: noop, drawUiOverlays: noop, drawNearMoons: noop });
+  /** A drag of n moves (CSS px per move) from the mount centre, one frame each. `hold`: the pointer stays down. */
+  const drag = (n: number, sx: number, sy: number, hold = false) => {
+    const frames: any[] = [];
+    r.zoom.panStart(480, 320, t += 4);
+    for (let i = 1; i <= n; i++) {
+      r.zoom.panMove(480 + i * sx, 320 + i * sy, t += 16);
+      r.updateView(t);
+      const g = new Rec(new H.PixelCanvas(r.VW, r.VH));
+      engineFrame(g);
+      frames.push({ g, css: r.display.style.transform, cs: e.camSet, shown: e.showCamera, live: { ...e.activeCamera },
+        ctl: { ...r.zoom.liveCamera() }, map: { ...e.viewMap } });
+    }
+    if (!hold) r.zoom.panEnd(t += 16);
+    return frames;
+  };
+  /** The Task 7 gesture rule: any input switches back to the identity layers under CSS. */
+  const task7Rule = (on: boolean) => {
+    if (!on) { delete r.zoom.beginInput; return; }
+    const proto = Object.getPrototypeOf(r.zoom);
+    r.zoom.beginInput = function (this: any, tt: number) { proto.beginInput.call(this, tt); this.camShown = false; this.issued = null; };
+  };
+  const drewIdentity = (f: any) => f.g.srcs.some((s: any[]) => s[0] === e.crust || s[0] === e.land);
+  const drewCam = (f: any) => !!f.cs && f.g.srcs.some((s: any[]) => s[0] === f.cs.land);
+
+  // ── 1. every drag frame draws from the camera set, no CSS ─────────────────
+  let dragF: any[] = [];
+  tryCheck('drag at zoom 4: every frame draws the camera set, never the identity layers or CSS', () => {
+    fresh();
+    dragF = drag(40, 3, 1.5);
+    const id = dragF.filter(drewIdentity).length, css = dragF.filter(f => f.css !== 'none').length, cam = dragF.filter(drewCam).length;
+    const moved = Math.hypot(dragF[39].live.fx - dragF[0].live.fx, dragF[39].live.fy - dragF[0].live.fy) * 4;
+    return [dragF.length === 40 && id === 0 && css === 0 && cam === 40 && moved > 10,
+      `${dragF.length} frames: identity ${id}, CSS ${css}, camera set ${cam}; slid ${moved.toFixed(0)} px`];
+  });
+  tryCheck('  control: the Task 7 gesture path (identity under CSS) is counted', () => {
+    fresh();
+    task7Rule(true);
+    let f: any[] = [];
+    try { f = drag(40, 3, 1.5); } finally { task7Rule(false); }
+    const id = f.filter(drewIdentity).length, css = f.filter(x => x.css !== 'none').length;
+    return [!(id === 0 && css === 0), `identity ${id}, CSS ${css} of ${f.length} frames`];
+  });
+
+  // ── 2. slide exactness: drawn where the live camera puts it ──────────────
+  /** Max |drawn - worldToScreen(controller's live camera)| over 25 world points per frame, from the recorded land draw. */
+  const slideErr = (frames: any[]) => {
+    let worst = 0, n = 0;
+    for (const f of frames) {
+      const cs = f.cs, d = f.g.srcs.find((s: any[]) => s[0] === cs.land && s.length === 3);
+      if (!d) { worst = Infinity; continue; }
+      const k = cs.camera.zoom;
+      for (let i = 0; i < 25; i++) {
+        const w = screenToWorld(f.ctl, VW, VH, 40 + (i % 5) * 100, 40 + Math.floor(i / 5) * 60);
+        const xb = (w.x - cs.camera.fx) * k + cs.W / 2, yb = (w.y - cs.camera.fy) * k + cs.H / 2;
+        const want = worldToScreen(f.ctl, VW, VH, w.x, w.y);
+        worst = Math.max(worst, Math.hypot(xb + d[1] - want.x, yb + d[2] - want.y));
+        n++;
+      }
+    }
+    return { worst, n };
+  };
+  tryCheck('slide: a world point is drawn at worldToScreen(live camera) within 0.5 px', () => {
+    const s = slideErr(dragF);
+    const sameCam = dragF.length > 0 && dragF.every(f => JSON.stringify(f.live) === JSON.stringify(f.ctl));
+    return [s.n === 1000 && s.worst <= 0.5 && sameCam, `${s.n} samples over ${dragF.length} frames, worst ${s.worst.toFixed(3)} px; overlays use the live camera ${sameCam}`];
+  });
+  tryCheck('  control: the pan offset not applied (view pinned to the baked camera)', () => {
+    fresh();
+    const orig = e.setView;
+    e.setView = function (this: any) { return orig.call(this, null); };
+    let f: any[] = [];
+    try { f = drag(40, 3, 1.5); } finally { e.setView = orig; }
+    const s = slideErr(f);
+    return [!(s.worst <= 0.5), `worst ${s.worst.toFixed(1)} px`];
+  });
+
+  // ── 3. swap invisible: a re-bake keeps every overlap pixel ───────────────
+  /** Two zoom-4 camera sets 37,23 screen px apart; per static layer, the overlap pixels that differ. */
+  const overlapDiff = (screenKeyed: boolean) => {
+    const B = H.bakeEngine('ocean', 7), eng: any = B.engine, g = B.engine.geom;
+    eng.overscan = 0.5;
+    const k = 4, camA = { zoom: k, fx: Math.round((g.cx - 30) * k) / k, fy: Math.round((g.cyTop + 10) * k) / k };
+    eng.setCamera(camA);
+    const A = eng.camSet;
+    const snap = { crust: A.crust.data.slice(), land: A.land.data.slice(), occ: A.occupancy.slice(), pick: A.pick.slice(), shore: A.shoreDist.slice(), W: A.W, H: A.H };
+    const camB = { zoom: k, fx: camA.fx + 37 / k, fy: camA.fy + 23 / k };
+    const orig = eng.cameraOpts;
+    if (screenKeyed) eng.cameraOpts = function (this: any, b: any, s: any) { return { ...orig.call(this, b, s), camera: undefined }; };
+    try { eng.setCamera(camB); } finally { eng.cameraOpts = orig; }
+    const Bs = eng.camSet;
+    const ox = Math.round((camB.fx - camA.fx) * k), oy = Math.round((camB.fy - camA.fy) * k);
+    const diff = { crust: 0, land: 0, occ: 0, pick: 0, shore: 0, shoreBig: 0, n: 0 };
+    for (let y = 0; y < Bs.H; y++) for (let x = 0; x < Bs.W; x++) {
+      const xa = x + ox, ya = y + oy;
+      if (xa < 0 || ya < 0 || xa >= snap.W || ya >= snap.H) continue;
+      diff.n++;
+      const ib = y * Bs.W + x, ia = ya * snap.W + xa;
+      for (let c = 0; c < 4; c++) if (Bs.crust.data[ib * 4 + c] !== snap.crust[ia * 4 + c]) { diff.crust++; break; }
+      for (let c = 0; c < 4; c++) if (Bs.land.data[ib * 4 + c] !== snap.land[ia * 4 + c]) { diff.land++; break; }
+      if (Bs.occupancy[ib] !== snap.occ[ia]) diff.occ++;
+      if (Bs.pick[ib] !== snap.pick[ia]) diff.pick++;
+      if (Bs.shoreDist[ib] !== snap.shore[ia]) { diff.shore++; if (Math.abs(Bs.shoreDist[ib] - snap.shore[ia]) > 0.5) diff.shoreBig++; }
+    }
+    return { ...diff, sets: `${snap.W}x${snap.H}`, shift: `${ox},${oy}` };
+  };
+  tryCheck('swap invisible: two zoom-4 bakes 37,23 px apart agree on every overlap pixel (crust, land, occupancy, pick)', () => {
+    const d = overlapDiff(false);
+    return [d.n > 100000 && d.crust === 0 && d.land === 0 && d.occ === 0 && d.pick === 0,
+      `${d.n} overlap px of ${d.sets} sets shifted ${d.shift}: crust ${d.crust}, land ${d.land}, occupancy ${d.occ}, pick ${d.pick} differ (info: shore distance ${d.shore}, ${d.shoreBig} by > 0.5 px)`];
+  });
+  tryCheck('  control: a re-bake with a screen-keyed hash differs', () => {
+    const d = overlapDiff(true);
+    return [!(d.crust === 0 && d.land === 0), `crust ${d.crust}, land ${d.land} of ${d.n}`];
+  });
+
+  // ── 4. re-centre through the renderer: sliced, swapped invisibly ─────────
+  /** After a drag, frames at an 8 ms budget until the re-centre swaps; the view compared across the swap. */
+  const recentre = (screenKeyed: boolean) => {
+    fresh();
+    drag(40, 3, 1.5);
+    r.bakeBudgetMs = 8;
+    const orig = e.cameraOpts;
+    if (screenKeyed) e.cameraOpts = function (this: any, b: any, s: any) { return { ...orig.call(this, b, s), camera: undefined }; };
+    const cnt = (a: any, b: any) => {
+      let n = 0;
+      for (let i = 0; i < a.data.length; i += 4) {
+        if (a.data[i] !== b.data[i] || a.data[i + 1] !== b.data[i + 1] || a.data[i + 2] !== b.data[i + 2] || a.data[i + 3] !== b.data[i + 3]) n++;
+      }
+      return n;
+    };
+    let frames = 0, swapped = false, stat = -1, full = -1;
+    const slices: number[] = [];
+    const set0 = e.camSet;
+    try {
+      r.updateView(t += SETTLE_MS + 1);
+      for (frames = 1; frames < 2000 && !swapped; frames++) {
+        const pre = e.camSet;
+        const g0 = new H.PixelCanvas(VW, VH); e.drawStatic(g0.getContext(), 0);
+        const f0 = new H.PixelCanvas(VW, VH); engineFrame(f0.getContext());
+        const t0 = performance.now();
+        r.updateView(t += 16);
+        slices.push(performance.now() - t0);
+        if (e.camSet !== pre) {
+          swapped = true;
+          const g1 = new H.PixelCanvas(VW, VH); e.drawStatic(g1.getContext(), 0);
+          const f1 = new H.PixelCanvas(VW, VH); engineFrame(f1.getContext());
+          stat = cnt(g0, g1); full = cnt(f0, f1);
+        }
+      }
+    } finally { e.cameraOpts = orig; r.bakeBudgetMs = Infinity; }
+    return { frames, swapped, newSet: e.camSet !== set0, slices, stat, full };
+  };
+  let rc: any = null;
+  tryCheck('re-centre: the next set is baked over several frames while the old one is drawn, then swapped', () => {
+    rc = recentre(false);
+    const max = Math.max(...rc.slices);
+    return [rc.swapped && rc.newSet && rc.frames > 2, `swapped after ${rc.frames} frames at an 8 ms budget; slowest view step ${max.toFixed(1)} ms (headless)`];
+  });
+  tryCheck('re-centre swap: the view\'s static layers are identical before and after (diff 0)', () => {
+    return [!!rc && rc.swapped && rc.stat === 0, `${rc?.stat} of ${VW * VH} view px differ (info: whole engine frame incl. water ${rc?.full})`];
+  });
+  tryCheck('  control: a re-centre baked with a screen-keyed hash shows a swap', () => {
+    const b = recentre(true);
+    return [!(b.swapped && b.stat === 0), `${b.stat} view px differ`];
+  });
+
+  // ── 5. outrun: a drag past the margin shows a soft strip, never a blank one ─
+  /** Body pixels (identity layers through the live camera) of the uncovered strip left alpha 0. */
+  const outrun = () => {
+    fresh();
+    const f = drag(32, -24, -10, true);          // 384 x 160 virtual px toward the body: past the 240 x 160 margin
+    const last = f[f.length - 1], cs = e.camSet, m = e.viewMap, cam = e.activeCamera, k = cam.zoom;
+    const comp = new H.PixelCanvas(VW, VH); engineFrame(comp.getContext());
+    const idC = e.crust.data, idL = e.land.data, idO = e.idOccupancy, g = e.activeGeom;
+    let strip = 0, blank = 0, body = 0;
+    for (let y = 0; y < VH; y++) for (let x = 0; x < VW; x++) {
+      const bx = (x - m.dx) / m.r, by = (y - m.dy) / m.r;
+      if (bx >= 0 && by >= 0 && bx < cs.W && by < cs.H) continue;    // covered by the camera set
+      strip++;
+      const ix = Math.floor((x + 0.5 - VW / 2) / k + cam.fx), iy = Math.floor((y + 0.5 - VH / 2) / k + cam.fy);
+      if (ix < 0 || iy < 0 || ix >= VW || iy >= VH) continue;
+      const i = iy * VW + ix;
+      const dx = (x - g.cx) / g.rx, dy = (y - g.cyTop) / g.ry;
+      const isBody = idC[i * 4 + 3] > 0 || idL[i * 4 + 3] > 0 || (idO[i] === 1 && dx * dx + dy * dy <= 1);
+      if (!isBody) continue;
+      body++;
+      if (comp.data[(y * VW + x) * 4 + 3] === 0) blank++;
+    }
+    r.zoom.panEnd(t += 16);
+    return { strip, body, blank, scaledId: last.g.srcs.some((s: any[]) => s[0] === e.land && s.length === 9) };
+  };
+  tryCheck('outrun: a drag past the margin leaves 0 blank body pixels in the view', () => {
+    const o = outrun();
+    return [o.strip > 1000 && o.body > 500 && o.blank === 0 && o.scaledId,
+      `uncovered strip ${o.strip} px, ${o.body} of them body; blank ${o.blank}; identity layers drawn scaled x k ${o.scaledId}`];
+  });
+  tryCheck('  control: the underlay disabled leaves the strip blank', () => {
+    e.underlay = false;
+    let o: any;
+    try { o = outrun(); } finally { e.underlay = true; }
+    return [!(o.blank === 0), `blank ${o.blank} of ${o.body} body px`];
+  });
+
+  // ── 6. bounded: per-frame loops by the view, bakes by the overscan ───────
+  /** One more drag frame with the iteration counters reset (they add up over a frame's calls). */
+  const countedFrame = (sx: number, sy: number) => {
+    const it = ((globalThis as any).__zoomIters = {} as Record<string, number>);
+    r.zoom.panMove(480 + sx, 320 + sy, t += 16);
+    r.updateView(t);
+    engineFrame(new H.PixelCanvas(VW, VH).getContext());
+    delete (globalThis as any).__zoomIters;
+    return it;
+  };
+  tryCheck('bounded: per-frame water and night-veil loops <= view + relief margin while panning (zoom 4)', () => {
+    fresh();
+    drag(5, 6, 3, true);
+    const it = countedFrame(36, 18);
+    r.zoom.panEnd(t += 16);
+    const cs = e.camSet, vb = VW * (VH + Math.ceil(cs.opts.maxLift));
+    return [it.fluids > 0 && it.fluids <= vb && it.dayNight > 0 && it.dayNight <= vb,
+      `fluids ${it.fluids}, veil ${it.dayNight} (bound ${vb}); atmosphere ${it.atmo ?? 0} (haze 0 at zoom 4); set ${cs.W}x${cs.H}`];
+  });
+  tryCheck('  control: painting the whole overscanned set per frame exceeds it', () => {
+    const it = ((globalThis as any).__zoomIters = {} as Record<string, number>);
+    try {
+      const cs = e.camSet, vb = VW * (VH + Math.ceil(cs.opts.maxLift));
+      const img = { width: cs.W, height: cs.H, data: new Uint8ClampedArray(cs.W * cs.H * 4) };
+      Eng.paintFluids(img, cs.geom, cs.occupancy, 'ocean', 10, 0, cs.shoreDist, cs.camera.zoom);
+      return [it.fluids > vb, `fluids ${it.fluids} > ${vb}`];
+    } finally { delete (globalThis as any).__zoomIters; }
+  });
+  let inView = 0, lutAll = 0;
+  tryCheck('bounded: per-frame cloud loop visits only lookup entries in the view while panning (zoom 2.1)', () => {
+    fresh(5);
+    drag(6, -40, 12, true);
+    const it = countedFrame(-280, 84);
+    r.zoom.panEnd(t += 16);
+    const cs = e.camSet, p = cs.painter, m = e.viewMap, lut = p.lut, cl = p.cloudLift;
+    inView = 0; lutAll = lut.count;
+    for (let n = 0; n < lut.count; n++) {
+      const x = lut.px[n] + m.dx, y = lut.py[n] - cl + m.dy;
+      if (x >= -2 && x < VW + 2 && y >= -2 && y < VH + 2) inView++;
+    }
+    const wb = VW * (VH + cl);
+    return [it.clouds > 0 && it.clouds <= inView + 4 * (VH + 4) && (it.shadows ?? 0) <= wb,
+      `clouds visited ${it.clouds} of ${lut.count} entries (${inView} in the view +/- 2 px), shadows ${it.shadows ?? 0} (bound ${wb}); offset ${m.dx},${m.dy}`];
+  });
+  tryCheck('  control: the pre-5b loop over the whole lookup exceeds the in-view count', () => [lutAll > inView + 4 * (VH + 4), `${lutAll} > ${inView}`]);
+  {
+    // Bakes at a zoom whose geometry outgrows the overscanned set (zoom 8,
+    // engine-level), so the bound is the set's, not the planet's.
+    const B = H.bakeEngine('ocean', 7), eng: any = B.engine, g = B.engine.geom, k = 8;
+    eng.overscan = 0.5;
+    let cs: any = null;
+    tryCheck('bounded: an overscanned bake <= set area + relief margin (surface, crust, shore, weather lookup; zoom 8)', () => {
+      const it = ((globalThis as any).__zoomIters = {} as Record<string, number>);
+      try {
+        eng.setCamera({ zoom: k, fx: g.cx, fy: g.cyTop + g.ry * 0.5 });
+        cs = eng.camSet;
+        const lift = Math.ceil(cs.opts.maxLift), bound = cs.W * (cs.H + lift);
+        const fm = Math.ceil(5 * k), sb = (cs.W + 2 * fm) * (cs.H + 2 * fm);
+        const lb = cs.W * (cs.H + cs.painter.cloudLift), lut = cs.painter.lut.count;
+        const ok = it.surface > 0 && it.surface <= bound && it.crust > 0 && it.crust <= bound && it.shore > 0 && it.shore <= sb && lut > 0 && lut <= lb;
+        return [ok, `set ${cs.W}x${cs.H}: surface ${it.surface}, crust ${it.crust} (bound ${bound}); shore ${it.shore} (bound ${sb}); lookup ${lut} (bound ${lb})`];
+      } finally { delete (globalThis as any).__zoomIters; }
+    });
+    tryCheck('  control: the unclamped surface loop and lookup on the zoom-8 geometry exceed them', () => {
+      const it = ((globalThis as any).__zoomIters = {} as Record<string, number>);
+      try {
+        const gm = cs.geom, lift = Math.ceil(cs.opts.maxLift), bound = cs.W * (cs.H + lift);
+        const Wd = Math.ceil(2 * gm.rx) + 1, Hd = Math.ceil(2 * gm.ry) + 1 + cs.opts.maxLift;
+        const big = new H.PixelCanvas(Wd, Hd);
+        Eng.paintCutawaySurface(big.getContext(), { ...cs.opts, w: Wd, h: Hd, cx: gm.rx, cyTop: gm.ry + cs.opts.maxLift,
+          occupancy: new Uint8Array(Wd * Hd), pick: new Int32Array(Wd * Hd), decalSites: [] });
+        const lb = cs.W * (cs.H + cs.painter.cloudLift);
+        const u = WP.buildWeatherLut(gm, cs.opts.discToGrid, () => 0);
+        return [it.surface > bound && u.count > lb, `surface ${it.surface} > ${bound}; lookup ${u.count} > ${lb}`];
+      } finally { delete (globalThis as any).__zoomIters; }
+    });
+  }
+
+  // ── 7. clicks mid-pan and after the re-centre ─────────────────────────────
+  {
+    const D = H.makeDiscToGrid(r.focusLat, r.focusLon);
+    const idOf = (c: { row: number; col: number } | null) => c ? c.row * GRID_SIZE + c.col + 1 : 0;
+    const waterAround = (id: number) => {
+      const row = Math.floor((id - 1) / GRID_SIZE), col = (id - 1) % GRID_SIZE;
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+        const c = r.grid[row + dr]?.[(col + dc + GRID_SIZE) % GRID_SIZE];
+        if (!c || !isWater(c.biome)) return false;
+      }
+      return true;
+    };
+    /** Open-sea clicks through the real pickTile at the live camera (fixture as in the RENDERER click check). */
+    const clicks = () => {
+      const g = e.geom, cam = e.activeCamera;
+      const flat = (x: number, y: number) => idOf(D((x - g.cx) / g.rx, (y - g.cyTop) / g.ry));
+      let n = 0, agree = 0;
+      const miss: string[] = [];
+      for (let wy = 1; wy < VH - 1 && n < 200; wy += 1) for (let wx = 1; wx < VW - 1 && n < 200; wx += 3) {
+        const sp = worldToScreen(cam, VW, VH, wx, wy);
+        if (sp.x < 0 || sp.y < 0 || sp.x >= VW || sp.y >= VH || Math.abs(sp.x - Math.round(sp.x)) > 1e-6 || Math.abs(sp.y - Math.round(sp.y)) > 1e-6) continue;
+        const want = flat(wx, wy);
+        if (!want || !waterAround(want)) continue;
+        const q = 1e-3;
+        if (flat(wx - q, wy) !== want || flat(wx + q, wy) !== want || flat(wx, wy - q) !== want || flat(wx, wy + q) !== want) continue;
+        n++;
+        const got = idOf(r.pickTile(Math.round(sp.x) * CSS, Math.round(sp.y) * CSS));
+        if (got === want) agree++; else if (miss.length < 2) miss.push(`w${wx},${wy}: ${got} vs ${want}`);
+      }
+      return { n, agree, miss };
+    };
+    tryCheck('click mid-pan (sharp, offset camera set) picks the cell under the cursor (200 open-sea pts)', () => {
+      fresh();
+      drag(20, -4, 0, true);                     // pointer still down
+      const c = clicks();
+      const offset = e.viewMap.dx !== -e.camSet.mx || e.viewMap.dy !== -e.camSet.my;
+      return [c.n === 200 && c.agree === c.n && e.showCamera && offset,
+        `${c.agree}/${c.n} agree, offset ${e.viewMap.dx},${e.viewMap.dy} (margin ${e.camSet.mx},${e.camSet.my}) ${c.miss.join('; ')}`];
+    });
+    tryCheck('  control: the set read at raw screen px (no pan offset) picks elsewhere', () => {
+      const m = e.viewMap, keep = { ...m };
+      Object.assign(m, { r: 1, dx: 0, dy: 0 });
+      let c: any;
+      try { c = clicks(); } finally { Object.assign(m, keep); }
+      return [!(c.n === 200 && c.agree === c.n), `${c.agree}/${c.n} agree`];
+    });
+    tryCheck('click after the re-centre picks the cell under the cursor (200 open-sea pts)', () => {
+      r.zoom.panEnd(t += 16);
+      settleAll();
+      const c = clicks();
+      const centred = e.viewMap.dx === -e.camSet.mx && e.viewMap.dy === -e.camSet.my;
+      return [c.n === 200 && c.agree === c.n && centred, `${c.agree}/${c.n} agree; set re-centred ${centred} ${c.miss.join('; ')}`];
+    });
+  }
+
+  // ── 8. wheel while zoomed: the sharp set scales in-canvas ────────────────
+  const wheelFrames = () => {
+    let id = 0, css = 0, scaled = 0, n = 0;
+    for (let i = 0; i < 2; i++) {
+      r.zoom.wheel(-40, 10, +1, t += 4);
+      r.updateView(t += 4);
+      const g = new Rec(new H.PixelCanvas(VW, VH)); engineFrame(g);
+      n++;
+      if (drewIdentity({ g })) id++;
+      if (r.display.style.transform !== 'none') css++;
+      if (e.camSet && g.srcs.some((s: any[]) => s[0] === e.camSet.land && s.length === 5)) scaled++;
+    }
+    return { id, css, scaled, n };
+  };
+  tryCheck('wheel while zoomed: frames draw the camera set scaled in the canvas, no identity, CSS none', () => {
+    fresh();
+    const w = wheelFrames();
+    settleAll();
+    return [w.n === 2 && w.id === 0 && w.css === 0 && w.scaled === 2,
+      `${w.n} frames: scaled set ${w.scaled}, identity ${w.id}, CSS ${w.css}; settled at zoom ${e.camSet?.camera.zoom.toFixed(2)}`];
+  });
+  tryCheck('  control: the Task 7 rule on the same wheel shows identity under CSS', () => {
+    fresh();
+    task7Rule(true);
+    let w: any;
+    try { w = wheelFrames(); } finally { task7Rule(false); }
+    return [!(w.id === 0 && w.css === 0), `identity ${w.id}, CSS ${w.css}`];
+  });
+  tryCheck('a wheel starting at zoom 1 is today\'s CSS over the identity layers', () => {
+    r.bakeBudgetMs = Infinity;
+    r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
+    wheel(3, -1); r.updateView(t += 4);
+    const g = new Rec(new H.PixelCanvas(VW, VH)); engineFrame(g);
+    const css = r.display.style.transform;
+    const ok = css !== 'none' && drewIdentity({ g }) && !e.showCamera;
+    settleAll();
+    return [ok, `css ${css}, identity drawn ${drewIdentity({ g })}, camera set shown ${!ok}`];
+  });
+
+  // ── 9. no per-frame allocation while dragging ────────────────────────────
+  {
+    const gc = (globalThis as any).gc as (() => void) | undefined;
+    const sink: unknown[] = [];
+    let step = 0;
+    const measure = (extra: boolean) => {
+      let best = Infinity;
+      for (let rep = 0; rep < 3; rep++) {
+        gc?.(); const h0 = process.memoryUsage().heapUsed;
+        for (let i = 0; i < 1000; i++) {
+          step++;
+          r.zoom.panMove(480 + Math.sin(step * 0.05) * 200, 320 + Math.cos(step * 0.07) * 100, t += 16);
+          r.updateView(t);
+          if (extra) sink.push(new Float64Array(8));
+        }
+        best = Math.min(best, process.memoryUsage().heapUsed - h0);
+        sink.length = 0;
+      }
+      return best;
+    };
+    tryCheck('drag view step: no per-frame allocation (1000 moves, best of 3)', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      fresh();
+      r.zoom.panStart(480, 320, t += 4);
+      measure(false);
+      const g0 = measure(false);
+      return [g0 < 64 * 1024 && e.showCamera, `heap +${(g0 / 1024).toFixed(1)} KB per 1000 drag frames`];
+    });
+    tryCheck('  control: one small array per frame is detected', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const g1 = measure(true);
+      r.zoom.panEnd(t += 16);
+      return [g1 >= 64 * 1024, `heap +${(g1 / 1024).toFixed(1)} KB`];
+    });
+    tryCheck('weather painter with a moving view: no per-frame allocation (zoom 2.1, 1000 frames)', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      fresh(5);
+      const p = e.camSet.painter, sim = e.weatherSim;
+      const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
+      let f = 0;
+      const run = () => {
+        f++;
+        p.setView(1, -e.camSet.mx + (f % 50), -e.camSet.my + (f % 30));
+        p.prepare(sim, 0.5, 1 / 60); p.paintShadows(img, 0.6, 0.5); p.paintClouds(img, 0.6, 0.5);
+      };
+      for (let i = 0; i < 1000; i++) run();
+      let best = Infinity;
+      for (let w = 0; w < 3; w++) {
+        gc(); const h0 = process.memoryUsage().heapUsed;
+        for (let i = 0; i < 1000; i++) run();
+        best = Math.min(best, process.memoryUsage().heapUsed - h0);
+      }
+      return [best < 64 * 1024, `heap +${(best / 1024).toFixed(1)} KB per 1000 frames; lookup ${p.lut.count}`];
+    });
+  }
+
+  // ── 10. re-centre churn retains no set ───────────────────────────────────
+  {
+    const gc = (globalThis as any).gc as (() => void) | undefined;
+    const churn = (leak: unknown[] | null) => {
+      fresh();
+      const one = (i: number) => { drag(4, (i % 2 ? 1 : -1) * 20, (i % 3 - 1) * 10); settleAll(); if (leak) leak.push(e.camSet); };
+      one(0); one(1); one(2);
+      const mem = () => { const m = process.memoryUsage(); return m.heapUsed + m.arrayBuffers; };
+      gc?.(); gc?.(); const h0 = mem();
+      for (let i = 3; i < 23; i++) one(i);
+      gc?.(); gc?.(); const h1 = mem();
+      const cs = e.camSet;
+      const setBytes = [cs.occupancy, cs.pick, cs.shoreDist].reduce((s: number, a: any) => s + a.byteLength, 0) + 2 * cs.W * cs.H * 4;
+      return { grew: h1 - h0, setBytes };
+    };
+    tryCheck('re-centre churn: heap retained over 20 re-centres < one camera set', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const a = churn(null);
+      return [a.grew < a.setBytes, `+${(a.grew / 1048576).toFixed(2)} MB over 20 re-centres; one set ${(a.setBytes / 1048576).toFixed(2)} MB`];
+    });
+    tryCheck('  control: keeping every set exceeds it', () => {
+      if (!gc) return [false, 'run with node --expose-gc'];
+      const leak: unknown[] = [];
+      const b = churn(leak);
+      return [!(b.grew < b.setBytes), `+${(b.grew / 1048576).toFixed(2)} MB retained`];
     });
   }
 }

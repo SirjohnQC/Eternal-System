@@ -41,7 +41,7 @@ import {
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import type { ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
-import { WeatherPainter, buildWeatherLut, WEATHER_PMAX } from './weather/WeatherPainter';
+import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
 import { ELEV_LIGHT } from './sky/SunLight';
 //
 // COUPLED CONSTANT — `PAINTER_SNOW_ELEVATION` is this painter's own snow
@@ -831,6 +831,23 @@ function zoomIters(): Record<string, number> | undefined {
 }
 
 /**
+ * A bake that can be time-sliced (spec 5b): a generator that yields between
+ * small units of work (a column, a row, a decal) and returns its result. The
+ * engine's camera re-bake runs one over several frames within a per-frame
+ * budget; every synchronous caller (the identity bake included) `drain`s it,
+ * which runs exactly the same code to completion.
+ */
+export type BakeSteps<T = void> = Generator<void, T, void>;
+
+/** Run a sliced bake to completion and return its result. */
+export function drain<T>(steps: BakeSteps<T>): T {
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+/**
  * Is the face pixel (px, py) water? The same land/water decision the surface
  * painter makes, for pixels OUTSIDE the canvas: the camera bake's shore
  * distance needs the coast a little beyond the view (see bakeShoreDistance).
@@ -871,6 +888,13 @@ export function faceWaterAt(opts: CutawayBakeOpts, px: number, py: number): bool
 export function paintCutawaySurface(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
+  drain(surfaceSteps(g, opts));
+}
+
+/** {@link paintCutawaySurface}, sliced: yields after every column, punch row and decal. */
+export function* surfaceSteps(
+  g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
+): BakeSteps {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed, grid } = opts;
   const elevationAt = subCellSampler(opts);
   const k = opts.cameraZoom ?? 1;
@@ -889,7 +913,11 @@ export function paintCutawaySurface(
   const occ = opts.occupancy && opts.occupancy.length === VW * VH ? opts.occupancy : null;
   if (occ) occ.fill(0);
 
-  const x0 = Math.max(0, Math.ceil(cx - rx)), x1 = Math.min(VW - 1, Math.floor(cx + rx));
+  // Horizontal pad so rim vegetation/decals can overhang the disc instead of
+  // having their bodies clipped at x = cx±rx (atlas cell is typically 16).
+  const decalPad = opts.planetType === 'gas' ? 0 : Math.ceil(10 * k);
+  const x0 = Math.max(0, Math.ceil(cx - rx) - decalPad);
+  const x1 = Math.min(VW - 1, Math.floor(cx + rx) + decalPad);
   const yFace0 = Math.ceil(cyTop - ry), yFace1 = Math.floor(cyTop + ry);
   const y1 = Math.min(VH - 1, yFace1);                          // last stored row
   const yScan1 = Math.min(VH - 1 + (opts.planetType === 'gas' ? 0 : opts.maxLift), yFace1);
@@ -952,6 +980,7 @@ export function paintCutawaySurface(
         d[o + 3] = 255;
         if (pick && cellId > 0) pick[py * VW + px] = cellId;
       }
+      yield;
     }
     const it = zoomIters();
     if (it) it.surface = iters;
@@ -1122,6 +1151,7 @@ export function paintCutawaySurface(
       }
       if (top < minTop) minTop = top;
     }
+    yield;
   }
   const it = zoomIters();
   if (it) it.surface = iters;
@@ -1134,6 +1164,7 @@ export function paintCutawaySurface(
         if (!occ[py * VW + px]) continue;
         d[((py - yTop) * bw + (px - x0)) * 4 + 3] = 0;
       }
+      if ((py & 15) === 15) yield;
     }
   }
 
@@ -1141,9 +1172,18 @@ export function paintCutawaySurface(
   // has already cleared water pixels back to alpha 0 so nothing lands in the sea.
   // Given sites are a stored plan: the identity bake stamps them 1:1 and
   // records each one's footing; a camera bake stamps them x round(k), clipped.
+  // One site per call, in plan order (stamping is sequential either way), so
+  // a sliced bake can yield between decals. A camera bake stamps every site on
+  // its identity footing (`storedFoot`): the stamp is then a function of the
+  // plan alone, not of which pixels this bake's window holds, so two camera
+  // bakes of the same zoom agree on every overlap pixel (spec 5b re-centre).
   if (opts.decalSites) {
-    stampDecals(d, bw, bh, x0, yTop, opts.decalSites, opts.decalAtlas ?? null,
-      Math.round(k), opts.cameraZoom === undefined);
+    const camera = opts.cameraZoom !== undefined, one: DecalSite[] = [];
+    for (const site of opts.decalSites) {
+      one[0] = site;
+      stampDecals(d, bw, bh, x0, yTop, one, opts.decalAtlas ?? null, Math.round(k), !camera, camera);
+      if (camera) yield;
+    }
   } else if (opts.decalSeed !== undefined) {
     const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
     stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
@@ -1261,6 +1301,13 @@ export function paintVolcanoChimneys(
 export function paintCutawayCrust(
   g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
 ): void {
+  drain(crustSteps(g, opts));
+}
+
+/** {@link paintCutawayCrust}, sliced: yields after every column. */
+export function* crustSteps(
+  g: CanvasRenderingContext2D, opts: CutawayBakeOpts,
+): BakeSteps {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed } = opts;
   // The engine always passes `wall` (the camera's, on a camera bake); the
   // fallback is for legacy callers and is only correct at identity.
@@ -1328,6 +1375,7 @@ export function paintCutawayCrust(
       }
       g.fillRect(x, y, 1, 1);
     }
+    yield;
   }
 
   // ── Jagged hanging keel ───────────────────────────────────────────────────
@@ -1429,6 +1477,7 @@ export function paintCutawayCrust(
     }
     g.fillStyle = 'rgba(2,2,6,0.55)';
     g.fillRect(x, Math.round(top + depth) - 1, 1, 1);
+    yield;
   }
   const it = zoomIters();
   if (it) it.crust = iters;
@@ -1437,12 +1486,23 @@ export function paintCutawayCrust(
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
 
 /**
- * How much atmosphere to show at a given camera zoom.
- * Full haze at 1×, gone by ~2.5× so a close look is just terrain.
+ * How much atmosphere shell to show at a given camera zoom.
+ * Full haze at 1×, gone by ~2.5× so a close look reads bare terrain/limb.
+ * Weather (clouds / precip) uses {@link weatherAmount} — it must not share
+ * this fade, or rain and snow vanish at max zoom.
  */
 export function atmoHazeAmount(viewZoom = 1): number {
   const t = Math.max(0, Math.min(1, (viewZoom - 1) / 1.5));
   return (1 - t) * (1 - t);
+}
+
+/**
+ * Clouds, precipitation and storm ground-shadows stay readable through max
+ * zoom (4×). Mild fade only — never drops to zero like the atmosphere veil.
+ */
+export function weatherAmount(viewZoom = 1): number {
+  const t = Math.max(0, Math.min(1, (viewZoom - 1) / 3));
+  return 0.55 + 0.45 * (1 - t) * (1 - t);
 }
 
 /**
@@ -1616,6 +1676,8 @@ export function paintAtmosphere(
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
   const x0 = Math.max(0, Math.floor(cx - rx - fadeMax));
   const x1 = Math.min(w - 1, Math.ceil(cx + rx + fadeMax));
+  const it = zoomIters();
+  if (it) it.atmo = (it.atmo ?? 0) + Math.max(0, y1 - y0 + 1) * Math.max(0, x1 - x0 + 1);
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       let hit = ozoneAt(x, y, geom, bob, fadeMax);
@@ -1687,24 +1749,40 @@ export function paintAtmosphere(
 /**
  * Night veil on the pancake. See sky/SunLight: noon lights the whole face,
  * midnight veils it, capped at NIGHT_MAX.
+ *
+ * Relief peaks paint ABOVE the face ellipse (`py - lift`). The veil must cover
+ * that column too — otherwise snowcaps and far-rim ridges stay full-bright at
+ * night (the elliptical mask ends at the unlifted rim).
  */
 export function paintDayNight(
   img: ImageData, geom: HabitableGeom, sunAzimuth: number, layerBob: number,
+  maxLift = 0,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
   const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
   const d = img.data;
   const w = img.width, h = img.height;
-  const y0 = Math.max(0, Math.floor(cy - ry));
+  const lift = maxLift > 0 ? maxLift : 0;
+  const y0 = Math.max(0, Math.floor(cy - ry - lift));
   const y1 = Math.min(h - 1, Math.ceil(cy + ry));
-  const x0 = Math.max(0, Math.floor(cx - rx));
-  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  // ±1 px: land columns can round just outside the geometric rim.
+  const x0 = Math.max(0, Math.floor(cx - rx) - 1);
+  const x1 = Math.min(w - 1, Math.ceil(cx + rx) + 1);
+  const it = zoomIters();
+  if (it) it.dayNight = (it.dayNight ?? 0) + Math.max(0, y1 - y0 + 1) * Math.max(0, x1 - x0 + 1);
   for (let py = y0; py <= y1; py++) {
     for (let px = x0; px <= x1; px++) {
       const dx = (px - cx) / rx;
+      const dx2 = dx * dx;
+      if (dx2 > 1.02) continue;
       const dy = (py - cy) / ry;
-      if (dx * dx + dy * dy > 1) continue;
+      if (dx2 + dy * dy > 1) {
+        // Outside the flat disc: only the skyward lift column (peaks).
+        if (dy >= 0 || lift <= 0) continue;
+        const faceTop = cy - ry * Math.sqrt(1 - dx2);
+        if (py < faceTop - lift) continue;
+      }
       const day = clamp01(0.38 + 0.9 * (dx * sunX + sunUp));   // sky/SunLight.sunLit, inlined
       const night = 1 - day;
       if (night < 0.06) continue;
@@ -1737,7 +1815,15 @@ export function bakeShoreDistance(
   occupancy: Uint8Array, geom: HabitableGeom, w: number, h: number,
   margin = 0, waterAt?: (x: number, y: number) => boolean, blurStride = 1,
 ): Float32Array {
-  if (margin <= 0) return shoreDistanceCore(occupancy, geom, w, h, blurStride);
+  return drain(shoreSteps(occupancy, geom, w, h, margin, waterAt, blurStride));
+}
+
+/** {@link bakeShoreDistance}, sliced: yields between rows and BFS batches. */
+export function* shoreSteps(
+  occupancy: Uint8Array, geom: HabitableGeom, w: number, h: number,
+  margin = 0, waterAt?: (x: number, y: number) => boolean, blurStride = 1,
+): BakeSteps<Float32Array> {
+  if (margin <= 0) return yield* shoreDistanceCore(occupancy, geom, w, h, blurStride);
   const m = Math.ceil(margin), W = w + 2 * m, H = h + 2 * m;
   const occ = new Uint8Array(W * H);
   for (let y = 0; y < H; y++) {
@@ -1748,17 +1834,18 @@ export function bakeShoreDistance(
         ? occupancy[sy * w + sx]
         : (waterAt && waterAt(sx, sy) ? 1 : 0);
     }
+    yield;
   }
-  const ext = shoreDistanceCore(occ, { ...geom, cx: geom.cx + m, cyTop: geom.cyTop + m }, W, H, blurStride);
+  const ext = yield* shoreDistanceCore(occ, { ...geom, cx: geom.cx + m, cyTop: geom.cyTop + m }, W, H, blurStride);
   const dist = new Float32Array(w * h);
   for (let y = 0; y < h; y++) dist.set(ext.subarray((y + m) * W + m, (y + m) * W + m + w), y * w);
   return dist;
 }
 
-function shoreDistanceCore(
+function* shoreDistanceCore(
   occupancy: Uint8Array, geom: Pick<HabitableGeom, 'cx' | 'cyTop' | 'rx' | 'ry'>, w: number, h: number,
   blurStride: number,
-): Float32Array {
+): BakeSteps<Float32Array> {
   let scan = 0, bfs = 0, blurMax = 0;   // visits per pass, for the bounded-work check
   const dist = new Float32Array(w * h);
   const seen = new Uint8Array(w * h);
@@ -1776,9 +1863,10 @@ function shoreDistanceCore(
       seen[i] = 1;
       q[tail++] = i;
     }
+    if ((y & 7) === 7) yield;
   }
   while (head < tail) {
-    bfs++;
+    if ((++bfs & 16383) === 0) yield;
     const i = q[head++];
     const x = i % w, y = (i / w) | 0;
     for (let oy = -1; oy <= 1; oy++) {
@@ -1813,6 +1901,7 @@ function shoreDistanceCore(
           + src[i - s] + src[i + s] + src[i - sw] + src[i + sw]
         ) / 6;
       }
+      if ((y & 7) === 7) yield;
     }
     if (blur > blurMax) blurMax = blur;
   }
@@ -1881,6 +1970,11 @@ const WEB_HALO = 0.055;      // base halo width; kept narrow so open water isn't
  *
  * Magma keeps its hotter travelling churn; ice/desert run the same caustic
  * slower.
+ *
+ * Decal canopies stamp onto land *after* the cliff-punch clears water cells
+ * for fluids, so a shore tree can overhang into occupancy===1. Pass
+ * `landCover` (land bake RGBA, same space as occupancy) so opaque foliage
+ * wins and water does not paint over it.
  */
 export function paintFluids(
   img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
@@ -1893,6 +1987,15 @@ export function paintFluids(
    * camera set with the glint width left unscaled.
    */
   lineK = k,
+  /**
+   * Where `occupancy` / `shoreDist` live when they are not this image's own
+   * pixels (spec 5b): an overscanned camera set drawn through the live camera,
+   * or the identity set under it. Omitted: the image's own pixels (identity,
+   * and a camera set at its own camera with no overscan) — the exact pre-5b path.
+   */
+  map?: FluidMap | null,
+  /** Land bake RGBA in occupancy-buffer space; alpha > 0 blocks fluid paint. */
+  landCover?: Uint8ClampedArray | null,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
@@ -1909,11 +2012,22 @@ export function paintFluids(
   const rimCut = k === 1 ? 0.94 : (1 - (1 - Math.sqrt(0.94)) / k) ** 2;
   const d = img.data;
   const w = img.width, h = img.height;
-  const y0 = Math.max(0, Math.floor(cy - ry));
-  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
-  const x0 = Math.max(0, Math.floor(cx - rx));
-  const x1 = Math.min(w - 1, Math.ceil(cx + rx));
-  const hasShore = !!(shoreDist && shoreDist.length === w * h);
+  let y0 = Math.max(0, Math.floor(cy - ry));
+  let y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  let x0 = Math.max(0, Math.floor(cx - rx));
+  let x1 = Math.min(w - 1, Math.ceil(cx + rx));
+  // Buffer space: the image's own pixels, or `map` (screen -> buffer, nearest).
+  const bw = map ? map.bw : w, bh = map ? map.bh : h;
+  const mInv = map ? map.inv : 1, mOx = map ? map.ox : 0, mOy = map ? map.oy : 0;
+  // Shore distances are in the buffer's px: world px = shore / its zoom.
+  const invS = map ? 1 / map.shoreK : 1 / k;
+  if (map) {
+    x0 = Math.max(x0, map.x0); x1 = Math.min(x1, map.x1);
+    y0 = Math.max(y0, map.y0); y1 = Math.min(y1, map.y1);
+  }
+  const hasShore = !!(shoreDist && shoreDist.length === bw * bh);
+  const hasCover = !!(landCover && landCover.length === bw * bh * 4);
+  let iters = 0;
   // Magma churns hotter/faster; ice melt is sluggish; desert oases barely breathe.
   const speed =
     planetType === 'lava' ? 2.35
@@ -1935,19 +2049,24 @@ export function paintFluids(
   const invRx = 1 / rx, invRy = 1 / ry;
 
   for (let py = y0; py <= y1; py++) {
+    const sourceY = py - layerBob;
+    const bufY = map ? Math.floor((sourceY + 0.5) * mInv + mOy) : sourceY;
     for (let px = x0; px <= x1; px++) {
+      iters++;
       const idx = py * w + px;
-      const sourceY = py - layerBob;
       // Offset keeps the noise domain positive, as in SurfaceDecals.
       const lx = (px - cx) * invK + 4096, ly = (sourceY - geom.cyTop) * invK + 4096;
-      if (sourceY < 0 || sourceY >= h || occupancy[sourceY * w + px] !== 1) continue;
+      const bufX = map ? Math.floor((px + 0.5) * mInv + mOx) : px;
+      if (bufY < 0 || bufY >= bh || bufX < 0 || bufX >= bw || occupancy[bufY * bw + bufX] !== 1) continue;
+      // Foliage overhanging the sea lives in the land bake on water occupancy.
+      if (hasCover && landCover![(bufY * bw + bufX) * 4 + 3] > 0) continue;
       const dx = (px - cx) / rx;
       const dy = (py - cy) / ry;
       const r2 = dx * dx + dy * dy;
       if (r2 > 1) continue;
-      const src = sourceY * w + px;
+      const src = bufY * bw + bufX;
       const shore = hasShore ? shoreDist![src] : 0;
-      const shoreW = shore * invK;   // world px
+      const shoreW = shore * invS;   // world px
 
       let c = pal.mid;
       if (useCaustic) {
@@ -1957,16 +2076,16 @@ export function paintFluids(
         let nx = 0, ny = 0, toward = shoreW;
         if (shore > 0) {
           const sdy = (sourceY - geom.cyTop) * invRy;
-          const sE = px + 1 < w && (occupancy[src + 1] === 1 || (px + 1 - cx) * invRx * ((px + 1 - cx) * invRx) + sdy * sdy <= 1)
+          const sE = bufX + 1 < bw && (occupancy[src + 1] === 1 || (px + 1 - cx) * invRx * ((px + 1 - cx) * invRx) + sdy * sdy <= 1)
             ? shoreDist![src + 1] : shore;
-          const sW = px - 1 >= 0 && (occupancy[src - 1] === 1 || (px - 1 - cx) * invRx * ((px - 1 - cx) * invRx) + sdy * sdy <= 1)
+          const sW = bufX - 1 >= 0 && (occupancy[src - 1] === 1 || (px - 1 - cx) * invRx * ((px - 1 - cx) * invRx) + sdy * sdy <= 1)
             ? shoreDist![src - 1] : shore;
           const sdyS = (sourceY + 1 - geom.cyTop) * invRy;
           const sdyN = (sourceY - 1 - geom.cyTop) * invRy;
-          const sS = sourceY + 1 < h && (occupancy[src + w] === 1 || dx * dx + sdyS * sdyS <= 1)
-            ? shoreDist![src + w] : shore;
-          const sN = sourceY - 1 >= 0 && (occupancy[src - w] === 1 || dx * dx + sdyN * sdyN <= 1)
-            ? shoreDist![src - w] : shore;
+          const sS = bufY + 1 < bh && (occupancy[src + bw] === 1 || dx * dx + sdyS * sdyS <= 1)
+            ? shoreDist![src + bw] : shore;
+          const sN = bufY - 1 >= 0 && (occupancy[src - bw] === 1 || dx * dx + sdyN * sdyN <= 1)
+            ? shoreDist![src - bw] : shore;
           const gx = sE - sW, gy = sS - sN;
           const gl = Math.sqrt(gx * gx + gy * gy);
           if (gl > 1e-4) { nx = -gx / gl; ny = -gy / gl; }
@@ -2046,7 +2165,7 @@ export function paintFluids(
         }
       } else {
         // Magma: keep travelling swell + hot glint.
-        const toward = (shore > 0 ? shore : Math.sqrt(r2) * rx) * invK;
+        const toward = shore > 0 ? shore * invS : Math.sqrt(r2) * rx * invK;
         const drift = Math.sin(lx * 0.055 - ly * 0.04) * 2.4;
         const wave = Math.sin((toward + drift) * 0.22 + t * 1.15 * speed)
                    + Math.cos((toward + drift) * 0.09 + t * 0.42 * speed) * 0.35;
@@ -2068,6 +2187,20 @@ export function paintFluids(
       d[o + 3] = 255;
     }
   }
+  const it = zoomIters();
+  if (it) it.fluids = (it.fluids ?? 0) + iters;
+}
+
+/**
+ * Screen pixel -> buffer pixel for {@link paintFluids} (spec 5b), nearest:
+ * buffer x = floor((px + 0.5) * inv + ox), y likewise from the un-bobbed row.
+ * At zoom ratio 1 with whole offsets this is exactly px + ox. `shoreK` is the
+ * buffer's own zoom (its shore distances are in its px); `x0..y1` clip the
+ * painted screen rect (a strip of the view).
+ */
+export interface FluidMap {
+  inv: number; ox: number; oy: number; bw: number; bh: number; shoreK: number;
+  x0: number; y0: number; x1: number; y1: number;
 }
 
 export interface HabitableFrameInput {
@@ -2093,30 +2226,82 @@ export interface HabitableFrameInput {
 }
 
 /**
- * Owns static layers and composites moving habitable-world effects.
- * `drawGeom` includes bob for host-owned overlay placement.
- */
-/**
  * The layers baked for one non-identity camera (see `setCamera`). The identity
  * set is the engine's own fields, baked by `bake()` exactly as before zoom.
+ *
+ * Overscan (spec 5b): the set covers the view plus `mx` / `my` px on every
+ * side (`overscan` x the view), so a pan at this zoom slides the baked layers
+ * instead of re-baking them. Every buffer and canvas is W x H, in the set's
+ * own pixels: set px (X, Y) shows the world point
+ * `screenToWorld(camera, W, H, X, Y)`.
  */
 interface CameraLayerSet {
   camera: Camera;
-  /** `applyCamera(base geometry, camera)`. */
+  /** `applyCamera(base geometry, camera, W, H)`: the geometry in the set's own pixels. */
   geom: HabitableGeom;
-  /** The identity bake options with this geometry, `cameraZoom`, `camera` and a k-scaled `liftOf` / `maxLift`. */
+  /** The identity bake options with this geometry and size, `cameraZoom`, `camera` and a k-scaled `liftOf` / `maxLift`. */
   opts: CutawayBakeOpts;
+  /** Overscanned size: the view plus `mx` / `my` on each side. */
+  W: number;
+  H: number;
+  mx: number;
+  my: number;
   crust: HTMLCanvasElement;
   land: HTMLCanvasElement;
   occupancy: Uint8Array;
   shoreDist: Float32Array;
   pick: Int32Array;
   /**
+   * Land bake RGBA (same space as occupancy). Used so live fluids skip pixels
+   * where decals overhang the sea. Refreshed whenever the surface is painted.
+   */
+  landCover: Uint8ClampedArray | null;
+  /**
    * This set's weather painter: its own lookup (camera geometry, clamped to the
-   * view, fractional field coordinates, ground lift x k) and cloud lift x k.
-   * Null when the world has no weather. Built by `setCamera`, never per frame.
+   * set plus the cloud lift below it, fractional field coordinates, ground lift
+   * x k) and cloud lift x k. Null when the world has no weather. Built by the
+   * bake, never per frame.
    */
   painter: WeatherPainter | null;
+  /** Which of the engine's two layer slots holds crust, land, occupancy and pick. */
+  slot: number;
+}
+
+/** Canvases and buffers a camera set is baked into; two, so one bakes while the other is shown. */
+interface LayerSlot {
+  crust: HTMLCanvasElement;
+  land: HTMLCanvasElement;
+  occupancy: Uint8Array;
+  pick: Int32Array;
+}
+
+/**
+ * A camera re-bake in progress (spec 5b): `full` bakes every layer for `cam`;
+ * `surface` repaints the surface, pick and shore distance of the current
+ * camera (the 4 s throttled rebake) and keeps its crust and painter.
+ */
+interface BakeJob {
+  /** The camera object the host requested (returned by `stepBake`, matched by the controller). */
+  cam: Camera;
+  kind: 'full' | 'surface';
+  set: CameraLayerSet;
+  steps: BakeSteps;
+  /** `surfaceEpoch` when the job started: a surface rebake during it leaves its land stale. */
+  epoch: number;
+}
+
+/**
+ * A copy of `o` whose number fields V8 stores as doubles from the start: each
+ * is first written as a fraction, then the real value. These objects are
+ * rewritten every frame of a pan (spec 5b); a field left at its integer
+ * (Smi) representation is generalised on the first fractional write, and the
+ * measured result was ~125 bytes of boxed numbers per frame.
+ */
+function doubleFields<T extends object>(o: T): T {
+  const r: Record<string, number> = {};
+  for (const k of Object.keys(o)) r[k] = 0.5;
+  for (const k of Object.keys(o)) r[k] = (o as Record<string, number>)[k];
+  return r as T;
 }
 
 /** What the host passes to `bake` / `resize`: the geometry is the engine's own. */
@@ -2124,6 +2309,10 @@ export type EngineBakeOpts = Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'>
   w: number; h: number; weather?: ClimateSources | null; sunLat?: number;
 };
 
+/**
+ * Owns static layers and composites moving habitable-world effects.
+ * `drawGeom` includes bob for host-owned overlay placement.
+ */
 export class HabitableCutawayEngine {
   /** BASE (identity) geometry. The shown geometry is `activeGeom` / `drawGeom`. */
   geom: HabitableGeom = habitableGeom(1, 1);
@@ -2134,23 +2323,41 @@ export class HabitableCutawayEngine {
    * set instead of the identity set. Ignored while there is no camera set.
    *
    * The identity weather painter is frozen while the camera set is shown; on
-   * the way back to the identity set (zoom back to 1, a new gesture, resize)
-   * it re-primes from the running sim, or its frozen drops would show for
-   * ~0.3 s over a sky that has moved on.
+   * the way back to the identity set (zoom back to 1, resize) it re-primes
+   * from the running sim, or its frozen drops would show for ~0.3 s over a
+   * sky that has moved on.
    */
   get showCamera(): boolean { return this.camShown; }
   set showCamera(v: boolean) {
     const was = this.shown !== null;
     this.camShown = v;
     if (was && this.shown === null) this.reprimeIdentityPainter();
+    this.syncView();
   }
   private camShown = false;
   /**
-   * Test hook (tools/zoomCheck): when set, atmosphere, clouds and cloud
-   * shadows use this intensity instead of `atmoHazeAmount(zoom)`. Never set in
-   * the game.
+   * Test hook (tools/zoomCheck): when set, atmosphere AND weather use this
+   * intensity instead of `atmoHazeAmount` / `weatherAmount`. Never set in-game.
    */
   hazeOverride: number | null = null;
+  /**
+   * Overscan of a camera set, as a fraction of the view added on EACH side
+   * (spec 5b). 0 (the default) bakes exactly the view, as before 5b; the
+   * renderer sets 0.5 (see IsoDioramaRenderer for the measured choice).
+   */
+  overscan = 0;
+  /**
+   * Draw the identity layers, scaled by the zoom, where a pan has outrun the
+   * shown set (spec 5b: a soft strip, never a blank one). Test hook: the
+   * zoomCheck control turns it off; always on in the game.
+   */
+  underlay = true;
+  /**
+   * Shown set -> screen (spec 5b): set px (X, Y) is drawn at
+   * (X * r + dx, Y * r + dy). r = live zoom / baked zoom; at r = 1 the offsets
+   * are whole px (a pan). Identity (1, 0, 0) when no set is shown.
+   */
+  readonly viewMap = doubleFields({ r: 1, dx: 0, dy: 0 });
 
   private idOccupancy = new Uint8Array(1);
   private idShoreDist: Float32Array = new Float32Array(1);
@@ -2158,6 +2365,26 @@ export class HabitableCutawayEngine {
   private camSet: CameraLayerSet | null = null;
   /** `identityCamera(w, h)`, kept so `activeCamera` never allocates per frame. */
   private idCamera: Camera = identityCamera(1, 1);
+  /** The live camera the host draws the shown set through (`setView`), when set. */
+  private viewCam: Camera = doubleFields(identityCamera(1, 1));
+  private viewSet = false;
+  /** The camera and geometry the shown set is drawn through this frame (mutable, never reallocated). */
+  private liveCam: Camera = doubleFields(identityCamera(1, 1));
+  private liveGeom: HabitableGeom = doubleFields(habitableGeom(1, 1));
+  /** Two layer slots: the shown set's and the one a bake job fills. */
+  private slots: LayerSlot[] = [];
+  private job: BakeJob | null = null;
+  /** A re-centre requested while a same-zoom bake was running: started when it lands. */
+  private nextCam: Camera | null = null;
+  /** The camera set's surface must be repainted (a throttled rebake, or one during a bake). */
+  private surfaceStale = false;
+  private surfaceEpoch = 0;
+  /** Uncovered strips of the view (spec 5b outrun), [x0, y0, x1, y1) x up to 4; see `computeStrips`. */
+  private strips = new Float64Array(16);
+  private stripCount = 0;
+  /** Reused per frame: the shown set's and a strip's buffer maps for paintFluids. */
+  private setMap: FluidMap = { inv: 1, ox: 0, oy: 0, bw: 1, bh: 1, shoreK: 1, x0: 0, y0: 0, x1: 0, y1: 0 };
+  private stripMap: FluidMap = { inv: 1, ox: 0, oy: 0, bw: 1, bh: 1, shoreK: 1, x0: 0, y0: 0, x1: 0, y1: 0 };
   /**
    * Stable placement (spec 3): the decal and chimney plans, made ONCE per
    * identity bake (`bake`, `rebakeSurface`) from the identity options and
@@ -2170,8 +2397,8 @@ export class HabitableCutawayEngine {
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
-  private camCrust = document.createElement('canvas');
-  private camLand = document.createElement('canvas');
+  /** Identity land bake RGBA — fluids skip opaque pixels (decal overhang). */
+  private idLandCover: Uint8ClampedArray | null = null;
   private atmoScratch = document.createElement('canvas');
   private fluidScratch = document.createElement('canvas');
   private weatherScratch = document.createElement('canvas');
@@ -2212,16 +2439,18 @@ export class HabitableCutawayEngine {
     if (this.weatherPainter && this.weatherSim) this.weatherPainter.reprime(this.weatherSim, this.weatherAcc / WX_DT);
   }
 
-  /** Land/water of the ACTIVE layer set, 1 = fluid. */
+  /** Land/water of the ACTIVE layer set, 1 = fluid (a camera set's: W x H, its own px). */
   get occupancy(): Uint8Array { return this.shown?.occupancy ?? this.idOccupancy; }
-  /** Shore distance of the ACTIVE layer set, in its screen px. */
+  /** Shore distance of the ACTIVE layer set, in its px. */
   get shoreDist(): Float32Array { return this.shown?.shoreDist ?? this.idShoreDist; }
-  /** Pick buffer of the ACTIVE layer set. */
+  /** Pick buffer of the ACTIVE layer set (a camera set's: W x H; `hitTest` maps screen px into it). */
   get pick(): Int32Array { return this.shown?.pick ?? this.idPick; }
-  /** Geometry of the ACTIVE layer set (the camera geometry while it is shown). */
-  get activeGeom(): HabitableGeom { return this.shown?.geom ?? this.geom; }
-  /** Camera of the ACTIVE layer set; the identity camera while none is shown. Never allocates. */
-  get activeCamera(): Camera { return this.shown?.camera ?? this.idCamera; }
+  /** Geometry on screen: the live camera's while a camera set is shown, else the base geometry. */
+  get activeGeom(): HabitableGeom { return this.shown ? this.liveGeom : this.geom; }
+  /** The camera the screen shows: the live one while a camera set is shown, else identity. Never allocates. */
+  get activeCamera(): Camera { return this.shown ? this.liveCam : this.idCamera; }
+  /** A time-sliced camera bake is running or queued (see `stepBake`). */
+  get bakePending(): boolean { return !!this.job || !!this.nextCam || (this.surfaceStale && !!this.camSet); }
 
   get bob(): number {
     return bobOf(this.elapsed, this.geom.R);
@@ -2229,6 +2458,45 @@ export class HabitableCutawayEngine {
 
   get drawGeom(): HabitableGeom & { bob: number } {
     return { ...this.activeGeom, bob: this.bob };
+  }
+
+  /**
+   * The live camera to draw the shown camera set through (spec 5b), once per
+   * frame by the host; null pins it to the set's own camera. A pan at the set's
+   * zoom slides the baked layers by whole px; another zoom (a wheel in
+   * progress) scales them, nearest-neighbour. Allocation-free.
+   */
+  setView(cam: Camera | null): void {
+    if (cam) {
+      this.viewCam.zoom = cam.zoom; this.viewCam.fx = cam.fx; this.viewCam.fy = cam.fy;
+      this.viewSet = true;
+    } else {
+      this.viewSet = false;
+    }
+    this.syncView();
+  }
+
+  /** Recompute `viewMap`, the live camera and the live geometry for the shown set. Allocation-free. */
+  private syncView(): void {
+    const cs = this.shown, m = this.viewMap, L = this.liveGeom, g = this.geom;
+    const v = cs ? (this.viewSet ? this.viewCam : cs.camera) : this.idCamera;
+    const c = this.liveCam;
+    c.zoom = v.zoom; c.fx = v.fx; c.fy = v.fy;
+    if (!cs || isIdentity(v, this.w, this.h)) {
+      L.cx = g.cx; L.cyBody = g.cyBody; L.cyTop = g.cyTop; L.R = g.R; L.rx = g.rx; L.ry = g.ry; L.wall = g.wall; L.T = g.T;
+    } else {
+      // applyCamera(g, v, w, h), written in place (same arithmetic).
+      const z = v.zoom, hw = this.w / 2, hh = this.h / 2;
+      L.cx = (g.cx - v.fx) * z + hw; L.cyBody = (g.cyBody - v.fy) * z + hh; L.cyTop = (g.cyTop - v.fy) * z + hh;
+      L.R = g.R * z; L.rx = g.rx * z; L.ry = g.ry * z; L.wall = g.wall * z; L.T = g.T * z;
+    }
+    if (!cs) { m.r = 1; m.dx = 0; m.dy = 0; return; }
+    const b = cs.camera, r = v.zoom / b.zoom;
+    let dx = this.w / 2 - (cs.W / 2) * r + (b.fx - v.fx) * v.zoom;
+    let dy = this.h / 2 - (cs.H / 2) * r + (b.fy - v.fy) * v.zoom;
+    // Same zoom: both foci are snapped to whole px, so the slide is whole px.
+    if (r === 1) { dx = Math.round(dx); dy = Math.round(dy); }
+    m.r = r; m.dx = dx; m.dy = dy;
   }
 
   /** A new planet: identity layers, the identity view and a fresh weather sim. */
@@ -2258,6 +2526,9 @@ export class HabitableCutawayEngine {
     this.idCamera = identityCamera(this.w, this.h);
     this.camSet = null;
     this.camShown = false;
+    this.job = null;
+    this.nextCam = null;
+    this.surfaceStale = false;
     this.planetType = opts.planetType;
     this.seed = opts.seed;
     if (!sim) this.elapsed = 0;
@@ -2283,6 +2554,7 @@ export class HabitableCutawayEngine {
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
+    this.idLandCover = this.snapshotLandCover(this.land);
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     // Weather: a fresh sim per bake — a new planet must never inherit the last
     // one's sky (the repo's recurring state-leak pattern). A resize keeps it.
@@ -2327,62 +2599,44 @@ export class HabitableCutawayEngine {
       this.weatherClimate = opts.weather;
       this.idLutCount = Math.max(1, lut.count);
     }
+    this.syncView();
   }
 
   /**
-   * Bake the camera layer set for `cam` (distinct from `bake()`: same planet,
-   * new view). Identity drops the camera set. Keeps the weather sim and its
-   * fields, `elapsed`, the day angle and every other animation state — only
-   * the static layers are re-baked, in `bake()`'s order: zero occupancy,
-   * crust, surface, shore distance (with pick written by the surface).
-   * Decals and chimneys are the stored IDENTITY plans (base-world px) mapped
-   * through the camera and stamped x round(k) / x k, never re-planned.
+   * Bake the camera layer set for `cam` NOW (distinct from `bake()`: same
+   * planet, new view) and make it the camera set. Identity drops the camera
+   * set. The time-sliced form is `requestCamera` + `stepBake`; this runs the
+   * same steps to completion (tools, resize, the renderer's direct hook).
+   * Keeps the weather sim and its fields, `elapsed`, the day angle and every
+   * other animation state — only the static layers are re-baked, in `bake()`'s
+   * order: zero occupancy, crust, surface, shore distance (with pick written by
+   * the surface). Decals and chimneys are the stored IDENTITY plans (base-world
+   * px) mapped through the camera and stamped x round(k) / x k, never re-planned.
    *
-   * Weather: the set gets its own painter (see `cameraPainter`) over the SAME
-   * sim; while the set is shown only its painter spawns and moves particles.
-   * The identity painter is frozen meanwhile and re-primes when the identity
-   * set is shown again (see `showCamera`).
+   * Weather: the set gets its own painter (see `cameraPainterSteps`) over the
+   * SAME sim; while the set is shown only its painter spawns and moves
+   * particles. The identity painter is frozen meanwhile and re-primes when the
+   * identity set is shown again (see `showCamera`).
    *
-   * Allocation per call (it runs once per settle, never per frame): the
-   * occupancy and pick buffers are reused; the shore distance, the weather
-   * lookup and the painter (pmax up to ~3.3k at zoom 4) are rebuilt, and the
-   * previous ones become garbage at once — tools/zoomCheck measures that 50
-   * settles retain less heap than a single camera set.
+   * Allocation per bake (once per settle, never per frame): the two layer
+   * slots' canvases and occupancy / pick buffers are reused; the shore
+   * distance, the weather lookup and the painter (pmax up to ~3.3k at zoom 4
+   * without overscan) are rebuilt, and the previous ones become garbage at
+   * once — tools/zoomCheck measures that 50 settles retain less heap than a
+   * single camera set.
    */
   setCamera(cam: Camera): void {
-    this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
-    const base = this.surfaceBakeOpts;
-    if (isIdentity(this.camera, this.w, this.h) || !base) {
-      const was = this.shown !== null;
-      this.camSet = null;
-      if (was) this.reprimeIdentityPainter();
+    this.job = null;
+    this.nextCam = null;
+    if (isIdentity(cam, this.w, this.h) || !this.surfaceBakeOpts) {
+      this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
+      this.dropCameraSet();
       return;
     }
-    const n = this.w * this.h;
-    const prev = this.camSet;
-    const geom = applyCamera(this.geom, this.camera, this.w, this.h);
-    const set: CameraLayerSet = {
-      camera: this.camera,
-      geom,
-      opts: base,   // replaced below
-      crust: this.camCrust,
-      land: this.camLand,
-      occupancy: prev && prev.occupancy.length === n ? prev.occupancy : new Uint8Array(n),
-      shoreDist: new Float32Array(0),   // baked below
-      pick: prev && prev.pick.length === n ? prev.pick : new Int32Array(n),
-      painter: null,
-    };
-    set.opts = this.cameraOpts(base, set);
-    if (set.crust.width !== this.w || set.crust.height !== this.h) {
-      set.crust.width = this.w; set.crust.height = this.h;
-      set.land.width = this.w; set.land.height = this.h;
-    }
-    set.occupancy.fill(0);
-    const crustG = set.crust.getContext('2d');
-    if (crustG) paintCutawayCrust(crustG, set.opts);
-    this.paintCameraSurface(set);
-    set.painter = this.cameraPainter(set, base);
-    this.camSet = set;
+    const job = this.startJob(cam, 'full');
+    drain(job.steps);
+    this.job = null;
+    this.swapIn(job);
   }
 
   /** Back to the identity view: drop the camera layer set (zoom back to 1). */
@@ -2390,38 +2644,192 @@ export class HabitableCutawayEngine {
     this.setCamera(this.idCamera);
   }
 
+  private dropCameraSet(): void {
+    const was = this.shown !== null;
+    this.camSet = null;
+    this.job = null;
+    this.nextCam = null;
+    this.surfaceStale = false;
+    if (was) this.reprimeIdentityPainter();
+    this.syncView();
+  }
+
+  /**
+   * Ask for the camera set of `cam`, baked time-sliced by `stepBake` while the
+   * current set (or the identity view) keeps being drawn (spec 5b). A running
+   * bake of another zoom is dropped; one of the same zoom (a re-centre) is
+   * finished first and `cam` follows it. Identity drops the camera set.
+   * Returns false when nothing needs baking (the set already shows `cam`).
+   */
+  requestCamera(cam: Camera): boolean {
+    if (isIdentity(cam, this.w, this.h) || !this.surfaceBakeOpts) {
+      this.camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
+      this.dropCameraSet();
+      return false;
+    }
+    const job = this.job;
+    if (job && job.kind === 'full' && job.cam.zoom === cam.zoom && job.set.W === this.setSize().W && job.set.H === this.setSize().H) {
+      if (job.cam.fx === cam.fx && job.cam.fy === cam.fy) { this.nextCam = null; return true; }
+      this.nextCam = cam;
+      return true;
+    }
+    this.job = null;
+    this.nextCam = null;
+    const cur = this.camSet;
+    if (cur && !this.surfaceStale && cur.camera.zoom === cam.zoom && cur.camera.fx === cam.fx && cur.camera.fy === cam.fy
+        && cur.W === this.setSize().W && cur.H === this.setSize().H) return false;
+    this.startJob(cam, 'full');
+    return true;
+  }
+
+  /**
+   * Run the pending camera bake for at most `budgetMs` (Infinity: to
+   * completion). When it completes, its set replaces the current one at once
+   * and the requested camera is returned (a surface-only rebake returns null);
+   * otherwise null. Whatever is drawn meanwhile is the current set, untouched.
+   */
+  stepBake(budgetMs: number): Camera | null {
+    if (!this.job) {
+      if (this.nextCam) { const c = this.nextCam; this.nextCam = null; this.startJob(c, 'full'); }
+      else if (this.surfaceStale && this.camSet) this.startJob(this.camSet.camera, 'surface');
+      else return null;
+    }
+    const job = this.job!;
+    const deadline = budgetMs === Infinity ? Infinity : performance.now() + budgetMs;
+    for (;;) {
+      if (job.steps.next().done) break;
+      if (deadline !== Infinity && performance.now() >= deadline) return null;
+    }
+    this.job = null;
+    this.swapIn(job);
+    return job.kind === 'full' ? job.cam : null;
+  }
+
+  /** The overscanned set size for this view. */
+  private setSize(): { W: number; H: number; mx: number; my: number } {
+    const mx = Math.round(this.w * this.overscan), my = Math.round(this.h * this.overscan);
+    return { W: this.w + 2 * mx, H: this.h + 2 * my, mx, my };
+  }
+
+  /** Slot `i` sized W x H (canvases and buffers kept when the size matches). */
+  private slotOf(i: number, W: number, H: number): LayerSlot {
+    let s = this.slots[i];
+    if (!s) {
+      s = { crust: document.createElement('canvas'), land: document.createElement('canvas'), occupancy: new Uint8Array(0), pick: new Int32Array(0) };
+      this.slots[i] = s;
+    }
+    if (s.crust.width !== W || s.crust.height !== H) {
+      s.crust.width = W; s.crust.height = H;
+      s.land.width = W; s.land.height = H;
+    }
+    if (s.occupancy.length !== W * H) s.occupancy = new Uint8Array(W * H);
+    if (s.pick.length !== W * H) s.pick = new Int32Array(W * H);
+    return s;
+  }
+
+  /** Begin a bake job into the slot the current set does not use. */
+  private startJob(cam: Camera, kind: 'full' | 'surface'): BakeJob {
+    const base = this.surfaceBakeOpts!;
+    const { W, H, mx, my } = this.setSize();
+    const cur = this.camSet;
+    const slot = cur && cur.slot === 0 ? 1 : 0;
+    const res = this.slotOf(slot, W, H);
+    const camera: Camera = { zoom: cam.zoom, fx: cam.fx, fy: cam.fy };
+    const set: CameraLayerSet = {
+      camera, geom: applyCamera(this.geom, camera, W, H), opts: base, W, H, mx, my,
+      crust: res.crust, land: res.land, occupancy: res.occupancy, pick: res.pick,
+      shoreDist: new Float32Array(0), landCover: null, painter: null, slot,
+    };
+    set.opts = this.cameraOpts(base, set);
+    let steps: BakeSteps;
+    if (kind === 'surface' && cur && cur.W === W && cur.H === H) {
+      set.painter = cur.painter;
+      steps = this.surfaceJobSteps(set, cur);
+    } else {
+      kind = 'full';
+      steps = this.fullSteps(set, base);
+    }
+    // A full bake paints the surface from the current plans.
+    this.surfaceStale = false;
+    this.job = { cam, kind, set, steps, epoch: this.surfaceEpoch };
+    return this.job;
+  }
+
+  /** Every layer of a camera set, in `bake()`'s order. */
+  private *fullSteps(set: CameraLayerSet, base: CutawayBakeOpts): BakeSteps {
+    set.occupancy.fill(0);
+    yield;
+    const crustG = set.crust.getContext('2d');
+    if (crustG) yield* crustSteps(crustG, set.opts);
+    yield* this.paintCameraSurface(set);
+    set.painter = yield* this.cameraPainterSteps(set, base);
+  }
+
+  /** The 4 s surface rebake of a camera set: its crust copied (unchanged), surface and shore repainted. */
+  private *surfaceJobSteps(set: CameraLayerSet, from: CameraLayerSet): BakeSteps {
+    const g = set.crust.getContext('2d');
+    if (g) { g.clearRect(0, 0, set.W, set.H); g.drawImage(from.crust, 0, 0); }
+    yield;
+    yield* this.paintCameraSurface(set);
+  }
+
+  /**
+   * Make a finished job's set the camera set. A re-centre at the same zoom
+   * hands the shown set's live drops and bolts to the new painter (shifted to
+   * its pixels), so the weather keeps falling across the swap.
+   */
+  private swapIn(job: BakeJob): void {
+    const old = this.camSet, set = job.set;
+    if (job.kind === 'full' && old && old.painter && set.painter && this.camShown
+        && old.camera.zoom === set.camera.zoom) {
+      const k = set.camera.zoom;
+      const dx = Math.round((old.camera.fx - set.camera.fx) * k + (set.W - old.W) / 2);
+      const dy = Math.round((old.camera.fy - set.camera.fy) * k + (set.H - old.H) / 2);
+      set.painter.adopt(old.painter, dx, dy);
+    }
+    this.camSet = set;
+    this.camera = set.camera;
+    if (job.epoch !== this.surfaceEpoch) this.surfaceStale = true;
+    this.syncView();
+  }
+
   /**
    * A camera set's weather painter (spec 5: a NEW painter per camera set; the
-   * sim, its fields and clock are kept). Lookup on the camera geometry,
-   * clamped to the view plus the cloud lift below it, with fractional field
+   * sim, its fields and clock are kept). Lookup on the set geometry, clamped
+   * to the set plus the cloud lift below it, with fractional field
    * coordinates (Ruling 3) and the k-scaled sub-cell ground lift; cloud lift,
    * fall speeds and other world sizes x k; spawn density per screen px as
-   * before (Ruling 4). Primed at once from the running sim, so the first frame
-   * after a settle shows the steady fall, not a sky that refills.
+   * before (Ruling 4). Dithered on world-anchored px (spec 5b), so two sets of
+   * the same zoom agree. Primed from the running sim on its first frame, or
+   * handed the previous set's drops at a same-zoom swap.
    */
-  private cameraPainter(set: CameraLayerSet, base: CutawayBakeOpts): WeatherPainter | null {
+  private *cameraPainterSteps(set: CameraLayerSet, base: CutawayBakeOpts): BakeSteps<WeatherPainter | null> {
     const sim = this.weatherSim, climate = this.weatherClimate, o = set.opts, grid = o.grid;
     if (!sim || !climate || !grid || o.planetType === 'gas') return null;
     const k = set.camera.zoom;
     const cloudLift = Math.round((base.maxLift + 6) * k);
     const elevAt = subCellSampler(o);
-    const lut = buildWeatherLut(set.geom, o.discToGrid,
+    const lut = yield* weatherLutSteps(set.geom, o.discToGrid,
       (row, col, r, dx, dy) => o.liftOf(
         (elevAt?.(dx, dy) ?? o.smoothElevation(grid, row, col)) - o.rimFalloff(r)),
-      { bounds: { w: this.w, h: this.h, below: cloudLift }, projectF: o.discToGridF });
+      { bounds: { w: set.W, h: set.H, below: cloudLift }, projectF: o.discToGridF });
+    yield;
+    // Set px X shows world x = (X - W/2) / k + fx: X + round(fx * k - W/2) is
+    // the same for one world point in every set of this zoom.
     const painter = new WeatherPainter(lut, climate, cloudLift, base.seed, {
       scale: k, pmax: WEATHER_PMAX * Math.max(1, lut.count / this.idLutCount),
       area: lut.count / this.idLutCount,
+      ditherX: Math.round(set.camera.fx * k - set.W / 2), ditherY: Math.round(set.camera.fy * k - set.H / 2),
     });
-    painter.prepare(sim, this.weatherAcc / WX_DT, 0);
     return painter;
   }
 
-  /** The identity options re-targeted at a camera set: world-class values x k. */
+  /** The identity options re-targeted at a camera set: its size and geometry, world-class values x k. */
   private cameraOpts(base: CutawayBakeOpts, set: CameraLayerSet): CutawayBakeOpts {
     const k = set.camera.zoom, g = set.geom, liftOf = base.liftOf;
     return {
       ...base,
+      w: set.W, h: set.H,
       cx: g.cx, cyTop: g.cyTop, rx: g.rx, ry: g.ry, R: g.R, wall: g.wall, cyBody: g.cyBody,
       cameraZoom: k, camera: set.camera,
       liftOf: (elev: number) => Math.round(liftOf(elev) * k),
@@ -2458,12 +2866,12 @@ export class HabitableCutawayEngine {
     };
   }
 
-  /** Surface + shore distance of a camera set, from its own stored options. */
-  private paintCameraSurface(set: CameraLayerSet): void {
-    const { w, h } = this, cam = set.camera, k = cam.zoom;
+  /** Surface + shore distance of a camera set, from its own stored options (sliced). */
+  private *paintCameraSurface(set: CameraLayerSet): BakeSteps {
+    const { W, H } = set, cam = set.camera, k = cam.zoom;
     // The stored world plans through this camera: positions mapped, sizes
     // left in base px (the painters scale them by k / round(k)).
-    const at = (x: number, y: number) => ({ x: (x - cam.fx) * k + w / 2, y: (y - cam.fy) * k + h / 2 });
+    const at = (x: number, y: number) => ({ x: (x - cam.fx) * k + W / 2, y: (y - cam.fy) * k + H / 2 });
     const opts: CutawayBakeOpts = {
       ...set.opts,
       decalSites: this.planDecals ? this.planDecals.map(s => ({ ...s, ...at(s.wx ?? s.x, s.wy ?? s.y) })) : [],
@@ -2473,24 +2881,28 @@ export class HabitableCutawayEngine {
       }),
     };
     const landG = set.land.getContext('2d');
-    if (landG) paintCutawaySurface(landG, opts);
-    set.shoreDist = bakeShoreDistance(set.occupancy, set.geom, w, h,
+    if (landG) yield* surfaceSteps(landG, opts);
+    set.landCover = this.snapshotLandCover(set.land);
+    set.shoreDist = yield* shoreSteps(set.occupancy, set.geom, W, H,
       Math.ceil(FOAM_REACH * k), (x, y) => faceWaterAt(opts, x, y), Math.round(k));
   }
 
   /**
    * Repaint the mutable top-face data of BOTH layer sets without resetting
-   * animation or crust. `includeCamera: false` repaints the identity set only:
-   * the host passes it when a settle re-bakes the camera set in the same frame
-   * (spec 5: the two merge into one re-bake), so the camera set is painted
-   * once, from the fresh plans.
+   * animation or crust. The identity set is repainted at once; the camera
+   * set's repaint is a time-sliced surface bake (`stepBake`), swapped in when
+   * done. `includeCamera: false` skips it: the host passes that when a settle
+   * re-bakes the camera set in the same frame (spec 5: the two merge into one
+   * re-bake), so the camera set is painted once, from the fresh plans.
    */
   rebakeSurface(includeCamera = true): void {
     const landG = this.land.getContext('2d');
     this.planIdentity();
     if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.identityPaintOpts());
+    this.idLandCover = this.snapshotLandCover(this.land);
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
-    if (includeCamera && this.camSet) this.paintCameraSurface(this.camSet);
+    this.surfaceEpoch++;
+    if (includeCamera && this.camSet) this.surfaceStale = true;
   }
 
   /**
@@ -2516,7 +2928,87 @@ export class HabitableCutawayEngine {
     this.weatherSim.setClimate(c);
     this.weatherPainter.setClimate(c);
     this.camSet?.painter?.setClimate(c);
+    this.job?.set.painter?.setClimate(c);
     this.weatherClimate = c;
+  }
+
+  /**
+   * The parts of the view the shown set does not cover (a pan that outran the
+   * overscan, or a wheel zooming out): up to 4 rects [x0, y0, x1, y1) in
+   * un-bobbed screen px, in `strips`. Allocation-free.
+   */
+  private computeStrips(cs: CameraLayerSet): number {
+    const m = this.viewMap, w = this.w, h = this.h, s = this.strips;
+    const cx0 = m.dx, cx1 = m.dx + cs.W * m.r, cy0 = m.dy, cy1 = m.dy + cs.H * m.r;
+    let n = 0;
+    if (!(cx0 <= 0 && cy0 <= 0 && cx1 >= w && cy1 >= h)) {
+      const clampY = (v: number) => (v < 0 ? 0 : v > h ? h : v), clampX = (v: number) => (v < 0 ? 0 : v > w ? w : v);
+      const T = clampY(Math.ceil(cy0)), B = clampY(Math.floor(cy1));
+      const put = (x0: number, y0: number, x1: number, y1: number) => {
+        if (x1 <= x0 || y1 <= y0) return;
+        s[n * 4] = x0; s[n * 4 + 1] = y0; s[n * 4 + 2] = x1; s[n * 4 + 3] = y1; n++;
+      };
+      put(0, 0, w, T);
+      put(0, Math.max(T, B), w, h);
+      if (B > T) {
+        put(0, T, clampX(Math.ceil(cx0)), B);
+        put(clampX(Math.floor(cx1)), T, w, B);
+      }
+    }
+    this.stripCount = n;
+    return n;
+  }
+
+  /** Snapshot land RGBA for fluid overhang tests (same buffer space as occupancy). */
+  private snapshotLandCover(canvas: HTMLCanvasElement): Uint8ClampedArray | null {
+    const g = canvas.getContext('2d');
+    if (!g || canvas.width < 1 || canvas.height < 1) return null;
+    return g.getImageData(0, 0, canvas.width, canvas.height).data;
+  }
+
+  /**
+   * Static layers: the identity set, or the shown camera set through
+   * `viewMap` (whole-px slide during a pan, nearest-neighbour scale during a
+   * wheel) over the identity layers scaled by the live zoom wherever the set
+   * does not reach (spec 5b). Public for tools/zoomCheck.
+   */
+  drawStatic(g: CanvasRenderingContext2D, layerBob: number): void {
+    const cs = this.shown;
+    if (!cs) {
+      g.drawImage(this.crust, 0, layerBob);
+      g.drawImage(this.land, 0, layerBob);
+      return;
+    }
+    const m = this.viewMap;
+    const n = this.computeStrips(cs);
+    if (n > 0 && this.underlay) {
+      const c = this.liveCam, z = c.zoom, hw = this.w / 2, hh = this.h / 2, s = this.strips;
+      for (const layer of [this.crust, this.land]) {
+        for (let i = 0; i < n; i++) {
+          const x0 = s[i * 4], y0 = s[i * 4 + 1], x1 = s[i * 4 + 2], y1 = s[i * 4 + 3];
+          g.drawImage(layer, (x0 - hw) / z + c.fx, (y0 - hh) / z + c.fy, (x1 - x0) / z, (y1 - y0) / z,
+            x0, y0 + layerBob, x1 - x0, y1 - y0);
+        }
+      }
+    }
+    if (m.r === 1) {
+      g.drawImage(cs.crust, m.dx, m.dy + layerBob);
+      g.drawImage(cs.land, m.dx, m.dy + layerBob);
+    } else {
+      const W = cs.W * m.r, H = cs.H * m.r;
+      g.drawImage(cs.crust, m.dx, m.dy + layerBob, W, H);
+      g.drawImage(cs.land, m.dx, m.dy + layerBob, W, H);
+    }
+  }
+
+  /** The shown set's buffer map for paintFluids, or null at its own camera with no overscan (the pre-5b path). */
+  private fluidMapOf(cs: CameraLayerSet): FluidMap | null {
+    const m = this.viewMap;
+    if (m.r === 1 && m.dx === 0 && m.dy === 0 && cs.W === this.w && cs.H === this.h) return null;
+    const f = this.setMap;
+    f.inv = 1 / m.r; f.ox = -m.dx / m.r; f.oy = -m.dy / m.r; f.bw = cs.W; f.bh = cs.H; f.shoreK = cs.camera.zoom;
+    f.x0 = 0; f.y0 = 0; f.x1 = this.w - 1; f.y1 = this.h - 1;
+    return f;
   }
 
   frame(input: HabitableFrameInput): void {
@@ -2524,33 +3016,52 @@ export class HabitableCutawayEngine {
     this.elapsed = elapsed;
     const bob = this.bob;
     const layerBob = Math.round(bob);
-    // The active layer set: the camera set while the host shows it. Per-frame
-    // painters take its geometry and its zoom k (world sizes x k, strokes 1 px).
+    // The active layer set: the camera set while the host shows it, drawn
+    // through the live camera. Per-frame painters take the live geometry and
+    // its zoom k (world sizes x k, strokes 1 px), bounded to the view.
     const cs = this.shown;
-    const geom = cs ? cs.geom : this.geom;
-    const k = cs ? cs.camera.zoom : 1;
-    // Haze follows the zoom the layers are RENDERED at: the camera zoom when
-    // the camera set is shown; during a gesture the identity layers are CSS-
-    // scaled, so it follows the CSS zoom exactly as before zoom.
-    const haze = this.hazeOverride ?? atmoHazeAmount(cs ? cs.camera.zoom : (input.viewZoom ?? 1));
+    const geom = cs ? this.liveGeom : this.geom;
+    const k = cs ? this.liveCam.zoom : 1;
+    // Atmosphere haze and weather intensity both follow the RENDERED zoom
+    // (live camera when shown; CSS zoom during an identity gesture) — but they
+    // fade on different curves so precip survives max zoom.
+    const renderZ = cs ? k : (input.viewZoom ?? 1);
+    const haze = this.hazeOverride ?? atmoHazeAmount(renderZ);
+    const wx = this.hazeOverride ?? weatherAmount(renderZ);
     const painter = cs ? cs.painter : this.weatherPainter;
+    if (cs && painter) { const m = this.viewMap; painter.setView(m.r, m.dx, m.dy); }
 
     input.drawBackdrop(g);
     input.drawFarSpace(g);
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob, geom, k);
-    g.drawImage(cs ? cs.crust : this.crust, 0, layerBob);
-    g.drawImage(cs ? cs.land : this.land, 0, layerBob);
+    this.drawStatic(g, layerBob);
     const fluids = this.fluidImage;
     if (fluids) {
       fluids.data.fill(0);
-      paintFluids(fluids, geom, this.occupancy, this.planetType, elapsed, layerBob, this.shoreDist, k);
+      if (!cs) {
+        paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover);
+      } else {
+        paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover);
+        // Outrun strips: water from the identity buffers through the live camera.
+        if (this.underlay) {
+          const s = this.strips, f = this.stripMap, c = this.liveCam;
+          for (let i = 0; i < this.stripCount; i++) {
+            f.inv = 1 / c.zoom; f.ox = c.fx - (this.w / 2) / c.zoom; f.oy = c.fy - (this.h / 2) / c.zoom;
+            f.bw = this.w; f.bh = this.h; f.shoreK = 1;
+            f.x0 = s[i * 4]; f.y0 = s[i * 4 + 1] + layerBob; f.x1 = s[i * 4 + 2] - 1; f.y1 = s[i * 4 + 3] - 1 + layerBob;
+            paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, k, k, f, this.idLandCover);
+          }
+        }
+      }
       const fluidG = this.fluidScratch.getContext('2d');
       if (fluidG) {
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
         fluids.data.fill(0);
-        paintDayNight(fluids, geom, sunAzimuth, layerBob);
+        // maxLift: peaks rise above the face; veil must cover that column too.
+        const veilLift = cs ? cs.opts.maxLift : (this.surfaceBakeOpts?.maxLift ?? 18);
+        paintDayNight(fluids, geom, sunAzimuth, layerBob, veilLift);
         if (this.weatherSim) {
           // At most 4 steps per frame: a refocused tab hands us seconds of dt.
           // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
@@ -2568,8 +3079,7 @@ export class HabitableCutawayEngine {
           }
           if (painter) {
             painter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
-            // Zero haze (zoomed past ~2.5x) draws nothing: skip the loop.
-            if (haze > 0) painter.paintShadows(fluids, sunAzimuth, haze);
+            if (wx > 0.01) painter.paintShadows(fluids, sunAzimuth, wx);
           }
         }
         fluidG.putImageData(fluids, 0, 0);
@@ -2578,10 +3088,10 @@ export class HabitableCutawayEngine {
     }
     input.drawSurfaceOverlays(g);
     const weatherG = this.weatherG, weatherImage = this.weatherImage;
-    if (painter && weatherImage && weatherG && haze > 0.01) {
+    if (painter && weatherImage && weatherG && wx > 0.01) {
       // putImageData-only, like the atmosphere canvas.
       weatherImage.data.fill(0);
-      painter.paintClouds(weatherImage, sunAzimuth, haze);
+      painter.paintClouds(weatherImage, sunAzimuth, wx);
       weatherG.putImageData(weatherImage, 0, 0);
       g.drawImage(this.weatherScratch, 0, 0);
     }
@@ -2661,14 +3171,33 @@ export class HabitableCutawayEngine {
     g.restore();
   }
 
+  /**
+   * The grid cell drawn at screen px (px, py): the shown camera set's pick
+   * through `viewMap` (the live camera), the identity pick through the live
+   * camera where the set does not reach, or the identity pick at identity.
+   */
   hitTest(px: number, py: number): { row: number; col: number } | null {
     const y = py - Math.round(this.bob);
     if (px < 0 || px >= this.w || y < 0 || y >= this.h) return null;
-    const id = this.pick[y * this.w + px];
+    const cs = this.shown;
+    let id = 0;
+    if (cs) {
+      const m = this.viewMap;
+      const bx = m.r === 1 ? px - m.dx : Math.floor((px + 0.5 - m.dx) / m.r);
+      const by = m.r === 1 ? y - m.dy : Math.floor((y + 0.5 - m.dy) / m.r);
+      if (bx >= 0 && by >= 0 && bx < cs.W && by < cs.H) {
+        id = cs.pick[by * cs.W + bx];
+      } else {
+        const c = this.liveCam;
+        const ix = Math.floor((px + 0.5 - this.w / 2) / c.zoom + c.fx), iy = Math.floor((y + 0.5 - this.h / 2) / c.zoom + c.fy);
+        if (ix >= 0 && iy >= 0 && ix < this.w && iy < this.h) id = this.idPick[iy * this.w + ix];
+      }
+    } else {
+      id = this.idPick[y * this.w + px];
+    }
     if (!id || id <= 0) return null;
     return { row: Math.floor((id - 1) / GRID_SIZE), col: (id - 1) % GRID_SIZE };
   }
-
   private resizeLayers(w: number, h: number): void {
     this.crust.width = w; this.crust.height = h;
     this.land.width = w; this.land.height = h;

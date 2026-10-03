@@ -14,6 +14,7 @@ import { bakeCreatureSprite, bakeSettlementSprite } from '../rendering/SpeciesSp
 import { SeedRNG } from '../utils/SeedRNG';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
+import { installZoomBench } from './zoomBench';
 
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
@@ -145,6 +146,8 @@ await renderer.init(stage);
 renderer.setClock(() => (performance.now() / (1000 / 60)) * YEAR);
 // Exposed for console poking while iterating on the look.
 (window as any).__diorama = renderer;
+// Frame-budget bench for the zoom camera (tools/zoomBench.ts drives it).
+installZoomBench(renderer);
 
 // ?fx=revelation — replay a divine power on a loop so the animation can be
 // looked at without a running game and 15 Divine Points.

@@ -413,6 +413,15 @@ export class IsoDioramaRenderer {
   private sized = false;
   /** The 4 s surface rebake is due this frame (read by the settle hook). */
   private rebakeDue = false;
+  /**
+   * Camera-bake time budget per frame (ms). Keep this under one 240Hz frame
+   * (~4.2 ms) so settle work doesn't steal the whole vsync. Tests set
+   * `Infinity` for a one-frame settle.
+   */
+  bakeBudgetMs = 2;
+  /** 0 = uncapped (match display refresh). Otherwise present at most this many fps. */
+  private targetFps = 0;
+  private lastPresentTime = 0;
   /** Settle hooks, allocated once: `updateView` runs every frame. */
   private readonly settleHooks: SettleHooks = {
     // A settle and a due 4 s rebake in one frame merge: the identity rebake
@@ -817,7 +826,7 @@ export class IsoDioramaRenderer {
     if (this.habitable) {
       this.rebakeDue = this.surfaceDirty &&
         this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL;
-      applySettle(this.cutaway, this.zoom, now, this.settleHooks);
+      applySettle(this.cutaway, this.zoom, now, this.settleHooks, this.bakeBudgetMs);
       if (this.rebakeDue) {
         this.rebakeDue = false;
         this.rebakeSurfaceAndPlacement(true);
@@ -923,12 +932,30 @@ export class IsoDioramaRenderer {
     }
   }
 
+  /**
+   * Cap diorama presents. `0` = Unlimited — every display vsync (the performance
+   * target on a 240Hz panel). Soft caps (30/60/120) skip presents to save power.
+   */
+  setTargetFps(fps: number): void {
+    this.targetFps = fps > 0 ? fps : 0;
+    // Unlimited: smallest settle slice so rebakes never own a whole high-Hz frame.
+    this.bakeBudgetMs = this.targetFps === 0 ? 2 : this.targetFps >= 100 ? 4 : 8;
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;
     this.lastT = performance.now();
+    this.lastPresentTime = 0;
     const loop = (t: number) => {
       if (!this.running) return;
+      this.raf = requestAnimationFrame(loop);
+      // Match BigBangEngine: keep RAF on vsync, skip presents under the cap.
+      if (this.targetFps > 0 && this.lastPresentTime > 0) {
+        const minDt = 1000 / this.targetFps;
+        if (t - this.lastPresentTime < minDt - 0.5) return;
+      }
+      this.lastPresentTime = t;
       const dt = Math.min(0.1, (t - this.lastT) / 1000);
       this.lastT = t;
       this.elapsed += dt;
@@ -943,7 +970,6 @@ export class IsoDioramaRenderer {
         }
         this.displayCtx.drawImage(this.buf, 0, 0);
       }
-      this.raf = requestAnimationFrame(loop);
     };
     this.raf = requestAnimationFrame(loop);
   }
@@ -2357,15 +2383,22 @@ export class IsoDioramaRenderer {
     const { cx, cy, rx, ry } = this;
     const layerBob = this.habitable ? this.cutaway.drawGeom.bob : 0;
 
-    g.save();
-    g.beginPath();
-    g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    g.clip();
-
     const surf = this.habitable ? cutawayWaterSurf(this.planetType as HabitableType) : null;
     // Sprite class: positions through the camera, sprite pixels x round(k),
     // nearest-neighbour (the backbuffer has smoothing off). S = 1 at identity.
     const S = Math.max(1, Math.round(this.camZoom));
+
+    // Clip to an *inflated* face: a tight ellipse sheared species/settlements
+    // whose anchors sit near the rim (half the body fell outside the disc).
+    // Pad ≈ half a typical sprite so overhang reads, without spilling into the
+    // cutaway crust far below the front rim.
+    let pad = 14 * S;
+    for (const c of this.inhabitants) pad = Math.max(pad, Math.ceil(c.w * S * 0.55), Math.ceil(c.h * S * 0.55));
+    for (const st of this.settlements) pad = Math.max(pad, Math.ceil(st.w * S * 0.55), Math.ceil(st.h * S * 0.55));
+    g.save();
+    g.beginPath();
+    g.ellipse(cx, cy + layerBob, rx + pad, ry + pad, 0, 0, Math.PI * 2);
+    g.clip();
 
     for (const c of this.inhabitants) {
       // A small idle bob keeps the world alive without implying real movement.
