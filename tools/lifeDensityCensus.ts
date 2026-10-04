@@ -56,6 +56,8 @@ const { generatePlanetGrid } = await import('../src/simulation/PlanetGrid');
 
 gameState.playerPlanetName = 'Census';
 gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+// Measures the biology ladder: start the home world formed and alive (lab path).
+gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
 gameState.playerSpecies = [];
 
 const engine: any = new BigBangEngine(makeCanvas());

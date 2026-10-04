@@ -78,6 +78,8 @@ const livingCounts: number[] = [];
 for (let run = 0; run < RUNS; run++) {
   gameState.playerPlanetName = `World${run}`;
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = [];
   gameState.codexEntries = [];
 

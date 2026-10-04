@@ -35,6 +35,7 @@ import { initPlayerSpecies, stepEvolution } from './simulation/EvolutionEngine';
 import { clearSpriteCaches, bakeCreatureSprite } from './rendering/SpeciesSprite';
 import { runtimeState } from './simulation/GameState';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
+import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -388,6 +389,7 @@ function launchBigBang(): void {
 }
 
 async function launchBigBangAsync(): Promise<void> {
+  applyPlayModeControls();
   const planetName = (document.getElementById('planet-name-input') as HTMLInputElement)?.value.trim() || 'Terra';
 
   // Store planet name + DNA now; species + religion emerge as in-game events
@@ -760,7 +762,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
 
     const ps = engine?.getPlayerStar();
     if (ps) {
-      const home = ps.planets.find(p => p.hasLife) ?? ps.planets[0];
+      const home = eng.homePlanetOf(ps);
       if (home) {
         gameState.playerPlanetName = home.name;
         home.name = gameState.playerPlanetName;
@@ -794,7 +796,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
     addCodexEntry(`Panspermia: ${planetName}`, 'biology');
     // Show impact image based on home planet type
     const ps = engine?.getPlayerStar();
-    const homePlanet = ps?.planets.find(p => p.hasLife) ?? ps?.planets[0];
+    const homePlanet = ps ? engine?.homePlanetOf(ps) : undefined;
     showMeteorImpact(planetName, homePlanet?.type ?? 'rocky');
     updateDivineActions();
   };
@@ -805,8 +807,32 @@ function wireEngineEvents(eng: BigBangEngine): void {
     };
     const label = labels[stage] ?? stage;
     addFeedEntry(`Planet formation: ${label}`, 'milestone');
+    addChatMessage(FORMATION_STAGE_LINES[stage] ?? `${gameState.playerPlanetName} enters a new age: ${label}.`, 'god');
     const el = document.getElementById('civ-bar');
     if (el) el.textContent = label;
+    refreshHomeWorldSurface();
+  };
+  eng.onPlanetFormationComplete = (destiny) => {
+    const name = gameState.playerPlanetName || 'Your world';
+    addFeedEntry(`${name} has finished forming — a ${DESTINY_LABELS[destiny]}`, 'milestone');
+    addChatMessage(
+      `The long fire is over. ${name} has become what it was always meant to be: a ${DESTINY_LABELS[destiny]}. Life may now climb.`,
+      'god',
+    );
+    addCodexEntry(`${name}: formation complete`, 'biology');
+    refreshHomeWorldSurface();
+    updateDivineActions();
+  };
+  eng.onFormationLifeArrived = (source, from) => {
+    const name = gameState.playerPlanetName || 'your world';
+    const how: Record<string, string> = {
+      spontaneous: `Chemistry stirs in the young crust of ${name}. Life has woken on its own.`,
+      ejecta: `Debris thrown from ${from || 'a living neighbour'} has fallen on ${name}, carrying life with it.`,
+      meteor: `A meteor strike has seeded ${name} with life.`,
+      divine: `You have placed life on ${name}.`,
+    };
+    addFeedEntry(how[source] ?? `Life has reached ${name}.`, 'milestone');
+    addChatMessage(`${how[source] ?? ''} It sleeps until the world is finished, but it hurries the forming.`, 'god');
   };
   eng.onTerraformProgress = (stage, targetType) => {
     const labels: Record<string, string> = {
@@ -859,7 +885,9 @@ function wireEngineEvents(eng: BigBangEngine): void {
     const devotion = ps?.religionDevotion ?? 0;
     // Devotion tiers: base 1 DP, +1 at >0.4, +1 at >0.7 (max 3 DP per tick)
     const dpGain = DP_REGEN_BASE + (devotion > DP_DEVOTION_THRESHOLD_MID ? 1 : 0) + (devotion > DP_DEVOTION_THRESHOLD_HIGH ? 1 : 0);
-    gameState.divinePoints = Math.min(DP_CAP, gameState.divinePoints + dpGain);
+    gameState.divinePoints = gameState.playMode === 'creative'
+      ? CREATIVE_DP
+      : Math.min(DP_CAP, gameState.divinePoints + dpGain);
     updateDivineActions();
     setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
   }, 8000); // every 8 real seconds — devotion multiplies gain
@@ -985,6 +1013,7 @@ function enterUniverse(): void {
   applyFrameRateCap(pendingFrameRateCap);
   engine.start();
   engine.focusPlayerStar();
+  applyPlayModeControls();
   setSpeed(1);
 }
 
@@ -1020,10 +1049,15 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   // Uses the same numeric seed as bakePlanetTexture so terrain is consistent.
   if (target.isPlayerStar && !runtimeState.playerPlanetGrid) {
     const gridSeed = target.id * 7777 + planetIndex * 131;
+    // `planet.type` is the face of the current formation stage while the world
+    // forms, then its destiny. The setup DNA's ocean answer only shapes the
+    // ground in lab runs; a normal run's water comes from its destiny.
+    const dna = gameState.playerPlanetDNA;
+    const labDna = gameState.destinyOverride !== null || gameState.skipFormation;
     runtimeState.playerPlanetGrid = generatePlanetGrid(
       planet?.type ?? 'rocky',
       gridSeed,
-      gameState.playerPlanetDNA,
+      dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
     );
   }
 
@@ -2151,6 +2185,14 @@ function updatePhaseBar(): void {
   const ps = engine?.getPlayerStar();
   if (!ps) return;
 
+  if (ps.formationDestiny && ps.formationStage) {
+    // Still forming: the bar is the formation ladder, filled by progress.
+    phaseEl.textContent = `FORMING · ${FORMATION_STAGE_LABELS[ps.formationStage] ?? ps.formationStage}`.toUpperCase();
+    phaseEl.style.color = '#ff9a4a';
+    renderSegmentBar('phase-segs', (engine?.homeFormationFraction() ?? 0) * 12, 12);
+    return;
+  }
+
   if (ps.biologyPhase !== 'intelligent') {
     phaseEl.textContent = BIO_PHASE_LABELS[ps.biologyPhase].toUpperCase();
     phaseEl.style.color = '#44cc88';
@@ -2851,11 +2893,77 @@ function smiteAsteroid(): void {
 }
 
 function setSpeed(speed: number): void {
+  // Normal mode has one fixed pace: anything that is not a pause runs at it.
+  const normal = gameState.playMode === 'normal';
+  if (normal && speed > 0) speed = NORMAL_PACE;
   gameState.speed = speed;
   (window as unknown as Record<string, unknown>)['eternalSpeed'] = speed;
   document.querySelectorAll('.speed-btn').forEach(btn => {
-    btn.classList.toggle('active', Number((btn as HTMLElement).dataset['speed']) === speed);
+    const b = Number((btn as HTMLElement).dataset['speed']);
+    btn.classList.toggle('active', normal ? (b > 0) === (speed > 0) : b === speed);
   });
+}
+
+/** Divine points a Creative run always has. */
+const CREATIVE_DP = 9999;
+
+/**
+ * Normal: pause and play only (fixed pace), no Place Life. Creative: the full
+ * speed row, unlimited divine points, Place Life.
+ */
+function applyPlayModeControls(): void {
+  const creative = gameState.playMode === 'creative';
+  document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
+    const b = Number(btn.dataset['speed']);
+    if (b > 1) btn.style.display = creative ? '' : 'none';
+    if (b === 1) {
+      btn.textContent = creative ? '1×' : '▶';
+      btn.title = creative ? '' : 'Play (normal pace)';
+    }
+  });
+  const place = document.getElementById('place-life-btn');
+  if (place) place.style.display = creative ? '' : 'none';
+  if (creative) gameState.divinePoints = CREATIVE_DP;
+  document.body.classList.toggle('mode-creative', creative);
+}
+
+const DESTINY_LABELS: Record<DestinyType, string> = {
+  ocean: 'ocean world', rocky: 'rocky world', ice: 'ice world', desert: 'desert world',
+};
+
+const FORMATION_STAGE_LABELS: Record<string, string> = {
+  magma: 'Magma Ocean', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
+  atmosphere: 'First Air', ice_age: 'Ice Age', primordial: 'Primordial Sea',
+};
+
+const FORMATION_STAGE_LINES: Record<string, string> = {
+  cooling: 'The magma sea is skinning over. A dark crust floats on the fire.',
+  volcanic: 'The crust holds now, but the world still bleeds fire through a thousand vents.',
+  atmosphere: 'Outgassing has given the world a first, thin breath of air.',
+  ice_age: 'The air has turned cold. Ice is spreading across the young world.',
+  primordial: 'Rain has fallen for an age. A primordial sea fills the low places.',
+};
+
+/**
+ * The home world's face changed (a new formation stage, or formation done):
+ * regenerate its surface grid as that face and repaint the diorama if open.
+ */
+function refreshHomeWorldSurface(): void {
+  runtimeState.playerPlanetGrid = null;
+  const overlay = document.getElementById('planet-overlay');
+  const ps = engine?.getPlayerStar();
+  if (!ps || !overlay || overlay.style.display === 'none' || !_dioramaRenderer) return;
+  void openPlanetView(ps);
+}
+
+function placeLifeAction(): void {
+  if (!engine || gameState.playMode !== 'creative') return;
+  if (!engine.placeLife()) {
+    addChatMessage('Life already thrives there.', 'system');
+    return;
+  }
+  _dioramaRenderer?.playDivineEffect('fertility');
+  updateDivineActions();
 }
 
 let _preEventSpeed: number | null = null;
@@ -3717,6 +3825,7 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
   applyFrameRateCap(pendingFrameRateCap);
   engine.start();
   engine.focusPlayerStar();
+  applyPlayModeControls();
   setSpeed(save.gameState.speed ?? 1);
 
   // Restore HUD displays
@@ -3966,6 +4075,20 @@ window.addEventListener('DOMContentLoaded', () => {
     answeredQuestions.climate = 'temperate';
     answeredQuestions.oceans  = 'mixed';
     answeredQuestions.chaos   = 'turbulent';
+    // Formation lab flags (never reachable from the UI):
+    //   &mode=creative       sandbox controls
+    //   &destiny=ocean|...   force the home world's destiny
+    //   &labdna=1            take the destiny from the setup DNA instead
+    //   &formed=1            start already formed and alive (old behaviour);
+    //                        implied by &lab=1 and &view=home, which need life
+    if (q.get('mode') === 'creative') gameState.playMode = 'creative';
+    const forcedDestiny = q.get('destiny');
+    if (isDestinyType(forcedDestiny)) gameState.destinyOverride = forcedDestiny;
+    else if (q.get('labdna') === '1') {
+      const oceans: string = q.get('oceans') ?? answeredQuestions.oceans ?? 'mixed';
+      gameState.destinyOverride = oceans === 'barren' ? 'rocky' : 'ocean';
+    }
+    gameState.skipFormation = q.get('formed') === '1' || q.get('lab') === '1' || q.get('view') === 'home';
     const nameInput = document.getElementById('planet-name-input') as HTMLInputElement | null;
     if (nameInput) nameInput.value = q.get('planet') || 'Terra';
     launchBigBang();
@@ -4028,6 +4151,21 @@ window.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Play mode, chosen on the setup screen before launch.
+  const syncModeChoice = () => {
+    document.querySelectorAll<HTMLElement>('.mode-choice').forEach(b => {
+      b.classList.toggle('selected', b.dataset['mode'] === gameState.playMode);
+    });
+  };
+  document.querySelectorAll<HTMLElement>('.mode-choice').forEach(b => {
+    b.addEventListener('click', () => {
+      gameState.playMode = b.dataset['mode'] === 'creative' ? 'creative' : 'normal';
+      syncModeChoice();
+    });
+  });
+  syncModeChoice();
+  document.getElementById('place-life-btn')?.addEventListener('click', placeLifeAction);
+
   const playerInput = document.getElementById('player-input') as HTMLInputElement;
 
   async function sendChat(): Promise<void> {
@@ -4050,8 +4188,8 @@ window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('view-homeworld-btn')?.addEventListener('click', () => {
     const ps = engine?.getPlayerStar();
     if (ps) {
-      const homePlanet = ps.planets.find(p => p.hasLife) ?? ps.planets[0];
-      const idx = ps.planets.indexOf(homePlanet);
+      const homePlanet = engine?.homePlanetOf(ps);
+      const idx = homePlanet ? ps.planets.indexOf(homePlanet) : -1;
       openPlanetView(ps, idx >= 0 ? idx : 0);
     }
   });

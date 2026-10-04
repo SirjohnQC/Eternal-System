@@ -27,6 +27,8 @@ const NUDGE  = process.argv[4] === 'nudge';
 
 gameState.playerPlanetName = 'Testworld';
 gameState.playerPlanetDNA  = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+// Measures the biology ladder: start the home world formed and alive (lab path).
+gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
 gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {}; gameState.dnaPoints = 0;
 
 const engine = new BigBangEngine(makeCanvas());

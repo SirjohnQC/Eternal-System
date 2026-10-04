@@ -47,6 +47,8 @@ console.log('\n═══ Big Bang warm / precache ═══');
 
 gameState.playerPlanetName = 'Warm';
 gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+// Measures the biology ladder: start the home world formed and alive (lab path).
+gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
 gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
 
 const engine = new BigBangEngine(makeCanvas());

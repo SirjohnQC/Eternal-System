@@ -41,6 +41,11 @@ import {
   type Civilization, type GenomeSummary,
 } from './Civilization';
 import { generateCulture } from '../ai/CultureGenerator';
+import {
+  type DestinyType, rollDestiny, rollFormationBudget, stageDuration, nextStage,
+  lifeEligible, addBoost, LIFE_BOOST, SEED_BOOST, formationFaceType,
+  spontaneousLifeChance, ejectaChance, formationFraction,
+} from './Formation';
 import type { GeminiService } from '../ai/GeminiService';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
@@ -150,6 +155,12 @@ export interface Planet {
    * Absent on saves written before the genome landed; backfilled on load.
    */
   genomeSeed?: number;
+  /**
+   * What this world is meant to FINISH as (home world only; see Formation.ts).
+   * While it forms, `type` is the face of its current stage — molten, bare
+   * rock — and becomes this when the last stage completes.
+   */
+  destinyType?: DestinyType;
 }
 
 // Moved to ./Orbit (pure) so renderers can place planets without the engine.
@@ -301,6 +312,17 @@ export interface StarBody {
    */
   newSystemUntil?: number;
   formationTick: number;
+  /**
+   * Destiny ladder (home world): set while the world walks the stage ladder for
+   * its destiny instead of the generic FORMATION_SEQUENCE. Cleared when done.
+   */
+  formationDestiny?: DestinyType;
+  /** Total formation budget in ticks of progress, rolled once (1-3 player days). */
+  formationBudget?: number;
+  /** Ticks of progress made in the current stage (advances faster with life). */
+  formationProgress?: number;
+  /** Rate bonus from life present / seeding events, 0..MAX_BOOST. */
+  formationBoost?: number;
   terraformStage: PlanetFormationStage | null;  // active terraform stage, null = idle
   terraformTick: number;                         // tick when current stage started
   terraformTargetType: Planet['type'] | null;    // final planet type after terraforming
@@ -525,6 +547,19 @@ const MERGER_CATASTROPHE_RATIO = 0.45;
 const MOON_CHECK_RATE = 1000;
 /** Ticks between planet-formation stage checks. */
 const FORMATION_CHECK_RATE = 60;
+/** How far debris from a living neighbour can carry life to a forming world. */
+const FORMATION_EJECTA_RANGE = 220;
+/** System-view colour of the home planet while it forms (by stage). */
+const FORMATION_FACE_COLORS: Partial<Record<PlanetFormationStage, string>> = {
+  magma: '#d4521c', cooling: '#8a3a1e', volcanic: '#5a3a30',
+  atmosphere: '#7d6f63', ice_age: '#bfd8ea', primordial: '#3d6f9e',
+};
+/** System-view colour of a finished home world, by destiny. */
+const DESTINY_COLORS: Record<DestinyType, string> = {
+  ocean: '#2266aa', rocky: '#aa8866', ice: '#cfe6f5', desert: '#d2b07a',
+};
+/** Where life on a forming world came from (for the feed). */
+export type FormationLifeSource = 'spontaneous' | 'ejecta' | 'meteor' | 'divine';
 /**
  * Chance that a newly condensed system starts with life already in it.
  *
@@ -700,6 +735,10 @@ export class BigBangEngine {
   onWarEnd:      ((war: War, attacker: StarBody, defender: StarBody, attackerWon: boolean) => void) | null = null;
   onReligionEvent: ((msg: string) => void) | null = null;
   onMeteorLifeSeeded: ((planetName: string) => void) | null = null;
+  /** The home world finished forming and is now its destiny type. */
+  onPlanetFormationComplete: ((destiny: DestinyType) => void) | null = null;
+  /** Life reached the home world while it was still forming (dormant until done). */
+  onFormationLifeArrived: ((source: FormationLifeSource, from: string) => void) | null = null;
   onWarBattle: ((warId: number, attackerName: string, defenderName: string, attackerDice: number[], attackerColor: string, phase: string) => void) | null = null;
   onLeaderMessage: ((leader: Leader, eventContext: string, starId: number) => void) | null = null;
   // Phase / evolution callbacks
@@ -1185,9 +1224,12 @@ export class BigBangEngine {
     // is watching one world climb. Previously this fell back to planets[0] when
     // the system happened to roll no rocky planet, which could hand the player an
     // ice or gas giant to shepherd. Pick a viable world, or make one.
-    const wantsOcean = gameState.playerPlanetDNA?.oceans === 'ocean_world';
-    const wantsDry   = gameState.playerPlanetDNA?.oceans === 'barren';
-    const preferred: Planet['type'] = wantsOcean ? 'ocean' : wantsDry ? 'rocky' : 'ocean';
+    //
+    // Its DESTINY — what it is meant to finish as — is rolled from the seed
+    // (Formation.ts). Setup DNA no longer picks it; only a lab override does.
+    const destinyRng = this.rng.fork(`destiny_${seed}`);
+    const destiny: DestinyType = gameState.destinyOverride ?? rollDestiny(() => destinyRng.next());
+    const preferred: Planet['type'] = destiny;
 
     let playerIdx = ps0.planets.findIndex(p => p.type === preferred);
     if (playerIdx < 0) playerIdx = ps0.planets.findIndex(p => p.type === 'ocean' || p.type === 'rocky');
@@ -1210,12 +1252,21 @@ export class BigBangEngine {
       playerPlanet.eccentricity = this.rng.nextFloat(0, 0.08);
       playerPlanet.periapsisAngle = this.rng.nextFloat(0, Math.PI * 2);
       playerPlanet.type = preferred;
+      playerPlanet.destinyType = destiny;
       ps0.habitability = undefined;
       ps0.bestPlanetIndex = playerIdx;
-      this.igniteLife(ps0, playerIdx);
-      playerPlanet.biosphere = 0.8;
-      playerPlanet.color = '#3a8f3a';
       playerPlanet.discovery = 'landing'; // Home world — fully surveyed
+      if (gameState.skipFormation) {
+        // Lab / test path: the world starts finished and alive (old behaviour).
+        this.igniteLife(ps0, playerIdx);
+        playerPlanet.biosphere = 0.8;
+        playerPlanet.color = '#3a8f3a';
+      } else {
+        // Birth: molten rock, no life. The world walks its destiny's ladder
+        // over a budget of 1-3 player days before it becomes what it is.
+        this.beginHomeFormation(ps0, playerPlanet, destiny,
+          rollFormationBudget(() => destinyRng.next()));
+      }
       // The player always starts from familiar chemistry; exotic biospheres are
       // something to discover elsewhere, not something to be saddled with.
       ps0.lifeArchetype = 'carbon_water';
@@ -1951,7 +2002,12 @@ export class BigBangEngine {
           // survive where it lands, so the roll is weighted by habitability.
           // Nothing survives landing on a world that is still molten, so a
           // system part-way through formation cannot be seeded at all.
-          if (!star.hasLife && !star.formationStage) {
+          if (star.formationDestiny && star.formationStage
+              && lifeEligible(star.formationDestiny, star.formationStage)) {
+            // A forming home world whose crust has set: the strike can carry
+            // life. It lies dormant and hastens the ladder.
+            if (this.rng.chance((this.stats.life / 500) * 0.6)) this.seedFormingWorld(star, 'meteor');
+          } else if (!star.hasLife && !star.formationStage) {
             const hab = this.habitabilityOf(star);
             const young = star.isNewSystem ? NEW_SYSTEM_PANSPERMIA_MOD : 1;
             if (this.rng.chance((this.stats.life / 500) * hab * young)) {
@@ -1989,6 +2045,11 @@ export class BigBangEngine {
       }
 
       star.age++;
+
+      // A world still walking its formation ladder holds any life it has
+      // dormant: no catastrophes, no spread, no biology ladder until it is
+      // finished ground (Formation.ts).
+      if (star.formationDestiny) continue;
 
       // ── Biosphere catastrophes ──────────────────────────────────────────────
       this.rollBiosphereCatastrophe(star);
@@ -4348,6 +4409,7 @@ export class BigBangEngine {
     if (this.tick % FORMATION_CHECK_RATE !== 0) return;
     for (const star of this.stars) {
       if (star.isDead || !star.formationStage) continue;
+      if (star.formationDestiny) { this.stepHomeFormation(star); continue; }
 
       const elapsed = this.tick - star.formationTick;
       if (elapsed < FORMATION_DURATIONS[star.formationStage]) continue;
@@ -4398,6 +4460,180 @@ export class BigBangEngine {
     }
   }
 
+  // ── Home-world formation lifecycle (Formation.ts) ───────────────────────
+
+  /** Start the home world molten on its destiny's ladder. */
+  private beginHomeFormation(star: StarBody, planet: Planet, destiny: DestinyType, budget: number): void {
+    star.hasLife = false;
+    star.civLevel = 0;
+    star.biologyPhase = 'microbial';
+    star.bioPhaseProgress = 0;
+    star.formationStage = 'magma';
+    star.formationTick = this.tick;
+    star.formationDestiny = destiny;
+    star.formationBudget = budget;
+    star.formationProgress = 0;
+    star.formationBoost = 0;
+    planet.hasLife = false;
+    planet.biosphere = 0;
+    planet.destinyType = destiny;
+    this.applyFormationFace(star, planet);
+  }
+
+  /** The home planet of a star walking a destiny ladder. */
+  homePlanetOf(star: StarBody): Planet | undefined {
+    return star.planets.find(p => p.destinyType && p.discovery === 'landing')
+      ?? star.planets[star.bestPlanetIndex ?? 0];
+  }
+
+  /** Paint the planet as its current stage (lava while molten, bare rock, ...). */
+  private applyFormationFace(star: StarBody, planet: Planet): void {
+    if (!star.formationStage || !star.formationDestiny) return;
+    const face = formationFaceType(star.formationStage, star.formationDestiny);
+    planet.type = face;
+    planet.color = FORMATION_FACE_COLORS[star.formationStage] ?? planet.color;
+    star.habitability = undefined;
+  }
+
+  /** One formation check (every FORMATION_CHECK_RATE ticks) on a destiny ladder. */
+  private stepHomeFormation(star: StarBody): void {
+    const destiny = star.formationDestiny!;
+    const stage = star.formationStage!;
+    const budget = star.formationBudget ?? 0;
+    const planet = this.homePlanetOf(star);
+    const dur = stageDuration(destiny, budget, stage);
+
+    // Life on the path: it can wake on its own or arrive from outside once the
+    // crust is solid. It only hastens the ladder; the destiny never changes.
+    if (!star.hasLife && lifeEligible(destiny, stage)) {
+      if (this.rng.chance(spontaneousLifeChance(dur, FORMATION_CHECK_RATE))) {
+        this.seedFormingWorld(star, 'spontaneous');
+      } else {
+        const donor = this.nearestLivingNeighbour(star, FORMATION_EJECTA_RANGE);
+        if (donor && this.rng.chance(ejectaChance(budget, FORMATION_CHECK_RATE,
+            Math.hypot(donor.x - star.x, donor.y - star.y), FORMATION_EJECTA_RANGE))) {
+          this.seedFormingWorld(star, 'ejecta', donor.civName);
+        }
+      }
+    }
+
+    const rate = 1 + (star.formationBoost ?? 0);
+    star.formationProgress = (star.formationProgress ?? 0) + FORMATION_CHECK_RATE * rate;
+    if (star.formationProgress < dur) return;
+
+    const next = nextStage(destiny, stage);
+    if (next) {
+      star.formationStage = next;
+      star.formationTick = this.tick;
+      // Carry the overshoot so stage boundaries do not add up past the budget.
+      star.formationProgress -= dur;
+      if (planet) this.applyFormationFace(star, planet);
+      if (star.isPlayerStar) this.onPlanetFormationProgress?.(next);
+      return;
+    }
+
+    // ── Formation complete: the world settles into its destiny ────────────
+    star.formationStage = null;
+    star.formationTick = 0;
+    star.formationDestiny = undefined;
+    star.formationProgress = 0;
+    star.formationBoost = 0;
+    star.habitability = undefined;
+    if (planet) {
+      planet.type = destiny;
+      planet.color = DESTINY_COLORS[destiny];
+    }
+    const idx = planet ? star.planets.indexOf(planet) : (star.bestPlanetIndex ?? 0);
+    const hadLife = star.hasLife;
+    if (!hadLife) {
+      // The finished world's own roll: its young seas or crust wake up.
+      this.igniteHomeLife(star, idx);
+    }
+    // The biology ladder begins on finished ground, whatever woke first.
+    star.biologyPhase = 'microbial';
+    star.bioPhaseProgress = 0;
+    star.lifeFirstTick = this.tick;
+    if (planet) { planet.hasLife = true; planet.biosphere = Math.max(planet.biosphere, 0.3); }
+    if (star.isPlayerStar) {
+      this.onPlanetFormationComplete?.(destiny);
+      // Life climbs from here, whether it woke now or slept through the
+      // forming: either way this is when the player meets it.
+      this.onPlayerLifeEmerged?.();
+    }
+  }
+
+  /**
+   * Life arrives on a world that is still forming. It lies dormant until the
+   * world is finished, but it hastens the ladder (capped: see MAX_BOOST).
+   * A second seeding adds a smaller push.
+   */
+  private seedFormingWorld(star: StarBody, source: FormationLifeSource, from = ''): void {
+    if (!star.formationDestiny) return;
+    const planet = this.homePlanetOf(star);
+    if (star.hasLife) {
+      star.formationBoost = addBoost(star.formationBoost ?? 0, SEED_BOOST);
+    } else {
+      const idx = planet ? star.planets.indexOf(planet) : (star.bestPlanetIndex ?? 0);
+      this.igniteHomeLife(star, idx);
+      star.formationBoost = addBoost(star.formationBoost ?? 0, LIFE_BOOST);
+    }
+    if (star.isPlayerStar) this.onFormationLifeArrived?.(source, from);
+  }
+
+  /**
+   * igniteLife for the home world: it re-rolls biochemistry from the planet's
+   * face (lava, mid-formation) and a fresh tempo. The player's world keeps the
+   * familiar chemistry and the tempo its seed rolled at birth.
+   */
+  private igniteHomeLife(star: StarBody, idx: number): void {
+    const arch = star.lifeArchetype, tempo = star.bioTempo;
+    this.igniteLife(star, idx);
+    if (star.isPlayerStar) {
+      star.lifeArchetype = arch ?? 'carbon_water';
+      if (tempo !== undefined) star.bioTempo = tempo;
+    }
+  }
+
+  private nearestLivingNeighbour(star: StarBody, range: number): StarBody | null {
+    let best: StarBody | null = null, bestD = range;
+    for (const s of this.stars) {
+      if (s === star || s.isDead || !s.hasLife || s.formationStage) continue;
+      const d = Math.hypot(s.x - star.x, s.y - star.y);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    return best;
+  }
+
+  /** True while the player's home world is still walking its destiny ladder. */
+  isHomeForming(): boolean {
+    return !!this.getPlayerStar()?.formationDestiny;
+  }
+
+  /** 0..1 through the home world's formation, or 1 when formed. */
+  homeFormationFraction(): number {
+    const ps = this.getPlayerStar();
+    if (!ps?.formationDestiny || !ps.formationStage) return 1;
+    return formationFraction(ps.formationDestiny, ps.formationBudget ?? 0, ps.formationStage, ps.formationProgress ?? 0);
+  }
+
+  /**
+   * Creative mode: place life on the home world by hand. On a forming world it
+   * is a seeding event (hastens, never redirects); on a finished lifeless one
+   * it starts the biosphere. Returns false if there was nothing to do.
+   */
+  placeLife(): boolean {
+    const ps = this.getPlayerStar();
+    if (!ps) return false;
+    if (ps.formationDestiny) {
+      this.seedFormingWorld(ps, 'divine');
+      return true;
+    }
+    if (ps.hasLife) return false;
+    this.igniteLife(ps, ps.bestPlanetIndex ?? 0);
+    this.onPlayerLifeEmerged?.();
+    return true;
+  }
+
   private updateTerraforming(): void {
     const ps = this.getPlayerStar();
     if (!ps || !ps.terraformStage) return;
@@ -4442,6 +4678,8 @@ export class BigBangEngine {
   getTerraformInfo(): { options: { label: string; targetType: Planet['type']; stages: PlanetFormationStage[] }[] } | null {
     const ps = this.getPlayerStar();
     if (!ps || ps.terraformStage) return null;
+    // Terraforming reshapes a FINISHED world; one still forming has no type yet.
+    if (ps.formationDestiny) return null;
     const homePlanet = ps.planets.find(p => p.discovery === 'landing') ?? null;
     if (!homePlanet) return null;
     const seqList = TERRAFORM_SEQUENCES[homePlanet.type];
@@ -4551,7 +4789,8 @@ export class BigBangEngine {
     if (!ps) return;
     const lifePlanet = ps.planets.find(p => p.hasLife) ?? ps.planets[0];
     if (lifePlanet) lifePlanet.biosphere = Math.min(1, lifePlanet.biosphere + 0.25);
-    if (!ps.hasLife) this.igniteLife(ps, ps.bestPlanetIndex ?? 0);
+    // A world still forming cannot be blessed into life early.
+    if (!ps.hasLife && !ps.formationDestiny) this.igniteLife(ps, ps.bestPlanetIndex ?? 0);
   }
 
   /** Returns the nearest revealed lifeless star that can receive a life-seeding meteor, or null. */

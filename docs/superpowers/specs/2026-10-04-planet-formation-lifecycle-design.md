@@ -1,6 +1,6 @@
 # Planet Formation Lifecycle — Design
 
-**Status:** design, awaiting approval  
+**Status:** implemented 2026-10-04 (see Implementation notes at the end)  
 **Origin:** play feedback that a new world should begin as rock and lava after
 the bang, grow through cooling and chemistry, and only later become its
 destiny type — with life able to arrive and push along that path, and with
@@ -107,7 +107,7 @@ At game start the player chooses:
 
 ## Existing code this rides on
 
-- `PlanetFormationStage` and `FORMATIONFORMATIONFORMATIONformationStage` on `StarBody` (`BigBangEngine.ts`)
+- `PlanetFormationStage` and `formationStage` on `StarBody` (`BigBangEngine.ts`)
 - Formation durations and progress callbacks (`onPlanetFormationProgress`)
 - Meteor life seeding (`onMeteorLifeSeeded`) and directed panspermia hooks
 - Diorama / `PlanetRenderer` formation overlays (today a tint; this work must
@@ -147,3 +147,45 @@ a label on an already-finished ocean world.
   finish a 3-day world in minutes).
 - Neighbour ejecta frequency and range.
 - Whether Creative “place life” is a divine act UI or a sandbox brush.
+
+## Implementation notes (2026-10-04)
+
+Code: `src/simulation/Formation.ts` (pure rules), `BigBangEngine` (state and
+ticking), `main.ts` (modes, feed, HUD), `IsoDioramaRenderer` /
+`HabitableCutawayEngine` (stage faces). Check: `tools/formationCheck.ts`.
+
+**Decisions taken while building**
+
+- **"Player day" = one hour of play at Normal pace** (`PLAYER_DAY_TICKS`).
+  Twenty-four real hours meant almost nobody would see a world finish; an
+  in-game day (minutes) made formation a loading screen. Time passes only while
+  the game runs; saves keep it. Budget 1–3 player days = 7,200–21,600 ticks.
+- **Normal pace = 2× the old 1×** (`NORMAL_PACE`). Normal shows pause / play
+  only; any speed request maps to that pace. Creative keeps the full row.
+- **Destiny weights:** ocean 40, rocky 36, ice 12, desert 12.
+- **Ladders** (weights are shares of the budget):
+  - ocean: magma 1.0, cooling 1.0, volcanic 1.2, atmosphere 1.0, primordial 1.3
+  - rocky: magma 1.0, cooling 1.1, volcanic 1.4, atmosphere 1.2
+  - ice: magma 1.0, cooling 1.0, atmosphere 1.0, ice_age 1.6
+  - desert: magma 1.0, cooling 1.0, volcanic 1.5, atmosphere 1.2
+- **Life eligibility:** from the third rung on (volcanic, or atmosphere for
+  ice). Sources: spontaneous roll (expected wait ~1.5 stage lengths), debris
+  from a living neighbour within 220 units, an asteroid strike, or Creative
+  Place Life. Life lies dormant (no spread, catastrophes or biology ladder)
+  until formation ends.
+- **Life's push is capped:** first life +50% rate, each further seeding +15%,
+  at most 2× in total — a meteor can at most halve what is left.
+- **If nothing woke during formation**, life wakes when the world finishes,
+  so the biology ladder always starts on finished ground.
+- **Surface while forming:** `planet.type` is the stage's face and
+  `planet.destinyType` the goal. Magma / cooling / volcanic use the lava face
+  with a heat dial (crust plates skin over the melt); atmosphere is bare
+  rock (or bare desert) under a thin air shell; primordial / ice_age show the
+  young sea or ice. Land is barren (no cover, no flora decals, no creatures or
+  towns) and has no rivers until the sea / ice stage.
+- **Lab flags** (dev only): `?dev=1&destiny=ocean|rocky|ice|desert`,
+  `&labdna=1` (destiny from the setup DNA), `&formed=1` (start finished and
+  alive; implied by `&lab=1` and `&view=home`), `&mode=creative`. Setup DNA's
+  ocean answer only shapes the home grid in lab runs.
+- Terraforming is unavailable until the world is formed.
+- Diorama preview: `/diorama-preview.html?formation=<stage>&destiny=<type>`.

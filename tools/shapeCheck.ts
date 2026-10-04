@@ -58,6 +58,8 @@ console.log('  entropy  stars  meanR   maxR   %pinned  corner/edge  verdict');
 for (const entropy of [1, 5, 10, 15, 20]) {
   gameState.playerPlanetName = 'ShapeTest';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = [];
 
   const engine = new BigBangEngine(makeCanvas());

@@ -147,6 +147,20 @@ export interface GameStateData {
   playerStarId: number;
   bigBangComplete: boolean;
   speed: number;  // 0=pause, 1, 10, 100, 1000
+  /**
+   * Chosen at game start. 'normal' is how the game is meant to feel: one fixed
+   * pace, no fast-forward, divine points earned. 'creative' is the sandbox:
+   * fast-forward, unlimited divine points, place life by hand.
+   */
+  playMode: 'normal' | 'creative';
+  /**
+   * Lab / test only: force the home world's destiny instead of rolling it from
+   * the seed (dev query `destiny=`, or `labdna=1` to read it from the setup
+   * DNA). Never set on a normal run.
+   */
+  destinyOverride: 'ocean' | 'rocky' | 'ice' | 'desert' | null;
+  /** Lab / test only: start with the home world already formed (old behaviour). */
+  skipFormation: boolean;
   playerPlanetDNA: PlanetDNA | null;
   codexEntries: CodexEntry[];
   playerSpeciesTraits: Record<string, string>;   // category → chosen value from traits modal
@@ -190,6 +204,9 @@ export const gameState: GameStateData = {
   playerStarId: -1,
   bigBangComplete: false,
   speed: 1,
+  playMode: 'normal',
+  destinyOverride: null,
+  skipFormation: false,
   playerPlanetDNA: null,
   codexEntries: [],
   playerSpeciesTraits: {},

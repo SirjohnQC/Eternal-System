@@ -227,6 +227,8 @@ console.log('\n═══ Civilisations in the engine ═══');
 
   gameState.playerPlanetName = 'Cultureworld';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
 
   const engine = new BigBangEngine(makeCanvas());
@@ -274,6 +276,8 @@ console.log('\n═══ Civilisations survive save/load ═══');
 
   gameState.playerPlanetName = 'Saveworld';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
 
   const stats = { life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 };
@@ -336,6 +340,8 @@ console.log('\n═══ Civilisations survive the Big-Bang → game handoff ═
 
   gameState.playerPlanetName = 'Handoffworld';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
 
   const stats = { life: 16, evolution: 12, hostility: 9, entropy: 10, divine: 12 };

@@ -1971,6 +1971,15 @@ html,body{
   font-size:var(--fs-label);color:var(--dim);letter-spacing:1px;
   min-height:1.2em;
 }
+/* Play mode picker (setup screen) */
+.mode-picker{display:flex;gap:10px;margin:14px 0 6px}
+.mode-choice{flex:1;display:flex;flex-direction:column;gap:4px;text-align:left;padding:10px 12px;
+  background:rgba(12,10,24,.7);border:1px solid #33305a;color:#9a94c0;cursor:pointer;font:inherit}
+.mode-choice .mode-name{font-family:var(--font-pixel);letter-spacing:.12em;color:#c9c4e0;font-size:12px}
+.mode-choice .mode-desc{font-size:11px;line-height:1.35}
+.mode-choice:hover{border-color:#6a5fa8}
+.mode-choice.selected{border-color:#c8a96e;box-shadow:0 0 0 1px #c8a96e inset;background:rgba(40,30,16,.55)}
+.mode-choice.selected .mode-name{color:#f0d49a}
 #enter-universe-btn{
   display:none;
   pointer-events:auto;
@@ -2633,6 +2642,17 @@ input[type="range"], select, label[for],
             </div>
           </div>
 
+          <div class="mode-picker" role="radiogroup" aria-label="Play mode">
+            <button class="mode-choice selected" data-mode="normal" type="button" role="radio">
+              <span class="mode-name">NORMAL</span>
+              <span class="mode-desc">Watch your world be born. One pace, no fast-forward.</span>
+            </button>
+            <button class="mode-choice" data-mode="creative" type="button" role="radio">
+              <span class="mode-name">CREATIVE</span>
+              <span class="mode-desc">Sandbox: fast-forward, unlimited DP, place life.</span>
+            </button>
+          </div>
+
           <div class="rolling-actions">
             <button class="action-btn" id="roll-btn" type="button" disabled>⬡ ROLL</button>
             <button class="action-btn primary-action sim-launch-btn" id="genesis-btn" type="button" style="display:none">
@@ -2815,6 +2835,13 @@ input[type="range"], select, label[for],
         <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/meteor.png" alt="" width="32" height="32"/></span>
         <span class="divine-action-desc">Hurl a life-seeding meteor at the nearest lifeless world.</span>
         <span class="divine-action-cost">✦ 20 DP</span>
+      </button>
+      <button class="divine-action-btn faith-green" id="place-life-btn" style="display:none">
+        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
+        <span class="divine-action-name">PLACE LIFE</span>
+        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/harvest.png" alt="" width="32" height="32"/></span>
+        <span class="divine-action-desc">Creative: seed life on your world. Hastens a forming world.</span>
+        <span class="divine-action-cost">✦ FREE</span>
       </button>
       <button class="divine-action-btn faith-orange" id="smite-asteroid-btn" disabled style="display:none">
         <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>

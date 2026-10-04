@@ -243,6 +243,13 @@ export interface CutawayBakeOpts extends CutawayGeom {
   seed: number;
   grid: PlanetGrid | null;
   planetType: HabitableType;
+  /**
+   * Young ground (a world still forming): land is bare rock and regolith
+   * whatever its climate biome, and no flora decals are planned.
+   */
+  barren?: boolean;
+  /** Draw no river channels (a world before its rains). */
+  noRivers?: boolean;
 
   /** Inverse azimuthal projection: disc [-1,1]² → grid cell, null off-face. */
   discToGrid: (dx: number, dy: number) => { row: number; col: number } | null;
@@ -1078,10 +1085,10 @@ export function* surfaceSteps(
         continue;
       }
 
-      const base = pal.biome[biome];
+      const base = opts.barren ? barrenGround(biome, cell.elevation, cell.moisture) : pal.biome[biome];
       let br = base.r, bg = base.g, bb = base.b;
 
-      if (biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
+      if (!opts.barren && biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
                  && biome !== 'volcanic' && biome !== 'beach') {
         // Vegetation responds to the living biosphere, gated on the cell's own
         // fertility so deserts and savanna still read as themselves.
@@ -1096,7 +1103,7 @@ export function* surfaceSteps(
       // wet bank either side. 0 none, 1 bank, 2 water, 3 sunlit core.
       let river = 0;
       let fall = false;
-      if (opts.planetType !== 'lava') {
+      if (opts.planetType !== 'lava' && !opts.noRivers) {
         const fp = opts.discToGridF?.(dx, dy);
         if (fp) {
           const rs = riverAt(grid, fp.row, fp.col);
@@ -1255,7 +1262,7 @@ export function* surfaceSteps(
       stampDecals(d, bw, bh, x0, yTop, one, opts.decalAtlas ?? null, Math.round(k), !camera, camera);
       if (camera) yield;
     }
-  } else if (opts.decalSeed !== undefined) {
+  } else if (opts.decalSeed !== undefined && !opts.barren) {
     const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
     stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
   }
@@ -1997,6 +2004,25 @@ function noise2(x: number, y: number, seed: number): number {
 const SWELL_K = 0.30;        // radians per px of shore distance → wavelength ≈ 21 px
 const SWELL_W = 1.6;         // radians per second at speed 1
 const FOAM_REACH = 5.0;      // px of shore distance that gets the crash/foam band
+/**
+ * Bare young ground for a world still forming: no soil, no cover. Lowlands are
+ * dark basalt regolith, uplands paler weathered rock; beaches and ice stay as
+ * they are. Two moisture steps keep the old climate zones faintly readable.
+ */
+function barrenGround(biome: BiomeType, elevation: number, moisture: number): RGB {
+  if (biome === 'beach' || biome === 'snow') return paletteFor('rocky').biome[biome];
+  const up = clamp01((elevation - SEA_LEVEL) / 0.35);
+  const damp = moisture > 0.5 ? 1 : 0;
+  return rgb(
+    92 + up * 46 - damp * 10,
+    80 + up * 40 - damp * 6,
+    72 + up * 34 - damp * 2,
+  );
+}
+
+/** Formation crust over cooling magma (see paintFluids `heat`). */
+const CRUST_DARK: RGB = { r: 38, g: 26, b: 24 };
+const CRUST_WARM: RGB = { r: 78, g: 34, b: 22 };
 /** Wave-dash lattice (world px) and how fast each dash fades in and out. */
 const WAVE_CELL_X = 11;
 const WAVE_CELL_Y = 5;
@@ -2044,6 +2070,12 @@ export function paintFluids(
   map?: FluidMap | null,
   /** Land bake RGBA in occupancy-buffer space; alpha > 0 blocks fluid paint. */
   landCover?: Uint8ClampedArray | null,
+  /**
+   * Magma only: 1 = an open magma sea; lower = a world cooling through its
+   * formation (Formation.formationHeat), where dark crust plates skin over the
+   * melt and only the cracks between them still glow.
+   */
+  heat = 1,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
@@ -2166,6 +2198,18 @@ export function paintFluids(
         if (wave > 0.48) c = pal.glint;
         else if (wave > 0.22) c = pal.light;
         else if (wave < -0.55) c = pal.deep;
+        if (heat < 1) {
+          // Crust plates: a slow-drifting cell field. Cooler = more plate, and
+          // plates darken toward basalt; the seams between them stay molten.
+          const cr0 = noise2(lx * 0.09 + t * 0.02, ly * 0.16, seed + 41)
+                    + 0.5 * noise2(lx * 0.21, ly * 0.37 - t * 0.015, seed + 43);
+          const plate = cr0 / 1.5;                       // 0..1
+          const cut = 0.62 - (1 - heat) * 0.55;          // heat .55 → .37, .28 → .22
+          if (plate > cut + 0.035) {
+            const k2 = clamp01((plate - cut) * 4);
+            c = k2 > 0.5 || heat < 0.4 ? CRUST_DARK : CRUST_WARM;
+          } else if (plate > cut) c = pal.light;          // glowing seam
+        }
       }
 
       let cr = c.r, cg = c.g, cb = c.b;
@@ -2308,6 +2352,11 @@ export type EngineBakeOpts = Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'>
  * `drawGeom` includes bob for host-owned overlay placement.
  */
 export class HabitableCutawayEngine {
+  /**
+   * Magma heat for the live fluid layer: 1 = open magma sea, lower while a
+   * forming world's crust cools (Formation.formationHeat). Lava worlds only.
+   */
+  magmaHeat = 1;
   /** BASE (identity) geometry. The shown geometry is `activeGeom` / `drawGeom`. */
   geom: HabitableGeom = habitableGeom(1, 1);
   /** The camera the camera layer set was baked for; identity when there is none. */
@@ -2842,7 +2891,7 @@ export class HabitableCutawayEngine {
   private planIdentity(): void {
     const base = this.surfaceBakeOpts;
     if (!base) { this.planDecals = null; this.planChimneys = []; return; }
-    this.planDecals = base.decalSeed !== undefined
+    this.planDecals = base.decalSeed !== undefined && !base.barren
       ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed).map(d => ({ ...d, wx: d.x, wy: d.y }))
       : null;
     this.planChimneys = base.planetType === 'lava'
@@ -3034,9 +3083,9 @@ export class HabitableCutawayEngine {
     if (fluids) {
       fluids.data.fill(0);
       if (!cs) {
-        paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover);
+        paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover, this.magmaHeat);
       } else {
-        paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover);
+        paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover, this.magmaHeat);
         // Outrun strips: water from the identity buffers through the live camera.
         if (this.underlay) {
           const s = this.strips, f = this.stripMap, c = this.liveCam;
@@ -3044,7 +3093,7 @@ export class HabitableCutawayEngine {
             f.inv = 1 / c.zoom; f.ox = c.fx - (this.w / 2) / c.zoom; f.oy = c.fy - (this.h / 2) / c.zoom;
             f.bw = this.w; f.bh = this.h; f.shoreK = 1;
             f.x0 = s[i * 4]; f.y0 = s[i * 4 + 1] + layerBob; f.x1 = s[i * 4 + 2] - 1; f.y1 = s[i * 4 + 3] - 1 + layerBob;
-            paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, k, k, f, this.idLandCover);
+            paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, k, k, f, this.idLandCover, this.magmaHeat);
           }
         }
       }

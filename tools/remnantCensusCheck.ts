@@ -45,6 +45,8 @@ function check(name: string, ok: boolean, detail = ''): void {
 function prep(seed: string, life: number, entropy: number): InstanceType<typeof BigBangEngine> {
   gameState.playerPlanetName = 'Remnant';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = []; gameState.codexEntries = []; gameState.playerDNA = {};
   const engine = new BigBangEngine(makeCanvas());
   engine.onCivEvent = () => {}; engine.onLifeEvent = () => {};

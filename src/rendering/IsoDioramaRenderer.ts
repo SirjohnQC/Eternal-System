@@ -31,6 +31,7 @@
  */
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
+import { formationHeat } from '../simulation/Formation';
 import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
@@ -654,9 +655,16 @@ export class IsoDioramaRenderer {
   /** This world's air; see `atmosphereForPlanet`. */
   private get air(): AtmosphereChannel {
     const seed = this.planet?.genomeSeed;
-    const key = `${seed}|${this.planetType}`;
+    const stage = this.forming ? this.star?.formationStage ?? '' : '';
+    const key = `${seed}|${this.planetType}|${stage}`;
     if (!this.airCache || this.airCache.key !== key) {
-      this.airCache = { key, air: atmosphereForPlanet(seed, this.planetType) };
+      let air = atmosphereForPlanet(seed, this.planetType);
+      // A forming world's first breath: the air shell is thin and faint until
+      // the seas (or ice) arrive.
+      if (stage === 'atmosphere') {
+        air = { ...air, thicknessPx: air.thicknessPx * 0.55, density: air.density * 0.5, saturation: air.saturation * 0.6 };
+      }
+      this.airCache = { key, air };
     }
     return this.airCache.air;
   }
@@ -892,6 +900,9 @@ export class IsoDioramaRenderer {
     this.planetType  = (planet.type ?? 'rocky') as PlanetType;
     this.star        = star ?? null;
     this.planetIndex = planetIndex;
+    // A forming world (Formation.ts): the molten face cools stage by stage.
+    const forming = this.star?.formationDestiny ? this.star.formationStage : null;
+    this.cutaway.magmaHeat = forming ? Math.max(0.2, formationHeat(forming)) : 1;
     // A renderer instance can be reused across planets / a new game. Without
     // this reset, the next passive setLiveData() call would compare the NEW
     // planet's lushness against the PREVIOUS planet's, possibly suppressing
@@ -1299,6 +1310,8 @@ export class IsoDioramaRenderer {
    * cannot drift apart across call sites again.
    */
   private lushFor(bio: PlanetBiosphere | null): number {
+    // A world still forming has no cover yet, whatever the biosphere says.
+    if (this.forming) return 0;
     return bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3;
   }
 
@@ -1381,6 +1394,9 @@ export class IsoDioramaRenderer {
       seed: this.planetSeed,
       grid: this.grid,
       planetType: this.planetType as HabitableType,
+      barren: this.forming,
+      // No rivers until the rains: only the sea / ice stages carry them.
+      noRivers: this.forming && this.star?.formationStage !== 'primordial' && this.star?.formationStage !== 'ice_age',
       discToGrid: (dx, dy) => this.discToGrid(dx, dy),
       discToGridF: (dx, dy) => this.discToGridF(dx, dy),
       rimFalloff: (r) => this.rimFalloff(r),
@@ -2223,10 +2239,15 @@ export class IsoDioramaRenderer {
    * change never re-plans. `geom` exists for zoomCheck's control (re-planning
    * on a camera's geometry, the pre-Task-6 behaviour); the game never passes it.
    */
+  /** True while the shown world is still walking its formation ladder. */
+  private get forming(): boolean {
+    return !!this.star?.formationDestiny;
+  }
+
   private buildCityDots(geom = this.placeGeom): void {
     this.cityDots = [];
     const grid = this.grid;
-    if (!grid || this.planetType === 'gas') return;
+    if (!grid || this.planetType === 'gas' || this.forming) return;
 
     const { cx, cy, rx, ry } = geom;
     const s = new Stream(this.planetSeed ^ 0x1b873593);
@@ -2285,7 +2306,7 @@ export class IsoDioramaRenderer {
     // Microbial life is not visible at this scale; showing creatures then would
     // misrepresent the simulation.
     const phase = this.star?.biologyPhase;
-    if (phase === 'microbial') return;
+    if (phase === 'microbial' || this.forming) return;
 
     const byId = new Map<string, SpeciesGenome>();
     for (const sp of this.species) byId.set(sp.id, sp);

@@ -39,6 +39,8 @@ console.log('  entropy   t=0   50k  100k  200k  400k  800k   lost%  civs@800k');
 for (const entropy of [4, 11, 18]) {
   gameState.playerPlanetName = 'DecayTest';
   gameState.playerPlanetDNA = { climate: 'temperate', oceans: 'mixed', chaos: 'turbulent' };
+  // Measures the biology ladder: start the home world formed and alive (lab path).
+  gameState.skipFormation = true; gameState.destinyOverride = 'ocean';
   gameState.playerSpecies = [];
 
   const e = new BigBangEngine(mc());

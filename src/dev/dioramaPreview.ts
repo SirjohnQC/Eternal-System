@@ -15,6 +15,7 @@ import { SeedRNG } from '../utils/SeedRNG';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
 import { installZoomBench } from './zoomBench';
+import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
@@ -25,6 +26,12 @@ const params = new URLSearchParams(location.search);
 const orbitSpeed = (r: number) => 0.0012 / Math.sqrt(Math.max(0.5, r / 10));
 const YEAR = Number(params.get('year') ?? 1);
 let type: Planet['type'] = (params.get('type') as Planet['type']) || 'ocean';
+// ?formation=magma|cooling|volcanic|atmosphere|ice_age|primordial&destiny=ocean
+// shows the home world part-way through formation: its stage face, no life.
+const formation = params.get('formation') as StarBody['formationStage'];
+const destinyParam = params.get('destiny');
+const destiny: DestinyType = isDestinyType(destinyParam) ? destinyParam : 'ocean';
+if (formation) type = formationFaceType(formation, destiny);
 let seed = Number(params.get('seed')) || 1;
 
 function makePlanet(): Planet {
@@ -79,7 +86,7 @@ function rebuild(): void {
   const grid = generatePlanetGrid(type, seed * 7777, null, archetype);
 
   // Fake some life + civilisation coverage so lights and vegetation show.
-  const wantCiv = (document.getElementById('civ') as HTMLInputElement).checked;
+  const wantCiv = !formation && (document.getElementById('civ') as HTMLInputElement).checked;
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
       const cell = grid[r][c];
@@ -90,7 +97,7 @@ function rebuild(): void {
       // fertility layer. Measuring species range on a dry-ocean preview made
       // every aquatic lineage look homeless and the map look like a monoculture.
       const alive = isHabitable(cell.biome) || isWater(cell.biome);
-      cell.lifeDensity = alive ? Math.min(1, cell.fertility * 1.4) : 0;
+      cell.lifeDensity = alive && !formation ? Math.min(1, cell.fertility * 1.4) : 0;
       if (wantCiv && isHabitable(cell.biome) && cell.fertility > 0.45) cell.civId = '0';
     }
   }
@@ -122,6 +129,14 @@ function rebuild(): void {
 
   const star = makeStar();
   star.planets[0] = planet;   // the home planet must BE the star's planet (siblings are excluded by identity)
+  if (formation) {
+    star.formationStage = formation;
+    star.formationDestiny = destiny;
+    star.hasLife = false;
+    planet.hasLife = false;
+    planet.destinyType = destiny;
+    species = [];
+  }
   star.biologyPhase = phase;
   star.civLevel = Number(params.get('civLevel') ?? params.get('civ') ?? 4);
 
