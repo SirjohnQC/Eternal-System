@@ -39,6 +39,7 @@ import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait, CREATURE_SIZE_PX } from './SpeciesSprite';
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
+import { archGenome, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import {
   HabitableCutawayEngine,
@@ -526,6 +527,8 @@ export class IsoDioramaRenderer {
   private townSig = '';
   private townVersion = 0;
   private townStyleOf: TownStyle | null = null;
+  /** How the planet's civilisation builds (null before one exists). */
+  townArch: ArchGenome | null = null;
   /**
    * When each building's construction started (renderer seconds), aligned
    * with townPlan.buildings; -Infinity = standing. Keyed across re-plans by
@@ -2401,8 +2404,18 @@ export class IsoDioramaRenderer {
     const intelligent = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? null;
     const env = intelligent?.dna.environment ?? 'land';
     const aquatic = env === 'ocean' || env === 'deep_sea';
+    // How this civilisation builds: its body, habitat, ways and world, plus
+    // a seeded wildcard (Architecture.ts). Rolled from the species and the
+    // planet, so it stays the same through the eras.
+    const sp = intelligent;
+    const arch: ArchGenome | undefined = sp ? archGenome({
+      bodyStructure: sp.physicalTraits.bodyStructure, environment: sp.dna.environment, locomotion: sp.dna.locomotion,
+      metabolism: sp.dna.metabolism, social: sp.dna.social, size: sp.physicalTraits.size,
+      planetType: this.planetType, seed: this.planetSeed ^ hashStr(sp.id),
+    }) : undefined;
+    this.townArch = arch ?? null;
     const sig = [spots.length, eraOf(civLevel), Math.round(cx), Math.round(cy), Math.round(rx), Math.round(ry), env,
-      intelligent?.physicalTraits.bodyStructure ?? '', this.planetSeed].join('|');
+      intelligent?.physicalTraits.bodyStructure ?? '', this.planetSeed, arch?.summary ?? ''].join('|');
     if (sig === this.townSig) return;
     // Keep the outgoing town standing; anything the new plan does not reuse
     // is torn down in the same outward wave its replacements go up in.
@@ -2464,7 +2477,7 @@ export class IsoDioramaRenderer {
     };
     this.townPlan = planSettlements({
       sites, civLevel, seed: this.planetSeed, rx, isLand, fertileAt, aquatic,
-      aggression: intelligent?.dna.aggression ?? 3,
+      aggression: intelligent?.dna.aggression ?? 3, arch,
     });
     this.townLift = this.townPlan.buildings.map(b => this.liftAtFace(b.x, b.y, geom));
     // Construction: buildings new to this planet's plan go up over time,
@@ -2491,7 +2504,7 @@ export class IsoDioramaRenderer {
         this.retired.push({ b, lift: oldLift[i] ?? 0, st: oldStyle, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
       });
     }
-    this.townStyleOf = townStyle(this.townPlan.era, intelligent?.physicalTraits.bodyStructure ?? 'vertebrate');
+    this.townStyleOf = townStyle(this.townPlan.era, intelligent?.physicalTraits.bodyStructure ?? 'vertebrate', arch);
     this.pushTownProps();
   }
 
@@ -3770,3 +3783,9 @@ function planetTypeRGB(type: string): RGB {
   }
 }
 
+
+function hashStr(t: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h | 0;
+}

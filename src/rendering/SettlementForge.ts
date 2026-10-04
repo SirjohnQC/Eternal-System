@@ -16,6 +16,7 @@
  */
 import { ramp, type Ramp, type RGB } from './CreatureForge';
 import { SQUASH, type Building, type Era } from './SettlementPlan';
+import type { ArchGenome } from './Architecture';
 
 export interface BuildingSprite {
   width: number; height: number; data: Uint8ClampedArray;
@@ -28,6 +29,8 @@ export interface TownStyle {
   wall: Ramp; roof: Ramp; trim: Ramp; glass: Ramp;
   /** Warm window light. */
   lamp: RGB;
+  /** Wildcard: a lantern on every rooftop. */
+  lanterns?: boolean;
 }
 
 /** Wall hue for the species' building material (early eras only). */
@@ -42,7 +45,7 @@ const MATERIAL_HUE: Array<[RegExp, number, number, number]> = [
   [/film/, 110, 0.22, 0.62],
 ];
 
-export function townStyle(era: Era, material = 'quarried stone'): TownStyle {
+export function townStyle(era: Era, material = 'quarried stone', arch?: ArchGenome): TownStyle {
   let wall: [number, number, number], roof: [number, number, number], trim: [number, number, number], glass: [number, number, number];
   switch (era) {
     case 0: wall = [28, 0.32, 0.42]; roof = [44, 0.45, 0.52]; trim = [24, 0.32, 0.26]; glass = [30, 0.3, 0.15]; break;
@@ -53,7 +56,19 @@ export function townStyle(era: Era, material = 'quarried stone'): TownStyle {
     case 5: wall = [200, 0.18, 0.66]; roof = [200, 0.08, 0.76]; trim = [205, 0.12, 0.4]; glass = [196, 0.6, 0.52]; break;
     default: wall = [190, 0.12, 0.86]; roof = [186, 0.45, 0.72]; trim = [200, 0.14, 0.62]; glass = [185, 0.8, 0.6]; break;
   }
-  if (era <= 3) {
+  if (arch?.wall) {
+    // The civilisation's own material: fully until the industrial era, then
+    // blended with the modern materials (glass and concrete take over).
+    const m = era <= 3 ? 1 : era === 4 ? 0.6 : 0.4, aw = arch.wall;
+    wall = [aw[0], aw[1] * m + wall[1] * (1 - m), aw[2] * m + wall[2] * (1 - m)];
+  }
+  if (arch) roof = [arch.accent[0], arch.accent[1], Math.max(0.3, Math.min(0.7, (arch.accent[2] + roof[2]) / 2))];
+  // Their glass takes their colour too, so modern domes and pods differ.
+  if (arch) {
+    const dh = ((arch.accent[0] - glass[0] + 540) % 360) - 180;
+    glass = [(glass[0] + dh * 0.6 + 360) % 360, glass[1], glass[2]];
+  }
+  if (!arch?.wall && era <= 3) {
     for (const [re, h, s, l] of MATERIAL_HUE) {
       if (re.test(material)) { wall = [h, s, (wall[2] + l) / 2]; break; }
     }
@@ -62,6 +77,7 @@ export function townStyle(era: Era, material = 'quarried stone'): TownStyle {
     era,
     wall: ramp(...wall), roof: ramp(...roof), trim: ramp(...trim), glass: ramp(...glass),
     lamp: era >= 6 ? [150, 250, 255] : [255, 214, 130],
+    lanterns: !!arch?.quirks.includes('lanterns'),
   };
 }
 
@@ -109,9 +125,11 @@ export function paintBuilding(b: Building, S: number, st: TownStyle): BuildingSp
   const pad = 2;
   // Room above for roofs, spires and chimneys.
   const above = D + Math.max(W, Math.round(b.h * S * 1.8)) + 2 * S + 2;
-  const cw = W + pad * 2 + 2, ch = H + above + pad;
+  // On stilts the whole building stands raised; the legs reach the ground.
+  const stilt = b.stilts ? Math.max(2, Math.round(Math.max(H, 2 * S) * 0.5)) : 0;
+  const cw = W + pad * 2 + 2, ch = H + above + pad + stilt;
   const P = new Px(cw, ch);
-  const ox = pad + 1, base = ch - pad;              // front wall: columns ox..ox+W-1, rows base-H..base-1
+  const ox = pad + 1, base = ch - pad - stilt;      // front wall: columns ox..ox+W-1, rows base-H..base-1
   const wallTop = base - H;
   const { wall, roof, trim, glass } = st;
   const detail = S >= 3;
@@ -346,6 +364,91 @@ export function paintBuilding(b: Building, S: number, st: TownStyle): BuildingSp
       door(ox + tw + (nw >> 1));
       break;
     }
+    case 'hive': {
+      // Stacked rings narrowing upward, dark openings round each course.
+      const n = Math.max(3, Math.round(H / Math.max(2, S * 0.9)));
+      const c = ox + (W - 1) / 2;
+      let y = base;
+      for (let i = 0; i < n; i++) {
+        const hw = (W / 2) * (1 - (i / n) * 0.65), hb = Math.max(1, Math.round(H / n));
+        for (let yy = y - hb; yy < y; yy++) for (let x = Math.round(c - hw); x <= Math.round(c + hw); x++) {
+          const u = (x - c) / (hw + 0.01);
+          P.set(x, yy, wall.lv[yy === y - hb ? 3 : u > 0.35 ? 3 : u < -0.45 ? 1 : 2]);
+        }
+        if (S >= 2 && (i & 1) === 0) for (let x = Math.round(c - hw * 0.6); x <= Math.round(c + hw * 0.6); x += Math.max(2, S)) {
+          P.set(x, y - Math.max(1, hb >> 1) - 1, st.era >= 4 && hash(b.seed, i, x) < 0.5 ? st.lamp : trim.lv[0]);
+        }
+        y -= hb;
+      }
+      for (let yy = y - Math.max(1, S >> 1); yy < y; yy++) P.set(Math.round(c), yy, roof.lv[3]);
+      if (detail) P.rect(Math.round(c) - (Math.max(1, Math.round(S * 0.3)) >> 1), base - Math.max(2, Math.round(S * 0.6)), Math.max(1, Math.round(S * 0.3)), Math.max(2, Math.round(S * 0.6)), trim.lv[0]);
+      break;
+    }
+    case 'pod': {
+      // A round pod on a short stalk; glass from the space age.
+      const c = ox + (W - 1) / 2, rr = W / 2, stalk = Math.max(1, Math.round(H * 0.35));
+      const sw = Math.max(1, Math.round(W * 0.2));
+      P.rect(Math.round(c - sw / 2), base - stalk, sw, stalk, trim.lv[1]);
+      const cy = base - stalk - rr;
+      const R2 = st.era >= 5 ? glass : wall;
+      for (let y = Math.floor(cy - rr - D * 0.3); y <= Math.ceil(cy + rr); y++) for (let x = ox; x < ox + W; x++) {
+        const u = (x + 0.5 - c - 0.5) / rr, v = (y + 0.5 - cy) / (rr + D * 0.15);
+        if (u * u + v * v > 1) continue;
+        P.set(x, y, R2.lv[u > 0.2 && v < -0.2 ? 4 : u < -0.4 || v > 0.55 ? 1 : u > 0.2 ? 3 : 2]);
+      }
+      if (S >= 2) for (let x = ox + 1; x < ox + W - 1; x += Math.max(2, S)) P.set(x, Math.round(cy), st.era >= 3 ? st.lamp : trim.lv[0]);
+      break;
+    }
+    case 'burrow': {
+      // A low turfed mound with an arched mouth; skylights later on.
+      const mw = Math.round(W * 1.1), x0 = ox - ((mw - W) >> 1), c = x0 + (mw - 1) / 2;
+      const mh = Math.max(2, H + D);
+      for (let x = x0; x < x0 + mw; x++) {
+        const u = (x + 0.5 - c - 0.5) / (mw / 2);
+        const hh = Math.round(mh * Math.sqrt(Math.max(0, 1 - u * u)));
+        for (let i = 0; i < hh; i++) P.set(x, base - 1 - i, roof.lv[i === hh - 1 ? 4 : u > 0.3 ? 3 : u < -0.4 ? 1 : 2]);
+      }
+      const aw = Math.max(1, Math.round(W * 0.28)), ah = Math.max(1, Math.round(mh * 0.5));
+      for (let y = base - ah; y < base; y++) for (let x = Math.round(c - aw / 2); x < Math.round(c + aw / 2); x++) P.set(x, y, trim.lv[0]);
+      if (st.era >= 3 && S >= 2) P.set(Math.round(c + mw * 0.25), base - Math.round(mh * 0.8), st.lamp);
+      break;
+    }
+    case 'grown': {
+      // A living tower: a trunk swelling into a bulbous crown, lit windows.
+      const c = ox + (W - 1) / 2, tw = Math.max(1, Math.round(W * 0.42)), th = Math.max(1, Math.round(H * 0.55));
+      for (let y = base - th; y < base; y++) {
+        const flare = y > base - 2 ? 1 : 0;
+        for (let x = Math.round(c - tw / 2) - flare; x < Math.round(c + tw / 2) + flare; x++) P.set(x, y, wall.lv[x < c - tw * 0.2 ? 1 : x > c + tw * 0.2 ? 3 : 2]);
+      }
+      const cr = W / 2 + (S >= 2 ? 1 : 0), cyc = base - th - (H - th) / 2 - D * 0.4, ch2 = (H - th) / 2 + D * 0.5;
+      for (let y = Math.floor(cyc - ch2); y <= Math.ceil(cyc + ch2); y++) for (let x = Math.floor(c - cr); x <= Math.ceil(c + cr); x++) {
+        const u = (x - c) / cr, v = (y - cyc) / ch2;
+        if (u * u + v * v > 1) continue;
+        P.set(x, y, roof.lv[u > 0.25 && v < -0.1 ? 4 : u < -0.4 || v > 0.5 ? 1 : 3]);
+      }
+      if (S >= 2) for (let y = base - th + 1; y < base - 1; y += Math.max(2, S)) P.set(Math.round(c), y, st.era >= 2 ? st.lamp : trim.lv[0]);
+      break;
+    }
+    case 'carved': {
+      // Halls cut into a block of the world's own stone: stepped masses
+      // with dark carved openings.
+      const steps = 2 + (b.seed & 1);
+      let y = base, w = W, x0 = ox;
+      for (let i = 0; i < steps; i++) {
+        const hh = Math.max(1, Math.round(H / steps)), dd = Math.max(1, Math.round(D / steps));
+        frontWall(x0, w, y - hh, y);
+        flatTop(x0, w, y - hh, dd, wall);
+        if (S >= 2) for (let x = x0 + 1; x < x0 + w - 1; x += Math.max(3, S + 1)) {
+          const oh = Math.max(1, Math.round(hh * 0.5));
+          for (let yy = y - oh - 1; yy < y - 1; yy++) P.set(x, yy, st.era >= 4 && hash(b.seed, i, x) < 0.5 ? st.lamp : trim.lv[0]);
+        }
+        y -= hh + dd;
+        const nw = Math.max(1, Math.round(w * 0.7));
+        x0 += (b.seed >> (i + 2)) & 1 ? w - nw : 0;
+        w = nw;
+      }
+      break;
+    }
     case 'mill': {
       // Long works shed with a tall chimney stack.
       frontWall(ox, W, wallTop, base);
@@ -359,8 +462,22 @@ export function paintBuilding(b: Building, S: number, st: TownStyle): BuildingSp
       break;
     }
   }
+  if (st.lanterns && S >= 2) {
+    // Wildcard: a lantern above every building.
+    for (let y = 0; y < ch; y++) {
+      let hit = -1;
+      for (let x = 0; x < cw; x++) if (P.has(x, y)) { hit = x; break; }
+      if (hit >= 0) { P.set(ox + (W >> 1), Math.max(0, y - 2), st.lamp); P.set(ox + (W >> 1), Math.max(0, y - 1), trim.lv[1]); break; }
+    }
+  }
+  if (stilt) {
+    // Legs down to the ground (and a cross-brace on longer ones).
+    const legs = W >= 4 ? [ox, ox + (W >> 1), ox + W - 1] : [ox, ox + W - 1];
+    for (const x of legs) for (let y = base; y < base + stilt; y++) P.set(x, y, trim.lv[x === ox ? 1 : 2]);
+    if (stilt >= 4) for (let x = ox; x < ox + W; x++) P.set(x, base + (stilt >> 1), trim.lv[1]);
+  }
   if (S >= 2) P.outline(wall.outline);
-  return { width: cw, height: ch, data: P.data, footX: ox + (W >> 1), footY: base - 1 };
+  return { width: cw, height: ch, data: P.data, footX: ox + (W >> 1), footY: base + stilt - 1 };
 }
 
 /**

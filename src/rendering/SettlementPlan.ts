@@ -20,7 +20,8 @@ export function eraOf(civLevel: number): Era {
 
 export type BuildingKind =
   | 'hut' | 'house' | 'gable' | 'adobe' | 'row' | 'block' | 'tower' | 'dome' | 'spire'
-  | 'ziggurat' | 'keep' | 'church' | 'mill';
+  | 'ziggurat' | 'keep' | 'church' | 'mill'
+  | 'hive' | 'pod' | 'burrow' | 'grown' | 'carved';
 
 export interface Building {
   /** Foot (front-centre of the footprint), face coordinates. */
@@ -30,6 +31,8 @@ export interface Building {
   kind: BuildingKind;
   seed: number;
   town: number;
+  /** Raised on stilts (the civilisation's architecture). */
+  stilts?: boolean;
 }
 
 export interface Field {
@@ -82,7 +85,11 @@ export interface PlanInput {
   aquatic: boolean;
   /** 0..10: walled keeps for warlike species. */
   aggression: number;
+  /** How this civilisation builds (Architecture.ts); absent: by era only. */
+  arch?: ArchGenome;
 }
+
+import type { ArchGenome } from './Architecture';
 
 /** The diorama's top-face foreshortening (BOARD_SQUASH). */
 export const SQUASH = 0.52;
@@ -143,26 +150,51 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       lm.y = t.y - streetHalf - 0.4;
       if (inp.isLand(lm.x, lm.y)) plan.buildings.push(lm); else lm = null;
     }
-    // Lots on a jittered grid, densest at the centre.
-    const lot = sc * (era >= 4 ? 2.0 : 1.75);
-    const rows = Math.ceil(t.r / lot) + 1;
-    const cols = Math.ceil(t.r / lot) + 1;
-    for (let gy = -rows; gy <= rows; gy++) {
-      for (let gx = -cols; gx <= cols; gx++) {
-        const jx = (R() - 0.5) * lot * 0.35, jy = (R() - 0.5) * lot * SQUASH * 0.35;
-        const x = t.x + gx * lot + jx, y = t.y + gy * lot * SQUASH + jy;
-        const e = Math.hypot((x - t.x) / t.r, (y - t.y) / (t.r * SQUASH));
-        if (e > 1) continue;
-        // Keep the streets clear.
-        if (era >= 1 || t.capital) {
-          if (Math.abs(y - t.y) < streetHalf + 0.35 * sc) continue;
-          if (cross && Math.abs(x - t.x) < streetHalf + 0.6 * sc) continue;
+    // Lots by the civilisation's layout: a jittered grid along the
+    // streets, concentric rings, a dense cluster, a line along the main
+    // street, or houses scattered wide.
+    const layout = inp.arch?.layout ?? 'grid';
+    const lot = sc * (era >= 4 ? 2.0 : 1.75) * (inp.arch?.scale ?? 1) * (layout === 'cluster' ? 0.85 : layout === 'scatter' ? 1.5 : 1);
+    const cand: Array<[number, number]> = [];
+    if (layout === 'ring') {
+      for (let ring = 1; ring * lot * 1.1 < t.r; ring++) {
+        const rr = ring * lot * 1.15, n = Math.max(4, Math.round((Math.PI * 2 * rr) / (lot * 1.05)));
+        for (let k = 0; k < n; k++) {
+          const a2 = (k / n) * Math.PI * 2 + ring * 0.37;
+          cand.push([t.x + Math.cos(a2) * rr, t.y + Math.sin(a2) * rr * SQUASH]);
         }
-        if (R() > 0.97 - e * 0.4) continue;
-        if (!inp.isLand(x, y)) continue;
-        if (lm && Math.abs(x - lm.x) < (lm.w + lot) / 2 && y < lm.y + 0.2 && y > lm.y - lm.d * SQUASH - lot * SQUASH) continue;
-        plan.buildings.push(makeBuilding(era, inp, R, sc, x, y, ti, false));
       }
+    } else if (layout === 'cluster' || layout === 'scatter') {
+      const n = Math.round((Math.PI * t.r * t.r) / (lot * lot) * (layout === 'cluster' ? 1.1 : 0.5));
+      for (let k = 0; k < n; k++) {
+        const a2 = R() * Math.PI * 2, rr = Math.sqrt(R()) * t.r * (layout === 'scatter' ? 1.25 : 0.95);
+        cand.push([t.x + Math.cos(a2) * rr, t.y + Math.sin(a2) * rr * SQUASH]);
+      }
+    } else {
+      const rows = layout === 'line' ? 1 : Math.ceil(t.r / lot) + 1;
+      const cols = Math.ceil(t.r / lot) + (layout === 'line' ? 3 : 1);
+      for (let gy = -rows; gy <= rows; gy++) for (let gx = -cols; gx <= cols; gx++) {
+        const jx = (R() - 0.5) * lot * 0.35, jy = (R() - 0.5) * lot * SQUASH * 0.35;
+        cand.push([t.x + gx * lot + jx, t.y + gy * lot * SQUASH + jy]);
+      }
+    }
+    const streets = layout === 'grid' || layout === 'line';
+    const placed: Array<[number, number]> = [];
+    for (const [x, y] of cand) {
+      const e = Math.hypot((x - t.x) / t.r, (y - t.y) / (t.r * SQUASH));
+      if (e > (layout === 'scatter' ? 1.3 : layout === 'line' ? 1.6 : 1)) continue;
+      // Keep the streets clear.
+      if (streets && (era >= 1 || t.capital)) {
+        if (Math.abs(y - t.y) < streetHalf + 0.35 * sc) continue;
+        if (cross && layout === 'grid' && Math.abs(x - t.x) < streetHalf + 0.6 * sc) continue;
+      }
+      if (layout === 'ring' && e < 0.25) continue;                    // the central plaza
+      if (layout !== 'ring' && R() > 0.97 - e * 0.4) continue;
+      if (!inp.isLand(x, y)) continue;
+      if (lm && Math.abs(x - lm.x) < (lm.w + lot) / 2 && y < lm.y + 0.2 && y > lm.y - lm.d * SQUASH - lot * SQUASH) continue;
+      if (!streets && placed.some(([px, py]) => Math.abs(px - x) < lot * 0.7 && Math.abs(py - y) < lot * SQUASH * 0.7)) continue;
+      placed.push([x, y]);
+      plan.buildings.push(makeBuilding(era, inp, R, sc, x, y, ti, false));
     }
   });
   // Back to front.
@@ -240,7 +272,26 @@ function makeBuilding(era: Era, inp: PlanInput, R: () => number, sc: number, x: 
   const seed = (R() * 0x7fffffff) | 0;
   const b: Building = { x, y, w: 0, d: 0, h: 0, kind: 'house', seed, town };
   const s = (lo: number, hi: number) => sc * (lo + R() * (hi - lo));
-  if (inp.aquatic) {
+  const A = inp.arch;
+  if (A) {
+    b.stilts = A.stilts;
+    if (A.shape !== 'box') {
+      // The civilisation's own shape family, growing taller and grander
+      // with the era; the landmark is the same form, much bigger.
+      const grand = 1 + era * 0.12;
+      b.kind = A.shape;
+      const [w0, w1, h0, h1] = A.shape === 'spire' ? [1.2, 1.7, 2.4, 3.6] : A.shape === 'burrow' ? [2.2, 3, 0.6, 0.9]
+        : A.shape === 'hive' ? [1.8, 2.4, 1.8, 2.6] : A.shape === 'grown' ? [1.7, 2.3, 2.2, 3.2]
+        : A.shape === 'carved' ? [2, 2.8, 1.4, 2.2] : A.shape === 'pod' ? [1.6, 2.2, 1.4, 2] : [1.8, 2.6, 0.5, 0.8];
+      b.w = s(w0, w1) * A.scale; b.d = b.w * 0.9; b.h = s(h0, h1) * A.tall * grand;
+      if (landmark) {
+        const big = A.quirks.includes('colossal') ? 2.6 : 1.8;
+        b.w *= big * 0.8; b.d *= big * 0.8; b.h *= big;
+      }
+      return b;
+    }
+  }
+  if (inp.aquatic && !A) {
     if (landmark || (era >= 3 && R() < 0.2)) { b.kind = 'spire'; b.w = s(1.2, 1.6); b.d = b.w; b.h = s(2.6, 3.6) * (1 + era * 0.1); }
     else { b.kind = 'dome'; b.w = s(1.8, 2.6); b.d = b.w; b.h = s(0.4, 0.7); }
     return b;
@@ -264,6 +315,10 @@ function makeBuilding(era: Era, inp: PlanInput, R: () => number, sc: number, x: 
     case 4: b.kind = R() < 0.25 ? 'tower' : 'block'; b.w = s(1.8, 2.4); b.d = s(1.6, 2.2); b.h = b.kind === 'tower' ? s(2.8, 3.6) : s(1.6, 2.2); break;
     case 5: b.kind = R() < 0.35 ? 'tower' : 'block'; b.w = s(1.7, 2.2); b.d = s(1.6, 2); b.h = b.kind === 'tower' ? s(3, 4.2) : s(1.8, 2.4); break;
     default: b.kind = R() < 0.25 ? 'spire' : 'dome'; b.w = s(1.7, 2.3); b.d = b.w; b.h = b.kind === 'spire' ? s(3.2, 4.6) : s(0.6, 1); break;
+  }
+  if (A) {
+    b.w *= A.scale; b.d *= A.scale; b.h *= A.tall;
+    if (landmark && A.quirks.includes('colossal')) { b.w *= 1.6; b.d *= 1.6; b.h *= 2; }
   }
   return b;
 }
