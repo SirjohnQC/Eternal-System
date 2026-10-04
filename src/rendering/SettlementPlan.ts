@@ -379,6 +379,10 @@ const CROPS: Array<[number, number, number]> = [
   [206, 172, 84], [112, 152, 64], [124, 88, 58], [168, 168, 72], [96, 124, 60],
 ];
 
+const SPRING: [number, number, number] = [128, 168, 76];
+const STUBBLE: [number, number, number] = [188, 158, 96];
+const FALLOW: [number, number, number] = [176, 172, 164];
+
 /**
  * The ground colour a field or road gives the face pixel at world (x, y),
  * packed 0xRRGGBB, or -1 when there is none. `k` is the camera zoom (detail:
@@ -386,7 +390,7 @@ const CROPS: Array<[number, number, number]> = [
  * colour underneath, which the marks blend with so they keep the planet's
  * palette. `water`: the pixel is a river (only a road crosses it: a bridge).
  */
-export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, r: number, g: number, b: number, water = false): number {
+export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, r: number, g: number, b: number, water = false, season = -1): number {
   const c = cellAt(plan, x, y);
   if (!c) return -1;
   // Roads first: they run over fields' edges and bridge rivers.
@@ -419,7 +423,12 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   for (const n of c.f) {
     const f = plan.fields[n];
     if (x < f.x0 || x > f.x1 || y < f.y0 || y > f.y1) continue;
-    let [cr, cg, cb] = CROPS[f.crop];
+    // The farming year: sprouting in spring, the crop itself in summer,
+    // stubble and fresh ploughing in autumn, frosted fallow in winter.
+    let [cr, cg, cb] = season === 0 ? (f.crop === 2 ? CROPS[2] : SPRING)
+      : season === 2 ? (f.crop % 2 ? CROPS[2] : STUBBLE)
+      : season === 3 ? FALLOW
+      : CROPS[f.crop];
     cr = cr * 0.8 + r * 0.2; cg = cg * 0.8 + g * 0.2; cb = cb * 0.8 + b * 0.2;
     if (k >= 2) {
       // Crop rows: alternate darker furrows, half a world pixel apart.

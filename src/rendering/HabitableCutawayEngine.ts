@@ -328,6 +328,11 @@ export interface CutawayBakeOpts extends CutawayGeom {
   /** Decals keep off this base-world face point (towns, fields, roads). */
   decalBlocked?: (x: number, y: number) => boolean;
   /**
+   * Winter, 0..1: snow lies on land colder than a line that creeps toward
+   * the warm latitudes as it rises (seasons; 0 = none).
+   */
+  winterSnow?: number;
+  /**
    * Atlas-cell multiplier for one decal. Ordinary cover is well under 1 so
    * the ground stays visible; a gigantic flora lineage can return about 1.
    */
@@ -1131,6 +1136,14 @@ export function* surfaceSteps(
             } else if (rs.dist <= rs.half + RIVER_BANK) { river = 1; fall = rs.drops; }
           }
         }
+      }
+      // Seasonal snow on cold ground (not on rivers): a hard line plus a
+      // dithered fringe, so it reads as a snowfield, not a tint.
+      if (opts.winterSnow && river < 2 && biome !== 'snow' && biome !== 'volcanic') {
+        const line = 0.18 + opts.winterSnow * 0.22;
+        const t = cell.temperature - (biome === 'mountain' ? 0.12 : 0);
+        const edge = t < line ? 1 : t < line + 0.05 ? (hash1(Math.floor(world.wx(px) * 2) * 7 + Math.floor(world.wy(py) * 2) * 13, seed) < (line + 0.05 - t) / 0.05 ? 1 : 0) : 0;
+        if (edge) { br = br * 0.15 + 228; bg = bg * 0.15 + 234; bb = bb * 0.12 + 242; if (br > 255) br = 255; if (bg > 255) bg = 255; if (bb > 255) bb = 255; }
       }
       // Fields and roads, keyed on the world point so they hold still under
       // the camera and gain rows, hedges and lane marks as it closes in.

@@ -75,6 +75,56 @@ function hashStr(s: string): number {
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
+/** Worlds whose plants follow the seasons (green, temperate foliage). */
+const SEASONAL_WORLDS = new Set(['ocean', 'rocky', 'ice', 'storm']);
+/** Autumn foliage: rust, amber, crimson. */
+const AUTUMN: Array<[number, number, number]> = [[196, 92, 38], [222, 160, 52], [170, 52, 40]];
+
+/**
+ * Seasonal colour on a sprite, in place. Deciduous plants (broadleaf, bush,
+ * scrub, grass) go fresh in spring, turn in autumn and are bare (or straw)
+ * in winter; conifers stay green and carry snow in winter. Foliage pixels
+ * are the green-dominant ones, so trunks, flowers and stone are untouched.
+ */
+function seasonTint(
+  src: { width: number; height: number; data: Uint8ClampedArray }, kind: DecalKind, season: number, variant: number,
+): void {
+  // Summer is the art as drawn; stone, palms and cacti have no seasons;
+  // fungi only catch snow.
+  if (season === 1 || isMineralKind(kind) || kind === 'palm' || kind === 'cactus') return;
+  if (kind === 'mushroom' && season !== 3) return;
+  const d = src.data, W = src.width;
+  const deciduous = kind === 'broadleaf' || kind === 'bush' || kind === 'scrub' || kind === 'grass';
+  const leaf = (i: number) => d[i + 3] > 0 && d[i + 1] > d[i] + 6 && d[i + 1] >= d[i + 2];
+  const snowTop: number[] = [];
+  for (let y = 0; y < src.height; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4;
+    if (d[i + 3] === 0) continue;
+    const l = (d[i] + d[i + 1] + d[i + 2]) / 765;
+    if (season === 3 && (y === 0 || d[i - W * 4 + 3] === 0)) snowTop.push(i);
+    if (!leaf(i)) continue;
+    if (season === 0 && deciduous) {
+      // Fresh spring green.
+      d[i] = d[i] * 0.75 + 150 * 0.25; d[i + 1] = Math.min(255, d[i + 1] * 0.75 + 205 * 0.25); d[i + 2] = d[i + 2] * 0.75 + 90 * 0.25;
+    } else if (season === 2 && deciduous) {
+      const c = AUTUMN[(variant + ((x * 7 + y * 3) >> 3)) % 3], m = 0.55 + l * 0.9;
+      d[i] = c[0] * m; d[i + 1] = c[1] * m; d[i + 2] = c[2] * m;
+    } else if (season === 3 && deciduous) {
+      if (kind === 'grass' || kind === 'scrub') {
+        d[i] = 168 * (0.6 + l * 0.7); d[i + 1] = 148 * (0.6 + l * 0.7); d[i + 2] = 100 * (0.6 + l * 0.7);
+      } else {
+        // Bare crown: a mass of grey-brown twigs, shaded as the foliage was.
+        const m = 0.5 + l * 1.1;
+        d[i] = 118 * m; d[i + 1] = 102 * m; d[i + 2] = 92 * m;
+      }
+    }
+  }
+  if (season === 3) {
+    // Snow lies on top of every upper edge (conifers, bare crowns, bushes).
+    for (const i of snowTop) if (d[i + 3] > 0) { d[i] = 236; d[i + 1] = 242; d[i + 2] = 250; }
+  }
+}
+
 /** Sway amplitude at the top of the sprite, as a fraction of its height. */
 function swayOf(kind: DecalKind): number {
   switch (kind) {
@@ -93,6 +143,17 @@ export class FloraLayer {
   private forgesLeft = 0;
   /** Wind strength (1 = a breeze; 0 stills every plant). */
   wind = 1;
+  /**
+   * Season shown: 0 spring, 1 summer, 2 autumn, 3 winter, -1 none (no axial
+   * tilt, or a world whose plants do not follow seasons). Set by the host;
+   * a change re-renders the layer (`setSeason`).
+   */
+  season = -1;
+  setSeason(s: number): void {
+    if (s === this.season) return;
+    this.season = s;
+    this.version++;
+  }
 
   /** Bumped on every new plan: a cached render of the layer is stale. */
   version = 0;
@@ -201,7 +262,8 @@ export class FloraLayer {
     // forged stone; forged plants only get a light 12% pull toward it.
     const gk = forge && !mineral ? groundKey([ur, ug, ub]) : ((ur >> 3) << 10) | ((ug >> 3) << 5) | (ub >> 3);
     const pxk = Math.min(FORGE_MAX_PX, px);
-    const key = `${forge ? 'F' : 'A'}|${s.kind}|${variant}|${pxk}|${planetType}|${gk}|${wilt ? 1 : 0}`;
+    const season = SEASONAL_WORLDS.has(planetType) ? this.season : -1;
+    const key = `${forge ? 'F' : 'A'}|${s.kind}|${variant}|${pxk}|${planetType}|${gk}|${wilt ? 1 : 0}|${season}`;
     const hit = this.cache.get(key);
     if (hit) return hit;
     let rgba: { width: number; height: number; data: Uint8ClampedArray; footX: number; footY: number } | null = null;
@@ -222,14 +284,14 @@ export class FloraLayer {
       if (t) return t;
       const a = atlasSprite(s, pxk, atlas, ur, ug, ub);
       if (!a) return null;
-      const sheet = this.makeSheet(a, s.kind, wilt);
+      const sheet = this.makeSheet(a, s.kind, wilt, season, variant);
       this.cache.set(tk, sheet);
       return sheet;
     } else {
       rgba = atlasSprite(s, pxk, atlas, ur, ug, ub);
     }
     if (!rgba) return null;
-    const sheet = this.makeSheet(rgba, s.kind, wilt);
+    const sheet = this.makeSheet(rgba, s.kind, wilt, season, variant);
     if (this.cache.size >= CACHE_MAX) this.cache.clear();
     this.cache.set(key, sheet);
     return sheet;
@@ -237,9 +299,10 @@ export class FloraLayer {
 
   private makeSheet(
     src: { width: number; height: number; data: Uint8ClampedArray; footX: number; footY: number },
-    kind: DecalKind, wilt: boolean,
+    kind: DecalKind, wilt: boolean, season = -1, variant = 0,
   ): Sheet {
     const data = src.data;
+    if (season >= 0) seasonTint(src, kind, season, variant);
     if (wilt) {
       // Wilting: browned and dulled.
       for (let i = 0; i < data.length; i += 4) {

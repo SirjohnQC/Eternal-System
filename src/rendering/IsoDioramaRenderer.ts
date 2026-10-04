@@ -50,7 +50,7 @@ import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
-import { orbitSky, type SkyState } from './sky/OrbitSky';
+import { orbitSky, axialTilt, seasonZero, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
 import { paintSky, skyLayout, farLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
 import { farScale, isIdentity, type Camera } from './ZoomCamera';
@@ -1469,7 +1469,8 @@ export class IsoDioramaRenderer {
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
       decalScale: this.floraScaleFn(),
-      groundAt: (x, y, k, r, g, b, water) => townGroundAt(this.townPlan, x, y, k, r, g, b, water),
+      groundAt: (x, y, k, r, g, b, water) => townGroundAt(this.townPlan, x, y, k, r, g, b, water, this.season),
+      winterSnow: this.season === 3 ? 1 : 0,
       decalBlocked: (x, y) => this.townPlan.towns.length > 0 && keepClear(this.townPlan, x, y),
     });
     this.pickBuf = this.cutaway.pick;
@@ -1485,6 +1486,7 @@ export class IsoDioramaRenderer {
     this.planTowns();
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
+      winterSnow: this.season === 3 ? 1 : 0,
       lush: this.lushFor(bio),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
@@ -2921,6 +2923,7 @@ export class IsoDioramaRenderer {
   private frame(dt: number, now = performance.now()): void {
     if (this.habitable) {
       this.sky = this.skyNow();
+      this.updateSeason();
       // Settle + throttled rebake, before drawing (see updateView).
       this.updateView(now);
       this.cutaway.frame({
@@ -3111,6 +3114,30 @@ export class IsoDioramaRenderer {
     g.restore();
   }
   private bgLive: Camera = { zoom: 1, fx: 0, fy: 0 };
+
+  /**
+   * The season on show: 0 spring, 1 summer, 2 autumn, 3 winter; -1 when the
+   * world has (almost) no axial tilt or is still forming. From the same orbit
+   * the sky is drawn from (sun longitude past the spring equinox).
+   */
+  private season = -1;
+  private seasonNow(): number {
+    const p = this.planet;
+    if (!p || this.forming || !this.sky) return -1;
+    const seed = p.genomeSeed ?? 0;
+    if (Math.sin(axialTilt(seed)) < 0.12) return -1;
+    const T = Math.PI * 2;
+    const phi = (((this.sky.sunLongitude - seasonZero(seed)) % T) + T) % T;
+    return Math.floor(((phi + Math.PI / 4) % T) / (Math.PI / 2));
+  }
+  /** A new season re-bakes the ground (fields, snow) and recolours the plants. */
+  private updateSeason(): void {
+    const s = this.seasonNow();
+    if (s === this.season) return;
+    this.season = s;
+    this.cutaway.flora.setSeason(s);
+    this.surfaceDirty = true;
+  }
 
   /**
    * The sun's glow, drawn as a canvas radial gradient (GPU-cheap) since the
