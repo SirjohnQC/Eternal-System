@@ -1,5 +1,7 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
-import { PlanetRenderer } from './simulation/PlanetRenderer';
+import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
+import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
+import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
 import {
   UniverseStats, PlanetDNA, DEFAULT_PLANET_DNA, GameStateData, gameState, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_LABELS, BIO_PHASE_SEQUENCE, CIV_PHASE_LABELS, civLevelToPhase,
@@ -5467,7 +5469,9 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
   const planet = star.planets[planetIndex];
   if (!planet) return;
   const moon = moonIndex != null ? planet.moons[moonIndex] : null;
-  const isHome = star.isPlayerStar && (star.bestPlanetIndex ?? 0) === planetIndex;
+  const isHome = star.isPlayerStar && (engine?.homeWorld(star) ?? null) === planet;
+  // A world can be visited once a satellite has studied it, or it is settled.
+  const studied = planet.discovery === 'probe' || planet.discovery === 'landing';
   const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
   const planetName = isHome ? (gameState.playerPlanetName || planet.name) : `${star.civName} ${planet.name}`;
   const rows: Array<[string, string]> = [];
@@ -5487,13 +5491,15 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     if (isHome && engine?.isHomeForming() && star.formationStage) rows.push(['Forming', cap(String(star.formationStage).replace(/_/g, ' '))]);
     if (isHome && star.civLevel > 0) rows.push(['Civilisation', TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)]]);
     rows.push(['Moons', String(planet.moons.length)]);
+    rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
   const card = document.createElement('div');
   card.id = 'body-card';
   card.style.cssText = 'position:fixed;z-index:60;min-width:200px;max-width:260px;padding:12px 14px;'
     + 'background:rgba(8,6,20,.94);border:1px solid #c8a96e;color:#d8d0e8;font:12px/1.5 monospace;'
     + 'box-shadow:0 0 18px rgba(200,169,110,.25);';
-  card.innerHTML = `<div style="color:#c8a96e;font-size:13px;letter-spacing:.08em">${title.toUpperCase()}</div>`
+  card.innerHTML = '<div class="body-card-art" style="display:flex;justify-content:center;margin:-2px 0 8px"></div>'
+    + `<div style="color:#c8a96e;font-size:13px;letter-spacing:.08em">${title.toUpperCase()}</div>`
     + `<div style="color:#8a80a0;margin-bottom:8px">${subtitle}</div>`
     + rows.map(([k, v]) => `<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#8a80a0">${k}</span><span>${v}</span></div>`).join('')
     + '<div style="display:flex;gap:8px;margin-top:10px"></div>';
@@ -5508,8 +5514,42 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
   };
   const close = () => { card.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') close(); };
-  if (!moon && !planet.isDead) button(isHome ? 'ENTER WORLD' : 'VIEW WORLD', true, () => { close(); void openPlanetView(star, planetIndex); });
-  button('CLOSE', moon != null || !!planet.isDead, close);
+  const canView = !moon && !planet.isDead && (isHome || studied);
+  if (canView) button(isHome ? 'ENTER WORLD' : 'VIEW WORLD', true, () => { close(); void openPlanetView(star, planetIndex); });
+  else if (!moon && !planet.isDead) {
+    const note = document.createElement('div');
+    note.textContent = 'Send a satellite to study this world before you can view it.';
+    note.style.cssText = 'flex:2;color:#8a80a0;font-size:10px;line-height:1.3;align-self:center';
+    bar.appendChild(note);
+  }
+  button('CLOSE', !canView, close);
+  // The body itself: the system view's own globe (or MoonArt moon), x3.
+  const art = card.querySelector<HTMLElement>('.body-card-art');
+  if (art) {
+    let src: HTMLCanvasElement | null = null;
+    try {
+      if (moon) {
+        const c = moon.color.replace('#', ''), n = parseInt(c.length === 3 ? c.split('').map(ch => ch + ch).join('') : c, 16);
+        const f = paintMoon({ kind: moon.kind as MoonKindArt, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255], size: 28,
+          seed: (planet.genomeSeed ?? 1) * 31 + (moonIndex ?? 0) * 977, lx: 0.8, ly: -0.4, colonised: moon.colonised });
+        src = document.createElement('canvas'); src.width = f.width; src.height = f.height;
+        const g = src.getContext('2d'); if (g) { const img = g.createImageData(f.width, f.height); img.data.set(f.data); g.putImageData(img, 0, 0); }
+      } else if (!planet.isDead) {
+        const dna = isHome ? (gameState.playerPlanetDNA ?? planet.dna ?? DEFAULT_PLANET_DNA) : (planet.dna ?? DEFAULT_PLANET_DNA);
+        const eq = bakePlanetTexture(star.id, planetIndex, planet.type, dna, 96, isHome && planet.hasLife ? (star.biologyPhase ?? null) : null,
+          isHome ? runtimeState.playerPlanetGrid : null);
+        src = wrapEquirectToGlobe(eq, 48, { rings: planet.type === 'gas', seed: star.id * 17 + planetIndex * 31 });
+      }
+    } catch { src = null; }
+    if (src) {
+      const cv = document.createElement('canvas');
+      cv.width = src.width * 3; cv.height = src.height * 3;
+      cv.style.cssText = 'image-rendering:pixelated;width:' + Math.min(144, src.width * 3) + 'px;filter:drop-shadow(0 0 10px rgba(200,169,110,.25))';
+      const g = cv.getContext('2d');
+      if (g) { g.imageSmoothingEnabled = false; g.drawImage(src, 0, 0, cv.width, cv.height); }
+      art.appendChild(cv);
+    }
+  }
   document.body.appendChild(card);
   // Beside the click, kept on screen.
   const r = card.getBoundingClientRect();

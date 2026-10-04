@@ -1030,8 +1030,9 @@ export class PixiBigBangRenderer {
       sprite.y = star.y;
       sprite.visible = true;
 
-      if (star.isPlayerStar) {
+      if (star.isPlayerStar && camera.scale < 1.6) {
         // Corner brackets outside the corona, not a box drawn across the sun.
+        // (Closer in, the brackets frame the home WORLD instead.)
         const alpha = 0.55 + 0.25 * Math.sin(animTick * 0.05);
         const pad = size * 0.78;
         const t = Math.max(0.5, 0.9 / camera.scale);
@@ -1302,7 +1303,8 @@ export class PixiBigBangRenderer {
         const kind = (planet.type as PlanetKind) || 'rocky';
         const withRings = kind === 'gas' && !planet.isDead;
         const seed = (star.id * 17 + i * 31) | 0;
-        const homeIdx = star.isPlayerStar ? (star.bestPlanetIndex ?? 0) : -1;
+        const landedIdx = star.planets.findIndex(p => p.discovery === 'landing');
+        const homeIdx = star.isPlayerStar ? (landedIdx >= 0 ? landedIdx : (star.bestPlanetIndex ?? 0)) : -1;
         const isHome = star.isPlayerStar && i === homeIdx && !planet.isDead;
         const dna = isHome
           ? (gameState.playerPlanetDNA ?? planet.dna ?? DEFAULT_PLANET_DNA)
@@ -1369,6 +1371,16 @@ export class PixiBigBangRenderer {
         sprite.y = py;
         sprite.visible = true;
 
+        if (isHome && camera.scale >= 1.6) {
+          // The player's world: gold corner brackets, pulsing.
+          const alpha = 0.6 + 0.3 * Math.sin(animTick * 0.05);
+          const pad = body * 0.85 + 2 / camera.scale, t = Math.max(0.3, 1 / camera.scale), arm = pad * 0.45;
+          for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+            const x = px + sx * pad, y = py + sy * pad;
+            this.planetLayer.rect(sx < 0 ? x : x - arm, sy < 0 ? y : y - t, arm, t).fill({ color: 0xffcc44, alpha });
+            this.planetLayer.rect(sx < 0 ? x : x - t, sy < 0 ? y : y - arm, t, arm).fill({ color: 0xffcc44, alpha });
+          }
+        }
         if (planet.hasLife) {
           const bp = 0.45 + 0.35 * Math.sin(animTick * 0.05);
           pixelOrbit(this.planetLayer, px, py, body * 0.72, 0x44ff88, bp, camera.scale);

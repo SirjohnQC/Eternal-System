@@ -1548,7 +1548,7 @@ export class BigBangEngine {
     } else {
       // System and planet zoom follow the home WORLD round its orbit, not
       // its sun (play report: after the Big Bang the view sat on the star).
-      const home = this.homePlanetOf(ps) ?? ps.planets[ps.bestPlanetIndex ?? 0];
+      const home = this.homeWorld(ps);
       if (home) {
         const o = planetOffsetFromStar(home, this.animTick);
         tx = ps.x + o.x; ty = ps.y + o.y;
@@ -4580,12 +4580,20 @@ export class BigBangEngine {
     return best;
   }
 
+  /** The player's world in a system: the landed one, else the formation home, else the best orbit. */
+  homeWorld(star: StarBody): Planet | undefined {
+    return star.planets.find(p => p.discovery === 'landing') ?? this.homePlanetOf(star) ?? star.planets[star.bestPlanetIndex ?? 0];
+  }
+
   focusPlayerStar(deep = false): void {
     const ps = this.getPlayerStar();
     if (ps) {
-      this.camera.tx = ps.x;
-      this.camera.ty = ps.y;
-      this.camera.ts = deep ? 6.0 : 4.0;
+      // Frame the home WORLD (the follow keeps it centred as it orbits).
+      const home = this.homeWorld(ps);
+      const o = home ? planetOffsetFromStar(home, this.animTick) : { x: 0, y: 0 };
+      this.camera.tx = ps.x + o.x;
+      this.camera.ty = ps.y + o.y;
+      this.camera.ts = deep ? 11 : 8.5;
       this.cameraFollowHome = true;
     }
   }

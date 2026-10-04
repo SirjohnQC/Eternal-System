@@ -4048,6 +4048,7 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:0;right:38
 .faith-deck.folded .divine-panel{gap:0;cursor:pointer}
 .faith-deck.folded .divine-action-btn{transition:transform .2s,margin .2s;pointer-events:none}
 .faith-deck.folded .divine-action-btn:not(:first-child){margin-left:-110px}
+.faith-deck.folded .divine-action-btn:not(:first-child) > *{visibility:hidden}
 .faith-deck.folded .divine-action-btn:nth-child(1){z-index:9}
 .faith-deck.folded .divine-action-btn:nth-child(2){z-index:8;transform:translate(2px,-3px) rotate(2deg)}
 .faith-deck.folded .divine-action-btn:nth-child(3){z-index:7;transform:translate(4px,-6px) rotate(4deg)}
