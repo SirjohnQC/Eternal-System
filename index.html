@@ -2017,7 +2017,9 @@ html,body{
 ═══════════════════════════════════════════════════════════════ */
 #planet-overlay{
   display:none;
-  position:fixed;inset:0;z-index:200;
+  /* Between the game's left rail and bottom status bar, so the player's
+     tools stay on screen in the planet view too. */
+  position:fixed;inset:0 0 var(--status) var(--rail);z-index:200;
   background:#000008;
   flex-direction:column;
 }
@@ -4044,7 +4046,8 @@ body.events-collapsed .events-tab{display:block}
 }
 body.events-collapsed .faith-deck{right:0}
 /* The deck also rides over the planet view (its overlay is z 200). */
-body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:0;right:380px;bottom:12px}
+body:has(#planet-overlay[style*="flex"]) .left-panel{z-index:230}
+body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail);right:380px;bottom:calc(var(--status) + 8px)}
 /* Folded: a small fanned stack, the first card on top; a click unfolds it.
    Unfolded is the row above. The label toggles. */
 .faith-deck-label{pointer-events:auto;cursor:pointer;user-select:none}
