@@ -2792,8 +2792,8 @@ input[type="range"], select, label[for],
   </div>
 
   <!-- FAITH DECK — exact mockup structure -->
-  <div class="faith-deck">
-    <div class="faith-deck-label">FAITH</div>
+  <div class="faith-deck folded">
+    <div class="faith-deck-label">FAITH <span class="fold-mark">▸</span></div>
     <div class="divine-panel" id="faith-panel">
       <button class="divine-action-btn faith-gold" id="divine-explore-btn" disabled>
         <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
@@ -4039,6 +4039,22 @@ body.events-collapsed .events-tab{display:block}
   pointer-events:none;padding:0 16px 6px;
 }
 body.events-collapsed .faith-deck{right:0}
+/* The deck also rides over the planet view (its overlay is z 200). */
+body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:0;right:380px;bottom:12px}
+/* Folded: a small fanned stack, the first card on top; a click unfolds it.
+   Unfolded is the row above. The label toggles. */
+.faith-deck-label{pointer-events:auto;cursor:pointer;user-select:none}
+.faith-deck.folded .divine-panel{gap:0;cursor:pointer}
+.faith-deck.folded .divine-action-btn{transition:transform .2s,margin .2s;pointer-events:none}
+.faith-deck.folded .divine-action-btn:not(:first-child){margin-left:-110px}
+.faith-deck.folded .divine-action-btn:nth-child(1){z-index:9}
+.faith-deck.folded .divine-action-btn:nth-child(2){z-index:8;transform:translate(2px,-3px) rotate(2deg)}
+.faith-deck.folded .divine-action-btn:nth-child(3){z-index:7;transform:translate(4px,-6px) rotate(4deg)}
+.faith-deck.folded .divine-action-btn:nth-child(4){z-index:6;transform:translate(6px,-9px) rotate(6deg)}
+.faith-deck.folded .divine-action-btn:nth-child(n+5){z-index:5;transform:translate(8px,-11px) rotate(8deg);opacity:0}
+.faith-deck.folded .divine-panel:hover .divine-action-btn:first-child{transform:translateY(-4px)}
+.faith-deck.folded .divine-action-btn:disabled{cursor:pointer}
+.faith-deck .faith-deck-label .fold-mark{font-size:8px;opacity:.8}
 .faith-deck-label{
   font-family:var(--font-pixel);font-size:10px;letter-spacing:5px;color:var(--gold);
   text-shadow:0 0 12px rgba(200,169,110,0.45);margin-bottom:7px;pointer-events:none;

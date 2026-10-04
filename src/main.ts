@@ -5513,3 +5513,31 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
   document.addEventListener('keydown', onKey);
   setTimeout(() => document.addEventListener('mousedown', (ev) => { if (!card.contains(ev.target as Node)) close(); }, { once: true }), 0);
 }
+
+
+/**
+ * Faith deck: folded into a stack until the top card is clicked; the label
+ * toggles; a click elsewhere folds it again. While folded, the click that
+ * unfolds never fires a card.
+ */
+function setupFaithDeckFold(): void {
+  const deck = document.querySelector<HTMLElement>('.faith-deck');
+  const panel = document.getElementById('faith-panel');
+  const label = deck?.querySelector<HTMLElement>('.faith-deck-label');
+  if (!deck || !panel || !label) return;
+  const mark = label.querySelector<HTMLElement>('.fold-mark');
+  const set = (folded: boolean) => {
+    deck.classList.toggle('folded', folded);
+    if (mark) mark.textContent = folded ? '▸' : '▾';
+  };
+  panel.addEventListener('click', (e) => {
+    if (!deck.classList.contains('folded')) return;
+    e.stopPropagation(); e.preventDefault();
+    set(false);
+  }, true);
+  label.addEventListener('click', () => set(!deck.classList.contains('folded')));
+  document.addEventListener('mousedown', (e) => {
+    if (!deck.classList.contains('folded') && !deck.contains(e.target as Node)) set(true);
+  });
+}
+setupFaithDeckFold();
