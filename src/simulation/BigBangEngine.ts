@@ -1481,7 +1481,9 @@ export class BigBangEngine {
           if (ps) {
             this.camera.tx = ps.x;
             this.camera.ty = ps.y;
-            this.camera.ts = 3.5;
+            // Close enough that the home world reads as a world (the follow
+            // then centres it); the system stays in view around it.
+            this.camera.ts = 8.5;
             this.cameraFollowHome = true;
             // Punch a large hole in the fog at the player's actual settled position
             this.exploredAreas.push({ x: ps.x, y: ps.y, r: 300 });
@@ -1543,6 +1545,14 @@ export class BigBangEngine {
     if (this.zoomTier === 'galaxy') {
       const gal = this.galaxies.find(g => g.id === ps.galaxyId);
       if (gal) { tx = gal.cx; ty = gal.cy; }
+    } else {
+      // System and planet zoom follow the home WORLD round its orbit, not
+      // its sun (play report: after the Big Bang the view sat on the star).
+      const home = this.homePlanetOf(ps) ?? ps.planets[ps.bestPlanetIndex ?? 0];
+      if (home) {
+        const o = planetOffsetFromStar(home, this.animTick);
+        tx = ps.x + o.x; ty = ps.y + o.y;
+      }
     }
     // Snappier than the general camera lerp so the home star doesn't drift
     // into the fog while the galaxy swirls at high speed.
@@ -4456,6 +4466,15 @@ export class BigBangEngine {
         const wx = (e.clientX - (this.canvas.width / 2 - this.camera.x * this.camera.scale)) / this.camera.scale;
         const wy = (e.clientY - (this.canvas.height / 2 - this.camera.y * this.camera.scale)) / this.camera.scale;
 
+        // A planet or moon under the cursor (system zoom): its details card.
+        if (this.camera.scale >= 1.2 && this.onBodySelected) {
+          const hit = this.pickBody(wx, wy);
+          if (hit) {
+            this.onBodySelected({ ...hit, screenX: e.clientX, screenY: e.clientY });
+            return;
+          }
+        }
+
         // Find nearest star
         let nearest: StarBody | null = null;
         let minDist = 30 / this.camera.scale;
@@ -4523,6 +4542,42 @@ export class BigBangEngine {
 
   getStarById(id: number): StarBody | undefined {
     return this.stars.find(s => s.id === id);
+  }
+
+  /**
+   * Called when a planet or moon is clicked in the system view. `moonIndex`
+   * null means the planet itself.
+   */
+  onBodySelected?: (hit: { star: StarBody; planetIndex: number; moonIndex: number | null; screenX: number; screenY: number }) => void;
+
+  /**
+   * The planet or moon nearest world point (wx, wy) within a click's reach,
+   * using the same positions the system view draws (orbit, body size, moon
+   * orbit as PixiBigBangRenderer lays them out). Known systems only.
+   */
+  pickBody(wx: number, wy: number): { star: StarBody; planetIndex: number; moonIndex: number | null } | null {
+    const sc = Math.max(0.01, this.camera.scale), reach = 10 / sc;
+    let best: { star: StarBody; planetIndex: number; moonIndex: number | null } | null = null, bestD = Infinity;
+    for (const star of this.stars) {
+      if (!star.isPlayerStar && !this.isStarKnownToPlayer(star)) continue;
+      if (Math.hypot(star.x - wx, star.y - wy) > 400) continue;
+      star.planets.forEach((planet, i) => {
+        const o = planetOffsetFromStar(planet, this.animTick);
+        const px = star.x + o.x, py = star.y + o.y;
+        const body = Math.max(planet.radius * 3.2, 2.0 / sc);
+        const d = Math.hypot(px - wx, py - wy);
+        if (d < body / 2 + reach && d < bestD) { bestD = d; best = { star, planetIndex: i, moonIndex: null }; }
+        planet.moons.forEach((moon, m) => {
+          const large = moon.radius >= planet.radius * 0.4;
+          const ma = moon.orbitalAngle + this.animTick * moon.orbitalSpeed;
+          const r = Math.max(moon.orbitalRadius, body * (large ? 1.15 : 0.85));
+          const dm = Math.hypot(px + Math.cos(ma) * r - wx, py + Math.sin(ma) * r - wy);
+          // Moons are small: they win only when the click is right on them.
+          if (dm < Math.max(moon.radius * 2, 4 / sc) && dm < bestD) { bestD = dm; best = { star, planetIndex: i, moonIndex: m }; }
+        });
+      });
+    }
+    return best;
   }
 
   focusPlayerStar(deep = false): void {

@@ -939,6 +939,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
   eng.onStarSelected = (star) => {
     openSystemPanel(star);
   };
+  eng.onBodySelected = (hit) => showBodyCard(hit.star, hit.planetIndex, hit.moonIndex, hit.screenX, hit.screenY);
   eng.onFirstContact = (npcStar) => {
     setTimeout(() => showFirstContact(npcStar), 600);
   };
@@ -5448,4 +5449,67 @@ function syncZoomTierUI(): void {
     }
   }
   window.setTimeout(syncZoomTierUI, 250);
+}
+
+
+/**
+ * Details card for a planet or moon clicked in the system view, with a way
+ * into the world. One card at a time; closes on its button, Escape, or the
+ * next click elsewhere.
+ */
+function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | null, sx: number, sy: number): void {
+  document.getElementById('body-card')?.remove();
+  const planet = star.planets[planetIndex];
+  if (!planet) return;
+  const moon = moonIndex != null ? planet.moons[moonIndex] : null;
+  const isHome = star.isPlayerStar && (star.bestPlanetIndex ?? 0) === planetIndex;
+  const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
+  const planetName = isHome ? (gameState.playerPlanetName || planet.name) : `${star.civName} ${planet.name}`;
+  const rows: Array<[string, string]> = [];
+  let title: string, subtitle: string;
+  if (moon) {
+    title = moon.name || 'Moon';
+    subtitle = `Moon of ${planetName}`;
+    rows.push(['Type', cap(String(moon.kind))]);
+    rows.push(['Size', moon.radius >= planet.radius * 0.4 ? 'Large' : 'Small']);
+    rows.push(['Habitability', `${Math.round(moon.habitability * 100)}%`]);
+    rows.push(['Status', moon.colonised ? 'Colonised' : 'Untouched']);
+  } else {
+    title = planetName;
+    subtitle = isHome ? 'Your home world' : star.isDead ? 'Remnant system' : `${star.civName} system`;
+    rows.push(['Type', cap(String(planet.type))]);
+    rows.push(['Life', planet.isDead ? 'Dead world' : planet.hasLife ? (isHome ? cap(String(star.biologyPhase ?? 'present')) : 'Present') : 'None detected']);
+    if (isHome && engine?.isHomeForming() && star.formationStage) rows.push(['Forming', cap(String(star.formationStage).replace(/_/g, ' '))]);
+    if (isHome && star.civLevel > 0) rows.push(['Civilisation', TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)]]);
+    rows.push(['Moons', String(planet.moons.length)]);
+  }
+  const card = document.createElement('div');
+  card.id = 'body-card';
+  card.style.cssText = 'position:fixed;z-index:60;min-width:200px;max-width:260px;padding:12px 14px;'
+    + 'background:rgba(8,6,20,.94);border:1px solid #c8a96e;color:#d8d0e8;font:12px/1.5 monospace;'
+    + 'box-shadow:0 0 18px rgba(200,169,110,.25);';
+  card.innerHTML = `<div style="color:#c8a96e;font-size:13px;letter-spacing:.08em">${title.toUpperCase()}</div>`
+    + `<div style="color:#8a80a0;margin-bottom:8px">${subtitle}</div>`
+    + rows.map(([k, v]) => `<div style="display:flex;justify-content:space-between;gap:12px"><span style="color:#8a80a0">${k}</span><span>${v}</span></div>`).join('')
+    + '<div style="display:flex;gap:8px;margin-top:10px"></div>';
+  const bar = card.lastElementChild as HTMLElement;
+  const button = (label: string, primary: boolean, fn: () => void) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = `flex:1;padding:5px 8px;font:11px monospace;letter-spacing:.06em;cursor:pointer;border:1px solid ${primary ? '#c8a96e' : '#443355'};`
+      + `background:${primary ? 'rgba(200,169,110,.15)' : 'transparent'};color:${primary ? '#e8d4a0' : '#8a80a0'};`;
+    b.onclick = (ev) => { ev.stopPropagation(); fn(); };
+    bar.appendChild(b);
+  };
+  const close = () => { card.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (ev: KeyboardEvent) => { if (ev.key === 'Escape') close(); };
+  if (!moon && !planet.isDead) button(isHome ? 'ENTER WORLD' : 'VIEW WORLD', true, () => { close(); void openPlanetView(star, planetIndex); });
+  button('CLOSE', moon != null || !!planet.isDead, close);
+  document.body.appendChild(card);
+  // Beside the click, kept on screen.
+  const r = card.getBoundingClientRect();
+  card.style.left = `${Math.min(window.innerWidth - r.width - 8, sx + 14)}px`;
+  card.style.top = `${Math.max(8, Math.min(window.innerHeight - r.height - 8, sy - r.height / 2))}px`;
+  document.addEventListener('keydown', onKey);
+  setTimeout(() => document.addEventListener('mousedown', (ev) => { if (!card.contains(ev.target as Node)) close(); }, { once: true }), 0);
 }
