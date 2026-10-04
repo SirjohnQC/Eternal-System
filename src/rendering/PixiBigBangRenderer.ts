@@ -974,11 +974,15 @@ export class PixiBigBangRenderer {
 
       // Each star keeps one of a few surface layouts (spots, ray pattern).
       const sunSeed = 5 + (star.id % 3);
+      // Zoomed in close (the system view goes to scale 12): bake at twice the
+      // resolution so the sun keeps its pixel detail instead of 5x blocks.
+      const big = size * camera.scale > 150;
+      const bodyPx = big ? 96 : 48, coronaPx = big ? 160 : 80;
       // Animated pixel corona (rotates; length/speed by spectral class)
       if (wantCorona) {
-        const coronaKey = `corona|${band}|${sunSeed}`;
+        const coronaKey = big ? `corona|${band}|${sunSeed}|${coronaPx}` : `corona|${band}|${sunSeed}`;
         const coronaTex = this.nearestTex(
-          this.starCoronaTextures, coronaKey, bakeStarCorona(band, 80, sunSeed),
+          this.starCoronaTextures, coronaKey, bakeStarCorona(band, coronaPx, sunSeed),
         );
         let corona = this.starCoronaSprites.get(star.id);
         if (!corona) {
@@ -1006,8 +1010,8 @@ export class PixiBigBangRenderer {
 
       // Pixel body on top; its granulation boils through a short frame loop.
       const frame = Math.floor(animTick / 15 + star.id * 3) % STAR_BODY_FRAMES;
-      const texKey = `body|${band}|${frame}|${sunSeed}`;
-      const tex = this.nearestTex(this.starTextures, texKey, bakeStarBody(band, 48, frame, sunSeed));
+      const texKey = big ? `body|${band}|${frame}|${sunSeed}|${bodyPx}` : `body|${band}|${frame}|${sunSeed}`;
+      const tex = this.nearestTex(this.starTextures, texKey, bakeStarBody(band, bodyPx, frame, sunSeed));
       let sprite = this.starSprites.get(star.id);
       if (!sprite) {
         sprite = new Sprite(tex);
@@ -1310,14 +1314,18 @@ export class PixiBigBangRenderer {
         if (useGlobe && !planet.isDead) {
           const lifeKey = planet.hasLife ? 1 : 0;
           const dnaKey = `${dna.climate}|${dna.oceans}|${dna.chaos}`;
-          const texKey = `globe|${star.id}|${i}|${kind}|${lifeKey}|${dnaKey}|${bioPhase ?? ''}|${withRings ? 1 : 0}`;
+          // Big on screen (zoomed in close): bake the globe at twice the
+          // resolution so it stays crisp pixel art instead of 3x blocks.
+          const onScreen = Math.max(planet.radius * 3.2, 2.0 / camera.scale) * camera.scale;
+          const gs = onScreen > 80 ? 96 : 48;
+          const texKey = `globe|${star.id}|${i}|${kind}|${lifeKey}|${dnaKey}|${bioPhase ?? ''}|${withRings ? 1 : 0}|${gs}`;
           let cached = this.planetTextures.get(texKey);
           if (!cached) {
             const equirect = bakePlanetTexture(
-              star.id, i, planet.type, dna, 96, bioPhase, grid,
+              star.id, i, planet.type, dna, gs * 2, bioPhase, grid,
             );
             const ringTint = parseHexColor(planet.color, [200, 190, 160]);
-            const globe = wrapEquirectToGlobe(equirect, 48, {
+            const globe = wrapEquirectToGlobe(equirect, gs, {
               rings: withRings,
               ringTint,
               seed: seed ^ (lifeKey * 997) ^ (bioPhase ? 13 : 0),

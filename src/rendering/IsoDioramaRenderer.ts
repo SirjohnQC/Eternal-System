@@ -3058,21 +3058,59 @@ export class IsoDioramaRenderer {
    * x lands at (x - fx) * s + VW/2, so the scaled image is offset by
    * (off + fx) * s - VW/2. Identity: today's panorama and offset.
    */
+  /**
+   * The space backdrop, ALWAYS as the panorama seen through the live view's
+   * far transform (farScale of its zoom, parallax about its focus).
+   *
+   * It used to draw the far bake only when the live camera matched the bake
+   * exactly and otherwise fell back to the unzoomed panorama, and during the
+   * identity CSS gesture it was scaled 1:1 with the planet: every pan or zoom
+   * swapped the star field for another and snapped it back on settle (play
+   * report: "the stars in the background change position"). Now the nearest
+   * bake is drawn stretched to the live far scale, counter-transformed under
+   * the CSS gesture, so the stars move continuously at their parallax rate.
+   */
   private drawBackdropPanorama(g: CanvasRenderingContext2D): void {
-    const W = this.bgLayer.width;
+    const W = this.bgLayer.width, H = this.VH, VW = this.VW;
     const off = backdropOffset(this.sky?.sunLongitude ?? 0, W);
-    const cam = this.cam, far = this.bgFar;
-    if (far && this.bgFarFor && this.bgFarFor.zoom === cam.zoom && this.bgFarFor.fy === cam.fy
-        && !isIdentity(cam, this.VW, this.VH)) {
-      const Ws = far.width, s = farScale(cam.zoom);
-      const D = ((Math.round((off + cam.fx) * s - this.VW / 2) % Ws) + Ws) % Ws;
-      g.drawImage(far, -D, 0);
-      if (Ws - D < this.VW) g.drawImage(far, Ws - D, 0);
+    const z = this.zoom;
+    const css = this.habitable && !z.showCamera && (z.viewZoom !== 1 || z.panX !== 0 || z.panY !== 0);
+    const L = css ? z.liveCamera(this.bgLive) : this.cam;
+    if (!css && isIdentity(L, VW, this.VH)) {
+      g.drawImage(this.bgLayer, -off, 0);
+      if (W - off < VW) g.drawImage(this.bgLayer, W - off, 0);
       return;
     }
-    g.drawImage(this.bgLayer, -off, 0);
-    if (W - off < this.VW) g.drawImage(this.bgLayer, W - off, 0);
+    const sL = farScale(L.zoom);
+    // Source: the unzoomed panorama or the far bake, whichever scale is nearer.
+    let src: HTMLCanvasElement = this.bgLayer, s0 = 1, fy0 = H / 2, sx = 1;
+    const far = this.bgFar, ff = this.bgFarFor;
+    if (far && ff && ff.W === W && ff.H === H && Math.abs(farScale(ff.zoom) - sL) < Math.abs(1 - sL)) {
+      src = far; s0 = farScale(ff.zoom); fy0 = ff.fy; sx = far.width / W;
+    }
+    g.save();
+    if (css) {
+      // The canvas is CSS-transformed (scale z about the centre, then the
+      // pan): draw in DISPLAYED coordinates through the inverse.
+      const zz = z.viewZoom, cx = VW / 2, cy = H / 2;
+      const pcx = (VW / 2 - L.fx) * zz, pcy = (H / 2 - L.fy) * zz;
+      g.setTransform(1 / zz, 0, 0, 1 / zz, cx - (cx + pcx) / zz, cy - (cy + pcy) / zz);
+    }
+    g.imageSmoothingEnabled = false;
+    g.fillStyle = '#05060f';
+    g.fillRect(0, 0, VW, H);
+    // World panorama (x, y) -> displayed (X, Y): X = (x - off - fx) sL + VW/2,
+    // Y = (y - fy) sL + H/2; the source holds x at x*sx and y at (y - fy0) s0 + H/2.
+    const kx = sL / sx, ky = sL / s0;
+    const ex = -(off + L.fx) * sL + VW / 2;
+    const ey = (fy0 - L.fy) * sL + H / 2 - (H / 2) * ky;
+    const period = W * sL, dw = src.width * kx, dh = src.height * ky;
+    let x0 = ex % period;
+    if (x0 > 0) x0 -= period;
+    for (let x = x0; x < VW; x += period) g.drawImage(src, Math.round(x), Math.round(ey), Math.ceil(dw), Math.ceil(dh));
+    g.restore();
   }
+  private bgLive: Camera = { zoom: 1, fx: 0, fy: 0 };
 
   /**
    * The sun's glow, drawn as a canvas radial gradient (GPU-cheap) since the

@@ -241,6 +241,13 @@ export interface Galaxy {
  */
 export type ZoomTier = 'universe' | 'galaxy' | 'system' | 'planet';
 
+/**
+ * Closest the system view's camera goes (wheel zoom). Was 5: a planet then
+ * filled only a few dozen pixels. At 12 a world reads as a globe you can
+ * inspect; its texture is baked larger when it is big on screen.
+ */
+export const CAMERA_MAX_SCALE = 12;
+
 /** Camera scale at which each tier begins, and the scale a jump lands on. */
 export const ZOOM_TIERS: Array<{ tier: ZoomTier; min: number; nominal: number; label: string }> = [
   // Nominal scales drop with the larger WORLD_SIZE so "Universe" still frames
@@ -4404,7 +4411,21 @@ export class BigBangEngine {
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.85 : 1.18;
-      this.camera.ts = Math.max(0.15, Math.min(5, this.camera.ts * factor));
+      const prev = this.camera.ts;
+      const next = Math.max(0.15, Math.min(CAMERA_MAX_SCALE, prev * factor));
+      if (next === prev) return;
+      // Zoom toward the cursor: the world point under it stays under it, so
+      // the player can zoom straight into a planet rather than the star.
+      const r = this.canvas.getBoundingClientRect();
+      const mx = (e.clientX - r.left) * (this.canvas.width / Math.max(1, r.width)) - this.canvas.width / 2;
+      const my = (e.clientY - r.top) * (this.canvas.height / Math.max(1, r.height)) - this.canvas.height / 2;
+      const wx = this.camera.tx + mx / prev, wy = this.camera.ty + my / prev;
+      this.camera.tx = wx - mx / next;
+      this.camera.ty = wy - my / next;
+      this.camera.ts = next;
+      // Zooming in away from the centre is a look somewhere else: stop
+      // pulling the view back onto the home star.
+      if (next > prev && Math.hypot(mx, my) > 60) this.cameraFollowHome = false;
     }, { passive: false });
 
     this.canvas.addEventListener('mousedown', (e) => {
