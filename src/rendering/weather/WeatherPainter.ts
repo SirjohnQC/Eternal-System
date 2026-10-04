@@ -128,7 +128,22 @@ export function* weatherLutSteps(
 /** Minimum float above local terrain when perspective lift is small (near rim). */
 const CLOUD_CLEARANCE = 6;
 
+/** Sheer table: the close-up, where the ground under a cloud should still read. */
 const LEVEL_ALPHA = [0, 0.5, 0.75, 0.95];
+/** Planet view and every zoom short of the last. Clouds read as a cover, not a haze. */
+const LEVEL_ALPHA_FAR = [0, 0.86, 0.95, 1];
+/** Matches ZoomController's max. The sheer table eases in over the last of the zoom. */
+const ZOOM_FULL = 4;
+
+function cloudLevelAlpha(zoom: number): Float32Array {
+  const out = new Float32Array(4);
+  const span = zoom <= 1 ? 0 : zoom >= ZOOM_FULL ? 1 : (zoom - 1) / (ZOOM_FULL - 1);
+  const fade = span < 0.82 ? 0 : (span - 0.82) / 0.18;
+  for (let i = 0; i < 4; i++) {
+    out[i] = LEVEL_ALPHA_FAR[i] * (1 - fade) + LEVEL_ALPHA[i] * fade;
+  }
+  return out;
+}
 const CLOUD_GAIN = 1.9;
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
 /** body rgb, under rgb — per WK kind. Carried over from the legacy CLOUD_PROFILES. */
@@ -139,6 +154,9 @@ const PAL = [
   230, 244, 252, 160, 196, 224,           // ICE
   110, 100, 96, 42, 36, 36,               // ASH
   168, 146, 112, 86, 72, 56,              // SMOG
+  214, 220, 230, 132, 146, 168,           // STRATUS
+  248, 250, 255, 196, 210, 228,           // CIRRUS
+  255, 255, 250, 176, 198, 224,           // CAP
 ];
 const ACID = [206, 224, 120, 120, 140, 48];
 /** Precipitation kinds: rain, acid rain, snow, ash — the legacy PRECIP_STYLE. */
@@ -208,10 +226,10 @@ const RAIN_SPAWN = 8;
 const FLASH_CHANCE = 0.02;
 /**
  * Density gain per sky kind (indexed by WK: CLEAR, CUMULUS, STORM, ICE, ASH,
- * SMOG). R4a: ICE and ASH were 1 and read blank. Thin polar haze and soot never
+ * SMOG, STRATUS, CIRRUS, CAP). R4a: ICE and ASH were 1 and read blank. Thin polar haze and soot never
  * reached the first step (median drawn: ice 1.2%, carbon 1.1%).
  */
-const KIND_GAIN = [1, 1, 1, 2, 2, 1];
+const KIND_GAIN = [1, 1, 1, 2, 2, 1, 1, 0.85, 1.15];
 /**
  * Extra density gain per unit of climate.nebula, which is 0.35 on crystal worlds
  * and 1 inside a nebula. Nebula is capped at NEBULA_GAIN_CAP first, so a
@@ -335,6 +353,8 @@ export class WeatherPainter {
   readonly skyH: Int16Array;
   /** Entries visited by the last paintClouds / paintShadows (bounded-work checks). */
   readonly visited = { clouds: 0, shadows: 0 };
+  /** Per density step. Far views use the solid table; full zoom eases back to sheer. */
+  private readonly levelAlpha: Float32Array;
 
   constructor(
     private lut: WeatherLut, private climate: ClimateSources,
@@ -342,6 +362,7 @@ export class WeatherPainter {
     opts: WeatherPainterOpts = {},
   ) {
     const k = opts.scale ?? 1;
+    this.levelAlpha = cloudLevelAlpha(k);
     const pmax = this.pmax = Math.max(PMAX, Math.ceil(opts.pmax ?? PMAX));
     this.pX = new Float32Array(pmax); this.pY = new Float32Array(pmax);
     this.pGround = new Float32Array(pmax); this.pSpawn = new Int32Array(pmax);
@@ -556,7 +577,8 @@ export class WeatherPainter {
     for (let i = 0; i < samples; i++, n = (n + step) % nLut) {
       const k = cell[n];
       const p = sim.precip[k];
-      if (p > 0.004 && this.pCount < this.pmax) {
+      const inRain = sim.seedMask(k % WX_NX, (k / WX_NX) | 0, true) > 0.08;
+      if (p > 0.004 && inRain && this.pCount < this.pmax) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < p * RAIN_SPAWN * stride / 4) {
           this.spawn(n, sim.snow[k] ? 2 : this.climate.acid > 0.5 ? 1 : 0);
@@ -566,7 +588,7 @@ export class WeatherPainter {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < 0.05) this.spawn(n, 3);
       }
-      if (flashes < boltCap && this.fCount < fmax && (kindAt(sim, k) === WK.STORM || sim.ash[k] > 0.7)) {
+      if (flashes < boltCap && this.fCount < fmax && (sim.ash[k] > 0.7 || (inRain && kindAt(sim, k) === WK.STORM))) {
         this.roll();
         if ((rs[0] >>> 0) * INV32 < FLASH_CHANCE) {
           const f = this.fCount++;
@@ -606,11 +628,19 @@ export class WeatherPainter {
       const c = sim.prevCloud[k] + (sim.cloud[k] - sim.prevCloud[k]) * t;
       const a = sim.prevAsh[k] + (sim.ash[k] - sim.prevAsh[k]) * t;
       const s = sim.prevSmog[k] + (sim.smog[k] - sim.prevSmog[k]) * t;
-      const kind = kindAt(sim, k);
+      const base = kindAt(sim, k);
+      const kind = base === WK.ASH || base === WK.SMOG ? base : sim.form[k];
       this.kind[k] = kind;
       // Cloud gain 1.9 (was 1.5): the shower cycle rains more water out, so the
       // mean cloud field is thinner and ocean skies fell under the readability floor.
-      this.dens[k] = (c * CLOUD_GAIN + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
+      // Water cloud is masked to the drifting seeds, thinned on the lee, with a
+      // cap on the windward slope. Ash and smog stay on their vents and cities.
+      const mask = sim.seedMask(k % WX_NX, (k / WX_NX) | 0, false);
+      // Seeds carry the weather. The windward slope keeps a cap, and a mass
+      // thins once it has crossed onto the lee.
+      const hi = sim.highCloud[k];
+      const water = Math.min(1, c * mask * (1 - 0.72 * sim.leeCloud[k]) + hi * 0.55);
+      this.dens[k] = (water * CLOUD_GAIN + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
     }
     // Polar anti-spoke: longitudinal box blur (not a flat row mean). A mean
     // erased every lon difference, so the disc's N/S tips — which project to
@@ -785,21 +815,34 @@ export class WeatherPainter {
       let r1 = (j0 + 1 < 0 ? 0 : j0 + 1 > WX_NY - 1 ? WX_NY - 1 : j0 + 1) * WX_NX;
       const dens = den[r0 + a] * (1 - tx) * (1 - ty) + den[r0 + b] * tx * (1 - ty)
                  + den[r1 + a] * (1 - tx) * ty + den[r1 + b] * tx * ty;
-      // Wind-sheared detail stays live at the poles so cloud keeps traveling
-      // through the diorama's front/back rim (see poleW).
-      const dd = dens * (0.2 + 1.6 * det * det);
-      if (dd < 0.34) continue;
       const bay = BAYER4[(y & 3) * 4 + (x & 3)];
-      const lv = (dd > 0.39 ? 1 : (dd - 0.34) / 0.05 > bay ? 1 : 0)
-               + (dd > 0.54 ? 1 : dd > 0.5 && (dd - 0.5) / 0.04 > bay ? 1 : 0)
-               + (dd > 0.74 ? 1 : dd > 0.7 && (dd - 0.7) / 0.04 > bay ? 1 : 0);
-      if (lv === 0) continue;
-      this.stats.drawn++;
-      if (lv >= 2) this.stats.midOrDense++;
       // R5: the kind (and so the palette) is picked from the four surrounding
       // cells by ordered dither on the bilinear weights. The nearest cell's kind
       // switched cumulus/storm colour along cell edges, in rectangles.
       const kind = this.kind[(ty > BAYER4[(x & 3) * 4 + (y & 3)] ? r1 : r0) + (tx > bay ? b : a)];
+      // Cumulus stays puffy. Stratus is a flat layer, a cap hugs the slope,
+      // and cirrus is filaments running with the zonal wind.
+      let dd: number;
+      if (kind === WK.CIRRUS) {
+        const phase = fy * 2.2 + (fx - shift[jr]) * 0.25;
+        const wrapped = phase - Math.floor(phase);
+        const filament = wrapped < 0.5 ? wrapped * 2 : (1 - wrapped) * 2;
+        dd = dens * (0.2 + 1.2 * filament);
+      } else if (kind === WK.STRATUS) {
+        dd = dens * (0.58 + 0.32 * det);
+      } else if (kind === WK.CAP) {
+        dd = dens * (0.72 + 0.22 * det);
+      } else {
+        dd = dens * (0.2 + 1.6 * det * det);
+      }
+      if (dd < (kind === WK.CIRRUS ? 0.46 : 0.34)) continue;
+      let lv = (dd > 0.39 ? 1 : (dd - 0.34) / 0.05 > bay ? 1 : 0)
+             + (dd > 0.54 ? 1 : dd > 0.5 && (dd - 0.5) / 0.04 > bay ? 1 : 0)
+             + (dd > 0.74 ? 1 : dd > 0.7 && (dd - 0.7) / 0.04 > bay ? 1 : 0);
+      if (kind === WK.CIRRUS && lv > 1) lv = 1;
+      if (lv === 0) continue;
+      this.stats.drawn++;
+      if (lv >= 2) this.stats.midOrDense++;
 
       // sampleField(dens, fx + sunX * 0.35, fy - 0.15), inlined: a thinner
       // sunward neighbour makes this pixel a lit cloud top. R5: compared against
@@ -817,15 +860,15 @@ export class WeatherPainter {
 
       let o = kind * 6 + (facing ? 0 : 3);
       let r = PAL[o], g = PAL[o + 1], bl = PAL[o + 2];
-      if (acid > 0 && (kind === WK.CUMULUS || kind === WK.STORM)) {
+      if (acid > 0 && (kind === WK.CUMULUS || kind === WK.STORM || kind === WK.STRATUS || kind === WK.CAP)) {
         o = facing ? 0 : 3;
         r += (ACID[o] - r) * acid; g += (ACID[o + 1] - g) * acid; bl += (ACID[o + 2] - bl) * acid;
       }
       const rawLit = 0.5 + lut.dx[n] * sunX + sunUp;
       const lit = 0.35 + 0.65 * (rawLit < 0 ? 0 : rawLit > 1 ? 1 : rawLit);
       r *= lit; g *= lit; bl *= lit;
-      if (neb > 0 && facing && kind === WK.CUMULUS) { r += 40 * neb; g += 10 * neb; bl += 60 * neb; }
-      const ai = (LEVEL_ALPHA[lv] * intensity * A_ONE) | 0;
+      if (neb > 0 && facing && (kind === WK.CUMULUS || kind === WK.CAP || kind === WK.STRATUS)) { r += 40 * neb; g += 10 * neb; bl += 60 * neb; }
+      const ai = (this.levelAlpha[lv] * intensity * A_ONE) | 0;
       for (let Y = Y0; Y < Y1; Y++) for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, r | 0, g | 0, bl | 0, ai);
       }
     }

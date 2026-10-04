@@ -244,8 +244,14 @@ export function planSurfaceDecals(
 
       const lift = opts.liftOf(
         opts.smoothElevation(grid, gp.row, gp.col) - opts.rimFalloff(r));
+      // Atlas cell is 16px. Ordinary cover is a fraction of that so a grove
+      // does not bury the ground. `decalScale` raises a cell whose flora
+      // genome is gigantic. A little extra toward the middle of the face.
+      const body = opts.decalScale?.(gp.row, gp.col, kind)
+        ?? (kind === 'rock' ? 0.5 : kind === 'scrub' || kind === 'cactus' ? 0.34 : 0.38);
       cand.push({
-        x: px, y: py - lift, kind, scale: 0.75 + (1 - r) * 0.45,
+        x: px, y: py - lift, kind,
+        scale: body * (0.9 + (1 - r) * 0.2),
         row: gp.row, col: gp.col,
         w: life * (woody ? grove : sward) * (0.6 + hash1(bx * 977 + by * 31, seed) * 0.8),
       });
@@ -377,11 +383,18 @@ export function stampDecals(
     // shading. Confirm the source rect actually lies inside the atlas first.
     const atlasRectOk = !!atlas && sx0 + atlas.cell <= atlas.width && sy0 + atlas.cell <= atlas.height;
     if (atlas && atlasRectOk) {
-      for (let ay = 0; ay < atlas.cell; ay++) {
-        for (let ax = 0; ax < atlas.cell; ax++) {
-          const ao = ((sy0 + ay) * atlas.width + (sx0 + ax)) * 4;
+      // Nearest-neighbour so a small tree stays crisp pixels, not a blur.
+      // Scale 1 reproduces the full cell, footed on the same two-pixel pad.
+      const cellN = atlas.cell;
+      const dest = Math.max(2, Math.round(cellN * Math.max(0.2, Math.min(1.35, s.scale))));
+      const foot = Math.max(1, Math.round(2 * dest / cellN));
+      for (let ay = 0; ay < dest; ay++) {
+        const sy = Math.min(cellN - 1, (ay * cellN / dest) | 0);
+        for (let ax = 0; ax < dest; ax++) {
+          const sx = Math.min(cellN - 1, (ax * cellN / dest) | 0);
+          const ao = ((sy0 + sy) * atlas.width + (sx0 + sx)) * 4;
           if (atlas.data[ao + 3] === 0) continue;
-          px(ax - (atlas.cell >> 1), ay - (atlas.cell - 2), shade(atlas.data[ao]));
+          px(ax - (dest >> 1), ay - (dest - foot), shade(atlas.data[ao]));
         }
       }
     } else {

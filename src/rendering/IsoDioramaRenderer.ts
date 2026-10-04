@@ -31,7 +31,7 @@
  */
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
-import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
+import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
@@ -41,7 +41,7 @@ import {
   type HabitableType,
   cutawayWaterSurf,
 } from './HabitableCutawayEngine';
-import { decalRebakeNeeded, type DecalAtlas } from './SurfaceDecals';
+import { decalRebakeNeeded, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
@@ -362,6 +362,15 @@ interface Ember   { x: number; y: number; vy: number; life: number; maxLife: num
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 
 export class IsoDioramaRenderer {
+  /** Visual day for the fastest orbit in the system view, seconds. */
+  private static readonly DAY_FAST = 30;
+  /** Visual day for the slowest orbit in the system view, seconds. */
+  private static readonly DAY_SLOW = 300;
+  /** rad per animTick. Innermost world, fast jitter — see generatePlanets. */
+  private static readonly ORBIT_FAST = 0.00162;
+  /** rad per animTick. Outermost world, slow jitter. */
+  private static readonly ORBIT_SLOW = 0.00028;
+
   // Display canvas (upscaled) + low-res backbuffer
   private display!:    HTMLCanvasElement;
   private displayCtx!: CanvasRenderingContext2D;
@@ -436,6 +445,8 @@ export class IsoDioramaRenderer {
   };
   private unbindView: Array<() => void> = [];
   private lastDecalState: { lush: number; biodiversity: number } | null = null;
+  /** Flora size classes, so a lineage growing gigantic regrows its trees. */
+  private lastFloraSig = '';
 
   // Data
   private grid:        PlanetGrid | null = null;
@@ -614,10 +625,20 @@ export class IsoDioramaRenderer {
     return isIdentity(c, this.VW, this.VH) ? y : (y - c.fy) * c.zoom + this.VH / 2;
   }
 
-  /** Seconds for one local day. Bigger worlds spin slower. */
+  /**
+   * Seconds for one local day, from this world's orbital speed — the same
+   * number the system view uses to walk it around its sun.
+   *
+   * Innermost worlds (fast Kepler speed) lap in DAY_FAST seconds. The cold
+   * fringe takes DAY_SLOW. Endpoints match generatePlanets: MU / sqrt(a/10)
+   * with the 0.85–1.15 jitter, a from ~7 to ~130.
+   */
   private get dayPeriod(): number {
-    const r = this.planet?.radius ?? 5;
-    return Math.max(16, 18 + r * 5.5);
+    const speed = this.planet?.orbitalSpeed ?? 0;
+    if (speed <= 0) return (IsoDioramaRenderer.DAY_FAST + IsoDioramaRenderer.DAY_SLOW) / 2;
+    const t = (speed - IsoDioramaRenderer.ORBIT_SLOW) / (IsoDioramaRenderer.ORBIT_FAST - IsoDioramaRenderer.ORBIT_SLOW);
+    const u = t < 0 ? 0 : t > 1 ? 1 : t;
+    return IsoDioramaRenderer.DAY_SLOW + (IsoDioramaRenderer.DAY_FAST - IsoDioramaRenderer.DAY_SLOW) * u;
   }
 
   /** Local solar azimuth in radians. 0 = sun on the +x limb. */
@@ -909,8 +930,10 @@ export class IsoDioramaRenderer {
     // what this method decides; see the tick%250 and onBioPhaseAdvance sites
     // in main.ts.
     const nextState = { lush: this.lushFor(biosphere), biodiversity: biosphere?.biodiversity ?? 0 };
-    if (decalRebakeNeeded(this.lastDecalState, nextState)) {
+    const flora = this.floraSig();
+    if (decalRebakeNeeded(this.lastDecalState, nextState) || flora !== this.lastFloraSig) {
       this.lastDecalState = nextState;
+      this.lastFloraSig = flora;
       this.markSurfaceDirty();
     }
   }
@@ -1279,6 +1302,45 @@ export class IsoDioramaRenderer {
     return bio ? clamp01((bio.biodiversity / 10) * 0.55 + bio.landLife * 0.45) : 0.3;
   }
 
+  /** A plant lineage, the same test the codex uses for flora. */
+  private isFlora(sp: SpeciesGenome): boolean {
+    return sp.dna.diet === 'producer'
+      || sp.dna.metabolism === 'photosynthetic'
+      || sp.dna.locomotion === 'stationary';
+  }
+
+  /**
+   * How big a decal stamps, as a fraction of the 16px atlas cell.
+   * Ordinary cover is a few pixels. A flora genome of size `massive` grows
+   * a super tree; `large` is taller than the scrub but still leaves ground.
+   */
+  private floraScaleFn(): (row: number, col: number, kind: DecalKind) => number {
+    const byId = new Map<string, SpeciesGenome>();
+    for (const sp of this.species) byId.set(sp.id, sp);
+    const grid = this.grid;
+    return (row, col, kind) => {
+      const sp = byId.get(grid?.[row]?.[col]?.dominantSpeciesId ?? '');
+      const flora = !!sp && this.isFlora(sp);
+      const size = flora ? sp.physicalTraits.size : '';
+      if (kind === 'rock') return 0.5;
+      const woody = kind === 'conifer' || kind === 'broadleaf';
+      if (size === 'massive' && woody) return 1.15;
+      if (size === 'massive') return 0.75;
+      if (size === 'large' && woody) return 0.62;
+      return woody ? 0.38 : 0.34;
+    };
+  }
+
+  /** Changes when a living plant lineage changes size class. */
+  private floraSig(): string {
+    let s = '';
+    for (const sp of this.species) {
+      if (sp.isExtinct || !this.isFlora(sp)) continue;
+      s += sp.id + sp.physicalTraits.size + ';';
+    }
+    return s;
+  }
+
   /**
    * The weather's view of this world. Every input is real state: grid, biosphere
    * stress and oxygen, civ level, and the planet's own genome seed, so each world
@@ -1331,6 +1393,7 @@ export class IsoDioramaRenderer {
       sunLat: this.skyNow().declination,
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
+      decalScale: this.floraScaleFn(),
     });
     this.pickBuf = this.cutaway.pick;
     this.lastSurfaceBake = this.elapsed;
@@ -1347,6 +1410,7 @@ export class IsoDioramaRenderer {
       lush: this.lushFor(bio),
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
+      decalScale: this.floraScaleFn(),
     });
     this.cutaway.rebakeSurface(includeCamera);
     // Sources follow the world (industry, stress, lushness); the sky is kept.
@@ -1767,6 +1831,7 @@ export class IsoDioramaRenderer {
         let cr = 0, cg = 0, cb = 0;
         let lift = 0;
         let cellId = 0;
+        let fall = false;
 
         if (!grid) {
           cr = 40; cg = 60; cb = 90;
@@ -1830,6 +1895,21 @@ export class IsoDioramaRenderer {
             br = mix(br * 1.55, br * 0.55, depth);
             bg2 = mix(bg2 * 1.35, bg2 * 0.60, depth);
             bb = mix(bb * 1.12, bb * 0.80, depth);
+          } else if (cell.river > 0 && this.planetType !== 'lava') {
+            const fp = this.discToGridF(dx, dy);
+            const fr = fp ? fp.row - gp.row + 0.5 : 0.5;
+            const fc = fp ? fp.col - gp.col : 0.5;
+            const strength = riverStrength(cell.river);
+            if (inRiverChannel(fr, fc, cell.riverDir, strength >= 1)) {
+              const tinted = tintRiver(br, bg2, bb, strength);
+              br = tinted[0]; bg2 = tinted[1]; bb = tinted[2];
+              if (riverIsFall(cell.river)) {
+                fall = true;
+                br = Math.min(255, br * 0.55 + 150);
+                bg2 = Math.min(255, bg2 * 0.45 + 190);
+                bb = Math.min(255, bb * 0.35 + 230);
+              }
+            }
           }
 
           // Relief shading from the elevation gradient (light from upper-right).
@@ -1871,7 +1951,19 @@ export class IsoDioramaRenderer {
         const top = py - lift;
         if (lift > 0) {
           const wallShade = 0.62 + hash1(px * 37 + py * 613, seed) * 0.08;
+          const fallReach = Math.max(3, Math.round(lift * 0.85));
           for (let k = 1; k <= lift; k++) {
+            // A channel that drops a terrace paints water down the cliff
+            // instead of rock. The head is the white lip; the rest is the fall.
+            if (fall && k <= fallReach) {
+              const head = k <= 2;
+              put(px, top + k,
+                  head ? 240 : 64 + (1 - k / fallReach) * 40,
+                  head ? 250 : 156 + (1 - k / fallReach) * 30,
+                  head ? 255 : 214,
+                  cellId);
+              continue;
+            }
             // Down the face, blend toward the crust's own top stratum so the
             // extrusion looks like the same rock the underside is made of, and
             // darken with depth for a soft occlusion at the foot of the cliff.

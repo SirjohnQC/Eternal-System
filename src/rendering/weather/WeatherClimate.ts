@@ -45,6 +45,11 @@ export interface ClimateSources {
   acid: number;
   /** 0-1 emissive glow on cloud tops. */
   nebula: number;
+  /**
+   * How readily this world rains. 0 never (a desert). Around 1 is a normal
+   * world: a few regions at a time. Above 1.5 is a rainy world, wet more often.
+   */
+  raininess: number;
   personality: WeatherPersonality;
 }
 
@@ -74,20 +79,22 @@ interface TypeClimate {
   waterEvaporates: boolean; storm: number; soot: number; nebula: number;
   /** Vapour from bare frozen land (sublimation), independent of lushness. */
   sublimation: number;
+  /** Copied onto ClimateSources.raininess. */
+  raininess: number;
 }
 
 export const TYPE_CLIMATE: Record<string, TypeClimate> = {
-  ocean:   { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
-  rocky:   { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
-  storm:   { tScale: 1.00, tShift: 0.05, moist: 1.2, waterEvaporates: true,  storm: 0.60, soot: 0,    nebula: 0, sublimation: 0 },
-  toxic:   { tScale: 1.00, tShift: 0.05, moist: 1.0, waterEvaporates: true,  storm: 0.10, soot: 0,    nebula: 0, sublimation: 0 },
-  ice:     { tScale: 0.45, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0.12 },
-  desert:  { tScale: 0.80, tShift: 0.25, moist: 0.3, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
+  ocean:   { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 1 },
+  rocky:   { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 0.75 },
+  storm:   { tScale: 1.00, tShift: 0.05, moist: 1.2, waterEvaporates: true,  storm: 0.60, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 2 },
+  toxic:   { tScale: 1.00, tShift: 0.05, moist: 1.0, waterEvaporates: true,  storm: 0.10, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 1 },
+  ice:     { tScale: 0.45, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0,    sublimation: 0.12, raininess: 0.4 },
+  desert:  { tScale: 0.80, tShift: 0.25, moist: 0.3, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 0 },
   // Magma lakes classify as water biomes. They must not evaporate water.
-  lava:    { tScale: 0.50, tShift: 0.50, moist: 0.1, waterEvaporates: false, storm: 0.10, soot: 0,    nebula: 0, sublimation: 0 },
-  carbon:  { tScale: 1.00, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0.02, nebula: 0, sublimation: 0 },
-  crystal: { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0.35, sublimation: 0 },
-  gas:     { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0, sublimation: 0 },
+  lava:    { tScale: 0.50, tShift: 0.50, moist: 0.1, waterEvaporates: false, storm: 0.10, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 0 },
+  carbon:  { tScale: 1.00, tShift: 0.00, moist: 0.6, waterEvaporates: true,  storm: 0.00, soot: 0.02, nebula: 0,    sublimation: 0,    raininess: 0.55 },
+  crystal: { tScale: 1.00, tShift: 0.00, moist: 0.8, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0.35, sublimation: 0,    raininess: 0.8 },
+  gas:     { tScale: 1.00, tShift: 0.00, moist: 1.0, waterEvaporates: true,  storm: 0.00, soot: 0,    nebula: 0,    sublimation: 0,    raininess: 0.3 },
 };
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -189,6 +196,7 @@ export function buildClimate(input: ClimateInput, opts: ClimateOptions = {}): Cl
   return {
     water, temp, elev, landMoist, ashEmit, smogEmit,
     stormPressure: clamp01(tc.storm + input.extinctionPressure),
+    raininess: tc.raininess,
     acid: planetType === 'toxic' ? 1 : clamp01((0.42 - input.oxygenLevel) / 0.42) * 0.6,
     nebula: Math.max(tc.nebula, input.inNebula ? 1 : 0),
     personality: personalityFor(input.seed),

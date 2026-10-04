@@ -21,7 +21,7 @@ import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
   generatePlanetGrid, classifyBiome, isWater, isHabitable,
-  SEA_LEVEL, GRID_SIZE, BIOME_COLORS,
+  SEA_LEVEL, GRID_SIZE, BIOME_COLORS, tintRiver,
   type BiomeType, type GridCell,
 } from './simulation/PlanetGrid';
 import { ARCHETYPES } from './simulation/LifeSystem';
@@ -4386,6 +4386,10 @@ function drawPlanetMap(): void {
         }
       } else {
         cr = br; cg = bg; cb = bb;
+        if (cell.river > 0 && !isWater(cell.biome)) {
+          const tinted = tintRiver(cr, cg, cb, cell.river);
+          cr = tinted[0]; cg = tinted[1]; cb = tinted[2];
+        }
         // A little relief so continents read as terrain, not flat colour.
         const east = grid[r]?.[(c + 1) % GRID_SIZE];
         const slope = east ? (cell.elevation - east.elevation) * 5 : 0;

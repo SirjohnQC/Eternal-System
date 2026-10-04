@@ -73,8 +73,9 @@ function makeStar(): StarBody {
 
 function rebuild(): void {
   const planet = makePlanet();
-  // ?archetype=supercontinent|archipelago|hemispheric — omit for the legacy field
-  const archetype = (params.get('archetype') as any) || null;
+  // ?archetype=supercontinent|archipelago|hemispheric — omit to roll from the type
+  const rawArchetype = params.get('archetype');
+  const archetype = rawArchetype ? (rawArchetype as any) : undefined;
   const grid = generatePlanetGrid(type, seed * 7777, null, archetype);
 
   // Fake some life + civilisation coverage so lights and vegetation show.

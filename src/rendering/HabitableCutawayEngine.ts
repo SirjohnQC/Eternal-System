@@ -33,10 +33,11 @@
  */
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
-import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE } from '../simulation/PlanetGrid';
+import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
 import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import {
-  planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION, type DecalAtlas, type DecalSite,
+  planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION,
+  type DecalAtlas, type DecalKind, type DecalSite,
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import type { ClimateSources } from './weather/WeatherClimate';
@@ -302,6 +303,11 @@ export interface CutawayBakeOpts extends CutawayGeom {
   lush?: number;
   /** `planet.genomeSeed`. Decals are stable across saves and re-bakes. */
   decalSeed?: number;
+  /**
+   * Atlas-cell multiplier for one decal. Ordinary cover is well under 1 so
+   * the ground stays visible; a gigantic flora lineage can return about 1.
+   */
+  decalScale?: (row: number, col: number, kind: DecalKind) => number;
   /** Loaded decal atlas, or null to use the procedural fallback. */
   decalAtlas?: DecalAtlas | null;
   /**
@@ -1080,6 +1086,23 @@ export function* surfaceSteps(
         bg = mix(bg, Math.min(255, bg * 1.12 + 8), veg);
         bb = mix(bb, bb * 0.76, veg);
       }
+      let fall = false;
+      if (cell.river > 0 && !isWater(biome) && opts.planetType !== 'lava') {
+        const fp = opts.discToGridF?.(dx, dy);
+        const fr = fp ? fp.row - gp.row + 0.5 : 0.5;
+        const fc = fp ? fp.col - Math.floor(fp.col) : 0.5;
+        const strength = riverStrength(cell.river);
+        if (inRiverChannel(fr, fc, cell.riverDir, strength >= 1)) {
+          const tinted = tintRiver(br, bg, bb, strength);
+          br = tinted[0]; bg = tinted[1]; bb = tinted[2];
+          if (riverIsFall(cell.river)) {
+            fall = true;
+            br = Math.min(255, br * 0.55 + 150);
+            bg = Math.min(255, bg * 0.45 + 190);
+            bb = Math.min(255, bb * 0.35 + 230);
+          }
+        }
+      }
 
       // Relief from the elevation gradient, then STEPPED — the whole point of
       // the flat-tabletop read is that shading arrives in plates.
@@ -1136,6 +1159,13 @@ export function* surfaceSteps(
           } else {
             vr = cr; vg = cg; vb = cb;
           }
+        } else if (fall && row - top <= Math.max(3, Math.round(lift * 0.85))) {
+          const k = row - top;
+          const reach = Math.max(3, Math.round(lift * 0.85));
+          const head = k <= 2;
+          vr = head ? 240 : 64 + (1 - k / reach) * 40;
+          vg = head ? 250 : 156 + (1 - k / reach) * 30;
+          vb = head ? 255 : 214;
         } else {
           // Solid cliff column under the crest (diorama_test language) — not a
           // silt fade, so height reads as real ground you can put life on.

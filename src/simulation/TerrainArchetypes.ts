@@ -88,7 +88,7 @@ export function elevationFor(
       // a low-frequency mask decides which stretches of arc surface at all.
       // Between the arcs there is nothing to clear sea level.
       const v = fbmWrapX(nx * 6, ny * 6, seed, 5, nx, 6);
-      const crest = clamp01(1 - Math.abs(v * 2 - 1) * 8);
+      const crest = clamp01(1 - Math.abs(v * 2 - 1) * 6.2);
       // The arcs fade toward the poles. Without this the densest island cluster
       // can be polar, and IsoDioramaRenderer centres its disc on the densest
       // land — so the player got a white pinwheel of snow islets where the
@@ -164,6 +164,120 @@ export function elevationFor(
       return clamp01(e);
     }
   }
+}
+
+/**
+ * Shared layout for a split ocean: 2–4 centres spread in longitude so the
+ * masses do not all pile onto one side of the planet.
+ */
+function continentCentres(seed: number): Array<{ cx: number; cy: number; reach: number }> {
+  const n = 2 + Math.floor(hash2(1, 1, seed) * 3);
+  const out: Array<{ cx: number; cy: number; reach: number }> = [];
+  for (let i = 0; i < n; i++) {
+    out.push({
+      cx: ((i + 0.2 + hash2(i + 3, 8, seed) * 0.55) / n) % 1,
+      cy: (i % 2 === 0 ? 0.34 : 0.58) + (hash2(8, i + 3, seed) - 0.5) * 0.12,
+      reach: 0.46 + hash2(i, 21, seed) * 0.10,
+    });
+  }
+  return out;
+}
+
+/**
+ * 2–4 separate landmasses. The coast is warped in the mass's own frame, and
+ * the height on land is local noise — not distance from the middle.
+ * A cone drawn in the diorama's lift steps is a stack of oval plates, which
+ * is what a world-scale wobble was still producing on the smaller masses:
+ * the wobble was flat across them, the sea ate the low skirt, and the shelf
+ * that remained rose toward the centre.
+ */
+export function continentsElevation(nx: number, ny: number, seed: number): number {
+  let e = 0.20;
+  let i = 0;
+  for (const c of continentCentres(seed)) {
+    const dx = Math.min(Math.abs(nx - c.cx), 1 - Math.abs(nx - c.cx)) * 2;
+    const dy = (ny - c.cy) * 1.58;
+    const warp =
+      (fbm(dx * 10, dy * 10, seed ^ (0x51 + i * 19), 3) - 0.5) * 0.34
+      + (fbm(dx * 20, dy * 20, seed ^ (0x27 + i * 13), 2) - 0.5) * 0.14;
+    const body = clamp01(1 - (Math.hypot(dx * 1.15, dy) + warp) / c.reach);
+    // A shoulder off to one side, overlapping the body, so the silhouette is
+    // a lump rather than the ellipse the body alone would be.
+    const ang = hash2(i + 4, 9, seed) * Math.PI * 2;
+    const ox = Math.cos(ang) * 0.16;
+    const oy = Math.sin(ang) * 0.13;
+    const shoulder = clamp01(1 - Math.hypot(dx - ox, dy - oy) / (c.reach * 0.62));
+    const dome = Math.max(body, shoulder);
+    const inland = clamp01((dome - 0.60) / 0.05);
+    if (inland <= 0) {
+      e = Math.max(e, 0.18 + dome * 0.38);
+    } else {
+      // No distance term. A small mass still changes height across itself
+      // because this noise is sampled in the mass's own frame.
+      const bump = fbm(dx * 14 + i, dy * 14, seed ^ (0x9c + i * 17), 2);
+      const h = 0.60 + (bump - 0.5) * 0.22;
+      e = Math.max(e, h);
+    }
+    i++;
+  }
+  return clamp01(e);
+}
+
+/**
+ * Rare sibling of `continentsElevation`: the same centres, drawn as clean
+ * circular domes. Most split oceans should not look like this.
+ */
+export function discsElevation(nx: number, ny: number, seed: number): number {
+  let e = 0.20;
+  for (const c of continentCentres(seed)) {
+    const dx = Math.min(Math.abs(nx - c.cx), 1 - Math.abs(nx - c.cx)) * 2;
+    const dy = (ny - c.cy) * 1.58;
+    const dome = clamp01(1 - Math.hypot(dx * 1.15, dy) / c.reach);
+    e = Math.max(e, 0.20 + dome * 0.50);
+  }
+  e += (fbmWrapX(nx * 4, ny * 4, seed ^ 0x5a, 3, nx, 4) - 0.5) * 0.10;
+  return clamp01(e);
+}
+
+/**
+ * A highland plateau. The gorge itself is cut after sea level is applied,
+ * so a dry world and a wetter one get the same depth of trench.
+ */
+export function canyonElevation(nx: number, ny: number, seed: number): number {
+  return clamp01(0.62 + (fbmWrapX(nx * 3, ny * 3, seed, 4, nx, 3) - 0.5) * 0.16);
+}
+
+/** 0–1 narrow trough. High frequency, so the cut is a slot and not a wide valley. */
+export function canyonTrough(nx: number, ny: number, seed: number): number {
+  const along = fbmWrapX(nx * 14, ny * 6, seed ^ 0x71, 3, nx, 14);
+  const across = fbmWrapX(nx * 6, ny * 14, seed ^ 0x2c, 3, nx, 6);
+  const trough = Math.max(
+    clamp01(1 - Math.abs(along * 2 - 1) * 16),
+    clamp01(1 - Math.abs(across * 2 - 1) * 18) * 0.75,
+  );
+  const open = clamp01((fbmWrapX(nx * 1.4, ny * 1.4, seed ^ 0x44, 2, nx, 1.4) - 0.42) * 3.4);
+  return trough * open;
+}
+
+export type LandStructure = 'continents' | 'discs' | 'archipelago' | 'canyon' | 'legacy';
+
+/** What an untyped world is allowed to be. Water can split; dry highland can crack. */
+export function structureFor(planetType: string, seed: number): LandStructure {
+  let h = (planetType.length * 131 + seed * 17) | 0;
+  h = ((h ^ (h >>> 13)) * 1540483477) | 0;
+  const r = ((h >>> 0) % 1000) / 1000;
+  const water = planetType === 'ocean' || planetType === 'toxic' || planetType === 'storm';
+  const dry = planetType === 'desert' || planetType === 'ice' || planetType === 'rocky'
+    || planetType === 'carbon' || planetType === 'crystal';
+  if (water) {
+    // Clean circular domes are a rare roll. The common split is a ragged coast.
+    if (r < 0.08) return 'discs';
+    if (r < 0.58) return 'continents';
+    if (r < 0.83) return 'archipelago';
+    return 'legacy';
+  }
+  if (dry) return r < 0.55 ? 'canyon' : 'legacy';
+  return 'legacy';
 }
 
 /** Which archetype a world gets. Rolled from `genomeSeed`, type-independent. */

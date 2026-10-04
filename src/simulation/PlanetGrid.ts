@@ -12,7 +12,7 @@
  */
 
 import type { PlanetDNA } from './GameState';
-import { elevationFor, type TerrainArchetype } from './TerrainArchetypes';
+import { elevationFor, structureFor, continentsElevation, discsElevation, canyonElevation, canyonTrough, type TerrainArchetype } from './TerrainArchetypes';
 
 /** Convert PlanetDNA string enums to numeric values used by grid generation */
 export function dnaToGridParams(dna: PlanetDNA): { oceanCoverage: number; tempBias: number } {
@@ -87,6 +87,13 @@ export interface GridCell {
   dominantSpeciesId: string | null;
   /** ID of the civilization controlling this cell, or null */
   civId:        string | null;
+  /** 0 on dry ground, ~0.65 a stream, 1 a river. A fall adds 1 (1.65 or 2). */
+  river:        number;
+  /**
+   * Downhill step of a channel, 0–7 (N, NE, … NW in grid row/col). -1 when
+   * this cell is not a channel. See `RIVER_STEP`.
+   */
+  riverDir:     number;
 }
 
 export type PlanetGrid = GridCell[][];
@@ -269,6 +276,293 @@ export function classifyBiome(
   return 'forest';
 }
 
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Trades and polar easterlies blow west; the westerlies blow east. +1 is east. */
+function prevailingDir(row: number): number {
+  const lat = Math.abs(row / (GRID_SIZE - 1) - 0.5) * 180;
+  return lat < 30 || lat >= 60 ? -1 : 1;
+}
+
+/** Shallow seas stay fertile: the microbial phase spreads only in water. */
+function fertilityFor(biome: BiomeType, moist: number, temp: number): number {
+  if (isWater(biome)) {
+    const shelf = biome === 'shallow' ? 1.0 : biome === 'ocean' ? 0.7 : 0.4;
+    return Math.max(0, shelf * (0.55 + (1 - Math.abs(temp - 0.5) * 2) * 0.45));
+  }
+  if (isHabitable(biome)) {
+    return Math.max(0, moist * 0.55 + (1 - Math.abs(temp - 0.5) * 2) * 0.35 + 0.1);
+  }
+  return 0;
+}
+
+/**
+ * The wind climbs a slope and drops its moisture, then stays dry on the way
+ * down. One lap around each latitude settles the carried dryness; the second
+ * writes it. Ocean recharges the air, so the next windward coast is wet again.
+ */
+function layRainShadow(grid: PlanetGrid, planetType: string): void {
+  const wet = planetType === 'desert' || planetType === 'lava' || planetType === 'carbon' ? 0.4
+    : planetType === 'storm' ? 1.35
+    : planetType === 'ice' ? 0.55
+    : 1;
+  for (let row = 0; row < GRID_SIZE; row++) {
+    const dir = prevailingDir(row);
+    const line = grid[row];
+    let carried = 0;
+    for (let step = 0; step < GRID_SIZE * 2; step++) {
+      const col = ((dir > 0 ? step : -step) % GRID_SIZE + GRID_SIZE) % GRID_SIZE;
+      const up = (col - dir + GRID_SIZE) % GRID_SIZE;
+      const cell = line[col];
+      const slope = cell.elevation - line[up].elevation;
+      const write = step >= GRID_SIZE;
+      if (cell.elevation < SEA_LEVEL) {
+        carried = 0;
+        continue;
+      }
+      if (slope > 0.004) {
+        const dump = Math.min(0.45, slope * 8) * wet;
+        if (write) cell.moisture = clamp01(cell.moisture + dump * (0.35 + 0.65 * (1 - carried)));
+        carried = Math.min(1, carried + slope * 6);
+      } else {
+        if (write) {
+          cell.moisture = clamp01(
+            cell.moisture * (1 - 0.65 * carried * Math.min(1, wet)) - Math.max(0, -slope) * 2 * wet,
+          );
+        }
+        carried = Math.max(0, carried * 0.985 + Math.max(0, -slope) * 1.5);
+      }
+    }
+  }
+}
+
+/** Lift shelf of an elevation. Matches the diorama's land steps. */
+function elevTier(e: number): number {
+  if (e <= SEA_LEVEL) return 0;
+  if (e > 0.80) return 4;
+  if (e > 0.70) return 3;
+  if (e > 0.62) return 2;
+  if (e > 0.54) return 1;
+  return 0;
+}
+
+/** Tiny deterministic tilt so a flat slope wanders instead of running straight. */
+function riverJitter(row: number, col: number, dr: number, dc: number): number {
+  let h = (row * 374761393 + col * 668265263 + (dr + 2) * 1274126177 + (dc + 2) * 461845907) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h >>> 0) % 1000) / 1000;
+}
+
+/**
+ * Water runs downhill to the sea. A cell becomes a stream once enough land
+ * drains through it, and a river once a whole basin does. Dry ground only
+ * carries a channel when the flow is already a river. A lip that drops a
+ * whole terrace is a waterfall.
+ */
+function traceRivers(grid: PlanetGrid, planetType: string): void {
+  if (planetType === 'lava' || planetType === 'gas') return;
+  const n = GRID_SIZE;
+  const at = (i: number) => grid[(i / n) | 0][i % n];
+  const flow = new Int32Array(n * n).fill(-1);
+  const dir = new Int8Array(n * n).fill(-1);
+  const land: number[] = [];
+  // (dr+1)*3+(dc+1) → RIVER_STEP index. Centre slot is unused.
+  const dirIx = [7, 0, 1, 6, -1, 2, 5, 4, 3];
+  for (let row = 0; row < n; row++) {
+    for (let col = 0; col < n; col++) {
+      if (grid[row][col].elevation < SEA_LEVEL) continue;
+      const i = row * n + col;
+      land.push(i);
+      let bestE = Infinity;
+      let best = -1;
+      let bestDir = -1;
+      const here = grid[row][col].elevation;
+      for (let dr = -1; dr <= 1; dr++) {
+        const rr = row + dr;
+        if (rr < 0 || rr >= n) continue;
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const cc = (col + dc + n) % n;
+          const trueE = grid[rr][cc].elevation;
+          if (trueE >= here) continue;
+          const e = trueE + (riverJitter(row, col, dr, dc) - 0.5) * 0.01;
+          if (e < bestE) {
+            bestE = e; best = rr * n + cc;
+            bestDir = dirIx[(dr + 1) * 3 + (dc + 1)];
+          }
+        }
+      }
+      flow[i] = best;
+      dir[i] = bestDir;
+    }
+  }
+  // A shelf with no downhill step is a lake. Cut a short outlet to the
+  // nearest lower ground so the water leaves — that outlet is where a
+  // waterfall happens.
+  const seen = new Int32Array(n * n);
+  const parent = new Int32Array(n * n);
+  let gen = 1;
+  const pits = land.filter(i => flow[i] < 0).sort((a, b) => at(b).elevation - at(a).elevation);
+  for (const pit of pits) {
+    const pitE = at(pit).elevation;
+    const pr = (pit / n) | 0;
+    const pc = pit % n;
+    gen++;
+    seen[pit] = gen;
+    parent[pit] = -1;
+    const q = [pit];
+    let found = -1;
+    for (let qh = 0; qh < q.length && found < 0; qh++) {
+      const cur = q[qh];
+      const r = (cur / n) | 0;
+      const c = cur % n;
+      const cdr = Math.abs(r - pr);
+      const cdc = Math.min(Math.abs(c - pc), n - Math.abs(c - pc));
+      if (Math.max(cdr, cdc) >= 48) continue;
+      for (let dr = -1; dr <= 1; dr++) {
+        const rr = r + dr;
+        if (rr < 0 || rr >= n) continue;
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const cc = (c + dc + n) % n;
+          const nb = rr * n + cc;
+          if (seen[nb] === gen) continue;
+          seen[nb] = gen;
+          parent[nb] = cur;
+          if (grid[rr][cc].elevation < pitE && grid[rr][cc].elevation >= SEA_LEVEL) {
+            found = nb;
+            break;
+          }
+          if (grid[rr][cc].elevation >= SEA_LEVEL) q.push(nb);
+        }
+        if (found >= 0) break;
+      }
+    }
+    if (found < 0) continue;
+    let child = found;
+    let cur = parent[found];
+    let guard = 0;
+    while (cur >= 0 && guard++ < 96) {
+      if (at(cur).elevation >= pitE) {
+        let dr = ((child / n) | 0) - ((cur / n) | 0);
+        let dc = (child % n) - (cur % n);
+        if (dc > n / 2) dc -= n;
+        if (dc < -n / 2) dc += n;
+        dr = Math.sign(dr);
+        dc = Math.sign(dc);
+        flow[cur] = child;
+        dir[cur] = dirIx[(dr + 1) * 3 + (dc + 1)];
+      }
+      child = cur;
+      cur = parent[cur];
+    }
+  }
+  const acc = new Float32Array(n * n);
+  for (const i of land) acc[i] = 1;
+  for (const i of land) {
+    let f = flow[i];
+    let guard = 0;
+    const mark = i + 100000;
+    while (f >= 0 && guard++ < 400) {
+      if (seen[f] === mark) break;
+      seen[f] = mark;
+      if (at(f).elevation < SEA_LEVEL) break;
+      acc[f] += 1;
+      f = flow[f];
+    }
+  }
+  const stream = planetType === 'desert' ? 120 : 40;
+  const trunk = stream * 3;
+  const moistGate = planetType === 'desert' ? 0.48 : 0.22;
+  for (const i of land) {
+    const a = acc[i];
+    if (a < stream) continue;
+    const cell = at(i);
+    if (cell.moisture < moistGate && a < trunk) continue;
+    cell.river = a >= trunk ? 1 : 0.65;
+    cell.riverDir = dir[i];
+  }
+  // One waterfall per channel, on its biggest terrace drop. A stream that
+  // never leaves a high shelf stays a stream.
+  const fed = new Uint8Array(n * n);
+  for (const i of land) {
+    const f = flow[i];
+    if (f >= 0 && at(i).river > 0) fed[f] = 1;
+  }
+  for (const head of land) {
+    if (at(head).river <= 0 || fed[head]) continue;
+    let cur = head;
+    let best = -1;
+    let bestDrop = 0;
+    let trunk = false;
+    for (let guard = 0; guard < 400 && cur >= 0 && at(cur).river > 0; guard++) {
+      if (riverStrength(at(cur).river) >= 1) trunk = true;
+      const down = flow[cur];
+      if (down < 0) break;
+      const from = elevTier(at(cur).elevation);
+      const belowE = at(down).elevation;
+      const to = belowE < SEA_LEVEL ? -1 : elevTier(belowE);
+      const drop = from - to;
+      if (from >= 1 && drop > bestDrop) {
+        bestDrop = drop;
+        best = cur;
+      }
+      if (at(down).river <= 0) break;
+      cur = down;
+    }
+    // Not every river. The ones that do fall are spread across the land.
+    if (trunk && best >= 0 && ((head * 3) >>> 0) % 4 === 0) at(best).river += 1;
+  }
+}
+
+/** Grid step for `riverDir` 0–7: [dRow, dCol], N then clockwise. */
+export const RIVER_STEP: ReadonlyArray<readonly [number, number]> = [
+  [-1, 0], [-1, 1], [0, 1], [1, 1], [1, 0], [1, -1], [0, -1], [-1, -1],
+];
+
+/** Channel strength with the waterfall flag removed. 0, ~0.65, or 1. */
+export function riverStrength(amount: number): number {
+  if (amount <= 0) return 0;
+  return amount > 1.25 ? amount - 1 : amount;
+}
+
+/** True on the lip where a channel drops a terrace. */
+export function riverIsFall(amount: number): boolean {
+  return amount > 1.25;
+}
+
+/**
+ * Whether a pixel inside a cell sits on the water thread.
+ * `fracRow` / `fracCol` are 0–1 within the cell. A trunk is wider than a stream.
+ * Unknown direction paints the cell, so a map that has no sub-pixel still shows it.
+ */
+export function inRiverChannel(
+  fracRow: number, fracCol: number, dir: number, trunk: boolean,
+): boolean {
+  const step = RIVER_STEP[dir];
+  if (!step) return true;
+  const dr = step[0], dc = step[1];
+  const len = Math.hypot(dr, dc) || 1;
+  const pr = fracRow - 0.5, pc = fracCol - 0.5;
+  const cross = Math.abs(pr * dc - pc * dr) / len;
+  return cross <= (trunk ? 0.55 : 0.40);
+}
+
+/** Blue thread drawn over a land biome. `amount` is 0, ~0.65, or 1. */
+export function tintRiver(
+  r: number, g: number, b: number, amount: number,
+): [number, number, number] {
+  if (amount <= 0) return [r, g, b];
+  const t = 0.5 + 0.35 * (amount > 1 ? 1 : amount);
+  return [
+    r + (58 - r) * t,
+    g + (132 - g) * t,
+    b + (198 - b) * t,
+  ];
+}
+
 // ─── Grid generation ─────────────────────────────────────────────────────────
 
 /**
@@ -304,6 +598,7 @@ export function generatePlanetGrid(
   const tempBias  = params.tempBias;            // raw offset (-0.3 … +0.3)
 
   const grid: PlanetGrid = [];
+  const shape = archetype === undefined ? structureFor(planetType, seed) : null;
 
   for (let row = 0; row < GRID_SIZE; row++) {
     grid[row] = [];
@@ -315,13 +610,21 @@ export function generatePlanetGrid(
     for (let col = 0; col < GRID_SIZE; col++) {
       const nx = col / GRID_SIZE;               // wraps (0 == 1)
 
-      // Elevation: FBM + ocean bias shifts effective sea level
-      let elev = archetype
-        ? elevationFor(archetype, nx, ny, elevSeed)
-        : fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
+      let elev: number;
+      if (archetype) elev = elevationFor(archetype, nx, ny, elevSeed);
+      else if (shape === 'continents') elev = continentsElevation(nx, ny, elevSeed);
+      else if (shape === 'discs') elev = discsElevation(nx, ny, elevSeed);
+      else if (shape === 'archipelago') elev = elevationFor('archipelago', nx, ny, elevSeed);
+      else if (shape === 'canyon') elev = canyonElevation(nx, ny, elevSeed);
+      else elev = fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
       // Coastal fade at poles (makes ice caps at very high latitudes)
       const poleFade = Math.pow(1 - latTemp, 3) * 0.3;
       elev = Math.max(0, Math.min(1, elev - oceanBias * 0.3 + poleFade));
+      if (shape === 'canyon' && elev > SEA_LEVEL + 0.12) {
+        const slot = canyonTrough(nx, ny, elevSeed);
+        const cut = Math.max(SEA_LEVEL + 0.06, elev - slot * 0.2);
+        elev = cut;
+      }
 
       // Moisture: FBM at slightly different frequency
       const moist = Math.max(0, Math.min(1,
@@ -334,23 +637,7 @@ export function generatePlanetGrid(
       ));
 
       const biome     = classifyBiome(elev, moist, temp, planetType);
-      // Fertility is how well life grows here.
-      //
-      // Water used to be given 0, because `isHabitable` excludes it — but the
-      // microbial phase spreads ONLY in water, multiplying by that fertility.
-      // The result was that life could never leave 0 during the entire first
-      // phase, and in practice `lifeDensity` stayed near zero for a whole game:
-      // no vegetation response, no settlements, nothing to render or inspect.
-      // Shallow seas are in reality the most productive water there is.
-      let fertility: number;
-      if (isWater(biome)) {
-        const shelf = biome === 'shallow' ? 1.0 : biome === 'ocean' ? 0.7 : 0.4;
-        fertility = Math.max(0, shelf * (0.55 + (1 - Math.abs(temp - 0.5) * 2) * 0.45));
-      } else if (isHabitable(biome)) {
-        fertility = Math.max(0, moist * 0.55 + (1 - Math.abs(temp - 0.5) * 2) * 0.35 + 0.1);
-      } else {
-        fertility = 0;   // bare mountain and volcanic rock
-      }
+      const fertility = fertilityFor(biome, moist, temp);
 
       grid[row][col] = {
         elevation:         elev,
@@ -361,9 +648,20 @@ export function generatePlanetGrid(
         lifeDensity:       0,
         dominantSpeciesId: null,
         civId:             null,
+        river:             0,
+        riverDir:          -1,
       };
     }
   }
+
+  layRainShadow(grid, planetType);
+  for (const row of grid) {
+    for (const cell of row) {
+      cell.biome = classifyBiome(cell.elevation, cell.moisture, cell.temperature, planetType);
+      cell.fertility = fertilityFor(cell.biome, cell.moisture, cell.temperature);
+    }
+  }
+  traceRivers(grid, planetType);
 
   return grid;
 }

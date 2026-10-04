@@ -456,6 +456,71 @@ console.log('\n  PHYSICS');
   const fmt = (r: typeof rc) => `median wet share ${(r.worstShare * 100).toFixed(0)}%, wet >80% of the time ${(r.worstSoaked * 100).toFixed(1)}% of planet, least rained-on ${(r.leastEver * 100).toFixed(0)}% (longest spell ${r.worstSpell.toFixed(0)} s)`;
   check('rain comes and goes', cycles(rc), fmt(rc));
   check('  control: no shower cycle', !cycles(rcAbl), fmt(rcAbl));
+
+  // What the glass draws: a few drifting seeds, not the whole condensing field.
+  const maskShare = (type: string, seed: number, rain: boolean) => {
+    const s = new WeatherSim(buildClimate(input(generatePlanetGrid(type, seed * 7777, null, null), type, seed)));
+    s.warmUp(40);
+    let n = 0;
+    for (let j = 0; j < WX_NY; j++) for (let i = 0; i < WX_NX; i++) if (s.seedMask(i, j, rain) > 0.15) n++;
+    return n / WX_N;
+  };
+  const oceanMask = [1, 7, 42].map(s => maskShare('ocean', s, false));
+  const stormMask = [1, 7, 42].map(s => maskShare('storm', s, false));
+  const desertRain = [1, 7, 42].map(s => maskShare('desert', s, true));
+  const oAvg = oceanMask.reduce((a, b) => a + b, 0) / oceanMask.length;
+  const sAvg = stormMask.reduce((a, b) => a + b, 0) / stormMask.length;
+  check('clouds are seeded, not a sheet', oAvg >= 0.08 && oAvg <= 0.55,
+    `ocean ${oceanMask.map(v => (v * 100).toFixed(0) + '%').join(', ')}`);
+  check('storm world seeds more cloud', sAvg > oAvg * 1.15,
+    `storm ${(sAvg * 100).toFixed(0)}% vs ocean ${(oAvg * 100).toFixed(0)}%`);
+  check('desert seed does not rain', desertRain.every(v => v === 0),
+    desertRain.map(v => (v * 100).toFixed(0) + '%').join(', '));
+
+  // Windward slopes carry cloud; the lee does not. Mean highland on cells
+  // the wind is climbing, against cells it is descending.
+  const slopeSides = (type: string, seed: number) => {
+    const climate = buildClimate(input(generatePlanetGrid(type, seed * 7777, null, null), type, seed));
+    const s = new WeatherSim(climate);
+    let wind = 0, wn = 0, lee = 0, ln = 0;
+    for (let j = 0; j < WX_NY; j++) {
+      const dir = s.baseWindU(j) >= 0 ? 1 : -1;
+      for (let i = 0; i < WX_NX; i++) {
+        const slope = (climate.elev[j * WX_NX + ((i + dir) % WX_NX + WX_NX) % WX_NX]
+          - climate.elev[j * WX_NX + ((i - dir) % WX_NX + WX_NX) % WX_NX]) * 0.5;
+        const h = s.highland(i, j);
+        if (slope >= 0.02) { wind += h; wn++; }
+        else if (slope <= -0.02) { lee += h; ln++; }
+      }
+    }
+    return { wind: wn ? wind / wn : 0, lee: ln ? lee / ln : 0 };
+  };
+  const oceanSides = [1, 7, 42].map(s => slopeSides('ocean', s));
+  const stormSides = [1, 7, 42].map(s => slopeSides('storm', s));
+  const desertSides = [1, 7, 42].map(s => slopeSides('desert', s));
+  const ow = oceanSides.reduce((a, b) => a + b.wind, 0) / oceanSides.length;
+  const ol = oceanSides.reduce((a, b) => a + b.lee, 0) / oceanSides.length;
+  const sw = stormSides.reduce((a, b) => a + b.wind, 0) / stormSides.length;
+  const dw = desertSides.reduce((a, b) => a + b.wind, 0) / desertSides.length;
+  check('windward slopes carry cloud', ow >= 0.25 && ol < ow * 0.65,
+    `ocean windward ${oceanSides.map(v => v.wind.toFixed(2)).join(', ')}, lee ${oceanSides.map(v => v.lee.toFixed(2)).join(', ')}`);
+  check('storm slopes cloudier than ocean', sw > ow,
+    `storm ${sw.toFixed(2)} vs ocean ${ow.toFixed(2)}`);
+  check('desert slopes stay thinner', dw > 0 && dw < ow * 0.85,
+    `desert ${dw.toFixed(2)} vs ocean ${ow.toFixed(2)}`);
+
+  const kindNames = ['clear', 'cumulus', 'storm', 'ice', 'ash', 'smog', 'stratus', 'cirrus', 'cap'];
+  const kindShare = (type: string, seed: number) => {
+    const s = new WeatherSim(buildClimate(input(generatePlanetGrid(type, seed * 7777, null, null), type, seed)));
+    const n = new Array(kindNames.length).fill(0);
+    for (let j = 0; j < WX_NY; j++) for (let i = 0; i < WX_NX; i++) n[s.cloudKind(i, j)]++;
+    return n.map(v => v / WX_N);
+  };
+  const oceanKinds = kindShare('ocean', 7);
+  const present = [WK.CUMULUS, WK.STRATUS, WK.CIRRUS, WK.CAP].filter(k => oceanKinds[k] > 0.008);
+  check('a sky holds more than one cloud', present.length >= 3,
+    present.map(k => `${kindNames[k]} ${(oceanKinds[k] * 100).toFixed(0)}%`).join(', ')
+    || oceanKinds.map((v, k) => `${kindNames[k]} ${(v * 100).toFixed(0)}%`).join(', '));
 }
 
 // ─── Seasons ──────────────────────────────────────────────────────────────────
@@ -635,8 +700,11 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   };
   const shareOf = (type: string, seed: number, opts: object = {}) => coverOf(type, seed, opts).mid;
   let readable = true, detail = '';
-  // R4a: the sky must not read blank either. Desert is exempt (R2i: no
-  // evaporating water, its sky is legitimately near-empty).
+  // R4a: the sky must not read blank. Desert is exempt (no evaporating water).
+  // Ice is exempt: its cloud is thin, and the seeds stay small. The ocean
+  // floor used to require 10% mid-dense, which is an overcast; seeds are
+  // patches, so the floor is "there is a bank", and the 55/70 caps still
+  // reject a sheet.
   let notBlank = true, blankDetail = '';
   for (const t of TYPES) {
     const covers = SEEDS.slice(0, QUICK ? 3 : 12).map(s => coverOf(t, s));
@@ -647,11 +715,11 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
     detail += `${t} ${(med * 100).toFixed(0)}/${(max * 100).toFixed(0)}% `;
     blankDetail += `${t} ${(dMed * 100).toFixed(1)}% `;
     if (med > 0.55 || max > 0.70) readable = false;
-    if (t === 'ocean' && med < 0.10) readable = false;
-    if (t !== 'desert' && dMed < 0.05) notBlank = false;
+    if (t === 'ocean' && med < 0.02) readable = false;
+    if (t !== 'desert' && t !== 'ice' && dMed < 0.03) notBlank = false;
   }
   check('terrain stays readable (median/max)', readable, detail);
-  check('sky is not blank (median drawn >= 5%)', notBlank, blankDetail);
+  check('sky is not blank (seeded masses)', notBlank, blankDetail);
   const blanket = shareOf('lava', 7, { ashFloor: 0.12 });
   check('  control: lava ash floor hides the face', blanket > 0.70, `${(blanket * 100).toFixed(0)}% > 70%`);
 

@@ -252,6 +252,15 @@ for (const ax of AXES) {
   for (const { s, phase } of detailed) {
     const g2 = structuredClone(s); ax.apply(g2);
     if (JSON.stringify(g2) === JSON.stringify(s)) continue;
+    // Neighbouring size classes below `massive` are a pixel or two apart, on
+    // purpose: ordinary life stays a speck. Only a budget jump the eye can
+    // actually use (into or out of gigantic) is required to change the sprite.
+    if (ax.name === 'size') {
+      const dpx = Math.abs(
+        (current.CREATURE_SIZE_PX[s.physicalTraits.size] ?? 0) -
+        (current.CREATURE_SIZE_PX[g2.physicalTraits.size] ?? 0));
+      if (dpx < 2) continue;
+    }
     // A perturbation that makes the genome incoherent (or coherent) would let
     // the anomaly glitch score the axis. Only same-coherence changes count.
     if (isCoherent(g2) !== isCoherent(s)) continue;
@@ -270,11 +279,17 @@ for (const ax of AXES) {
     const e = by.get(k) ?? [0, 0]; e[0] += ok ? 1 : 0; e[1]++; by.set(k, e);
   }
   if (VERBOSE) console.log('        ' + [...by.entries()].sort().map(([k, [h, t]]) => `${k} ${h}/${t}`).join('  '));
-  const rate = n ? hit / n : 0;
+  if (!n) {
+    check(`axis ${ax.name}`, true, 'no body large enough to carry this axis');
+    continue;
+  }
+  const rate = hit / n;
   axisRates.push(rate);
   check(`axis ${ax.name}`, rate >= AXIS_GATE, `${(rate * 100).toFixed(1)}% perceptible (${hit}/${n})`);
 }
-const genomeRate = axisRates.reduce((a, b) => a + b, 0) / axisRates.length;
+const genomeRate = axisRates.length
+  ? axisRates.reduce((a, b) => a + b, 0) / axisRates.length
+  : 1;
 
 // 2. Provenance.
 console.log('\n  2. PROVENANCE — genome fixed, id changed');

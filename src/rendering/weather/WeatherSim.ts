@@ -77,7 +77,10 @@ export interface SimAblation {
   seasons?: boolean;
 }
 
-export const WK = { CLEAR: 0, CUMULUS: 1, STORM: 2, ICE: 3, ASH: 4, SMOG: 5 } as const;
+export const WK = {
+  CLEAR: 0, CUMULUS: 1, STORM: 2, ICE: 3, ASH: 4, SMOG: 5,
+  STRATUS: 6, CIRRUS: 7, CAP: 8,
+} as const;
 
 export type AnomalyKind = 'supercell' | 'reversal' | 'clearing';
 export interface Anomaly { kind: AnomalyKind; i: number; j: number; until: number }
@@ -150,6 +153,26 @@ export class WeatherSim {
   private rowSnow = new Float64Array(WX_NY);
   private rowFor: ClimateSources | null = null;
   private anomalyRng: () => number = Math.random;
+  /**
+   * A few drifting rain regions. Without them the Hadley belt kept dozens of
+   * speckles raining on both hemispheres for the whole hour, so the diorama
+   * never cleared. Desert worlds (raininess 0) have none.
+   */
+  private readonly sysX = new Float64Array(6);
+  private readonly sysY = new Float64Array(6);
+  /** >0 seconds of rain left; <0 seconds of clear left. */
+  private readonly sysT = new Float64Array(6);
+  private sysN = 0;
+  private rainRng: () => number = () => 0;
+  /** Windward standing cloud. The lee is 0, apart from a one-cell banner. */
+  readonly highCloud = new Float32Array(WX_N);
+  /** 0–1 lee of a slope. The painter thins a passing mass here. */
+  readonly leeCloud = new Float32Array(WX_N);
+  /** Water-cloud kind per cell, written in step. Ash and smog are not in here. */
+  readonly form = new Uint8Array(WX_N);
+  /** Scratch for seedCover, so the painter's per-cell query does not allocate. */
+  private coverM = 0;
+  private coverAhead = false;
 
   constructor(public climate: ClimateSources, readonly ablate: SimAblation = {}) {
     this.reset();
@@ -173,11 +196,254 @@ export class WeatherSim {
     this.anomalyCount = 0;
     this.anomalyRng = weatherRng(this.climate.personality.anomalySeed);
     this.nextAnomaly = 300 + this.anomalyRng() * 300;
+    this.rainRng = weatherRng((this.climate.personality.anomalySeed ^ 0x51a15eed) >>> 0);
+    this.sysN = this.rainRegionCount();
+    for (let s = 0; s < this.sysT.length; s++) this.sysT[s] = 0;
+    for (let s = 0; s < this.sysN; s++) {
+      this.placeRainRegion(s);
+      // Stagger a normal world so both hemispheres are not wet together.
+      this.sysT[s] = this.rainLife();
+    }
+    this.buildHighland();
+    this.writeForms();
+  }
+
+  /**
+   * Cloud on the slope the wind is climbing, then a short banner over the
+   * crest. The lee stays clear. A flat plateau does not cap just for being high,
+   * and a dry world only caps its steepest rises.
+   */
+  private buildHighland(): void {
+    const elev = this.climate.elev;
+    const rainy = this.climate.raininess ?? 1;
+    const gain = rainy <= 0 ? 0.5 : rainy >= 1.5 ? 1 : 0.82;
+    const rise = new Float32Array(WX_N);
+    const SLOPE_LO = 0.012, SLOPE_HI = 0.028;
+    for (let j = 0; j < WX_NY; j++) {
+      const dir = this.baseWindU(j) >= 0 ? 1 : -1;
+      for (let i = 0; i < WX_NX; i++) {
+        const k = j * WX_NX + i;
+        const upE = elev[j * WX_NX + wrapI(i - dir)];
+        const dnE = elev[j * WX_NX + wrapI(i + dir)];
+        const here = elev[k];
+        const slope = (dnE - upE) * 0.5;
+        const t = (slope - SLOPE_LO) / (SLOPE_HI - SLOPE_LO);
+        const u = t <= 0 ? 0 : t >= 1 ? 1 : t;
+        const tall = (here - 0.56) / 0.2;
+        const hgt = tall <= 0 ? 0 : tall >= 1 ? 1 : tall;
+        let cap = u * (0.4 + 0.6 * hgt) * gain;
+        // The summit itself, not only the climb. A flat top still stays clear;
+        // the slope downwind of the crest is the lee and is left alone.
+        if (slope > -SLOPE_LO && here > upE + 0.008 && here >= dnE) {
+          const climb = (here - upE - 0.008) / 0.018;
+          const cU = climb <= 0 ? 0 : climb >= 1 ? 1 : climb;
+          const crest = cU * (0.55 + 0.45 * hgt) * gain;
+          if (crest > cap) cap = crest;
+        }
+        rise[k] = cap;
+        const leeT = (-slope - SLOPE_LO) / (SLOPE_HI - SLOPE_LO);
+        this.leeCloud[k] = slope >= -SLOPE_LO ? 0 : leeT >= 1 ? 1 : leeT <= 0 ? 0 : leeT;
+      }
+    }
+    this.highCloud.set(rise);
+    // One cell downwind of a windward face: the cloud streams off the crest, then stops.
+    for (let j = 0; j < WX_NY; j++) {
+      const dir = this.baseWindU(j) >= 0 ? 1 : -1;
+      for (let i = 0; i < WX_NX; i++) {
+        const src = rise[j * WX_NX + wrapI(i - dir)];
+        if (src <= 0.42) continue;
+        const k = j * WX_NX + i;
+        const banner = src * 0.5;
+        if (banner > this.highCloud[k]) this.highCloud[k] = banner;
+        this.leeCloud[k] = 0;
+      }
+    }
+  }
+
+  /** 0–1 standing cloud. Windward slopes and the crest banner; the lee is 0. */
+  highland(i: number, j: number): number {
+    return this.highCloud[j * WX_NX + i];
+  }
+
+  /** 0–1 downslope. A weather mass thins as it crosses onto this side. */
+  lee(i: number, j: number): number {
+    return this.leeCloud[j * WX_NX + i];
+  }
+
+  cloudKind(i: number, j: number): number {
+    return this.form[j * WX_NX + i];
+  }
+
+  /**
+   * Which water cloud to draw, stored on `form`. Ash and smog are decided by
+   * `kindAt` and win over this. A mass leads with cirrus, holds cumulus in the
+   * tropics and stratus in the westerlies, and a windward slope wears a cap.
+   * Inlined: a per-cell call from the painter boxed its return and grew the heap.
+   */
+  private writeForms(): void {
+    const rainy = this.climate.raininess ?? 1;
+    // Desert keeps its one small wisp. Wetter skies are a little wider so the
+    // typical view holds more cloud without closing the gaps.
+    const rx = rainy <= 0 ? 4.5 : rainy >= 1.5 ? 10.5 : 8.4;
+    const ry = rainy <= 0 ? 2 : rainy >= 1.5 ? 4.6 : 3.8;
+    const rx2 = rx * rx, ry2 = ry * ry;
+    const rrx = rainy >= 1.5 ? 7 : 5, rry = rainy >= 1.5 ? 3.2 : 2.4;
+    const rrx2 = rrx * rrx, rry2 = rry * rry;
+    const dry = rainy <= 0;
+    const n = this.sysN, sx = this.sysX, sy = this.sysY, st = this.sysT;
+    const hi = this.highCloud, snow = this.snow, conv = this.convection, form = this.form;
+    for (let j = 0; j < WX_NY; j++) {
+      const wind = this.baseWindU(j);
+      const west = Math.abs(latOf(j)) > 0.5;
+      for (let i = 0; i < WX_NX; i++) {
+        let best = 0, ahead = false, rain = 0;
+        for (let s = 0; s < n; s++) {
+          if (st[s] <= 0) continue;
+          let di = i - sx[s];
+          if (di > 32) di -= WX_NX; else if (di < -32) di += WX_NX;
+          const dj = j - sy[s];
+          const e = (di * di) / rx2 + (dj * dj) / ry2;
+          if (e < 1) {
+            const m = e <= 0.62 ? 1 : (1 - e) / 0.38;
+            if (m > best) {
+              best = m;
+              ahead = e > 0.5 && (wind >= 0 ? di > 1.2 : di < -1.2);
+            }
+          }
+          if (!dry) {
+            const er = (di * di) / rrx2 + (dj * dj) / rry2;
+            if (er < 1) {
+              const mr = er <= 0.62 ? 1 : (1 - er) / 0.38;
+              if (mr > rain) rain = mr;
+            }
+          }
+        }
+        const k = j * WX_NX + i;
+        const h = hi[k];
+        form[k] = best < 0.12 && h < 0.2 ? WK.CLEAR
+          : snow[k] && (best > 0.2 || h > 0.2) ? WK.ICE
+          : rain > 0.4 && conv[k] > 0.3 ? WK.STORM
+          : h >= 0.32 && h >= best * 0.85 ? WK.CAP
+          : ahead && best < 0.92 ? WK.CIRRUS
+          : west && best > 0.55 ? WK.STRATUS
+          : WK.CUMULUS;
+      }
+    }
+  }
+
+  /** Strongest seed at this cell, and whether that cover is the downwind rim. */
+  private seedCover(i: number, j: number, rain: boolean): void {
+    const rainy = this.climate.raininess ?? 1;
+    this.coverM = 0;
+    this.coverAhead = false;
+    if (rain && rainy <= 0) return;
+    const rx = rain ? (rainy >= 1.5 ? 7 : 5) : (rainy <= 0 ? 4.5 : rainy >= 1.5 ? 10.5 : 8.4);
+    const ry = rain ? (rainy >= 1.5 ? 3.2 : 2.4) : (rainy <= 0 ? 2 : rainy >= 1.5 ? 4.6 : 3.8);
+    const rx2 = rx * rx, ry2 = ry * ry;
+    const wind = this.baseWindU(j);
+    const n = this.sysN, sx = this.sysX, sy = this.sysY, st = this.sysT;
+    for (let s = 0; s < n; s++) {
+      if (st[s] <= 0) continue;
+      let di = i - sx[s];
+      if (di > 32) di -= WX_NX; else if (di < -32) di += WX_NX;
+      const dj = j - sy[s];
+      const e = (di * di) / rx2 + (dj * dj) / ry2;
+      if (e < 1) {
+        const m = e <= 0.62 ? 1 : (1 - e) / 0.38;
+        if (m > this.coverM) {
+          this.coverM = m;
+          this.coverAhead = e > 0.5 && (wind >= 0 ? di > 1.2 : di < -1.2);
+        }
+      }
+    }
+  }
+
+  /**
+   * How many cloud seeds this climate keeps. A desert still has one small
+   * wisp (the sky must not be a dead field) but it does not rain.
+   */
+  private rainRegionCount(): number {
+    const rainy = this.climate.raininess ?? 1;
+    // A normal world gets several scattered masses, not one puff and not a sheet.
+    return rainy <= 0 ? 1 : rainy >= 0.7 ? 7 : 5;
+  }
+
+  private placeRainRegion(s: number): void {
+    const r = this.rainRng;
+    // Evenly around the planet, with a little jitter. A random pile can sit
+    // entirely on the far side, so the hemisphere you are looking at is bare.
+    const n = this.sysN > 0 ? this.sysN : 1;
+    this.sysX[s] = ((s + r()) / n) * WX_NX;
+    if (this.sysX[s] >= WX_NX) this.sysX[s] -= WX_NX;
+    // Even seeds in the tropics, odd ones in the westerlies: the two belts
+    // where a real sky actually builds cloud.
+    if ((s & 1) === 0) this.sysY[s] = 10 + r() * 12;
+    else this.sysY[s] = r() < 0.5 ? 5 + r() * 4 : 23 + r() * 4;
+  }
+
+  private rainLife(): number {
+    const rainy = this.climate.raininess ?? 1;
+    const span = this.rainRng();
+    // Longer than the 200 s warm-up, so a new world opens with its clouds
+    // already seeded instead of in the gap between systems.
+    return rainy >= 1.5 ? 280 + span * 140 : 240 + span * 120;
+  }
+
+  private rainGap(): number {
+    const rainy = this.climate.raininess ?? 1;
+    const span = this.rainRng();
+    // A rainy world barely pauses. A normal world clears for a stretch.
+    return rainy >= 1.5 ? 6 + span * 8 : 18 + span * 22;
+  }
+
+  /**
+   * 0–1 coverage of a drifting cloud seed at field cell (i, j).
+   * `rain` is the smaller core, and is always 0 on a dry world.
+   * The sim still runs a full field; the painter uses this so the drifting
+   * masses are drawn, plus the standing cap on high ground (`highland`).
+   * A sheet of cloud never reaches the glass.
+   */
+  seedMask(i: number, j: number, rain: boolean): number {
+    this.seedCover(i, j, rain);
+    return this.coverM;
+  }
+
+  /** Drift live regions with the band wind; respawn them after their clear gap. */
+  private advanceRainRegions(dt: number): void {
+    const n = this.rainRegionCount();
+    this.sysN = n;
+    for (let s = 0; s < n; s++) {
+      const t = this.sysT[s];
+      if (t > 0) {
+        const j = clampJ(Math.round(this.sysY[s]));
+        // Inlined band wind (same as baseWindU). A call per step is fine; this
+        // stays inline so a returned number is not boxed on the frame path.
+        const g = this.climate.personality.bandGain;
+        const alat = Math.abs(latOf(j)) * 180 / Math.PI;
+        const u = this.ablate.wind ? 0 : alat < 30 ? -0.55 * g[0] : alat < 60 ? 0.6 * g[1] : -0.35 * g[2];
+        this.sysX[s] += u * dt;
+        if (this.sysX[s] >= WX_NX) this.sysX[s] -= WX_NX;
+        else if (this.sysX[s] < 0) this.sysX[s] += WX_NX;
+        const left = t - dt;
+        // A dry world keeps its one wisp; it drifts, it does not vanish.
+        if ((this.climate.raininess ?? 1) <= 0) this.sysT[s] = left > 30 ? left : this.rainLife();
+        else this.sysT[s] = left > 0 ? left : -this.rainGap();
+      } else {
+        const left = t + dt;
+        if (left < 0) this.sysT[s] = left;
+        else {
+          this.placeRainRegion(s);
+          this.sysT[s] = this.rainLife();
+        }
+      }
+    }
   }
 
   /** New sources (lushness, civ level changed). The sky is kept — no teleport. */
   setClimate(c: ClimateSources): void {
     this.climate = c;
+    this.buildHighland();
+    this.writeForms();
   }
 
   /** Band wind without meander or anomalies, cells/s; +i is eastward. */
@@ -236,6 +502,7 @@ export class WeatherSim {
 
   step(dt = WX_DT): void {
     this.time += dt;
+    this.advanceRainRegions(dt);
     // No-seasons ablation: sunLat is ignored, so the tropics, Hadley cell,
     // solar heating and snow line behave as at equinox (SimAblation.seasons).
     const sunLat = this.ablate.seasons ? 0 : this.sunLat;
@@ -357,6 +624,7 @@ export class WeatherSim {
         }
 
         let p = 0;
+        let r = nr[k];
         if (noCycle) {
           if (nc[k] > 0.42) { p = (nc[k] - 0.42) * 0.35 * dt; nc[k] -= p; }
         } else {
@@ -365,7 +633,6 @@ export class WeatherSim {
           // (SHOWER_LIFE). A 0.5 cut on the blended state flickered (4 s median
           // spells); refreshing it to 1 while raining let windward slopes under
           // steady inflow rain for the whole hour.
-          let r = nr[k];
           if (r <= SHOWER_ALIVE && nc[k] > RAIN_ON * (1 + lee)) r = 1;
           if (r > SHOWER_ALIVE) {
             r -= dt * (showerDecay + lee * LEE_KILL);
@@ -379,8 +646,8 @@ export class WeatherSim {
             if (dv > 0) { nv[k] -= dv; p += dv; }
             if (nc[k] < RAIN_OFF) r = 0;
           }
-          nr[k] = r;
         }
+        nr[k] = r;
         this.precip[k] = p / dt;
         this.snow[k] = !this.ablate.cold && T + this.rowSnow[j] < COLD ? 1 : 0;
         if (this.anomaly?.kind === 'clearing' && this.near(i, j, 3)) nc[k] *= clearing;
@@ -404,6 +671,7 @@ export class WeatherSim {
     const td = this.dryness; this.dryness = nd; this.nd = td;
 
     this.scheduleAnomaly();
+    this.writeForms();
   }
 
   private scheduleAnomaly(): void {

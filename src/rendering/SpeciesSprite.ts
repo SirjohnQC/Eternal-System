@@ -242,9 +242,13 @@ class Grid {
 
 // ─── Anatomy ──────────────────────────────────────────────────────────────────
 
-/** Interior long edge in pixels, before the outline, at full phase and mid depth. */
+/**
+ * Interior long edge in pixels, before the outline, at full phase and mid depth.
+ * Ordinary life stays a speck on the disc so the terrain stays readable.
+ * `massive` is the genome's gigantic class and keeps a body that can tower.
+ */
 export const CREATURE_SIZE_PX: Record<SpeciesSize, number> = {
-  microscopic: 2, tiny: 3, small: 5, medium: 7, large: 9, massive: 12,
+  microscopic: 2, tiny: 2, small: 3, medium: 4, large: 5, massive: 12,
 };
 
 interface Anatomy {
