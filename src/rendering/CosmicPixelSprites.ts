@@ -6,6 +6,8 @@
  * continents/clouds on ocean worlds. Nearest-neighbour blit only.
  */
 
+import { paintSunBody, paintSunCorona, SUN_PALETTES } from './SunArt';
+
 // ─── Colour helpers ───────────────────────────────────────────────────────────
 
 type RGB = [number, number, number];
@@ -63,14 +65,6 @@ export function starTempBand(temperature: number): StarTempBand {
   if (temperature > 4000) return 'orange';
   return 'red';
 }
-
-const STAR_BASE: Record<StarTempBand, RGB> = {
-  blue:   [130, 175, 255],
-  white:  [245, 248, 255],
-  yellow: [255, 210, 70],
-  orange: [255, 150, 55],
-  red:    [255, 95, 50],
-};
 
 export type PlanetKind =
   | 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
@@ -302,12 +296,18 @@ const coronaCache = new Map<string, HTMLCanvasElement>();
 
 // ─── Star (body + animated corona + soft glow) ────────────────────────────────
 
+/** Frames in the star body's boiling-surface loop (see {@link bakeStarBody}). */
+export const STAR_BODY_FRAMES = 8;
+
 /**
- * Pixel star body only (sphere + sunspots). Corona is a separate layer so it
- * can rotate / pulse without rebaking the disc every frame.
+ * Pixel star body: limb-darkened disc with granulation and sunspots
+ * (SunArt). Self-lit — no light direction. `frame` 0..STAR_BODY_FRAMES-1 walks
+ * the granulation around a seamless loop. Corona is a separate layer so it
+ * can rotate / pulse without re-baking the disc.
  */
-export function bakeStarBody(band: StarTempBand, size = 48): HTMLCanvasElement {
-  const key = `body|${band}|${size}`;
+export function bakeStarBody(band: StarTempBand, size = 48, frame = 0, seed = 5): HTMLCanvasElement {
+  const f = ((frame % STAR_BODY_FRAMES) + STAR_BODY_FRAMES) % STAR_BODY_FRAMES;
+  const key = `body|${band}|${size}|${f}|${seed}`;
   const hit = starCache.get(key);
   if (hit) return hit;
 
@@ -315,41 +315,24 @@ export function bakeStarBody(band: StarTempBand, size = 48): HTMLCanvasElement {
   const pack = makeCanvas(size);
   if (!pack) return blank;
 
-  const base = STAR_BASE[band];
-  const ramp: RGB[] = [
-    shade(base, 0.7),
-    shade(base, 0.35),
-    base,
-    hilite(base, 0.5),
-    mix(hilite(base, 0.75), [255, 255, 255], 0.6),
-  ];
-  const outline = shade(base, 0.85);
-  const cx = (size - 1) / 2;
-  const cy = (size - 1) / 2;
-  const bodyR = size * 0.30;
-
-  paintSphere(pack.img.data, size, size, cx, cy, bodyR, ramp, outline, { dither: true });
-
-  const d = pack.img.data;
-  const spot = shade(base, 0.75);
-  const spots = [[-0.25, -0.15], [0.2, 0.1], [-0.05, 0.3]];
-  for (const [sx, sy] of spots) {
-    const px = Math.round(cx + sx * bodyR);
-    const py = Math.round(cy + sy * bodyR);
-    if (getA(d, size, px, py) > 200) {
-      setPx(d, size, px, py, spot);
-      setPx(d, size, px + 1, py, spot);
-    }
-  }
+  const c = size / 2;
+  paintSunBody(pack.img.data, size, size, c, c, size * 0.30, SUN_PALETTES[band],
+    { seed, phase: f / STAR_BODY_FRAMES });
 
   pack.ctx.putImageData(pack.img, 0, 0);
   starCache.set(key, pack.cv);
   return pack.cv;
 }
 
-/** Jagged corona flares only — drawn under/around the body and rotated in-game. */
-export function bakeStarCorona(band: StarTempBand, size = 56): HTMLCanvasElement {
-  const key = `corona|${band}|${size}`;
+/** Corona: limb halo, tapered flame rays and prominences (SunArt). Rotated in-game. */
+/**
+ * Disc radius inside a corona canvas, as a fraction of its size. Draw the
+ * corona sprite at body size x (0.30 / CORONA_BODY_FRAC) to line it up.
+ */
+export const CORONA_BODY_FRAC = 0.19;
+
+export function bakeStarCorona(band: StarTempBand, size = 80, seed = 5): HTMLCanvasElement {
+  const key = `corona|${band}|${size}|${seed}`;
   const hit = coronaCache.get(key);
   if (hit) return hit;
 
@@ -357,14 +340,11 @@ export function bakeStarCorona(band: StarTempBand, size = 56): HTMLCanvasElement
   const pack = makeCanvas(size);
   if (!pack) return blank;
 
-  const base = STAR_BASE[band];
-  const cx = (size - 1) / 2;
-  const cy = (size - 1) / 2;
-  const bodyR = size * 0.26;
-
-  paintGlowRing(pack.img.data, size, cx, cy, bodyR * 1.55,
-    mix(hilite(base, 0.4), [255, 240, 180], 0.35), 0.4, band);
-  paintCorona(pack.img.data, size, cx, cy, bodyR, base, band);
+  // Body radius is CORONA_BODY_FRAC of the canvas: the rest is room for rays.
+  const c = size / 2;
+  const lenMul = band === 'red' ? 1.35 : band === 'blue' ? 1.3 : 1.2;
+  paintSunCorona(pack.img.data, size, size, c, c, size * CORONA_BODY_FRAC, SUN_PALETTES[band],
+    { seed, reach: lenMul });
 
   pack.ctx.putImageData(pack.img, 0, 0);
   coronaCache.set(key, pack.cv);
@@ -374,71 +354,6 @@ export function bakeStarCorona(band: StarTempBand, size = 56): HTMLCanvasElement
 /** @deprecated Prefer bakeStarBody + bakeStarCorona — kept for any stray callers. */
 export function bakeStarSprite(band: StarTempBand, size = 48): HTMLCanvasElement {
   return bakeStarBody(band, size);
-}
-
-function paintGlowRing(
-  data: Uint8ClampedArray,
-  size: number,
-  cx: number, cy: number,
-  radius: number,
-  color: RGB,
-  alpha: number,
-  band: StarTempBand,
-): void {
-  const a = Math.round(alpha * 255);
-  const step = 0.08;
-  for (let t = 0; t < Math.PI * 2; t += step) {
-    const jag = 1 + 0.08 * Math.sin(t * 7 + band.length) + 0.05 * Math.sin(t * 13);
-    const r = radius * jag;
-    const x = Math.round(cx + Math.cos(t) * r);
-    const y = Math.round(cy + Math.sin(t) * r);
-    if (x < 0 || y < 0 || x >= size || y >= size) continue;
-    const i = (y * size + x) * 4;
-    if (data[i + 3] > 0) continue;
-    data[i] = color[0]; data[i + 1] = color[1]; data[i + 2] = color[2]; data[i + 3] = a;
-    const x2 = Math.round(cx + Math.cos(t) * (r - 1));
-    const y2 = Math.round(cy + Math.sin(t) * (r - 1));
-    if (x2 >= 0 && y2 >= 0 && x2 < size && y2 < size) {
-      const j = (y2 * size + x2) * 4;
-      if (data[j + 3] === 0) {
-        data[j] = color[0]; data[j + 1] = color[1]; data[j + 2] = color[2]; data[j + 3] = a;
-      }
-    }
-  }
-}
-
-function paintCorona(
-  data: Uint8ClampedArray,
-  size: number,
-  cx: number, cy: number,
-  bodyR: number,
-  base: RGB,
-  band: StarTempBand,
-): void {
-  const flare = hilite(base, 0.35);
-  const tip = mix(flare, [255, 255, 220], 0.4);
-  const n = band === 'blue' || band === 'white' ? 14
-    : band === 'yellow' ? 12
-    : band === 'orange' ? 10 : 8;
-  const lenMul = band === 'red' ? 1.25 : band === 'blue' ? 1.15 : 1.0;
-  for (let i = 0; i < n; i++) {
-    const ang = (i / n) * Math.PI * 2 + (i % 3) * 0.08;
-    const len = bodyR * (0.65 + (i % 4) * 0.22) * lenMul;
-    for (let s = 0; s < len; s++) {
-      const t = s / len;
-      const r = bodyR + s;
-      const x = Math.round(cx + Math.cos(ang) * r);
-      const y = Math.round(cy + Math.sin(ang) * r);
-      const c = t > 0.7 ? tip : flare;
-      const a = Math.round(255 * (1 - t * 0.85));
-      setPx(data, size, x, y, c, a);
-      if (t < 0.5) {
-        const px = -Math.sin(ang), py = Math.cos(ang);
-        setPx(data, size, Math.round(x + px), Math.round(y + py), c, a);
-        setPx(data, size, Math.round(x - px), Math.round(y - py), c, a);
-      }
-    }
-  }
 }
 
 // ─── Planets ──────────────────────────────────────────────────────────────────

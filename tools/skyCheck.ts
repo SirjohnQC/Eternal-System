@@ -252,7 +252,7 @@ console.log('\n  BACKDROP');
   check('  control: frozen clock', !(Math.abs(ctl.sum - W) <= 2), `advances ${ctl.sum} px`);
 }
 
-const { skyLayout, trackX, trackY, paintSky, SUN_DIAMETER, BLOOM_CORE, bloomCoreAlpha } = await import('../src/rendering/sky/SkyPainter');
+const { skyLayout, trackX, trackY, paintSky, sunDiameter, BLOOM_CORE, bloomCoreAlpha } = await import('../src/rendering/sky/SkyPainter');
 
 // ─── 4. Sky painter ───────────────────────────────────────────────────────────
 console.log('\n  SKY PAINTER');
@@ -303,7 +303,7 @@ const sunDisc = (img: ReturnType<typeof blank>) => {
     const img = blank(); paintSky(img, L, drawOf(orbitSky({ animTick: 0, home, planets: [], dayAngle: Math.PI / 2 })), { fixedSunSize: fixed });
     return sunDisc(img).diameter;
   };
-  const e = 0.3, want = (s: number) => Math.min(8, Math.max(4, SUN_DIAMETER * s));
+  const e = 0.3, want = (s: number) => sunDiameter(s);
   const peri = at(0, e), apo = at(Math.PI, e), c0 = at(0, 0), c1 = at(Math.PI, 0), fixedPeri = at(0, e, true);
   check('rendered sun grows at periapsis', Math.abs(peri - want(1 / (1 - e))) <= 1 && Math.abs(apo - want(1 / (1 + e))) <= 1 && peri - apo >= 2 && c0 === c1,
     `periapsis ${peri.toFixed(1)} px (want ${want(1 / (1 - e)).toFixed(1)}), apoapsis ${apo.toFixed(1)} (want ${want(1 / (1 + e)).toFixed(1)}), circular ${c0.toFixed(1)}/${c1.toFixed(1)}`);

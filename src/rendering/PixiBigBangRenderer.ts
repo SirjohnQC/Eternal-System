@@ -30,7 +30,7 @@ import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA } from '../simu
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
 import { bakePlanetTexture } from '../simulation/PlanetRenderer';
 import {
-  bakeStarBody, bakeStarCorona, bakeStarGlow, bakePlanetSprite, bakeMoonSprite,
+  bakeStarBody, bakeStarCorona, bakeStarGlow, STAR_BODY_FRAMES, CORONA_BODY_FRAC, bakePlanetSprite, bakeMoonSprite,
   wrapEquirectToGlobe, starTempBand, starVisualProfile, parseHexColor,
   bakeSoftNebulaHaze,
   type PlanetKind, type MoonKind,
@@ -310,8 +310,10 @@ export class PixiBigBangRenderer {
     const bands: Array<'blue' | 'white' | 'yellow' | 'orange' | 'red'> =
       ['blue', 'white', 'yellow', 'orange', 'red'];
     for (const band of bands) {
-      this.nearestTex(this.starTextures, `body|${band}`, bakeStarBody(band, 48));
-      this.nearestTex(this.starCoronaTextures, `corona|${band}`, bakeStarCorona(band, 56));
+      for (let f = 0; f < STAR_BODY_FRAMES; f++) {
+        this.nearestTex(this.starTextures, `body|${band}|${f}|5`, bakeStarBody(band, 48, f, 5));
+      }
+      this.nearestTex(this.starCoronaTextures, `corona|${band}|5`, bakeStarCorona(band, 80, 5));
       this.linearTex(this.starGlowTextures, `glow|${band}`, bakeStarGlow(band, 160));
       this.linearTex(this.starGlowTextures, `haze|${band}`, bakeStarGlow(band, 160));
     }
@@ -965,15 +967,18 @@ export class PixiBigBangRenderer {
       glow.height = glowSize;
       glow.x = star.x;
       glow.y = star.y;
-      glow.alpha = Math.min(1, profile.glowAlpha * pulse);
+      // Held back so the pixel corona's rays still read on top of it.
+      glow.alpha = Math.min(1, profile.glowAlpha * pulse) * (wantCorona ? 0.55 : 1);
       glow.zIndex = 1;
       glow.visible = true;
 
+      // Each star keeps one of a few surface layouts (spots, ray pattern).
+      const sunSeed = 5 + (star.id % 3);
       // Animated pixel corona (rotates; length/speed by spectral class)
       if (wantCorona) {
-        const coronaKey = `corona|${band}`;
+        const coronaKey = `corona|${band}|${sunSeed}`;
         const coronaTex = this.nearestTex(
-          this.starCoronaTextures, coronaKey, bakeStarCorona(band, 56),
+          this.starCoronaTextures, coronaKey, bakeStarCorona(band, 80, sunSeed),
         );
         let corona = this.starCoronaSprites.get(star.id);
         if (!corona) {
@@ -984,7 +989,8 @@ export class PixiBigBangRenderer {
         } else if (corona.texture !== coronaTex) {
           corona.texture = coronaTex;
         }
-        const coronaSize = size * (1.15 + 0.06 * Math.sin(animTick * profile.pulseSpeed * 1.7 + star.id));
+        // Body is 0.30 of its sprite, the corona's disc CORONA_BODY_FRAC of its own.
+        const coronaSize = size * (0.30 / CORONA_BODY_FRAC) * (1 + 0.05 * Math.sin(animTick * profile.pulseSpeed * 1.7 + star.id));
         // Per-star rate + direction so neighbouring suns don't lock-step.
         const spinMul = 0.45 + ((star.id * 47) % 97) / 97 * 1.1; // ~0.45–1.55
         const spinDir = (star.id * 13) & 1 ? 1 : -1;
@@ -998,9 +1004,10 @@ export class PixiBigBangRenderer {
         corona.visible = true;
       }
 
-      // Static pixel body on top
-      const texKey = `body|${band}`;
-      const tex = this.nearestTex(this.starTextures, texKey, bakeStarBody(band, 48));
+      // Pixel body on top; its granulation boils through a short frame loop.
+      const frame = Math.floor(animTick / 15 + star.id * 3) % STAR_BODY_FRAMES;
+      const texKey = `body|${band}|${frame}|${sunSeed}`;
+      const tex = this.nearestTex(this.starTextures, texKey, bakeStarBody(band, 48, frame, sunSeed));
       let sprite = this.starSprites.get(star.id);
       if (!sprite) {
         sprite = new Sprite(tex);
@@ -1019,13 +1026,18 @@ export class PixiBigBangRenderer {
       sprite.visible = true;
 
       if (star.isPlayerStar) {
+        // Corner brackets outside the corona, not a box drawn across the sun.
         const alpha = 0.55 + 0.25 * Math.sin(animTick * 0.05);
-        const pad = size * 0.42;
+        const pad = size * 0.78;
         const t = Math.max(0.5, 0.9 / camera.scale);
-        this.starLayer.rect(star.x - pad, star.y - pad, pad * 2, t).fill({ color: 0xffcc44, alpha });
-        this.starLayer.rect(star.x - pad, star.y + pad - t, pad * 2, t).fill({ color: 0xffcc44, alpha });
-        this.starLayer.rect(star.x - pad, star.y - pad, t, pad * 2).fill({ color: 0xffcc44, alpha });
-        this.starLayer.rect(star.x + pad - t, star.y - pad, t, pad * 2).fill({ color: 0xffcc44, alpha });
+        const arm = pad * 0.32;
+        for (const sx of [-1, 1]) {
+          for (const sy of [-1, 1]) {
+            const x = star.x + sx * pad, y = star.y + sy * pad;
+            this.starLayer.rect(sx < 0 ? x : x - arm, sy < 0 ? y : y - t, arm, t).fill({ color: 0xffcc44, alpha });
+            this.starLayer.rect(sx < 0 ? x : x - t, sy < 0 ? y : y - arm, t, arm).fill({ color: 0xffcc44, alpha });
+          }
+        }
       }
 
       if (star.civLevel > 0) {

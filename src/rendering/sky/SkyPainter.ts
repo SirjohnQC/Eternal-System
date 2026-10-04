@@ -8,6 +8,7 @@
 import type { ImageDataLike } from '../weather/WeatherPainter';
 import { wrapPi } from './OrbitSky';
 import { farScale, isIdentity, type Camera } from '../ZoomCamera';
+import { paintSunBody, paintSunCorona, SUN_PALETTES, sunBandOf, tintPalette, type RGB3 } from '../SunArt';
 
 export interface SkyLayout {
   cx: number; horizonY: number; A: number; B: number; bloom: number;
@@ -90,10 +91,17 @@ export function bloomCoreAlpha(t: number, fade: number): number {
   return a < 0 ? 0 : a;
 }
 
-export const SUN_DIAMETER = 5;
+/**
+ * Sun disc diameter in px at the home world's mean distance. Big enough to
+ * carry the pixel-art face (limb bands, granulation, a spot) rather than a
+ * white dot. Kepler distance scales it inside SUN_MIN..SUN_MAX.
+ */
+export const SUN_DIAMETER = 14;
+export const SUN_MIN_DIAMETER = 10;
+export const SUN_MAX_DIAMETER = 20;
 export function sunDiameter(sizeScale: number): number {
   const d = SUN_DIAMETER * sizeScale;
-  return d < 4 ? 4 : d > 8 ? 8 : d;
+  return d < SUN_MIN_DIAMETER ? SUN_MIN_DIAMETER : d > SUN_MAX_DIAMETER ? SUN_MAX_DIAMETER : d;
 }
 
 /**
@@ -111,6 +119,12 @@ export interface SkySiblingDraw { az: number; elev: number; litFraction: number;
 export interface SkyDraw {
   sunAz: number; sunElev: number; sunSizeScale: number;
   sunRgb: [number, number, number];
+  /** Star temperature (K): picks the sun's palette. Omitted: from `sunRgb` alone (yellow band). */
+  sunTemperature?: number;
+  /** Seconds, for the boiling surface and breathing corona. Omitted: still. */
+  time?: number;
+  /** Stable per-star seed for spots and ray layout. */
+  sunSeed?: number;
   siblings: SkySiblingDraw[];
 }
 
@@ -178,20 +192,15 @@ export function paintSky(img: ImageDataLike, L: SkyLayout, sky: SkyDraw, opts: {
       over(d, (y * W + x) * 4, cr, cg, cb, bloomCoreAlpha(Math.sqrt(d2) / Rb, f));
     }
   }
-  // Far class: the disc (and with it the flare arms) grows by the far scale.
+  // Far class: the disc (and with it the corona) grows by the far scale.
   const D = (opts.fixedSunSize ? SUN_DIAMETER : sunDiameter(sky.sunSizeScale)) * (L.far ?? 1), rad = D / 2;
-  const arm = Math.round(6 + D);
-  for (let k = -arm; k <= arm; k++) {
-    const xs = Math.round(sunX) + k, ys = Math.round(sunY) + k;
-    if (xs >= 0 && xs < W && sunY >= 0 && sunY < H) over(d, (Math.round(sunY) * W + xs) * 4, cr, cg, cb, 0.35 * f);
-    if (ys >= 0 && ys < H && sunX >= 0 && sunX < W) over(d, (ys * W + Math.round(sunX)) * 4, cr, cg, cb, 0.35 * f);
-  }
-  for (let y = Math.floor(sunY - rad); y <= Math.ceil(sunY + rad); y++) {
-    if (y < 0 || y >= H) continue;
-    for (let x = Math.floor(sunX - rad); x <= Math.ceil(sunX + rad); x++) {
-      if (x < 0 || x >= W) continue;
-      if ((x + 0.5 - sunX) ** 2 + (y + 0.5 - sunY) ** 2 > rad * rad) continue;
-      over(d, (y * W + x) * 4, 255 + (cr - 255) * 0.25, 255 + (cg - 255) * 0.25, 255 + (cb - 255) * 0.25, f);
-    }
-  }
+  const band = sky.sunTemperature !== undefined ? sunBandOf(sky.sunTemperature) : 'yellow';
+  // Low sun reddens: lean the palette toward the (warmed) sky tint.
+  const pal = tintPalette(SUN_PALETTES[band], [cr, cg, cb] as RGB3, 0.5 * warm);
+  const t = sky.time ?? 0, seed = sky.sunSeed ?? 7;
+  const phase = ((t / 9) % 1 + 1) % 1;
+  paintSunCorona(d, W, H, sunX, sunY, rad, pal, {
+    seed, phase, spin: t * 0.05, reach: 1.1, alpha: f, prominences: rad >= 6,
+  });
+  paintSunBody(d, W, H, sunX, sunY, rad, pal, { seed, phase, alpha: f, spots: rad >= 5 });
 }

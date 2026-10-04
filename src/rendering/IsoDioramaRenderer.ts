@@ -2778,6 +2778,9 @@ export class IsoDioramaRenderer {
     paintSky(img, L, {
       sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale,
       sunRgb: [sun.r, sun.g, sun.b],
+      sunTemperature: this.star?.temperature,
+      time: this.elapsed,
+      sunSeed: this.star?.id ?? 7,
       siblings: sky.siblings.map(s => {
         const distN = Math.abs((s.planet.orbitalRadius ?? homeR) - homeR) / Math.max(homeR, 12);
         const c = planetTypeRGB(s.planet.type);

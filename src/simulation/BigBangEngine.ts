@@ -13,6 +13,7 @@ import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
 import {
   bakeStarBody, bakeStarCorona, bakeStarGlow, bakePlanetSprite, bakeMoonSprite,
+  STAR_BODY_FRAMES, CORONA_BODY_FRAC,
   wrapEquirectToGlobe, starTempBand, starVisualProfile, parseHexColor,
   type PlanetKind as CosmicPlanetKind,
   type MoonKind as CosmicMoonKind,
@@ -3484,13 +3485,14 @@ export class BigBangEngine {
       ctx.globalAlpha = profile.hazeAlpha * (0.85 + 0.15 * pulse);
       ctx.drawImage(glow, star.x - hazeSize / 2, star.y - hazeSize / 2, hazeSize, hazeSize);
       const glowSize = size * profile.glowMul * pulse;
-      ctx.globalAlpha = Math.min(1, profile.glowAlpha * pulse);
+      ctx.globalAlpha = Math.min(1, profile.glowAlpha * pulse) * 0.55;
       ctx.drawImage(glow, star.x - glowSize / 2, star.y - glowSize / 2, glowSize, glowSize);
       ctx.globalAlpha = 1;
 
       ctx.imageSmoothingEnabled = false;
-      const corona = bakeStarCorona(band, 56);
-      const coronaSize = size * (1.15 + 0.06 * Math.sin(this.animTick * profile.pulseSpeed * 1.7 + star.id));
+      const sunSeed = 5 + (star.id % 3);
+      const corona = bakeStarCorona(band, 80, sunSeed);
+      const coronaSize = size * (0.30 / CORONA_BODY_FRAC) * (1 + 0.05 * Math.sin(this.animTick * profile.pulseSpeed * 1.7 + star.id));
       const spinMul = 0.45 + ((star.id * 47) % 97) / 97 * 1.1;
       const spinDir = (star.id * 13) & 1 ? 1 : -1;
       const rot = this.animTick * profile.coronaSpeed * spinMul * spinDir + star.id * 1.918;
@@ -3504,20 +3506,25 @@ export class BigBangEngine {
       ctx.restore();
       ctx.globalAlpha = 1;
 
-      const spr = bakeStarBody(band, 48);
+      const spr = bakeStarBody(band, 48, Math.floor(this.animTick / 15 + star.id * 3) % STAR_BODY_FRAMES, sunSeed);
       const bodyPulse = 1 + profile.pulseAmp * 0.35 * Math.sin(this.animTick * profile.pulseSpeed * 0.8);
       const body = size * bodyPulse;
       ctx.drawImage(spr, star.x - body / 2, star.y - body / 2, body, body);
 
       if (star.isPlayerStar) {
         const alpha = 0.55 + 0.25 * Math.sin(this.animTick * 0.05);
-        const pad = size * 0.42;
+        // Corner brackets outside the corona (matches PixiBigBangRenderer).
+        const pad = size * 0.78;
         const t = Math.max(0.5, 0.9 / this.camera.scale);
+        const arm = pad * 0.32;
         ctx.fillStyle = `rgba(255,204,68,${alpha})`;
-        ctx.fillRect(star.x - pad, star.y - pad, pad * 2, t);
-        ctx.fillRect(star.x - pad, star.y + pad - t, pad * 2, t);
-        ctx.fillRect(star.x - pad, star.y - pad, t, pad * 2);
-        ctx.fillRect(star.x + pad - t, star.y - pad, t, pad * 2);
+        for (const sx of [-1, 1]) {
+          for (const sy of [-1, 1]) {
+            const x = star.x + sx * pad, y = star.y + sy * pad;
+            ctx.fillRect(sx < 0 ? x : x - arm, sy < 0 ? y : y - t, arm, t);
+            ctx.fillRect(sx < 0 ? x : x - t, sy < 0 ? y : y - arm, t, arm);
+          }
+        }
       }
 
       if (star.hasLife && star.civLevel > 0 && this.phase === 'settled') {
