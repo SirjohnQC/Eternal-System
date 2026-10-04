@@ -402,12 +402,18 @@ export class WeatherPainter {
     this.skyY = new Int16Array(lut.count);
     this.skyH = new Int16Array(lut.count);
     const dys = lut.dy;
+    // One cloud deck for the whole world, above its tallest ground. Floating
+    // each column a clearance over ITS OWN terrain made the deck step with
+    // every terrace, so clouds over land were cut into vertical slabs that
+    // showed worst when zoomed (play report: "clouds get chopped").
+    let top = 0;
+    for (let n = 0; n < lut.count; n++) { const l = lut.py[n] - lut.ground[n]; if (l > top) top = l; }
+    const deck = top + clearance;
     for (let n = 0; n < lut.count; n++) {
       // dy +1 = near/front, -1 = far/back. Rise into the dome only toward the back.
       const dy = dys ? dys[n] : 0;
       const perspective = this.cloudLift * 0.5 * (1 - dy);
-      const local = (lut.py[n] - lut.ground[n]) + clearance;
-      const lift = perspective > local ? perspective : local;
+      const lift = perspective > deck ? perspective : deck;
       this.skyY[n] = Math.round(lut.py[n] - (lift < 1 ? 1 : lift));
     }
     // Vertical fill to the next face row at the same x (row-major, ascending py).

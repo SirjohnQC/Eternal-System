@@ -2409,7 +2409,7 @@ export class IsoDioramaRenderer {
     this.townSig = sig;
     this.townVersion++;
     this.buildingSprites.clear();
-    if (spots.length === 0) { this.townPlan = emptyPlan(); this.townLift = []; this.buildingBorn = []; this.townPlanet = this.planet; return; }
+    if (spots.length === 0) { this.townPlan = emptyPlan(); this.townLift = []; this.buildingBorn = []; this.townPlanet = this.planet; this.pushTownProps(); return; }
 
     // Inland depth: lattice steps to the nearest water or the rim.
     const coast = (px: number, py: number): number => {
@@ -2491,6 +2491,53 @@ export class IsoDioramaRenderer {
       });
     }
     this.townStyleOf = townStyle(this.townPlan.era, intelligent?.physicalTraits.bodyStructure ?? 'vertebrate');
+    this.pushTownProps();
+  }
+
+  /**
+   * Hand the towns' buildings (standing, going up, and outgoing ones still
+   * standing) to the flora layer, which draws them in its back-to-front pass
+   * with the trees. Each draws itself through the layer's view at that
+   * view's scale; construction progress is read when drawn.
+   */
+  private pushTownProps(): void {
+    const flora = this.cutaway.flora;
+    const list: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView) => void }> = [];
+    const at = (v: import('./FloraLayer').FloraView, x: number, y: number) =>
+      [(x - v.fx) * v.K + v.W / 2, (y - v.fy) * v.K + v.H / 2 + v.bob] as const;
+    this.townPlan.buildings.forEach((b, i) => {
+      const wy = b.y - (this.townLift[i] ?? 0);
+      list.push({ wy, draw: (g, v) => {
+        const t0 = this.buildingBorn[i] ?? -Infinity;
+        const p = t0 === -Infinity ? 1 : (this.elapsed - t0) / BUILD_SECONDS;
+        if (p < 0) return;
+        const S = Math.max(1, Math.round(v.K));
+        const spr = p >= 1 ? this.buildingSprite(i, S) : this.constructionSprite(i, S, p);
+        if (!spr) return;
+        const [X, Y] = at(v, b.x, wy);
+        g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
+      } });
+    });
+    for (const r of this.retired) {
+      const wy = r.b.y - r.lift;
+      list.push({ wy, draw: (g, v) => {
+        if (r.until <= this.elapsed) return;
+        const S = Math.max(1, Math.round(v.K));
+        let spr = r.sprites.get(S);
+        if (!spr) {
+          const f = paintBuilding(r.b, S, r.st);
+          const cv = document.createElement('canvas');
+          cv.width = f.width; cv.height = f.height;
+          const cg = cv.getContext('2d');
+          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+          spr = { cv, fx: f.footX, fy: f.footY };
+          r.sprites.set(S, spr);
+        }
+        const [X, Y] = at(v, r.b.x, wy);
+        g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
+      } });
+    }
+    flora.setProps(list);
   }
 
   /** Building `i` under construction, `p` of the way (12 cached steps). */
@@ -2940,7 +2987,9 @@ export class IsoDioramaRenderer {
           this.drawSky(g);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
-        drawProps: (g) => this.drawBuildings(g),
+        // With live flora the buildings are drawn in the flora layer's depth
+        // pass (townProps); otherwise as their own layer.
+        drawProps: this.cutaway.liveFlora ? undefined : (g) => this.drawBuildings(g),
         drawSurfaceOverlays: (g) => {
           this.drawCityLights(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);

@@ -159,7 +159,19 @@ export class FloraLayer {
   version = 0;
 
   /** Number of plants currently drawn (growing, grown or wilting). */
-  get count(): number { return this.order.length; }
+  get count(): number { return this.order.length + this.props.length; }
+
+  /**
+   * Other things standing on the ground (the towns' buildings), drawn in the
+   * same back-to-front pass so a tree in front of a house covers it and a
+   * house in front of a tree covers the tree. `wy`: base-world foot row,
+   * lifted, like a site's; `draw` paints into the layer through `v`.
+   */
+  private props: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: FloraView) => void }> = [];
+  setProps(list: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: FloraView) => void }>): void {
+    this.props = [...list].sort((a, b) => a.wy - b.wy);
+    this.version++;
+  }
 
   /**
    * A new plan. `mature`: everything appears fully grown and nothing wilts
@@ -201,13 +213,17 @@ export class FloraLayer {
   clear(): void { this.live.clear(); this.order = []; this.version++; }
 
   draw(g: CanvasRenderingContext2D, now: number, v: FloraView, planetType: string, atlas: DecalAtlas | null): void {
-    if (this.order.length === 0) return;
+    if (this.order.length === 0 && this.props.length === 0) return;
     this.forgesLeft = FORGES_PER_FRAME;
     const prevSmooth = g.imageSmoothingEnabled;
     g.imageSmoothingEnabled = false;
-    let dead = 0;
+    let dead = 0, pi = 0;
+    const props = this.props;
     for (const l of this.order) {
       const s = l.site;
+      // Props behind this plant first (painter's order).
+      const lwy = s.wy ?? s.y;
+      while (pi < props.length && props[pi].wy <= lwy) props[pi++].draw(g, v);
       if (s.foot === undefined || s.foot < 0) continue;
       // Growth (or wilt) stage.
       let stage = STAGES.length - 1, wilt = false;
@@ -244,6 +260,7 @@ export class FloraLayer {
       g.drawImage(sheet.canvas, f * sheet.fw, 0, sheet.fw, sheet.fh,
         Math.round(sx - sheet.footX * r), Math.round(sy - sheet.footY * r), sheet.fw * r, sheet.fh * r);
     }
+    while (pi < props.length) props[pi++].draw(g, v);
     g.imageSmoothingEnabled = prevSmooth;
     // Drop fully wilted plants now and then (not every frame).
     if (dead > 16) {
