@@ -703,7 +703,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
           `glint=${openGlintFrac.toFixed(3)} light=${openLightFrac.toFixed(3)}`);
     check('ocean coast keeps caustic/foam', coastGlintFrac > 0.04 && coastGlintFrac < 0.45,
           `coastGlint=${coastGlintFrac.toFixed(3)}`);
-    check('ocean caustic web is thin (cell edges)', coastGlintPx === 0 || webFrac > 0.45,
+    check('ocean foam and glint lines are thin', coastGlintPx === 0 || webFrac > 0.45,
           `web=${webFrac.toFixed(3)} thin=${thinWeb}/${coastGlintPx}`);
 
     // Far from land the body should read deep navy, not flat mid-blue —

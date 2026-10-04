@@ -33,7 +33,7 @@
  */
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
-import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
+import { classifyBiome, isWater, SEA_LEVEL, GRID_SIZE, riverAt } from '../simulation/PlanetGrid';
 import { genomeFromLegacy, ATMO_THICKNESS_MAX_PX, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import {
   planSurfaceDecals, stampDecals, PAINTER_SNOW_ELEVATION,
@@ -119,6 +119,8 @@ class Stream {
  * is what the mockup's blocky shading actually is.
  */
 const SHADE_STEP = 0.11;
+/** Wet-bank width beside a river, in grid columns (≈1 px at the identity view). */
+const RIVER_BANK = 0.24;
 const quantise = (f: number, step = SHADE_STEP) => Math.round(f / step) * step;
 
 // ─── Public geometry ──────────────────────────────────────────────────────────
@@ -1002,6 +1004,9 @@ export function* surfaceSteps(
   const foamInner = k === 1 ? 0.988 : 1 - 0.012 / k;
   const coastLo = k === 1 ? SEA_LEVEL - 0.009 : SEA_LEVEL - 0.009 / k;
   const coastHi = k === 1 ? SEA_LEVEL + 0.014 : SEA_LEVEL + 0.014 / k;
+  // Waterfall lip/foam rows scale with the camera; splash points (x, y pairs).
+  const lipRows = Math.max(1, Math.round(k));
+  const splash: number[] = [];
 
   // One column at a time, NEAR rows first. Ground drawn by a nearer face row
   // hides whatever a farther one would draw at the same pixel, so each pixel is
@@ -1086,22 +1091,29 @@ export function* surfaceSteps(
         bg = mix(bg, Math.min(255, bg * 1.12 + 8), veg);
         bb = mix(bb, bb * 0.76, veg);
       }
+      // Rivers: an unbroken meandering line along each channel's flow path
+      // (see `riverAt`), drawn in the planet's own sea colours with a 1-px
+      // wet bank either side. 0 none, 1 bank, 2 water, 3 sunlit core.
+      let river = 0;
       let fall = false;
-      if (cell.river > 0 && !isWater(biome) && opts.planetType !== 'lava') {
+      if (opts.planetType !== 'lava') {
         const fp = opts.discToGridF?.(dx, dy);
-        const fr = fp ? fp.row - gp.row + 0.5 : 0.5;
-        const fc = fp ? fp.col - Math.floor(fp.col) : 0.5;
-        const strength = riverStrength(cell.river);
-        if (inRiverChannel(fr, fc, cell.riverDir, strength >= 1)) {
-          const tinted = tintRiver(br, bg, bb, strength);
-          br = tinted[0]; bg = tinted[1]; bb = tinted[2];
-          if (riverIsFall(cell.river)) {
-            fall = true;
-            br = Math.min(255, br * 0.55 + 150);
-            bg = Math.min(255, bg * 0.45 + 190);
-            bb = Math.min(255, bb * 0.35 + 230);
+        if (fp) {
+          const rs = riverAt(grid, fp.row, fp.col);
+          if (rs.half > 0) {
+            if (rs.dist <= rs.half) {
+              river = rs.strength >= 1 && rs.dist <= rs.half * 0.3 ? 3 : 2;
+              fall = rs.drops;
+            } else if (rs.dist <= rs.half + RIVER_BANK) { river = 1; fall = rs.drops; }
           }
         }
+      }
+      if (river === 1) {
+        // Wet ground: darker and a touch greener/bluer, not a drawn outline.
+        br = br * 0.72; bg = bg * 0.80; bb = bb * 0.84 + 6;
+      } else if (river >= 2) {
+        const w = river === 3 ? pal.waterSurf.light : pal.waterSurf.mid;
+        br = w.r; bg = w.g; bb = w.b;
       }
 
       // Relief from the elevation gradient, then STEPPED — the whole point of
@@ -1159,13 +1171,22 @@ export function* surfaceSteps(
           } else {
             vr = cr; vg = cg; vb = cb;
           }
-        } else if (fall && row - top <= Math.max(3, Math.round(lift * 0.85))) {
-          const k = row - top;
-          const reach = Math.max(3, Math.round(lift * 0.85));
-          const head = k <= 2;
-          vr = head ? 240 : 64 + (1 - k / reach) * 40;
-          vg = head ? 250 : 156 + (1 - k / reach) * 30;
-          vb = head ? 255 : 214;
+        } else if (fall && river >= 1) {
+          // Waterfall: the channel pours down the camera-facing cliff. A white
+          // lip, vertical streaks keyed on the world column (so they hold
+          // still under the camera), and a foam line where it lands.
+          const kk = row - top;
+          const ws = pal.waterSurf;
+          let c: RGB;
+          if (kk <= lipRows || row > rEnd - lipRows) c = ws.glint;
+          else {
+            const s = hash1(Math.floor(world.wx(px) / Math.max(1, Math.round(k))) * 131, seed + 77);
+            const dash = ((Math.floor((row - top) / Math.max(1, Math.round(k))) + Math.floor(s * 5)) & 3) === 0;
+            c = river === 1 ? (s > 0.5 ? ws.mid : ws.deep)
+              : s > 0.62 ? (dash ? ws.glint : ws.light) : s < 0.22 ? ws.deep : ws.mid;
+          }
+          vr = c.r; vg = c.g; vb = c.b;
+          if (river >= 2 && row === rEnd && rEnd >= top + 3 * lipRows) splash.push(px, rEnd + 1);
         } else {
           // Solid cliff column under the crest (diorama_test language) — not a
           // silt fade, so height reads as real ground you can put life on.
@@ -1185,6 +1206,26 @@ export function* surfaceSteps(
   }
   const it = zoomIters();
   if (it) it.surface = iters;
+
+  // Plunge pools: a short foam bar where each fall lands — white at the
+  // middle, pale water at the ends. One row tall at the identity view.
+  if (splash.length) {
+    const foam = pal.waterSurf.glint, lite = pal.waterSurf.light;
+    const sk = Math.max(1, Math.round(k));
+    for (let i = 0; i < splash.length; i += 2) {
+      const sx = splash[i], sy = splash[i + 1];
+      for (let oy = 0; oy < sk; oy++) {
+        for (let ox = -sk; ox <= sk; ox++) {
+          const x = sx + ox, y = sy + oy;
+          if (x < x0 || x > x1 || y < yTop || y > y1) continue;
+          const o = ((y - yTop) * bw + (x - x0)) * 4;
+          if (d[o + 3] !== 255) continue;
+          const c = ox === 0 ? foam : lite;
+          d[o] = c.r; d[o + 1] = c.g; d[o + 2] = c.b;
+        }
+      }
+    }
+  }
 
   // Land cliffs can extrude onto a farther water cell's pixel. Punch those
   // back to alpha 0 so occupancy water stays empty for live fluids.
@@ -1952,39 +1993,16 @@ function noise2(x: number, y: number, seed: number): number {
   return mix(mix(a, b, ux), mix(c, d, ux), uy);
 }
 
-/**
- * Cheap Worley edge field — bright on cell boundaries, dark in pocket centres.
- * Returns √F2 − √F1 style ridge strength in roughly [0, ~0.7].
- */
-function cellRidge(x: number, y: number, seed: number): number {
-  const ix = Math.floor(x), iy = Math.floor(y);
-  let f1 = 9, f2 = 9;
-  for (let oy = -1; oy <= 1; oy++) {
-    for (let ox = -1; ox <= 1; ox++) {
-      const jx = ix + ox, jy = iy + oy;
-      const px = jx + hash1(jx + jy * 113, seed);
-      const py = jy + hash1(jx * 57 + jy, seed + 19);
-      const ddx = x - px, ddy = y - py;
-      const d = ddx * ddx + ddy * ddy;
-      if (d < f1) { f2 = f1; f1 = d; }
-      else if (d < f2) f2 = d;
-    }
-  }
-  return Math.sqrt(f2) - Math.sqrt(f1);
-}
-
 /** Surface-wave tuning for the caustic (non-magma) fluid path. */
 const SWELL_K = 0.30;        // radians per px of shore distance → wavelength ≈ 21 px
 const SWELL_W = 1.6;         // radians per second at speed 1
-const SWELL_DISP_PX = 1.4;   // open-water texture displacement along the landward normal
-const SWELL_DISP_SHORE_PX = 2.8; // same, right at the coast (waves steepen as they shoal)
-const SWELL_BRIGHT_OPEN = 0.018;  // web-threshold swing per crest in open water
-const SWELL_BRIGHT_SHORE = 0.12;  // same at the coast
 const FOAM_REACH = 5.0;      // px of shore distance that gets the crash/foam band
-/** Beyond this shore distance, caustics fade toward a calm mid-blue body. */
-const CAUSTIC_FADE = 14;
-const WEB_GLINT = 0.028;     // √F2−√F1 below this → glint (thin line)
-const WEB_HALO = 0.055;      // base halo width; kept narrow so open water isn't busy
+/** Wave-dash lattice (world px) and how fast each dash fades in and out. */
+const WAVE_CELL_X = 11;
+const WAVE_CELL_Y = 5;
+const WAVE_TWINKLE = 1.3;
+/** 4x4 ordered dither, 0..1 — pixel-art band transitions, keyed on world px. */
+const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
 
 /**
  * Live water on occupancy pixels.
@@ -2065,18 +2083,10 @@ export function paintFluids(
     : planetType === 'desert' ? 0.35
     : 1.0;
   const useCaustic = planetType !== 'lava';
-  // Larger cells ⇒ sparser web (was ~0.078; smaller scale = bigger cells).
-  const cellScale = planetType === 'ice' ? 0.042 : planetType === 'desert' ? 0.055 : 0.048;
   const seed = 0xca07 + (planetType.length * 97);
   const omega = SWELL_W * speed;
-  // Slow bounded wobble of the web itself (refracted light shimmer). The warp
-  // fields orbit a fixed point instead of sliding, so nothing drifts globally:
-  // the only directed motion is the shore-bound swell below.
-  const wobT = t * 0.22 * speed;
-  const wobX = Math.sin(wobT) * 0.7, wobY = Math.cos(wobT * 0.77) * 0.7;
-  const wob2X = Math.cos(wobT * 0.61 + 1.3) * 0.5, wob2Y = Math.sin(wobT * 0.89) * 0.5;
-  const blobY = Math.sin(wobT * 0.5) * 0.9;
-  const invRx = 1 / rx, invRy = 1 / ry;
+  // The shelf band sits between the body and the light crest colour.
+  const shelf: RGB = rgb((pal.mid.r + pal.light.r) >> 1, (pal.mid.g + pal.light.g) >> 1, (pal.mid.b + pal.light.b) >> 1);
 
   for (let py = y0; py <= y1; py++) {
     const sourceY = py - layerBob;
@@ -2100,98 +2110,52 @@ export function paintFluids(
 
       let c = pal.mid;
       if (useCaustic) {
-        // Landward unit normal = −∇shoreDist. Neighbours outside the pancake
-        // carry no distance, so they fall back to our own value (one-sided
-        // difference) instead of dragging the normal toward the rim.
-        let nx = 0, ny = 0, toward = shoreW;
-        if (shore > 0) {
-          const sdy = (sourceY - geom.cyTop) * invRy;
-          const sE = bufX + 1 < bw && (occupancy[src + 1] === 1 || (px + 1 - cx) * invRx * ((px + 1 - cx) * invRx) + sdy * sdy <= 1)
-            ? shoreDist![src + 1] : shore;
-          const sW = bufX - 1 >= 0 && (occupancy[src - 1] === 1 || (px - 1 - cx) * invRx * ((px - 1 - cx) * invRx) + sdy * sdy <= 1)
-            ? shoreDist![src - 1] : shore;
-          const sdyS = (sourceY + 1 - geom.cyTop) * invRy;
-          const sdyN = (sourceY - 1 - geom.cyTop) * invRy;
-          const sS = bufY + 1 < bh && (occupancy[src + bw] === 1 || dx * dx + sdyS * sdyS <= 1)
-            ? shoreDist![src + bw] : shore;
-          const sN = bufY - 1 >= 0 && (occupancy[src - bw] === 1 || dx * dx + sdyN * sdyN <= 1)
-            ? shoreDist![src - bw] : shore;
-          const gx = sE - sW, gy = sS - sN;
-          const gl = Math.sqrt(gx * gx + gy * gy);
-          if (gl > 1e-4) { nx = -gx / gl; ny = -gy / gl; }
-        }
-        if (nx === 0 && ny === 0) {
-          // No coast information (or on the equidistant ridge between two
-          // coasts): run the swell toward the pancake centre instead.
-          const rl = Math.sqrt(r2) || 1;
-          nx = -dx / rl; ny = -dy / rl;
-          if (shore <= 0) toward = rl * rx * invK;
-        }
-
-        // How loud the caustic is: 1 at the beach, ~0 in open water.
-        const detail = hasShore && shore > 0
-          ? clamp01(1 - Math.max(0, shoreW - FOAM_REACH * 0.35) / CAUSTIC_FADE)
-          : 0.35;
-        const detail2 = detail * detail;
-
-        // Travelling swell: constant phase moves to SMALLER shore distance.
-        const ph = toward * SWELL_K + t * omega;
-        const sw = Math.sin(ph);
-        const nearShore = hasShore && shore > 0 ? clamp01(1 - shoreW / FOAM_REACH) : 0;
-        const shoal = nearShore * nearShore;
-        const dispPx = (SWELL_DISP_PX + (SWELL_DISP_SHORE_PX - SWELL_DISP_PX) * shoal) * (0.45 + 0.55 * detail);
-        const disp = Math.cos(ph) * dispPx * cellScale;
-
-        // Web domain: pixel → cell space, pushed along the landward normal by
-        // the passing crest, then softly warped so walls curve like refracted light.
-        // Body-relative sampling (lx/ly): water belongs to the world, so moving
-        // the body on screen — framing, a resize — must not re-roll the web.
-        const bx = lx * cellScale + nx * disp;
-        const by = ly * cellScale + ny * disp;
-        const warp = noise2(bx * 0.45 + wobX, by * 0.45 + wobY, seed + 3);
-        const qx = bx + (warp - 0.5) * 1.5;
-        const qy = by + (warp - 0.5) * 1.5;
-        // Same cell lattice sampled through a second, differently-warped lens:
-        // the two walls coincide in most places and braid apart elsewhere.
-        const warp2 = noise2(bx * 0.9 + wob2X + 7.7, by * 0.9 + wob2Y, seed + 5);
-        const b1 = cellRidge(qx, qy, seed);
-        const b2 = cellRidge(qx + (warp2 - 0.5) * 0.8, qy + (0.5 - warp2) * 0.55, seed) + 0.02 * invL;
-        // Ridge distance in screen terms (x k): the thresholds below then cut
-        // the same 1-px-wide lines at any zoom.
-        let b = (b1 < b2 ? b1 : b2) * lineK;
+        // Pixel-art sea: flat dithered depth bands, twinkling wave dashes in
+        // open water, and surf lines that roll in onto every coast.
+        const wx = Math.floor(lx), wy = Math.floor(ly);
+        const bayer = BAYER4[((wy & 3) << 2) | (wx & 3)];
         const grain = noise2(lx * 0.23, ly * 0.23, seed + 11);
-        b += (grain - 0.5) * 0.035;
-        const swell = sw * (SWELL_BRIGHT_OPEN + (SWELL_BRIGHT_SHORE - SWELL_BRIGHT_OPEN) * shoal);
-        // Narrow halo; open water barely gets the pale patch treatment.
-        const blob = noise2(lx * 0.07 + 3.1, ly * 0.07 + blobY, seed + 23);
-        const halo = (WEB_HALO + Math.max(0, blob - 0.72) * 0.22 + swell * 0.9)
-                   * (0.35 + 0.65 * detail);
 
-        // Stricter glint in open water so the web thins out away from land.
-        const glintCut = WEB_GLINT + swell * 0.25 + (1 - detail) * 0.045;
-        if (b < glintCut && detail2 > 0.12) c = pal.glint;
-        else if (b < halo && detail > 0.25) c = pal.light;
-        else {
-          // Depth ramp: shelf stays mid-blue; far from land → deep navy.
-          const depth = hasShore && shore > 0
-            ? clamp01((shoreW - 2.5) / 16)
-            : clamp01(Math.sqrt(r2) * 1.15);
-          if (depth > 0.72) c = pal.deep;
-          else if (depth > 0.38) c = (grain * 0.55 + depth) > 0.72 ? pal.deep : pal.mid;
-          else c = pal.mid;
+        // Depth tone 0 (shelf) … 1 (open ocean), with slow patches so the
+        // bands wander instead of tracing the coast exactly.
+        const patch = noise2(lx * 0.045, ly * 0.08, seed + 23) - 0.5;
+        const tone = hasShore && shore > 0
+          ? clamp01((shoreW - 1.5) / 9 + patch * 0.35)
+          : clamp01(0.72 + Math.sqrt(r2) * 0.3 + patch * 0.2);
+        const band = tone * 2.6 + (bayer - 0.5) * 0.9;
+        c = band < 0.7 ? shelf : band < 1.75 ? pal.mid : pal.deep;
 
-          // Whisper web on deep water: rare pale crests only (never bright glint).
-          // Keeps the navy readable while still showing faint wave lines.
-          if (depth > 0.35 && b < WEB_GLINT + 0.012 + swell * 0.15) {
-            c = pal.light;
+        // Wave dashes: one per jittered lattice cell, 2–4 px long, 1 screen
+        // px tall, fading in and out on their own clocks. Horizontal, because
+        // the board is seen low and flat.
+        const offShore = !hasShore || shore <= 0 || shoreW > FOAM_REACH;
+        if (offShore) {
+          const ix = Math.floor(lx / WAVE_CELL_X), iy = Math.floor(ly / WAVE_CELL_Y);
+          const hA = hash1(ix * 7919 + iy * 104729, seed + 31);
+          const hB = hash1(ix * 104729 + iy * 7919, seed + 37);
+          const gx = (ix + 0.2 + hA * 0.6) * WAVE_CELL_X;
+          const gy = (iy + 0.2 + hB * 0.6) * WAVE_CELL_Y;
+          const half = 1 + Math.floor(hA * 2.99) * 0.5;
+          const ddx = lx - gx, ddy = (ly - gy) * lineK;
+          if (ddy >= -0.5 && ddy < 0.5 && ddx >= -half && ddx < half) {
+            const live = Math.sin(t * WAVE_TWINKLE * speed + hB * 6.283);
+            if (live > 0.15) {
+              c = pal.light;
+              if (live > 0.75 && ddx >= -1 && ddx < 1) c = pal.glint;
+            }
           }
         }
 
-        // Shore crash: the crest piles up on the coast as a dithered foam band.
-        if (nearShore > 0) {
-          const foam = sw * (0.35 + nearShore * 0.85) + nearShore * 1.05 - 0.9 + (grain - 0.5) * 0.55;
-          if (foam > 0.28) c = pal.glint;
-          else if (foam > -0.05 && c !== pal.glint) c = pal.light;
+        if (hasShore && shore > 0) {
+          // Surf: crests travel to SMALLER shore distance (constant phase) and
+          // break up toward the beach. 1 px lines, broken by grain.
+          const ph = shoreW * SWELL_K + t * omega;
+          const crest = Math.sin(ph);
+          const reach = clamp01(1 - shoreW / (FOAM_REACH * 2.2));
+          const line = crest - (1 - reach * 0.22) + (grain - 0.5) * 0.12;
+          if (reach > 0 && line > 0) c = shoreW < FOAM_REACH && line > 0.06 ? pal.glint : pal.light;
+          // Wet edge: the water's first pixel against the land is always foam.
+          if (shoreW < 1.2 * invK * lineK + 0.6) c = pal.glint;
         }
       } else {
         // Magma: keep travelling swell + hot glint.

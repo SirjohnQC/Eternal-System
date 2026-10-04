@@ -473,7 +473,9 @@ function traceRivers(grid: PlanetGrid, planetType: string): void {
       f = flow[f];
     }
   }
-  const stream = planetType === 'desert' ? 120 : 40;
+  // Only well-fed channels show: at 40 cells the board read as a crackle of
+  // blue threads rather than a few rivers with their tributaries.
+  const stream = planetType === 'desert' ? 160 : 90;
   const trunk = stream * 3;
   const moistGate = planetType === 'desert' ? 0.48 : 0.22;
   for (const i of land) {
@@ -548,6 +550,111 @@ export function inRiverChannel(
   const pr = fracRow - 0.5, pc = fracCol - 0.5;
   const cross = Math.abs(pr * dc - pc * dr) / len;
   return cross <= (trunk ? 0.55 : 0.40);
+}
+
+/** Seamless (column-wrapping) value noise for river meanders. [0,1). */
+const MEANDER_CELLS = 64;                     // lattice cells around the planet
+const MEANDER_F = MEANDER_CELLS / GRID_SIZE;  // lattice cells per grid column
+function meanderNoise(row: number, col: number, salt: number): number {
+  const x = col * MEANDER_F, y = row * MEANDER_F;
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  const fx = x - x0, fy = y - y0;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const h = (ix: number, iy: number) => {
+    const wx = ((ix % MEANDER_CELLS) + MEANDER_CELLS) % MEANDER_CELLS;
+    let v = (wx * 374761393 + iy * 668265263 + salt * 1442695041) | 0;
+    v = Math.imul(v ^ (v >>> 13), 1274126177);
+    return ((v ^ (v >>> 16)) >>> 0) / 4294967296;
+  };
+  const a = h(x0, y0), b = h(x0 + 1, y0), c = h(x0, y0 + 1), d = h(x0 + 1, y0 + 1);
+  const top = a + (b - a) * ux, bot = c + (d - c) * ux;
+  return top + (bot - top) * uy;
+}
+
+/** Result of {@link riverAt}. Reused between calls — copy what you keep. */
+export interface RiverSample {
+  /** Distance to the nearest channel centreline, in grid columns (rows squashed). */
+  dist: number;
+  /** Half-width of that channel, same units. 0 when no channel is near. */
+  half: number;
+  /** Strength of that channel: ~0.65 stream, 1 river. */
+  strength: number;
+  /**
+   * The channel steps down a terrace on this segment or the next one — where
+   * it meets a cliff that faces the camera, it falls instead of stopping.
+   */
+  drops: boolean;
+}
+const _river: RiverSample = { dist: Infinity, half: 0, strength: 0, drops: false };
+
+/** Half-width of a channel in grid columns. Streams ~1 px at the identity view. */
+export const RIVER_HALF_STREAM = 0.2;
+export const RIVER_HALF_TRUNK = 0.34;
+
+/**
+ * Nearest river centreline to a FRACTIONAL grid position (cell i's centre at
+ * row i, cell j's centre at col j + 0.5 — the `discToGridF` convention).
+ *
+ * Each channel cell owns the segment from its centre to its downstream
+ * neighbour's centre, so consecutive cells join into one unbroken line no
+ * matter how the pixels sample it. The position is gently warped first so
+ * the 8-way flow directions meander instead of running ruler-straight.
+ * `rowScale` squashes row distances to match the board's foreshortening.
+ */
+export function riverAt(
+  grid: PlanetGrid, row: number, col: number, rowScale = 0.52,
+): RiverSample {
+  const n = GRID_SIZE;
+  _river.dist = Infinity; _river.half = 0; _river.strength = 0; _river.drops = false;
+  let ownR = -1, ownC = 0;
+  const wr = row + (meanderNoise(row, col, 3) - 0.5) * 0.7;
+  const wc = col + (meanderNoise(row, col, 11) - 0.5) * 0.7;
+  const r0 = Math.round(wr), c0 = Math.floor(wc);
+  for (let dr = -1; dr <= 1; dr++) {
+    const rr = r0 + dr;
+    if (rr < 0 || rr >= n) continue;
+    const gRow = grid[rr];
+    for (let dc = -1; dc <= 1; dc++) {
+      const cu = c0 + dc;
+      const cell = gRow[((cu % n) + n) % n];
+      if (cell.river <= 0 || cell.riverDir < 0) continue;
+      const step = RIVER_STEP[cell.riverDir];
+      // Segment A→B in (col, row·rowScale) space, A at this cell's centre.
+      const ax = cu + 0.5, ay = rr * rowScale;
+      const ex = step[1], ey = step[0] * rowScale;
+      const px = wc - ax, py = wr * rowScale - ay;
+      const len2 = ex * ex + ey * ey;
+      let t = (px * ex + py * ey) / len2;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const qx = px - ex * t, qy = py - ey * t;
+      const dist = Math.sqrt(qx * qx + qy * qy);
+      const s = riverStrength(cell.river);
+      const half = s >= 1 ? RIVER_HALF_TRUNK : RIVER_HALF_STREAM;
+      // Nearest by edge, not centre: a trunk passing beside a stream wins
+      // the pixels it actually covers.
+      if (dist - half < _river.dist - _river.half) {
+        _river.dist = dist; _river.half = half; _river.strength = s;
+        ownR = rr; ownC = ((cu % n) + n) % n;
+      }
+    }
+  }
+  if (ownR >= 0) {
+    // Walk two segments downstream looking for a terrace step.
+    let r = ownR, c = ownC;
+    for (let k = 0; k < 2 && !_river.drops; k++) {
+      const a = grid[r][c];
+      if (a.riverDir < 0) break;
+      const st = RIVER_STEP[a.riverDir];
+      const br = r + st[0];
+      if (br < 0 || br >= n) break;
+      const bc = (c + st[1] + n) % n;
+      const b = grid[br][bc];
+      if (b.elevation < SEA_LEVEL || elevTier(a.elevation) > elevTier(b.elevation)) _river.drops = true;
+      r = br; c = bc;
+      if (b.river <= 0) break;
+    }
+  }
+  return _river;
 }
 
 /** Blue thread drawn over a land biome. `amount` is 0, ~0.65, or 1. */
