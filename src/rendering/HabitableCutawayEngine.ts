@@ -2139,7 +2139,7 @@ export function paintFluids(
           const ddx = lx - gx, ddy = (ly - gy) * lineK;
           if (ddy >= -0.5 && ddy < 0.5 && ddx >= -half && ddx < half) {
             const live = Math.sin(t * WAVE_TWINKLE * speed + hB * 6.283);
-            if (live > 0.15) {
+            if (live > -0.05) {
               c = pal.light;
               if (live > 0.75 && ddx >= -1 && ddx < 1) c = pal.glint;
             }
