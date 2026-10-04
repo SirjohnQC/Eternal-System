@@ -29,6 +29,7 @@ import { planetOffsetFromStar } from '../simulation/BigBangEngine';
 import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA } from '../simulation/GameState';
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
 import { bakePlanetTexture } from '../simulation/PlanetRenderer';
+import { paintMoon, type MoonKindArt } from './MoonArt';
 import {
   bakeStarBody, bakeStarCorona, bakeStarGlow, STAR_BODY_FRAMES, CORONA_BODY_FRAC, bakePlanetSprite, bakeMoonSprite,
   wrapEquirectToGlobe, starTempBand, starVisualProfile, parseHexColor,
@@ -1386,10 +1387,29 @@ export class PixiBigBangRenderer {
             const my = py + Math.sin(ma) * moonOrbit;
 
             const mk = (moon.kind as MoonKind) || 'rock';
-            const mTexKey = `moon|${mk}`;
-            const mTex = this.nearestTex(
-              this.moonTextures, mTexKey, bakeMoonSprite(mk, 8),
-            );
+            // Big enough on screen: the shared MoonArt moon (the planet view
+            // draws the same one), lit from its star, colony and all.
+            const mOnScreen = Math.max(moon.radius * (large ? 3.6 : 2.8), (large ? 1.6 : 0.9) / camera.scale) * camera.scale;
+            let mTex: Texture;
+            if (mOnScreen >= 8) {
+              const px = mOnScreen >= 28 ? 32 : 16;
+              const la = Math.round(Math.atan2(star.y - my, star.x - mx) / (Math.PI / 8));
+              const mTexKey = `moonart|${star.id}|${i}|${m}|${px}|${la}|${moon.colonised ? 1 : 0}`;
+              mTex = this.moonTextures.get(mTexKey) ?? this.nearestTex(this.moonTextures, mTexKey, (() => {
+                const f = paintMoon({
+                  kind: mk as MoonKindArt, rgb: parseHexColor(moon.color, [180, 176, 168]) as [number, number, number],
+                  size: px, seed: (planet.genomeSeed ?? 1) * 31 + m * 977,
+                  lx: Math.cos(la * Math.PI / 8), ly: Math.sin(la * Math.PI / 8), colonised: moon.colonised,
+                });
+                const cv = document.createElement('canvas');
+                cv.width = f.width; cv.height = f.height;
+                const cg = cv.getContext('2d');
+                if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+                return cv;
+              })());
+            } else {
+              mTex = this.nearestTex(this.moonTextures, `moon|${mk}`, bakeMoonSprite(mk, 8));
+            }
             const mKey = `${star.id}:${i}:m${m}`;
             let mSprite = this.moonSprites.get(mKey);
             if (!mSprite) {

@@ -39,6 +39,7 @@ import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait, CREATURE_SIZE_PX } from './SpeciesSprite';
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
+import { paintMoon, type MoonKindArt } from './MoonArt';
 import {
   HabitableCutawayEngine,
   type HabitableType,
@@ -3280,78 +3281,62 @@ export class IsoDioramaRenderer {
    * @param angle global orbit phase, so the moons keep moving with the scene
    * @param front true to draw the half of the orbit in front of the planet
    */
-  private drawMoons(g: CanvasRenderingContext2D, angle: number, front: boolean): void {
+  /**
+   * The planet's actual moons, the same ones the system view draws: each on
+   * its own orbit at the SAME angle (orbitalAngle + animTick x orbitalSpeed,
+   * the system view's clock), so a moon east of the planet there is east of
+   * it here, and behind the world for the far half of its orbit. Ordered
+   * outward by orbit radius, sized from its radius relative to the planet,
+   * drawn by MoonArt (shared with the system view) and lit from the sun.
+   * A settled moon carries its colony's domes and lights.
+   *
+   * @param _angle unused (kept for the call sites; the orbit clock is animTick)
+   * @param front true to draw the half of each orbit in front of the planet
+   */
+  private drawMoons(g: CanvasRenderingContext2D, _angle: number, front: boolean): void {
     const { cx, cy, rx, ry } = this;
-    const moons = this.planet?.moons ?? [];
-    if (moons.length === 0) return;
-
-    for (let i = 0; i < moons.length; i++) {
-      const m = moons[i];
-      // Each moon runs at its own rate and starts from its own phase, so they
-      // separate instead of moving as one rigid body.
-      const speedMultiplier = 12;
-      const a = m.orbitalAngle + angle * (m.orbitalSpeed * speedMultiplier);
-      // Behind the planet for the far half of the orbit.
+    const planet = this.planet, moons = planet?.moons ?? [];
+    if (!planet || moons.length === 0) return;
+    const rank = moons.map((m, i) => i).sort((a, b) => moons[a].orbitalRadius - moons[b].orbitalRadius);
+    const tick = this.animTick;
+    const k = this.camZoom;
+    // Sun direction on screen (azimuth 0 lights the +x limb), from above.
+    const az = this.sky?.sun.az ?? 0;
+    const lb = Math.round(Math.cos(az) * 8) / 8;
+    for (let o = 0; o < rank.length; o++) {
+      const i = rank[o], m = moons[i];
+      const a = m.orbitalAngle + tick * m.orbitalSpeed;
       const isFront = Math.sin(a) > 0;
       if (isFront !== front) continue;
-
-      const dist = 1.55 + i * 0.34;
+      const dist = 1.5 + o * 0.32;
       const x = cx + Math.cos(a) * rx * dist;
       const y = this.habitable
         ? this.cutaway.drawGeom.cyTop - this.cutaway.drawGeom.ry * 1.35
           + Math.sin(a) * this.cutaway.drawGeom.R * 0.38
         : cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
-      // Scaled off the moon's real radius, floored so the smallest still reads.
-      // World class: the orbit follows the active geometry (x k via rx, ry, R);
-      // the floor and the per-unit term scale by k too.
-      const k = this.camZoom;
-      const r = Math.max(2 * k, rx * 0.05 + m.radius * 3.2 * k);
-      const tint = hexToRGB(m.color);
-
-      // Halo
-      g.fillStyle = css(tint, 0.12);
-      g.beginPath(); g.arc(x, y, r * 1.9, 0, Math.PI * 2); g.fill();
-      // Body
-      g.fillStyle = css(tint, 1);
-      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
-      // Terminator: away from the sun, deeper while it is down (sky/SunLight).
-      const ms = moonShade(this.dayAngle);
-      g.fillStyle = css(shade(tint, 0.45), ms.alpha);
-      g.beginPath(); g.arc(x + r * ms.offset, y + r * 0.12, r * 0.92, 0, Math.PI * 2); g.fill();
-
-      // Surface detail: craters on rock and iron, cracks on ice, glow on lava.
-      if (m.kind === 'volcanic') {
-        g.fillStyle = 'rgba(255,150,60,0.7)';
-        for (const [dx, dy] of [[-0.25, -0.2], [0.3, 0.18], [0.05, 0.35]]) {
-          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6 * k, r * 0.15), 0, Math.PI * 2); g.fill();
-        }
-      } else if (m.kind === 'ice' || m.kind === 'ocean') {
-        g.strokeStyle = css(shade(tint, 0.7), 0.7);
-        g.lineWidth = 1;
-        g.beginPath();
-        g.moveTo(x - r * 0.7, y - r * 0.1); g.lineTo(x + r * 0.5, y + r * 0.3);
-        g.moveTo(x - r * 0.2, y - r * 0.6); g.lineTo(x + r * 0.3, y + r * 0.6);
-        g.stroke();
-      } else {
-        const craters = [[-0.30, -0.28, 0.19], [0.22, 0.30, 0.14], [-0.06, 0.12, 0.11]];
-        for (const [dx, dy, cr] of craters) {
-          g.fillStyle = css(shade(tint, 0.6), 0.6);
-          g.beginPath(); g.arc(x + dx * r, y + dy * r, Math.max(0.6 * k, cr * r), 0, Math.PI * 2); g.fill();
-        }
+      const rel = planet.radius > 0 ? m.radius / planet.radius : 0.25;
+      const d = Math.round(Math.max(6 * k, Math.min(rx * 0.32, rx * 0.5 * rel)));
+      const key = `${i}|${d}|${lb}|${m.colonised ? 1 : 0}`;
+      let cv = this.moonSprites.get(key);
+      if (!cv) {
+        const f = paintMoon({
+          kind: m.kind as MoonKindArt, rgb: ((c) => [c.r, c.g, c.b] as [number, number, number])(hexToRGB(m.color)), size: d,
+          seed: (planet.genomeSeed ?? 1) * 31 + i * 977, lx: lb, ly: -0.45, colonised: m.colonised,
+        });
+        cv = document.createElement('canvas');
+        cv.width = f.width; cv.height = f.height;
+        const cg = cv.getContext('2d');
+        if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+        if (this.moonSprites.size > 200) this.moonSprites.clear();
+        this.moonSprites.set(key, cv);
       }
-
-      // A settled moon carries the lights of its colony.
-      if (m.colonised) {
-        g.fillStyle = 'rgba(255,226,150,0.95)';
-        for (const [dx, dy] of [[-0.35, 0.25], [0.1, -0.3], [0.42, 0.1]]) {
-          g.fillRect(Math.round(x + dx * r), Math.round(y + dy * r), 1, 1);
-        }
-        g.strokeStyle = 'rgba(255,226,150,0.35)';
-        g.lineWidth = 1;
-        g.beginPath(); g.arc(x, y, r * 1.35, 0, Math.PI * 2); g.stroke();
-      }
+      const prev = g.imageSmoothingEnabled;
+      g.imageSmoothingEnabled = false;
+      g.drawImage(cv, Math.round(x - d / 2), Math.round(y - d / 2));
+      g.imageSmoothingEnabled = prev;
     }
   }
+  private moonSprites = new Map<string, HTMLCanvasElement>();
 
   private drawOceanShimmer(g: CanvasRenderingContext2D, t: number, dt: number): void {
     if (this.planetType === 'lava' || this.planetType === 'gas') return;
