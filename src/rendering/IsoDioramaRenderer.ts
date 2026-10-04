@@ -367,6 +367,9 @@ interface Ember   { x: number; y: number; vy: number; life: number; maxLife: num
 
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 
+/** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
+const SKY_HZ = 30;
+
 export class IsoDioramaRenderer {
   /** Visual day for the fastest orbit in the system view, seconds. */
   private static readonly DAY_FAST = 30;
@@ -436,6 +439,9 @@ export class IsoDioramaRenderer {
   bakeBudgetMs = 2;
   /** 0 = uncapped (match display refresh). Otherwise present at most this many fps. */
   private targetFps = 0;
+  /** Sky pacing (see drawSky): last paint time and what it was painted for. */
+  private skyT = -1;
+  private skyKey = { z: 0, fx: 0, fy: 0, w: 0, h: 0 };
   private lastPresentTime = 0;
   /** Settle hooks, allocated once: `updateView` runs every frame. */
   private readonly settleHooks: SettleHooks = {
@@ -2851,6 +2857,21 @@ export class IsoDioramaRenderer {
     const sun = this.star ? tempToRGB(this.star.temperature) : rgb(255, 236, 180);
     const L = farLayout(skyLayout(geom, this.VW, this.VH), this.cam, this.VW, this.VH);
     const far = L.far ?? 1;
+    // Paced like the engine's pixel layers: the sky (sun, glow, siblings)
+    // repaints at SKY_HZ, or at once when the camera, the size or the sky
+    // changes; frames in between reuse the last paint.
+    const c = this.cam, K = this.skyKey;
+    const moved = K.z !== c.zoom || K.fx !== c.fx || K.fy !== c.fy || K.w !== this.VW || K.h !== this.VH;
+    K.z = c.zoom; K.fx = c.fx; K.fy = c.fy; K.w = this.VW; K.h = this.VH;
+    const due = moved || !this.cutaway.paceLayers || this.elapsed < this.skyT || this.elapsed - this.skyT >= 1 / SKY_HZ;
+    const sg = this.skyCanvas.getContext('2d');
+    if (!sg) return;
+    if (!due) {
+      this.drawSunWash(g, L, sky, sun);
+      g.drawImage(this.skyCanvas, 0, 0);
+      return;
+    }
+    this.skyT = this.elapsed;
     img.data.fill(0);
     paintSky(img, L, {
       sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale,
@@ -2868,8 +2889,6 @@ export class IsoDioramaRenderer {
         };
       }),
     });
-    const sg = this.skyCanvas.getContext('2d');
-    if (!sg) return;
     sg.putImageData(img, 0, 0);
     this.drawSunWash(g, L, sky, sun);
     g.drawImage(this.skyCanvas, 0, 0);

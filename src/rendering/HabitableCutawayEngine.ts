@@ -1750,6 +1750,8 @@ export function paintAtmosphere(
   tint?: RGB,
   air?: AtmosphereChannel,
   k = 1,
+  /** Paint only screen rows [rowLo, rowHi). */
+  rowLo = 0, rowHi = Infinity,
 ): void {
   if (intensity <= 0.01) return;
   const chan = air ?? genomeFromLegacy(planetType, 0).atmosphere;
@@ -1778,8 +1780,8 @@ export function paintAtmosphere(
   const fadeMax = k === 1 ? ozoneFadeMax(fade) : ozoneFadeMax(chan.thicknessPx) * k;
   const fadeFloor = 3 * k, bandRows = 6 * k;
   const aerialReach = rx * 0.35;
-  const y0 = Math.max(0, Math.floor(cy - rx - fadeMax));
-  const y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  const y0 = Math.max(0, Math.floor(cy - rx - fadeMax), rowLo);
+  const y1 = Math.min(h - 1, Math.ceil(cy + ry), rowHi - 1);
   const x0 = Math.max(0, Math.floor(cx - rx - fadeMax));
   const x1 = Math.min(w - 1, Math.ceil(cx + rx + fadeMax));
   const it = zoomIters();
@@ -2135,6 +2137,8 @@ export function paintFluids(
    * melt and only the cracks between them still glow.
    */
   heat = 1,
+  /** Paint only screen rows [rowLo, rowHi) (the host may refresh water a band per frame). */
+  rowLo = 0, rowHi = Infinity,
 ): void {
   const { cx, rx, ry } = geom;
   const cy = geom.cyTop + layerBob;
@@ -2152,7 +2156,8 @@ export function paintFluids(
   const d = img.data;
   const w = img.width, h = img.height;
   let y0 = Math.max(0, Math.floor(cy - ry));
-  let y1 = Math.min(h - 1, Math.ceil(cy + ry));
+  let y1 = Math.min(h - 1, Math.ceil(cy + ry), rowHi - 1);
+  if (y0 < rowLo) y0 = rowLo;
   let x0 = Math.max(0, Math.floor(cx - rx));
   let x1 = Math.min(w - 1, Math.ceil(cx + rx));
   // Buffer space: the image's own pixels, or `map` (screen -> buffer, nearest).
@@ -2430,6 +2435,19 @@ export type EngineBakeOpts = Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'>
  */
 /** Rate the live flora layer is re-rendered at (sway and growth steps). */
 const FLORA_HZ = 15;
+/**
+ * Repaint rates of the paced pixel layers: water, the day/night veil (with
+ * cloud shadows, which must keep step with the clouds), clouds and rain, and
+ * the atmosphere haze (it only moves with the sun). 30 Hz keeps water and
+ * rain fluid; frames in between blit the last paint.
+ */
+const PACE_HZ = [30, 30, 30, 15];
+/**
+ * Bands each paced layer's refresh is split into at high frame rates (see
+ * paceLayersFor): its rows are repainted a band per pick, so one refresh is
+ * spread over several frames instead of costing one frame all of it.
+ */
+const PACE_BANDS = [2, 1, 4, 2];
 
 export class HabitableCutawayEngine {
   /**
@@ -3174,79 +3192,107 @@ export class HabitableCutawayEngine {
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob, geom, k);
     this.drawStatic(g, layerBob);
-    const fluids = this.fluidImage;
-    if (fluids) {
-      fluids.data.fill(0);
-      if (!cs) {
-        paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover, this.magmaHeat);
-      } else {
-        paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover, this.magmaHeat);
-        // Outrun strips: water from the identity buffers through the live camera.
-        if (this.underlay) {
-          const s = this.strips, f = this.stripMap, c = this.liveCam;
-          for (let i = 0; i < this.stripCount; i++) {
-            f.inv = 1 / c.zoom; f.ox = c.fx - (this.w / 2) / c.zoom; f.oy = c.fy - (this.h / 2) / c.zoom;
-            f.bw = this.w; f.bh = this.h; f.shoreK = 1;
-            f.x0 = s[i * 4]; f.y0 = s[i * 4 + 1] + layerBob; f.x1 = s[i * 4 + 2] - 1; f.y1 = s[i * 4 + 3] - 1 + layerBob;
-            paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, k, k, f, this.idLandCover, this.magmaHeat);
+
+    // Weather sim: fixed steps, every frame (cheap; it is the clock the
+    // painters interpolate). At most 4 steps per frame: a refocused tab hands
+    // us seconds of dt. The sim's sun is the sun on screen: azimuth 0 lights
+    // the +x limb, so the subsolar point is a quarter turn from the centre
+    // toward +x, and it moves toward -x as the day turns.
+    if (this.weatherSim) {
+      this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
+      this.weatherSim.sunLat = input.sunLat ?? 0;
+      this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
+      while (this.weatherAcc >= WX_DT) {
+        this.weatherAcc -= WX_DT;
+        this.weatherSim.step(WX_DT);
+        // Only the shown set's painter spawns and moves particles; the
+        // other one is frozen until it is shown again.
+        painter?.onStep(this.weatherSim);
+      }
+    }
+    this.prepDt += input.dt;
+    let prepared = false;
+    const prepare = () => {
+      if (prepared || !painter || !this.weatherSim) return;
+      painter.prepare(this.weatherSim, this.weatherAcc / WX_DT, this.prepDt);
+      this.prepDt = 0;
+      prepared = true;
+    };
+
+    // Paced layers (see PACE_HZ): which repaint this frame.
+    const cloudsOn = !!painter && wx > 0.01, atmoOn = haze > 0.01;
+    this.frameDt = input.dt;
+    const [doWater, doVeil, doClouds, doAtmo] = this.paceLayersFor(elapsed, cloudsOn, atmoOn, layerBob);
+
+    const fluids = this.fluidImage, fluidG = this.fluidScratch.getContext('2d');
+    if (fluids && fluidG) {
+      if (doWater) {
+        const [r0, r1] = this.nextBand(0, fluids.height);
+        fluids.data.fill(0, r0 * fluids.width * 4, r1 * fluids.width * 4);
+        if (!cs) {
+          paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover, this.magmaHeat, r0, r1);
+        } else {
+          paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover, this.magmaHeat, r0, r1);
+          // Outrun strips: water from the identity buffers through the live camera.
+          if (this.underlay) {
+            const s = this.strips, f = this.stripMap, c = this.liveCam;
+            for (let i = 0; i < this.stripCount; i++) {
+              f.inv = 1 / c.zoom; f.ox = c.fx - (this.w / 2) / c.zoom; f.oy = c.fy - (this.h / 2) / c.zoom;
+              f.bw = this.w; f.bh = this.h; f.shoreK = 1;
+              f.x0 = s[i * 4]; f.y0 = s[i * 4 + 1] + layerBob; f.x1 = s[i * 4 + 2] - 1; f.y1 = s[i * 4 + 3] - 1 + layerBob;
+              paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, k, k, f, this.idLandCover, this.magmaHeat, r0, r1);
+            }
           }
         }
+        fluidG.putImageData(fluids, 0, 0, 0, r0, fluids.width, r1 - r0);
       }
-      const fluidG = this.fluidScratch.getContext('2d');
-      if (fluidG) {
-        fluidG.putImageData(fluids, 0, 0);
-        g.drawImage(this.fluidScratch, 0, 0);
-        // Plants and stones, live: over land and shore water, under the
-        // day/night veil and weather shadows.
-        if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
-        fluids.data.fill(0);
+      g.drawImage(this.fluidScratch, 0, 0);
+    }
+    // Plants and stones, live: over land and shore water, under the
+    // day/night veil and weather shadows.
+    if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
+    const veil = this.veilImage, veilG = this.veilG;
+    if (veil && veilG) {
+      if (doVeil) {
+        veil.data.fill(0);
         // maxLift: peaks rise above the face; veil must cover that column too.
         const veilLift = cs ? cs.opts.maxLift : (this.surfaceBakeOpts?.maxLift ?? 18);
-        paintDayNight(fluids, geom, sunAzimuth, layerBob, veilLift);
-        if (this.weatherSim) {
-          // At most 4 steps per frame: a refocused tab hands us seconds of dt.
-          // The sim's sun is the sun on screen: azimuth 0 lights the +x limb, so
-          // the subsolar point is a quarter turn from the centre toward +x, and
-          // it moves toward -x as the day turns.
-          this.weatherSim.sunLon = this.weatherFocusLon + this.weatherEast * (Math.PI / 2 - sunAzimuth);
-          this.weatherSim.sunLat = input.sunLat ?? 0;
-          this.weatherAcc = Math.min(this.weatherAcc + input.dt, WX_DT * 4);
-          while (this.weatherAcc >= WX_DT) {
-            this.weatherAcc -= WX_DT;
-            this.weatherSim.step(WX_DT);
-            // Only the shown set's painter spawns and moves particles; the
-            // other one is frozen until it is shown again.
-            painter?.onStep(this.weatherSim);
-          }
-          if (painter) {
-            painter.prepare(this.weatherSim, this.weatherAcc / WX_DT, input.dt);
-            if (wx > 0.01) painter.paintShadows(fluids, sunAzimuth, wx);
-          }
+        paintDayNight(veil, geom, sunAzimuth, layerBob, veilLift);
+        if (painter && this.weatherSim) {
+          prepare();
+          if (wx > 0.01) painter.paintShadows(veil, sunAzimuth, wx);
         }
-        fluidG.putImageData(fluids, 0, 0);
-        g.drawImage(this.fluidScratch, 0, 0);
+        veilG.putImageData(veil, 0, 0);
       }
+      g.drawImage(this.veilScratch, 0, 0);
     }
     input.drawSurfaceOverlays(g);
     const weatherG = this.weatherG, weatherImage = this.weatherImage;
-    if (painter && weatherImage && weatherG && wx > 0.01) {
-      // putImageData-only, like the atmosphere canvas.
-      weatherImage.data.fill(0);
-      painter.paintClouds(weatherImage, sunAzimuth, wx);
-      weatherG.putImageData(weatherImage, 0, 0);
+    if (painter && weatherImage && weatherG && cloudsOn) {
+      if (doClouds) {
+        // putImageData-only, like the atmosphere canvas.
+        prepare();
+        const [y0, y1] = this.nextBand(2, weatherImage.height), W = weatherImage.width;
+        weatherImage.data.fill(0, y0 * W * 4, y1 * W * 4);
+        painter.paintClouds(weatherImage, sunAzimuth, wx, y0, y1);
+        weatherG.putImageData(weatherImage, 0, 0, 0, y0, W, y1 - y0);
+      }
       g.drawImage(this.weatherScratch, 0, 0);
     }
     const atmo = this.atmoImage;
     const atmoG = this.atmoG;
-    if (atmo && atmoG && haze > 0.01) {
-      // putImageData-only on this canvas — mixing drawImage here forces a
-      // software rasterizer and the preview drops to ~1 fps.
-      atmo.data.fill(0);
-      const gasTint = this.planetType === 'gas' && this.gasBands.length
-        ? averageBands(this.gasBands)
-        : undefined;
-      paintAtmosphere(atmo, geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air, k);
-      atmoG.putImageData(atmo, 0, 0);
+    if (atmo && atmoG && atmoOn) {
+      if (doAtmo) {
+        // putImageData-only on this canvas — mixing drawImage here forces a
+        // software rasterizer and the preview drops to ~1 fps.
+        const [a0, a1] = this.nextBand(3, atmo.height);
+        atmo.data.fill(0, a0 * atmo.width * 4, a1 * atmo.width * 4);
+        const gasTint = this.planetType === 'gas' && this.gasBands.length
+          ? averageBands(this.gasBands)
+          : undefined;
+        paintAtmosphere(atmo, geom, this.planetType, bob, sunAzimuth, haze, gasTint, input.air, k, a0, a1);
+        atmoG.putImageData(atmo, 0, 0, 0, a0, atmo.width, a1 - a0);
+      }
       g.drawImage(this.atmoScratch, 0, 0);
     }
     input.drawUiOverlays(g);
@@ -3254,6 +3300,77 @@ export class HabitableCutawayEngine {
     input.drawNearMoons(g);
     this.drawVignette(g, this.geom, bob);
   }
+
+  /**
+   * Layer pacing. The pixel painters (water, the day/night veil with cloud
+   * shadows, clouds, atmosphere) each repaint into their own canvas at their
+   * own rate (PACE_HZ) and every frame just blits the canvases, so the frame
+   * rate is not bound by them (the Unlimited cap targets 240 Hz panels).
+   *
+   * - The view moving (pan, zoom, a camera set swapping in) or the surface
+   *   re-baking repaints every layer at once: nothing is ever drawn stale
+   *   against the land.
+   * - At rest, at most ONE layer repaints per frame, the most overdue, so
+   *   their costs are spread over frames instead of stacking into a hitch;
+   *   a layer more than two periods late repaints anyway (low frame rates).
+   */
+  private paceLayersFor(elapsed: number, cloudsOn: boolean, atmoOn: boolean, layerBob: number): [boolean, boolean, boolean, boolean] {
+    const cs = this.shown, c = this.liveCam, m = this.viewMap, P = this.paceKey;
+    const moved = P.set !== (cs ?? this) || P.z !== c.zoom || P.fx !== c.fx || P.fy !== c.fy
+      || P.r !== m.r || P.dx !== m.dx || P.dy !== m.dy || P.bob !== layerBob || P.w !== this.w || P.h !== this.h
+      || P.epoch !== this.surfaceEpoch || P.clouds !== cloudsOn || P.atmo !== atmoOn;
+    P.set = cs ?? this; P.z = c.zoom; P.fx = c.fx; P.fy = c.fy; P.r = m.r; P.dx = m.dx; P.dy = m.dy;
+    P.bob = layerBob; P.w = this.w; P.h = this.h; P.epoch = this.surfaceEpoch; P.clouds = cloudsOn; P.atmo = atmoOn;
+    const t = this.paceT, out = this.paceOut;
+    // At high frame rates layers are painted a band per pick (PACE_BANDS: a refresh
+    // spread over that many frames, picked that many times as often); whole
+    // when the view moves, at low frame rates, or unpaced.
+    const banded = this.paceLayers && !moved && this.frameDt > 0 && this.frameDt < 1 / 100;
+    for (let i = 0; i < 4; i++) {
+      const n = banded ? PACE_BANDS[i] : 1;
+      if (n !== this.bands[i]) { this.bands[i] = n; this.band[i] = 0; }
+    }
+    if (!this.paceLayers || moved) {
+      out[0] = out[1] = out[2] = out[3] = true;
+    } else {
+      const on = [true, true, cloudsOn, atmoOn];
+      let best = 1, bi = -1;
+      for (let i = 0; i < 4; i++) {
+        const hz = PACE_HZ[i] * this.bands[i];
+        const late = !on[i] ? 0 : elapsed < t[i] ? 99 : (elapsed - t[i]) * hz;
+        out[i] = late >= 2;
+        if (late >= best) { best = late; bi = i; }
+      }
+      if (bi >= 0) out[bi] = true;
+    }
+    for (let i = 0; i < 4; i++) if (out[i]) t[i] = elapsed;
+    return out;
+  }
+  /** Bands each paced layer is painted in this frame, and the next band to paint. */
+  private bands = [1, 1, 1, 1];
+  private band = [0, 0, 0, 0];
+  /** The screen rows [y0, y1) layer `i` paints this pick (all of them unbanded). */
+  private nextBand(i: number, H: number): [number, number] {
+    const B = this.bands[i];
+    if (B <= 1) return [0, H];
+    const b = this.band[i]++ % B;
+    return [Math.floor(b * H / B), Math.floor((b + 1) * H / B)];
+  }
+  /** This frame's dt (s): decides whether clouds are banded. */
+  private frameDt = 0;
+  /** Pace layers (`paceLayersFor`); tools that sample exact frame times turn it off. */
+  paceLayers = true;
+  private paceKey = {
+    set: null as unknown, z: 0, fx: 0, fy: 0, r: 0, dx: 0, dy: 0, bob: 0, w: 0, h: 0, epoch: -1,
+    clouds: false, atmo: false,
+  };
+  private paceT = [-1, -1, -1, -1];
+  private paceOut: [boolean, boolean, boolean, boolean] = [true, true, true, true];
+  /** Seconds of frames since the weather painter last moved its particles. */
+  private prepDt = 0;
+  private veilScratch = document.createElement('canvas');
+  private veilG: CanvasRenderingContext2D | null = null;
+  private veilImage: ImageData | null = null;
 
   /**
    * Plants, live but cheap: the whole layer is rendered into one canvas in
@@ -3389,6 +3506,10 @@ export class HabitableCutawayEngine {
     this.atmoScratch.width = w; this.atmoScratch.height = h;
     this.fluidScratch.width = w; this.fluidScratch.height = h;
     this.weatherScratch.width = w; this.weatherScratch.height = h;
+    this.veilScratch.width = w; this.veilScratch.height = h;
+    this.veilG = this.veilScratch.getContext('2d');
+    this.veilImage = this.veilG?.createImageData(w, h) ?? null;
+    this.paceKey.epoch = -1;
     this.atmoG = this.atmoScratch.getContext('2d');
     this.weatherG = this.weatherScratch.getContext('2d');
     const fluidG = this.fluidScratch.getContext('2d');

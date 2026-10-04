@@ -740,8 +740,11 @@ export class WeatherPainter {
   }
 
   /** Precipitation, then cloud, then lightning. */
-  paintClouds(img: ImageDataLike, sunAzimuth: number, intensity: number): void {
-    const lut = this.lut, d = img.data, w = img.width, h = img.height;
+  paintClouds(img: ImageDataLike, sunAzimuth: number, intensity: number, yLo = 0, yHi = img.height): void {
+    // [yLo, yHi): the band of screen rows this call paints (all by default).
+    // The host may repaint the clouds a band per frame; every write is
+    // clipped to the band, so bands tile the image exactly.
+    const lut = this.lut, d = img.data, w = img.width, h = yHi;
     const sunX = Math.cos(sunAzimuth), sunUp = ELEV_LIGHT * Math.sin(sunAzimuth);
     this.stats.drawn = 0; this.stats.midOrDense = 0;
     const vr = this.vr, vdx = this.vdx, vdy = this.vdy, one = vr === 1;
@@ -760,7 +763,7 @@ export class WeatherPainter {
       const ys = one ? y0 + vdy : Math.floor(y0 * vr + vdy);
       for (let l = 0; l < len; l++) {
         const y = ys + l;
-        if (x < 0 || y < 0 || x >= w || y >= h || y0 + l > this.pGround[q]) continue;
+        if (x < 0 || y < yLo || x >= w || y >= h || y0 + l > this.pGround[q]) continue;
         over(d, (y * w + x) * 4, P_RGBA[o4], P_RGBA[o4 + 1], P_RGBA[o4 + 2], ai);
       }
     }
@@ -772,7 +775,7 @@ export class WeatherPainter {
     // View-bounded (spec 5b): lookup rows whose cloud (skyY, ≥ py - cloudLift)
     // can land in the view. cloudLift is still the max lift (far rim).
     const cl = this.cloudLift;
-    const rA = Math.floor(-vdy / vr) + cl - 1, rB = Math.ceil((h - vdy) / vr) + cl + 1;
+    const rA = Math.floor((yLo - vdy) / vr) + cl - 1, rB = Math.ceil((h - vdy) / vr) + cl + 1;
     const xA = Math.floor(-vdx / vr) - 1, xB = Math.ceil((w - vdx) / vr) + 1;
     let visited = 0;
     for (let row = rA; row <= rB; row++) {
@@ -788,13 +791,13 @@ export class WeatherPainter {
       let X0: number, X1: number, Y0: number, Y1: number;
       if (one) {
         X0 = xl + vdx; Y0 = yl + vdy; Y1 = Y0 + yh; X1 = X0 + 1;
-        if (X0 < 0 || X0 >= w || Y1 <= 0 || Y0 >= h) continue;
-        if (Y0 < 0) Y0 = 0; if (Y1 > h) Y1 = h;
+        if (X0 < 0 || X0 >= w || Y1 <= yLo || Y0 >= h) continue;
+        if (Y0 < yLo) Y0 = yLo; if (Y1 > h) Y1 = h;
         if (Y1 <= Y0) continue;
       } else {
         X0 = Math.floor(xl * vr + vdx); X1 = Math.floor((xl + 1) * vr + vdx);
         Y0 = Math.floor(yl * vr + vdy); Y1 = Math.floor((yl + yh) * vr + vdy);
-        if (X0 < 0) X0 = 0; if (Y0 < 0) Y0 = 0; if (X1 > w) X1 = w; if (Y1 > h) Y1 = h;
+        if (X0 < 0) X0 = 0; if (Y0 < yLo) Y0 = yLo; if (X1 > w) X1 = w; if (Y1 > h) Y1 = h;
         if (X1 <= X0 || Y1 <= Y0) continue;
       }
       const fx = lut.fx[n], fy = lut.fy[n];
@@ -888,14 +891,14 @@ export class WeatherPainter {
         if (bx < x0 - WA) bx = x0 - WA; else if (bx > x0 + WA) bx = x0 + WA;
         // A 1-px stroke at its mapped spot.
         const X = one ? bx + vdx : Math.floor(bx * vr + vdx), Y = one ? y + vdy : Math.floor(y * vr + vdy);
-        if (X >= 0 && Y >= 0 && X < w && Y < h) over(d, (Y * w + X) * 4, 255, 255, 230, bolt);
+        if (X >= 0 && Y >= yLo && X < w && Y < h) over(d, (Y * w + X) * 4, 255, 255, 230, bolt);
       }
       const fy0 = Math.round(this.fY[f]);
       const cxs = one ? x0 + vdx : Math.floor(x0 * vr + vdx), fy = one ? fy0 + vdy : Math.floor(fy0 * vr + vdy);
       for (let oy = -HR; oy <= HR; oy++) for (let ox = -HR; ox <= HR; ox++) {
         const x = cxs + ox, y = fy + oy;
         const fall = 1 - Math.sqrt(ox * ox + oy * oy) / HR;
-        if (fall <= 0 || x < 0 || y < 0 || x >= w || y >= h) continue;
+        if (fall <= 0 || x < 0 || y < yLo || x >= w || y >= h) continue;
         over(d, (y * w + x) * 4, 230, 235, 255, (halo * fall) | 0);
       }
     }
