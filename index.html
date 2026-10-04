@@ -3555,7 +3555,10 @@ input[type="range"], select, label[for],
   height:210px; display:flex; align-items:center; justify-content:center;
   position:relative; overflow:hidden; flex:0 0 auto;
 }
-#evo-tank canvas{ image-rendering:pixelated; }
+#evo-tank canvas{ image-rendering:pixelated; animation:creatureHop 2.4s steps(1,end) infinite; }
+/* The same idle hop the creatures do on the planet (CREATURE_HOP_PERIOD):
+   up a pixel-step for the high part of the cycle. */
+@keyframes creatureHop{ 0%{transform:translateY(0)} 6%{transform:translateY(-4px)} 44%{transform:translateY(0)} 100%{transform:translateY(0)} }
 #evo-tank::after{
   content:''; position:absolute; left:8%; right:8%; bottom:10px; height:7px;
   background:radial-gradient(ellipse,rgba(125,255,180,0.35),transparent 70%);

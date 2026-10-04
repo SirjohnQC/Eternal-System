@@ -41,6 +41,7 @@ import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf,
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { archGenome, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
+import { forgeCreature } from './CreatureForge';
 import {
   HabitableCutawayEngine,
   type HabitableType,
@@ -62,7 +63,14 @@ import { applySettle, type SettleHooks } from './zoomSettle';
 // ─── Planet type palettes ──────────────────────────────────────────────────────
 
 /** On-screen size (px, long edge) from which a creature is drawn by CreatureForge. */
-const FORGE_MIN_PX = 10;
+/**
+ * Creatures are ALWAYS the CreatureForge body (the Evolution Lab's art),
+ * rendered at their on-screen size: the old pixel baker made the planet's
+ * species look unlike the lab's (play report).
+ */
+const FORGE_MIN_PX = 4;
+/** The shared idle hop (seconds per cycle); the lab specimen uses the same. */
+export const CREATURE_HOP_PERIOD = 2.4;
 /** New CreatureForge sprites baked per frame at most. */
 const FORGE_BAKES_PER_FRAME = 3;
 
@@ -2852,7 +2860,18 @@ export class IsoDioramaRenderer {
     if (hit) return hit;
     if (this.forgeBudget <= 0) return null;
     this.forgeBudget--;
-    const cv = bakeCreaturePortrait(gn, target);
+    // Small: the forge rendered straight at the target size (the portrait
+    // path renders at least 16 px and would not shrink).
+    let cv: HTMLCanvasElement;
+    if (target < 16) {
+      const f = forgeCreature(gn, target);
+      cv = document.createElement('canvas');
+      cv.width = f.width; cv.height = f.height;
+      const g2 = cv.getContext('2d');
+      if (g2) { const img = g2.createImageData(f.width, f.height); img.data.set(f.data); g2.putImageData(img, 0, 0); }
+    } else {
+      cv = bakeCreaturePortrait(gn, target);
+    }
     // Transparent rows under the lowest opaque pixel: the feet sit on the anchor.
     let foot = 0;
     const cg = cv.getContext('2d');
@@ -2894,7 +2913,8 @@ export class IsoDioramaRenderer {
     this.forgeBudget = FORGE_BAKES_PER_FRAME;
     for (const c of this.inhabitants) {
       // A small idle bob keeps the world alive without implying real movement.
-      const bob = Math.sin(t * c.sway + c.phase) * 0.6 * S;
+      // The shared idle hop: one pixel (x S) up for the high half of the cycle.
+      const bob = Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
       const ax = this.wsx(c.wx), ay = this.wsy(c.wy);
       // Big enough on screen to show a body: the 3D-built creature at its true
       // screen resolution instead of the speck magnified x S.
