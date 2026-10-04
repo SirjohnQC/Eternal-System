@@ -77,7 +77,7 @@ check('metric separates them', cClump > cEven * 1.8,
 const { generatePlanetGrid, SEA_LEVEL, GRID_SIZE, isWater } =
   await import('../src/simulation/PlanetGrid');
 const { habitableGeom } = await import('../src/rendering/HabitableCutawayEngine');
-const { planSurfaceDecals, DECAL_SNOW_LINE, DECAL_BUDGET, PAINTER_SNOW_ELEVATION } =
+const { planSurfaceDecals, DECAL_SNOW_LINE, DECAL_BUDGET, PAINTER_SNOW_ELEVATION, isMineralKind, isWoody } =
   await import('../src/rendering/SurfaceDecals');
 
 const VW = 1200, VH = 800;
@@ -179,7 +179,7 @@ console.log(`\n  sites: dead ${dead.length}  mid ${mid.length}  lush ${lush.leng
 // Rock is not life and is exempt from the life floor by design (bare crags
 // belong on a lifeless world); every other kind IS vegetation and must not
 // appear at all when lush is near zero.
-const livingDead = dead.filter(s => s.kind !== 'rock').length;
+const livingDead = dead.filter(s => !isMineralKind(s.kind)).length;
 check('dead world grows nothing living', livingDead === 0,
       `${livingDead} (rock ${dead.length - livingDead})`);
 // `dead < mid` was implied by the detail string but never asserted. Assert it.
@@ -188,7 +188,7 @@ check('readout is monotonic',
       `${dead.length} < ${mid.length} < ${lush.length}`);
 
 const woody = (a: any[]) =>
-  a.filter(s => s.kind === 'conifer' || s.kind === 'broadleaf').length / Math.max(1, a.length);
+  a.filter(s => isWoody(s.kind)).length / Math.max(1, a.length);
 // Density, composition and clumping are asserted over a SEED SWEEP further
 // down, not on this one world — see the "seed sweep" section. A single-seed
 // assertion on a stochastic generator cannot tell "broken" from "unlucky".
@@ -571,15 +571,20 @@ const lavaGrid = generatePlanetGrid('lava', 7777, null);
 const desertSites = planSurfaceDecals(typeOpts('desert', desertGrid) as any, 0.92, 0xC0FFEE);
 const lavaSites = planSurfaceDecals(typeOpts('lava', lavaGrid) as any, 0.92, 0xC0FFEE);
 const woodyOf = (a: any[]) =>
-  a.filter(s => s.kind === 'conifer' || s.kind === 'broadleaf').length;
+  a.filter(s => isWoody(s.kind)).length;
 
 check('a desert world grows no forest', woodyOf(desertSites) === 0,
       `${woodyOf(desertSites)} trees of ${desertSites.length} decals`);
 check('a desert world is not bare either', desertSites.length > 20,
       `${desertSites.length} decals`);
 check('a lava world grows nothing but rock',
-      lavaSites.every(s => s.kind === 'rock'),
+      lavaSites.every(s => isMineralKind(s.kind)),
       `${lavaSites.length} decals, kinds ${[...new Set(lavaSites.map(s => s.kind))].join(',')}`);
+// A world still forming carries stone, never life, however lush its numbers.
+const forming = planSurfaceDecals(opts, 0.92, 0xC0FFEE, undefined, true);
+check('a forming world carries stone only',
+      forming.length > 10 && forming.every(s => isMineralKind(s.kind)),
+      `${forming.length} decals, kinds ${[...new Set(forming.map(s => s.kind))].join(',')}`);
 // The temperate case must NOT regress: ocean keeps its forest. That control
 // used to live here as a second, literally identical copy of the deleted
 // `woodland dominates a lush world` assertion — same expression, same single

@@ -10,8 +10,25 @@
  */
 import type { CutawayBakeOpts, HabitableType } from './HabitableCutawayEngine';
 import { isWater } from '../simulation/PlanetGrid';
+import { forgeFlora, groundKey, FLORA_VARIANTS, type FloraSprite } from './FloraForge';
 
-export type DecalKind = 'conifer' | 'broadleaf' | 'scrub' | 'cactus' | 'rock';
+export type DecalKind =
+  | 'conifer' | 'broadleaf' | 'palm' | 'scrub' | 'bush' | 'grass' | 'cactus' | 'mushroom'
+  | 'rock' | 'ore' | 'crystal';
+
+/** Trees: they clump in groves and need a living world to reach full size. */
+export function isWoody(k: DecalKind): boolean {
+  return k === 'conifer' || k === 'broadleaf' || k === 'palm';
+}
+/** Not life: stone and crystal, which a dead or still-forming world carries too. */
+export function isMineralKind(k: DecalKind): boolean {
+  return k === 'rock' || k === 'ore' || k === 'crystal';
+}
+/** The atlas only draws the original five; newer kinds borrow the nearest shape. */
+const ATLAS_FALLBACK: Record<DecalKind, DecalKind> = {
+  conifer: 'conifer', broadleaf: 'broadleaf', palm: 'broadleaf', scrub: 'scrub', bush: 'scrub',
+  grass: 'scrub', cactus: 'cactus', mushroom: 'scrub', rock: 'rock', ore: 'rock', crystal: 'rock',
+};
 
 export interface DecalSite {
   /** Screen x, in virtual pixels (the planner's: at the identity view this IS base world x). */
@@ -138,6 +155,7 @@ export function planSurfaceDecals(
   lush: number,
   decalSeed: number,
   budget = DECAL_BUDGET,
+  mineralsOnly = false,
 ): DecalSite[] {
   const { cx, cyTop, rx, ry, grid } = opts;
   if (!grid) return [];
@@ -186,7 +204,7 @@ export function planSurfaceDecals(
       // The prototype's dead/mid/lush progression was produced with
       // lifeDensity 0 everywhere, so this is the proven path, not a fallback.
       const life = clamp01((cell.lifeDensity ?? 0) * 0.55 + fert * lush * 0.85);
-      if (biome !== 'mountain' && life < 0.12) continue;
+      if (!mineralsOnly && biome !== 'mountain' && life < 0.12) continue;
 
       // Woodland and ground cover clump on DIFFERENT scales. Sharing one field
       // made scrub carpet wherever trees thinned, the opposite of the intent.
@@ -200,7 +218,19 @@ export function planSurfaceDecals(
       if (grove < (canopy ? 0.58 : 0.74) - life * 0.04 && sward < 0.80 - life * 0.04) continue;
 
       let kind: DecalKind;
-      if (biome === 'mountain') {
+      // Which stone a crag shows: ore seams, crystal (common on crystal
+      // worlds), plain rock otherwise.
+      const mineral = (): DecalKind => {
+        const m = hash1(bx * 41 + by * 13, seed ^ 0x0e);
+        if (m < (opts.planetType === 'crystal' ? 0.5 : 0.05)) return 'crystal';
+        return m > 0.88 ? 'ore' : 'rock';
+      };
+      if (mineralsOnly) {
+        // A world still forming (or lifeless by choice): stone only, crags
+        // first, a thin scatter of boulders across open ground.
+        if (biome !== 'mountain' && sward < 0.72) continue;
+        kind = mineral();
+      } else if (biome === 'mountain') {
         // Bare rock: no fertility, and none needed — this is the one kind that
         // is not life, so it alone is exempt from the life floor above. Scrub
         // IS life, though, so a dead world must not grow it on crags either —
@@ -208,7 +238,7 @@ export function planSurfaceDecals(
         // rock rather than skipping the site keeps mountain terrain reading
         // as rocky at every lushness; only the vegetated kind is gated.)
         const wantsScrub = hash1(bx * 31 + by, seed) >= 0.62;
-        kind = (wantsScrub && life >= 0.12) ? 'scrub' : 'rock';
+        kind = (wantsScrub && life >= 0.12) ? 'scrub' : mineral();
       } else if (fert <= 0) {
         continue;                                        // dead ground, not rock
       } else if (biome === 'desert') {
@@ -217,7 +247,7 @@ export function planSurfaceDecals(
       } else if (biome === 'tundra') {
         kind = hash1(bx + by * 17, seed) < 0.30 ? 'conifer' : 'scrub';
       } else if (biome === 'jungle') {
-        kind = 'broadleaf';
+        kind = hash1(bx * 3 + by * 29, seed) < 0.35 ? 'palm' : 'broadleaf';
       } else if (biome === 'forest') {
         kind = hash1(bx * 13 + by * 5, seed) < 0.62 ? 'conifer' : 'broadleaf';
       } else {
@@ -229,7 +259,7 @@ export function planSurfaceDecals(
       // the `!woody` sward cutoff (which skips sites outright) and the spacing
       // weight `w`, which decides who survives the bucket sort. Changing this
       // branch is never a pure re-labelling.
-      if (bound !== 'forest' && (kind === 'conifer' || kind === 'broadleaf')) {
+      if (bound !== 'forest' && isWoody(kind)) {
         kind = bound === 'arid'
           ? (hash1(bx * 17 + by * 3, seed) < 0.40 ? 'cactus' : 'scrub')
           : 'scrub';
@@ -237,9 +267,22 @@ export function planSurfaceDecals(
 
       // Ground cover spreads before woodland. This is the evolutionary read and
       // it falls out of the rule rather than being scripted.
-      if ((kind === 'conifer' || kind === 'broadleaf') && life < 0.30) kind = 'scrub';
+      if (isWoody(kind) && life < 0.30) kind = 'scrub';
 
-      const woody = kind === 'conifer' || kind === 'broadleaf';
+      // Ground cover in its local forms: grass on open land, berry bushes
+      // where life is rich, fungi on toxic and carbon worlds. A relabelling
+      // only: the count and spacing above are already decided.
+      if (kind === 'scrub' && !mineralsOnly) {
+        const g = hash1(bx * 23 + by * 7, seed ^ 0x51);
+        if ((opts.planetType === 'toxic' || opts.planetType === 'carbon') && g < 0.45) kind = 'mushroom';
+        else if (opts.planetType === 'crystal' && g < 0.4) kind = 'crystal';
+        else if (biome === 'grassland' || biome === 'plains' || biome === 'savanna') kind = g < 0.55 ? 'grass' : g < 0.55 + life * 0.3 ? 'bush' : 'scrub';
+        else if (biome !== 'mountain' && biome !== 'tundra' && g < life * 0.4) kind = 'bush';
+      } else if (kind === 'cactus' && opts.planetType === 'toxic' && hash1(bx + by * 3, seed) < 0.5) {
+        kind = 'mushroom';
+      }
+
+      const woody = isWoody(kind);
       if (!woody && sward < 0.58 - life * 0.10) continue;
 
       const lift = opts.liftOf(
@@ -248,7 +291,7 @@ export function planSurfaceDecals(
       // does not bury the ground. `decalScale` raises a cell whose flora
       // genome is gigantic. A little extra toward the middle of the face.
       const body = opts.decalScale?.(gp.row, gp.col, kind)
-        ?? (kind === 'rock' ? 0.5 : kind === 'scrub' || kind === 'cactus' ? 0.34 : 0.38);
+        ?? defaultDecalScale(kind);
       cand.push({
         x: px, y: py - lift, kind,
         scale: body * (0.9 + (1 - r) * 0.2),
@@ -275,6 +318,39 @@ export function planSurfaceDecals(
   }
   sites.sort((a, b) => a.y - b.y);        // back to front, for correct overlap
   return sites;
+}
+
+/** How big a kind stamps, as a fraction of the 16px atlas cell. */
+export function defaultDecalScale(kind: DecalKind): number {
+  switch (kind) {
+    case 'rock': case 'ore': return 0.5;
+    case 'crystal': return 0.44;
+    case 'grass': return 0.28;
+    case 'mushroom': return 0.32;
+    case 'scrub': case 'bush': case 'cactus': return 0.34;
+    default: return 0.38;
+  }
+}
+
+/**
+ * Forged sprites, keyed by what changes their pixels. Plants ignore the
+ * ground; stone takes its colour from it (bucketed).
+ */
+const forgeCache = new Map<string, FloraSprite>();
+/** On-screen size (px) from which a decal is forged rather than taken from the atlas. */
+export const FORGE_DECAL_MIN_PX = 10;
+const FORGE_MAX_PX = 72;
+
+function forgedDecal(kind: DecalKind, variant: number, px: number, planetType: string, r: number, g: number, b: number): FloraSprite {
+  const gk = isMineralKind(kind) ? groundKey([r, g, b]) : 0;
+  const key = `${kind}|${variant}|${px}|${planetType}|${gk}`;
+  let f = forgeCache.get(key);
+  if (!f) {
+    if (forgeCache.size > 900) forgeCache.clear();
+    f = forgeFlora(kind, variant, px, planetType, [r, g, b]);
+    forgeCache.set(key, f);
+  }
+  return f;
 }
 
 export interface DecalAtlas {
@@ -313,6 +389,8 @@ export function stampDecals(
   x0: number, yTop: number,
   sites: DecalSite[], atlas: DecalAtlas | null,
   scale = 1, record = false,
+  _camera = false,
+  planetType?: HabitableType,
 ): number {
   let drawn = 0;
   const S = Math.max(1, Math.round(scale)), half = S >> 1;
@@ -353,7 +431,7 @@ export function stampDecals(
     const shade = (lit: number): [number, number, number] => {
       const t = lit / 255;
       const m = 0.45 + t * 0.42;
-      const push = s.kind === 'rock' ? 0 : 1;
+      const push = isMineralKind(s.kind) ? 0 : 1;
       return [
         Math.max(0, Math.min(255, ur * m + (push ? -12 : 8))),
         Math.max(0, Math.min(255, ug * m + (push ? 34 : 8))),
@@ -374,7 +452,41 @@ export function stampDecals(
         for (let j = 0; j < S; j++) for (let i = 0; i < S; i++) px1(X + i, Y + j, c);
       };
 
-    const row = atlas ? atlas.rows[s.kind] ?? 0 : 0;
+    // Big enough on screen to deserve real art: forge it. Colour comes from
+    // the world (foliage by planet type, stone from this ground), nudged a
+    // little toward the ground so it sits in the planet's palette.
+    const destPx = Math.max(2, Math.round(16 * Math.max(0.2, Math.min(1.35, s.scale)))) * S;
+    if (planetType && destPx >= FORGE_DECAL_MIN_PX) {
+      const variant = Math.abs(Math.round(s.wx ?? s.x) * 7 + s.row * 31 + s.col * 17) % FLORA_VARIANTS;
+      const f = forgedDecal(s.kind, variant, Math.min(FORGE_MAX_PX, destPx), planetType, ur, ug, ub);
+      const gx = bx - f.footX, gy = by - f.footY;
+      for (let y = 0; y < f.height; y++) {
+        const Y = gy + y;
+        if (Y < 0 || Y >= bh) continue;
+        for (let x = 0; x < f.width; x++) {
+          const so = (y * f.width + x) * 4, a = f.data[so + 3];
+          if (a === 0) continue;
+          const X = gx + x;
+          if (X < 0 || X >= bw) continue;
+          const o = (Y * bw + X) * 4;
+          if (a === 255) {
+            d[o] = f.data[so] * 0.88 + ur * 0.12;
+            d[o + 1] = f.data[so + 1] * 0.88 + ug * 0.12;
+            d[o + 2] = f.data[so + 2] * 0.88 + ub * 0.12;
+          } else {
+            const t = a / 255;   // translucent crystal: the ground shows through
+            d[o] = f.data[so] * t + d[o] * (1 - t);
+            d[o + 1] = f.data[so + 1] * t + d[o + 1] * (1 - t);
+            d[o + 2] = f.data[so + 2] * t + d[o + 2] * (1 - t);
+          }
+          d[o + 3] = 255;
+        }
+      }
+      drawn++;
+      continue;
+    }
+
+    const row = atlas ? atlas.rows[s.kind] ?? atlas.rows[ATLAS_FALLBACK[s.kind]] ?? 0 : 0;
     const variant = atlas ? Math.abs((s.row * 31 + s.col * 17)) % Math.max(1, atlas.variants) : 0;
     const sx0 = variant * (atlas?.cell ?? 0), sy0 = row * (atlas?.cell ?? 0);
     // A malformed atlas (rows/variants/width/height inconsistent with cell)
@@ -400,7 +512,7 @@ export function stampDecals(
     } else {
       // Procedural fallback so the renderer degrades gracefully if the atlas
       // has not loaded yet. Deliberately crude: a marker, not art.
-      const h = Math.round((s.kind === 'scrub' || s.kind === 'rock' ? 4 : 10) * s.scale);
+      const h = Math.round((isWoody(s.kind) || s.kind === 'cactus' ? 10 : 4) * s.scale);
       for (let i = 0; i < h; i++) {
         const hw = Math.max(0, Math.round((1 - i / h) * h * 0.4));
         for (let dx = -hw; dx <= hw; dx++) px(dx, -i, shade(dx < 0 ? 210 : 70));

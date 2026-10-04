@@ -16,18 +16,20 @@
  */
 import type { SpeciesGenome, Metabolism, Environment } from '../simulation/SpeciesGenome';
 
-type V3 = [number, number, number];
+export type V3 = [number, number, number];
 
 // ─── Materials and palette ───────────────────────────────────────────────────
 
-const PRIMARY = 0, BELLY = 1, MARK = 2, ACCENT = 3, SHELL = 4, BONE = 5, LEAF = 6, GLOW = 7, WING = 8;
+const PRIMARY = 0, BELLY = 1, MARK = 2, ACCENT = 3, SHELL = 4, BONE = 5, LEAF = 6, WING = 8;
+/** Material index lit as self-luminous by the renderer, in every palette. */
+export const GLOW = 7;
 const MATS = 9;
 /** Ramp levels: 0 deep … 4 highlight; OUTLINE is a separate darker step. */
 const LEVELS = 5;
 
-type RGB = [number, number, number];
+export type RGB = [number, number, number];
 
-function hsl(h: number, s: number, l: number): RGB {
+export function hsl(h: number, s: number, l: number): RGB {
   h = ((h % 360) + 360) % 360;
   s = Math.max(0, Math.min(1, s)); l = Math.max(0.03, Math.min(0.96, l));
   const c = (1 - Math.abs(2 * l - 1)) * s;
@@ -37,7 +39,7 @@ function hsl(h: number, s: number, l: number): RGB {
                   : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
   return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
-function toward(h: number, target: number, amt: number): number {
+export function toward(h: number, target: number, amt: number): number {
   const d = ((target - h + 540) % 360) - 180;
   return Math.abs(d) < amt ? target : h + Math.sign(d) * amt;
 }
@@ -53,10 +55,10 @@ const ENV_TONE: Record<Environment, { dh: number; l: number; s: number }> = {
   aerial:   { dh:   0, l: 0.62, s: 0.56 },
 };
 
-interface Ramp { lv: RGB[]; outline: RGB; alpha: number }
+export interface Ramp { lv: RGB[]; outline: RGB; alpha: number }
 
 /** Five-step ramp with hue shifting: shadows lean blue-violet, lights lean warm. */
-function ramp(h: number, s: number, l: number, alpha = 255): Ramp {
+export function ramp(h: number, s: number, l: number, alpha = 255): Ramp {
   const lv: RGB[] = [];
   const steps = [-0.25, -0.13, 0, 0.12, 0.22];
   for (let i = 0; i < LEVELS; i++) {
@@ -73,7 +75,7 @@ function hashStr(s: string): number {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
-function hash3(x: number, y: number, z: number, seed: number): number {
+export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1442695041) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
@@ -116,20 +118,20 @@ interface Prim {
   bc: V3; br: number;
 }
 
-interface Group { side: number; blend: number; noPattern: boolean }
+interface Group { side: number; blend: number; noPattern: boolean; facet: boolean }
 
 interface Eye { p: V3; style: 'vision' | 'compound' | 'spot' | 'small'; size: number }
 interface Dot { p: V3; mat: number }
 
-class Body {
+export class Body {
   prims: Prim[] = [];
   groups: Group[] = [];
   eyes: Eye[] = [];
   dots: Dot[] = [];
   /** Centre of a coiled shell, for its spiral banding. */
   shell: V3 | null = null;
-  group(side = 0, blend = 0.06, noPattern = false): number {
-    this.groups.push({ side, blend, noPattern });
+  group(side = 0, blend = 0.06, noPattern = false, facet = false): number {
+    this.groups.push({ side, blend, noPattern, facet });
     return this.groups.length - 1;
   }
   ell(c: V3, r: V3, mat: number, group: number): void {
@@ -660,20 +662,29 @@ function planFor(g: SpeciesGenome, t: Traits): Body {
 
 // ─── Camera ──────────────────────────────────────────────────────────────────
 
-/** Oblique three-quarter view: the head turns a little toward the viewer, seen from slightly above. */
-const YAW = -0.42, PITCH = 0.32;
-const cy_ = Math.cos(YAW), sy_ = Math.sin(YAW), cp = Math.cos(PITCH), sp = Math.sin(PITCH);
+/**
+ * Orthographic camera: yaw turns the subject toward the viewer, pitch looks
+ * down on it. Creatures use a three-quarter view seen from slightly above;
+ * scenery uses a higher pitch to match the diorama's board.
+ */
+export class Camera3 {
+  private cy: number; private sy: number; private cp: number; private sp: number;
+  constructor(yaw: number, pitch: number) {
+    this.cy = Math.cos(yaw); this.sy = Math.sin(yaw); this.cp = Math.cos(pitch); this.sp = Math.sin(pitch);
+  }
+  /** Body space → camera space. */
+  toCam(p: V3): V3 {
+    const x1 = p[0] * this.cy + p[2] * this.sy, z1 = -p[0] * this.sy + p[2] * this.cy;
+    return [x1, p[1] * this.cp - z1 * this.sp, p[1] * this.sp + z1 * this.cp];
+  }
+  /** Camera space → body space. */
+  toWorld(x: number, y: number, z: number): V3 {
+    const y1 = y * this.cp + z * this.sp, z1 = -y * this.sp + z * this.cp;
+    return [x * this.cy - z1 * this.sy, y1, x * this.sy + z1 * this.cy];
+  }
+}
 
-/** Creature space → camera space. */
-function toCam(p: V3): V3 {
-  const x1 = p[0] * cy_ + p[2] * sy_, z1 = -p[0] * sy_ + p[2] * cy_;
-  return [x1, p[1] * cp - z1 * sp, p[1] * sp + z1 * cp];
-}
-/** Camera space → creature space. */
-function toWorld(x: number, y: number, z: number): V3 {
-  const y1 = y * cp + z * sp, z1 = -y * sp + z * cp;
-  return [x * cy_ - z1 * sy_, y1, x * sy_ + z1 * cy_];
-}
+const CREATURE_CAM = new Camera3(-0.42, 0.32);
 
 const LIGHT: V3 = (() => { const v: V3 = [-0.45, 0.75, 0.5]; const l = Math.hypot(...v); return [v[0] / l, v[1] / l, v[2] / l]; })();
 
@@ -681,34 +692,45 @@ const LIGHT: V3 = (() => { const v: V3 = [-0.45, 0.75, 0.5]; const l = Math.hypo
 
 export interface ForgedSprite { width: number; height: number; data: Uint8ClampedArray }
 
-/**
- * Render a genome to RGBA with the long edge about `px` pixels (outline
- * included). Deterministic per genome.
- */
-export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
-  const t = traitsOf(g);
-  const B = planFor(g, t);
-  const pal = buildPalette(g, t.seed);
+/** Everything a caller needs to stamp details after the core render. */
+export interface RenderResult extends ForgedSprite {
+  cover: Uint8Array; outline: Uint8Array; zbuf: Float32Array; mat: Uint8Array; lvl: Int8Array;
+  /** Pixels per unit and the screen origin: screen = (cx * s + ox, oy - cy * s). */
+  s: number; ox: number; oy: number;
+  cam: Camera3;
+  put(i: number, c: RGB, a: number): void;
+}
 
-  // Screen bounds of every primitive's bounding sphere.
+/**
+ * Surface hook: given the material, the hit point and normal in body space
+ * and the group, return the material and a level offset (markings, grooves).
+ */
+export type SurfaceHook = (m: number, w: V3, n: V3, group: number) => { m: number; dl: number };
+
+/**
+ * The shared rasteriser. Every group is ray-marched as its own soft union;
+ * the nearest group wins each pixel. Lit with five quantised levels per
+ * material ramp, far-side groups one step darker, faceted groups lit by a
+ * snapped normal; then interior contours and a 1-px outline.
+ */
+export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREATURE_CAM, hook?: SurfaceHook): RenderResult {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const camC = B.prims.map(p => toCam(p.bc));
+  const camC = B.prims.map(p => cam.toCam(p.bc));
   B.prims.forEach((p, i) => {
     const c = camC[i], r = p.br * 0.85;
     minX = Math.min(minX, c[0] - r); maxX = Math.max(maxX, c[0] + r);
     minY = Math.min(minY, c[1] - r); maxY = Math.max(maxY, c[1] + r);
   });
   const span = Math.max(maxX - minX, maxY - minY);
-  const s = Math.max(4, px - 3) / span;               // pixels per unit
+  const s = Math.max(2, px - 3) / span;
   const W = Math.ceil((maxX - minX) * s) + 4, H = Math.ceil((maxY - minY) * s) + 4;
-  const ox = 2 - minX * s, oy = 2 + maxY * s;          // screen = (cx * s + ox, oy - cy * s)
+  const ox = 2 - minX * s, oy = 2 + maxY * s;
 
   const N = W * H;
-  const cover = new Uint8Array(N), grp = new Int16Array(N).fill(-1), prm = new Int16Array(N).fill(-1);
+  const cover = new Uint8Array(N), grp = new Int16Array(N).fill(-1);
   const zbuf = new Float32Array(N).fill(-Infinity);
   const mat = new Uint8Array(N), lvl = new Int8Array(N);
 
-  // Per-primitive screen boxes for culling (bounding sphere + blend margin).
   const boxes = B.prims.map((p, i) => {
     const c = camC[i], r = p.br + B.groups[p.group].blend + 0.02;
     return [(c[0] - r) * s + ox, (c[0] + r) * s + ox, oy - (c[1] + r) * s, oy - (c[1] - r) * s];
@@ -731,15 +753,13 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
       if (list.length === 0) continue;
       const groups = [...new Set(list.map(i => B.prims[i].group))];
       const cx = (xx + 0.5 - ox) / s, cyv = (oy - (yy + 0.5)) / s;
-      // Each group is marched on its own; the nearest hit wins (depth between groups).
       let bestZ = -Infinity, bestG = -1;
       for (const gi of groups) {
         let zc = 2.0;
         for (let step = 0; step < 48; step++) {
-          const w = toWorld(cx, cyv, zc);
+          const w = cam.toWorld(cx, cyv, zc);
           const d = groupSdf(gi, w[0], w[1], w[2], list);
           if (d < eps * 0.5) {
-            // Far-side groups lose ties so near legs draw over the body.
             const z = zc + B.groups[gi].side * 0.01;
             if (z > bestZ) { bestZ = z; bestG = gi; }
             break;
@@ -751,46 +771,41 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
       if (bestG < 0) continue;
       const i = yy * W + xx;
       const zc = bestZ - B.groups[bestG].side * 0.01;
-      const w = toWorld(cx, cyv, zc);
-      // Material from the nearest primitive of the winning group.
+      const w = cam.toWorld(cx, cyv, zc);
       let bp = -1, bd = Infinity;
       for (const pi of list) {
         if (B.prims[pi].group !== bestG) continue;
         const d = sdPrim(B.prims[pi], w[0], w[1], w[2]);
         if (d < bd) { bd = d; bp = pi; }
       }
-      // Normal: gradient of the group's field, back into camera space.
       const h = 0.004;
       const gx = groupSdf(bestG, w[0] + h, w[1], w[2], list) - groupSdf(bestG, w[0] - h, w[1], w[2], list);
       const gy = groupSdf(bestG, w[0], w[1] + h, w[2], list) - groupSdf(bestG, w[0], w[1] - h, w[2], list);
       const gz = groupSdf(bestG, w[0], w[1], w[2] + h, list) - groupSdf(bestG, w[0], w[1], w[2] - h, list);
       const gl = Math.hypot(gx, gy, gz) || 1;
-      const nW: V3 = [gx / gl, gy / gl, gz / gl];
-      const nC = toCam(nW);
-      cover[i] = 1; grp[i] = bestG; prm[i] = bp; zbuf[i] = zc;
-      let m = B.prims[bp].mat;
-      // Countershading: undersides of the main body go pale.
-      if (m === PRIMARY && nW[1] < -0.45) m = BELLY;
-      // Body-anchored markings.
-      if ((m === PRIMARY) && !B.groups[bestG].noPattern && markAt(g, t, w)) m = MARK;
-      mat[i] = m;
-      // A coiled shell: a spiral groove winding in to its apex.
-      let groove = 0;
-      if (m === SHELL && B.shell) {
-        const dx = w[0] - B.shell[0], dy = w[1] - B.shell[1];
-        const ang = Math.atan2(dy, dx), rad = Math.hypot(dx, dy);
-        if (Math.sin(rad * 46 - ang * 1.0) > 0.55) groove = -1;
+      let nW: V3 = [gx / gl, gy / gl, gz / gl];
+      if (B.groups[bestG].facet) {
+        // Faceted: snap the normal to a coarse lattice so rock and crystal
+        // light in flat planes with hard edges between them.
+        const q = (v: number) => Math.round(v * 1.6) / 1.6;
+        const f: V3 = [q(nW[0]), q(nW[1]), q(nW[2])];
+        const fl = Math.hypot(f[0], f[1], f[2]) || 1;
+        nW = [f[0] / fl, f[1] / fl, f[2] / fl];
       }
+      const nC = cam.toCam(nW);
+      cover[i] = 1; grp[i] = bestG; zbuf[i] = zc;
+      let m = B.prims[bp].mat, dl = 0;
+      if (hook) { const r = hook(m, w, nW, bestG); m = r.m; dl = r.dl; }
+      mat[i] = m;
       const ndl = nC[0] * LIGHT[0] + nC[1] * LIGHT[1] + nC[2] * LIGHT[2];
       let level = ndl > 0.86 ? 4 : ndl > 0.5 ? 3 : ndl > 0.1 ? 2 : ndl > -0.3 ? 1 : 0;
       if (m === GLOW) level = Math.max(3, level);
       if (B.groups[bestG].side < 0) level -= 1;
-      level += groove;
+      level += dl;
       lvl[i] = Math.max(0, Math.min(4, level));
     }
   }
 
-  // Compose: ramps, interior contours, outline.
   const out = new Uint8ClampedArray(N * 4);
   const put = (i: number, c: RGB, a: number) => { out[i * 4] = c[0]; out[i * 4 + 1] = c[1]; out[i * 4 + 2] = c[2]; out[i * 4 + 3] = a; };
   for (let i = 0; i < N; i++) if (cover[i]) put(i, pal[mat[i]].lv[lvl[i]], pal[mat[i]].alpha);
@@ -821,11 +836,37 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
     }
     if (best >= 0) { put(i, pal[mat[best]].outline, 255); outline[i] = 1; }
   }
+  return { width: W, height: H, data: out, cover, outline, zbuf, mat, lvl, s, ox, oy, cam, put };
+}
+
+/**
+ * Render a genome to RGBA with the long edge about `px` pixels (outline
+ * included). Deterministic per genome.
+ */
+export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
+  const t = traitsOf(g);
+  const B = planFor(g, t);
+  const pal = buildPalette(g, t.seed);
+  const R = renderBody(B, pal, px, CREATURE_CAM, (m0, w, nW, gi) => {
+    let m = m0, dl = 0;
+    // Countershading: undersides of the main body go pale.
+    if (m === PRIMARY && nW[1] < -0.45) m = BELLY;
+    // Body-anchored markings.
+    if (m === PRIMARY && !B.groups[gi].noPattern && markAt(g, t, w)) m = MARK;
+    // A coiled shell: a spiral groove winding in to its apex.
+    if (m === SHELL && B.shell) {
+      const dx = w[0] - B.shell[0], dy = w[1] - B.shell[1];
+      if (Math.sin(Math.hypot(dx, dy) * 46 - Math.atan2(dy, dx)) > 0.55) dl = -1;
+    }
+    return { m, dl };
+  });
+  const { width: W, height: H, cover, outline, zbuf, mat, lvl, s, ox, oy, put } = R;
+  const N = W * H;
 
   // Eyes and glow dots: stamped as designed clusters where visible.
   const unit = Math.max(1, Math.round(px / 34));
   const visible = (p: V3): [number, number] | null => {
-    const c = toCam(p);
+    const c = CREATURE_CAM.toCam(p);
     const sx = Math.round(c[0] * s + ox - 0.5), sy = Math.round(oy - c[1] * s - 0.5);
     if (sx < 0 || sy < 0 || sx >= W || sy >= H) return null;
     const i = sy * W + sx;
@@ -871,7 +912,7 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
       if (hash3(x, y, 7, t.seed) < 0.035 && lvl[i] >= 2) put(i, pal[GLOW].lv[4], 255);
     }
   }
-  return { width: W, height: H, data: out };
+  return { width: W, height: H, data: R.data };
 }
 
 /** Body-anchored markings by diet: stripes on hunters, spots on grazers, mottling on the rest. */

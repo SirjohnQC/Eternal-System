@@ -42,7 +42,7 @@ import {
   type HabitableType,
   cutawayWaterSurf,
 } from './HabitableCutawayEngine';
-import { decalRebakeNeeded, type DecalAtlas, type DecalKind } from './SurfaceDecals';
+import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
 import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
@@ -1350,12 +1350,12 @@ export class IsoDioramaRenderer {
       const sp = byId.get(grid?.[row]?.[col]?.dominantSpeciesId ?? '');
       const flora = !!sp && this.isFlora(sp);
       const size = flora ? sp.physicalTraits.size : '';
-      if (kind === 'rock') return 0.5;
-      const woody = kind === 'conifer' || kind === 'broadleaf';
+      if (isMineralKind(kind)) return defaultDecalScale(kind);
+      const woody = isWoody(kind);
       if (size === 'massive' && woody) return 1.15;
       if (size === 'massive') return 0.75;
       if (size === 'large' && woody) return 0.62;
-      return woody ? 0.38 : 0.34;
+      return defaultDecalScale(kind);
     };
   }
 

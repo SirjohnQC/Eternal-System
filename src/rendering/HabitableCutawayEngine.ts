@@ -1274,12 +1274,13 @@ export function* surfaceSteps(
     const camera = opts.cameraZoom !== undefined, one: DecalSite[] = [];
     for (const site of opts.decalSites) {
       one[0] = site;
-      stampDecals(d, bw, bh, x0, yTop, one, opts.decalAtlas ?? null, Math.round(k), !camera, camera);
+      stampDecals(d, bw, bh, x0, yTop, one, opts.decalAtlas ?? null, Math.round(k), !camera, camera, opts.planetType);
       if (camera) yield;
     }
-  } else if (opts.decalSeed !== undefined && !opts.barren) {
-    const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed);
-    stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null);
+  } else if (opts.decalSeed !== undefined) {
+    // A barren (still-forming) world carries stone only.
+    const sites = planSurfaceDecals(opts, clamp01(opts.lush ?? 0.3), opts.decalSeed, undefined, !!opts.barren);
+    stampDecals(d, bw, bh, x0, yTop, sites, opts.decalAtlas ?? null, 1, false, false, opts.planetType);
   }
 
   g.putImageData(img, x0, yTop);
@@ -2955,8 +2956,10 @@ export class HabitableCutawayEngine {
   private planIdentity(): void {
     const base = this.surfaceBakeOpts;
     if (!base) { this.planDecals = null; this.planChimneys = []; return; }
-    this.planDecals = base.decalSeed !== undefined && !base.barren
-      ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed).map(d => ({ ...d, wx: d.x, wy: d.y }))
+    // A barren (still-forming) world plans stone only: crags, ore, crystal.
+    this.planDecals = base.decalSeed !== undefined
+      ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed, undefined, !!base.barren)
+        .map(d => ({ ...d, wx: d.x, wy: d.y }))
       : null;
     this.planChimneys = base.planetType === 'lava'
       ? planVolcanoChimneys(base).map(c => ({ ...c, wx: c.x, wy: c.y }))
