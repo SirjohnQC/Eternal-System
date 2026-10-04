@@ -319,6 +319,15 @@ export interface CutawayBakeOpts extends CutawayGeom {
    */
   decalLive?: boolean;
   /**
+   * Fields and roads (SettlementPlan.groundAt): the ground colour at base-world
+   * face point (wx, wy), packed 0xRRGGBB, or -1. Given the camera zoom, the
+   * ground colour underneath and whether the pixel is a river (a road over
+   * one is a bridge).
+   */
+  groundAt?: (wx: number, wy: number, k: number, r: number, g: number, b: number, water: boolean) => number;
+  /** Decals keep off this base-world face point (towns, fields, roads). */
+  decalBlocked?: (x: number, y: number) => boolean;
+  /**
    * Atlas-cell multiplier for one decal. Ordinary cover is well under 1 so
    * the ground stays visible; a gigantic flora lineage can return about 1.
    */
@@ -1121,6 +1130,15 @@ export function* surfaceSteps(
               fall = rs.drops;
             } else if (rs.dist <= rs.half + RIVER_BANK) { river = 1; fall = rs.drops; }
           }
+        }
+      }
+      // Fields and roads, keyed on the world point so they hold still under
+      // the camera and gain rows, hedges and lane marks as it closes in.
+      if (opts.groundAt) {
+        const gc = opts.groundAt(world.wx(px), world.wy(py), k, br, bg, bb, river >= 2);
+        if (gc >= 0) {
+          br = (gc >> 16) & 255; bg = (gc >> 8) & 255; bb = gc & 255;
+          river = 0; fall = false;
         }
       }
       if (river === 1) {
@@ -2332,6 +2350,8 @@ export interface HabitableFrameInput {
   drawFarSpace: (g: CanvasRenderingContext2D) => void;
   /** Drawn on the ground, under the weather: city lights, inhabitants. */
   drawSurfaceOverlays: (g: CanvasRenderingContext2D) => void;
+  /** Buildings and other ground props: after plants, under the night veil. */
+  drawProps?: (g: CanvasRenderingContext2D) => void;
   /** Drawn over everything but moons: tile markers, divine effects. Never under weather. */
   drawUiOverlays: (g: CanvasRenderingContext2D) => void;
   drawNearMoons: (g: CanvasRenderingContext2D) => void;
@@ -3222,7 +3242,7 @@ export class HabitableCutawayEngine {
     // Paced layers (see PACE_HZ): which repaint this frame.
     const cloudsOn = !!painter && wx > 0.01, atmoOn = haze > 0.01;
     this.frameDt = input.dt;
-    const [doWater, doVeil, doClouds, doAtmo] = this.paceLayersFor(elapsed, cloudsOn, atmoOn, layerBob);
+    const [doWater, doVeil, doClouds, doAtmo] = this.paceLayersFor(elapsed, cloudsOn, atmoOn, layerBob, input.air);
 
     const fluids = this.fluidImage, fluidG = this.fluidScratch.getContext('2d');
     if (fluids && fluidG) {
@@ -3251,6 +3271,7 @@ export class HabitableCutawayEngine {
     // Plants and stones, live: over land and shore water, under the
     // day/night veil and weather shadows.
     if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
+    input.drawProps?.(g);
     const veil = this.veilImage, veilG = this.veilG;
     if (veil && veilG) {
       if (doVeil) {
@@ -3314,13 +3335,13 @@ export class HabitableCutawayEngine {
    *   their costs are spread over frames instead of stacking into a hitch;
    *   a layer more than two periods late repaints anyway (low frame rates).
    */
-  private paceLayersFor(elapsed: number, cloudsOn: boolean, atmoOn: boolean, layerBob: number): [boolean, boolean, boolean, boolean] {
+  private paceLayersFor(elapsed: number, cloudsOn: boolean, atmoOn: boolean, layerBob: number, air: unknown): [boolean, boolean, boolean, boolean] {
     const cs = this.shown, c = this.liveCam, m = this.viewMap, P = this.paceKey;
     const moved = P.set !== (cs ?? this) || P.z !== c.zoom || P.fx !== c.fx || P.fy !== c.fy
       || P.r !== m.r || P.dx !== m.dx || P.dy !== m.dy || P.bob !== layerBob || P.w !== this.w || P.h !== this.h
-      || P.epoch !== this.surfaceEpoch || P.clouds !== cloudsOn || P.atmo !== atmoOn;
+      || P.epoch !== this.surfaceEpoch || P.clouds !== cloudsOn || P.atmo !== atmoOn || P.air !== air;
     P.set = cs ?? this; P.z = c.zoom; P.fx = c.fx; P.fy = c.fy; P.r = m.r; P.dx = m.dx; P.dy = m.dy;
-    P.bob = layerBob; P.w = this.w; P.h = this.h; P.epoch = this.surfaceEpoch; P.clouds = cloudsOn; P.atmo = atmoOn;
+    P.bob = layerBob; P.w = this.w; P.h = this.h; P.epoch = this.surfaceEpoch; P.clouds = cloudsOn; P.atmo = atmoOn; P.air = air;
     const t = this.paceT, out = this.paceOut;
     // At high frame rates layers are painted a band per pick (PACE_BANDS: a refresh
     // spread over that many frames, picked that many times as often); whole
@@ -3362,7 +3383,7 @@ export class HabitableCutawayEngine {
   paceLayers = true;
   private paceKey = {
     set: null as unknown, z: 0, fx: 0, fy: 0, r: 0, dx: 0, dy: 0, bob: 0, w: 0, h: 0, epoch: -1,
-    clouds: false, atmo: false,
+    clouds: false, atmo: false, air: null as unknown,
   };
   private paceT = [-1, -1, -1, -1];
   private paceOut: [boolean, boolean, boolean, boolean] = [true, true, true, true];

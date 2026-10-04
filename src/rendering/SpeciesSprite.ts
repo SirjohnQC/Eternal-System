@@ -245,11 +245,12 @@ class Grid {
 
 /**
  * Interior long edge in pixels, before the outline, at full phase and mid depth.
- * Ordinary life stays a speck on the disc so the terrain stays readable.
- * `massive` is the genome's gigantic class and keeps a body that can tower.
+ * Ordinary life stays a speck on the disc so the terrain stays readable, and
+ * even `massive` (the genome's gigantic class) stays below a tree and a
+ * house (~6 px): play feedback found towering creatures swamped the world.
  */
 export const CREATURE_SIZE_PX: Record<SpeciesSize, number> = {
-  microscopic: 2, tiny: 2, small: 3, medium: 4, large: 5, massive: 12,
+  microscopic: 2, tiny: 2, small: 3, medium: 3, large: 4, massive: 6,
 };
 
 interface Anatomy {

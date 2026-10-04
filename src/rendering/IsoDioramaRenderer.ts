@@ -36,11 +36,14 @@ import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, 
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
-import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait } from './SpeciesSprite';
+import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait, CREATURE_SIZE_PX } from './SpeciesSprite';
+import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan } from './SettlementPlan';
+import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import {
   HabitableCutawayEngine,
   type HabitableType,
   cutawayWaterSurf,
+  habitableGeom,
 } from './HabitableCutawayEngine';
 import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
@@ -367,6 +370,10 @@ interface Ember   { x: number; y: number; vy: number; life: number; maxLife: num
 
 // ─── Renderer ─────────────────────────────────────────────────────────────────
 
+/** Seconds one building takes to go up, and the spread of a town's start times. */
+const BUILD_SECONDS = 24;
+const BUILD_SPREAD = 30;
+
 /** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
 const SKY_HZ = 30;
 
@@ -508,6 +515,34 @@ export class IsoDioramaRenderer {
   private forgeBudget = 0;
   /** Scratch for compositing a submerged creature without tinting the sea. */
   private subScratch: HTMLCanvasElement | null = null;
+  /**
+   * Towns, their buildings, farm fields and roads (SettlementPlan), planned
+   * before each surface bake so fields and roads are painted into the ground;
+   * buildings stand on the lifted ground (`townLift`) in the props layer.
+   */
+  private townPlan: SettlementPlan = emptyPlan();
+  private townLift: number[] = [];
+  private townSig = '';
+  private townVersion = 0;
+  private townStyleOf: TownStyle | null = null;
+  /**
+   * When each building's construction started (renderer seconds), aligned
+   * with townPlan.buildings; -Infinity = standing. Keyed across re-plans by
+   * town and lot, so a growing town builds only what is new.
+   */
+  private buildingBorn: number[] = [];
+  private bornByKey = new Map<string, number>();
+  /**
+   * Buildings dropped by a re-plan (a new era, a moved lot), left standing
+   * until the construction wave reaches them (`until`, renderer seconds).
+   */
+  private retired: Array<{ b: import('./SettlementPlan').Building; lift: number; st: TownStyle; until: number; sprites: Map<number, { cv: HTMLCanvasElement; fx: number; fy: number }> }> = [];
+  /** The planet the towns were planned for: a new planet shows them built. */
+  private townPlanet: unknown = null;
+  private buildingSprites = new Map<string, { cv: HTMLCanvasElement; fx: number; fy: number }>();
+  /** Buildings rendered for one view (camera, size, plan): one blit per frame otherwise. */
+  private propsCanvas: HTMLCanvasElement | null = null;
+  private propsKey = '';
   private settlements: Array<{
     wx: number; wy: number; row: number; col: number; sprite: HTMLCanvasElement; w: number; h: number; depth: number;
   }> = [];
@@ -1406,6 +1441,9 @@ export class IsoDioramaRenderer {
    * `discToGrid` / `gridToDisc` here, so they stay in register with the terrain.
    */
   private bakeHabitableCutaway(keepSim = false): void {
+    // Towns first: their fields and roads are painted by the bake. The
+    // geometry is the one the bake is about to lay out.
+    this.planTowns(this.geomForBake());
     const bio = this.biosphere;
     const grid = this.grid;
     // keepSim: a resize of the same planet (the engine keeps the weather sim).
@@ -1431,6 +1469,8 @@ export class IsoDioramaRenderer {
       decalSeed: this.planet?.genomeSeed ?? 0,
       decalAtlas: this.decalAtlas,
       decalScale: this.floraScaleFn(),
+      groundAt: (x, y, k, r, g, b, water) => townGroundAt(this.townPlan, x, y, k, r, g, b, water),
+      decalBlocked: (x, y) => this.townPlan.towns.length > 0 && keepClear(this.townPlan, x, y),
     });
     this.pickBuf = this.cutaway.pick;
     this.lastSurfaceBake = this.elapsed;
@@ -1442,6 +1482,7 @@ export class IsoDioramaRenderer {
    * `includeCamera: false` when a settle re-bakes the camera set this frame.
    */
   private rebakeHabitableSurface(includeCamera = true): void {
+    this.planTowns();
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
       lush: this.lushFor(bio),
@@ -2304,6 +2345,253 @@ export class IsoDioramaRenderer {
     }
   }
 
+  /** Geometry the next bake lays out (the engine's, once it has baked at this size). */
+  private geomForBake(): { cx: number; cy: number; rx: number; ry: number } {
+    const g = habitableGeom(this.VW, this.VH);
+    return { cx: g.cx, cy: g.cyTop, rx: g.rx, ry: g.ry };
+  }
+
+  /** Lift (px) of the drawn ground at a base-world face point. */
+  private liftAtFace(x: number, y: number, geom = this.placeGeom): number {
+    const grid = this.grid;
+    if (!grid) return 0;
+    const dx = (x - geom.cx) / geom.rx, dy = (y - geom.cy) / geom.ry;
+    const r = Math.hypot(dx, dy);
+    const e = this.elevationAt(grid, dx, dy);
+    if (e === null) return 0;
+    return this.liftOf(e - this.rimFalloff(r));
+  }
+
+  /**
+   * Plan towns, buildings, fields and roads from the civilisation's territory
+   * (cells with a civId). Kept while nothing it depends on changes, so towns
+   * stay put; a town site is chosen greedily by score, so a growing territory
+   * adds towns rather than moving them.
+   */
+  private planTowns(geom = this.placeGeom): void {
+    const grid = this.grid;
+    const civLevel = this.star?.civLevel ?? 0;
+    if (!grid || this.planetType === 'gas' || this.forming) {
+      if (this.townPlan.towns.length) { this.townPlan = emptyPlan(); this.townLift = []; this.townSig = ''; this.townVersion++; }
+      return;
+    }
+    const { cx, cy, rx, ry } = geom;
+    const step = 3;
+    const land = new Set<string>();
+    const key = (px: number, py: number) => `${Math.round(px / step)},${Math.round(py / step)}`;
+    const spots: Array<{ x: number; y: number; row: number; col: number; fertility: number }> = [];
+    for (let py = cy - ry; py <= cy + ry; py += step) {
+      const dy = (py - cy) / ry;
+      for (let px = cx - rx; px <= cx + rx; px += step) {
+        const dx = (px - cx) / rx;
+        const r = Math.hypot(dx, dy);
+        if (r > 0.97) continue;
+        const gp = this.discToGrid(dx, dy);
+        if (!gp) continue;
+        const cell = grid[gp.row]?.[gp.col];
+        if (!cell) continue;
+        if (cell.elevation - this.rimFalloff(r) < SEA_LEVEL) continue;
+        land.add(key(px, py));
+        if (cell.civId != null) spots.push({ x: px, y: py, row: gp.row, col: gp.col, fertility: cell.fertility });
+      }
+    }
+    const intelligent = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? null;
+    const env = intelligent?.dna.environment ?? 'land';
+    const aquatic = env === 'ocean' || env === 'deep_sea';
+    const sig = [spots.length, eraOf(civLevel), Math.round(cx), Math.round(cy), Math.round(rx), Math.round(ry), env,
+      intelligent?.physicalTraits.bodyStructure ?? '', this.planetSeed].join('|');
+    if (sig === this.townSig) return;
+    // Keep the outgoing town standing; anything the new plan does not reuse
+    // is torn down in the same outward wave its replacements go up in.
+    const oldPlan = this.townPlan, oldLift = this.townLift, oldStyle = this.townStyleOf, oldKeys = [...this.bornByKey.keys()];
+    this.townSig = sig;
+    this.townVersion++;
+    this.buildingSprites.clear();
+    if (spots.length === 0) { this.townPlan = emptyPlan(); this.townLift = []; this.buildingBorn = []; this.townPlanet = this.planet; return; }
+
+    // Inland depth: lattice steps to the nearest water or the rim.
+    const coast = (px: number, py: number): number => {
+      for (let rad = 0; rad < 24; rad++) {
+        for (let a = 0; a < 16; a++) {
+          const ang = (a / 16) * Math.PI * 2;
+          const sx = px + Math.cos(ang) * rad * step, sy = py + Math.sin(ang) * rad * step;
+          const dx = (sx - cx) / rx, dy = (sy - cy) / ry;
+          if (dx * dx + dy * dy > 0.94 || !land.has(key(sx, sy))) return rad;
+        }
+      }
+      return 24;
+    };
+    const byCell = new Map<string, { x: number; y: number; score: number }>();
+    for (const sp of spots) {
+      const inland = Math.min(1, coast(sp.x, sp.y) / 6);
+      // A small hash breaks ties so the order never depends on scan order.
+      const score = sp.fertility * (0.2 + 0.8 * inland) + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
+      const k2 = `${sp.row},${sp.col}`;
+      const prev = byCell.get(k2);
+      if (!prev || score > prev.score) byCell.set(k2, { x: sp.x, y: sp.y, score });
+    }
+    const ranked = [...byCell.values()].sort((a, b) => b.score - a.score);
+    const era = eraOf(civLevel);
+    const maxTowns = Math.min(13, 3 + era * 2);
+    const minD = Math.max(rx * 0.15, 26);
+    const sites: Array<{ x: number; y: number }> = [];
+    for (const c of ranked) {
+      if (sites.length >= maxTowns) break;
+      if (sites.some(s => Math.hypot(s.x - c.x, (s.y - c.y) / SQUASH) < minD)) continue;
+      sites.push({ x: c.x, y: c.y });
+    }
+    const isLand = (x: number, y: number) => {
+      const dx = (x - cx) / rx, dy = (y - cy) / ry, r = Math.hypot(dx, dy);
+      if (r > 0.95) return false;
+      const gp = this.discToGrid(dx, dy);
+      const cell = gp ? grid[gp.row]?.[gp.col] : null;
+      if (!cell) return false;
+      const e = this.elevationAt(grid, dx, dy) ?? cell.elevation;
+      if (e - this.rimFalloff(r) < SEA_LEVEL + 0.004) return false;
+      return cell.biome !== 'snow' && cell.biome !== 'volcanic';
+    };
+    const fertileAt = (x: number, y: number) => {
+      if (!isLand(x, y)) return 0;
+      const dx = (x - cx) / rx, dy = (y - cy) / ry;
+      const gp = this.discToGrid(dx, dy);
+      const cell = gp ? grid[gp.row]?.[gp.col] : null;
+      if (!cell || cell.biome === 'mountain' || cell.biome === 'tundra' || cell.biome === 'beach') return 0;
+      if (cell.biome === 'desert') return era >= 3 ? 0.3 : 0;
+      return Math.max(0.2, cell.fertility);
+    };
+    this.townPlan = planSettlements({
+      sites, civLevel, seed: this.planetSeed, rx, isLand, fertileAt, aquatic,
+      aggression: intelligent?.dna.aggression ?? 3,
+    });
+    this.townLift = this.townPlan.buildings.map(b => this.liftAtFace(b.x, b.y, geom));
+    // Construction: buildings new to this planet's plan go up over time,
+    // staggered so a town grows outward from its first houses.
+    const fresh = this.townPlanet !== this.planet;
+    this.townPlanet = this.planet;
+    const born = new Map<string, number>();
+    this.buildingBorn = this.townPlan.buildings.map(b => {
+      const t = this.townPlan.towns[b.town];
+      const k = `${Math.round(t.x)},${Math.round(t.y)}|${Math.round(b.x * 2)},${Math.round(b.y * 2)}|${b.kind}`;
+      const prev = this.bornByKey.get(k);
+      const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
+      const at = prev ?? (fresh ? -Infinity : this.elapsed + d * BUILD_SPREAD + ((b.seed >>> 3) % 1000) / 1000 * 4);
+      born.set(k, at);
+      return at;
+    });
+    this.bornByKey = born;
+    this.retired = fresh ? [] : this.retired.filter(r => r.until > this.elapsed);
+    if (!fresh && oldStyle) {
+      oldPlan.buildings.forEach((b, i) => {
+        if (born.has(oldKeys[i] ?? '')) return;
+        const t = oldPlan.towns[b.town];
+        const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
+        this.retired.push({ b, lift: oldLift[i] ?? 0, st: oldStyle, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
+      });
+    }
+    this.townStyleOf = townStyle(this.townPlan.era, intelligent?.physicalTraits.bodyStructure ?? 'vertebrate');
+  }
+
+  /** Building `i` under construction, `p` of the way (12 cached steps). */
+  private constructionSprite(i: number, S: number, p: number): { cv: HTMLCanvasElement; fx: number; fy: number } | null {
+    const step = Math.min(11, Math.floor(p * 12));
+    const k = `${i}|${S}|c${step}`;
+    const hit = this.buildingSprites.get(k);
+    if (hit) return hit;
+    const st = this.townStyleOf;
+    if (!st) return null;
+    const f = paintConstruction(this.townPlan.buildings[i], S, st, (step + 0.5) / 12);
+    const cv = document.createElement('canvas');
+    cv.width = f.width; cv.height = f.height;
+    const cg = cv.getContext('2d');
+    if (cg) {
+      const img = cg.createImageData(f.width, f.height);
+      img.data.set(f.data);
+      cg.putImageData(img, 0, 0);
+    }
+    const e = { cv, fx: f.footX, fy: f.footY };
+    if (this.buildingSprites.size > 3000) this.buildingSprites.clear();
+    this.buildingSprites.set(k, e);
+    return e;
+  }
+
+  /** The sprite of building `i` at camera scale S (cached per plan and scale). */
+  private buildingSprite(i: number, S: number): { cv: HTMLCanvasElement; fx: number; fy: number } | null {
+    const k = `${i}|${S}`;
+    const hit = this.buildingSprites.get(k);
+    if (hit) return hit;
+    const st = this.townStyleOf;
+    if (!st) return null;
+    const f = paintBuilding(this.townPlan.buildings[i], S, st);
+    const cv = document.createElement('canvas');
+    cv.width = f.width; cv.height = f.height;
+    const cg = cv.getContext('2d');
+    if (cg) {
+      const img = cg.createImageData(f.width, f.height);
+      img.data.set(f.data);
+      cg.putImageData(img, 0, 0);
+    }
+    const e = { cv, fx: f.footX, fy: f.footY };
+    if (this.buildingSprites.size > 3000) this.buildingSprites.clear();
+    this.buildingSprites.set(k, e);
+    return e;
+  }
+
+  /**
+   * The towns' buildings, standing on the lifted ground, back to front.
+   * Rendered into one canvas per view and blitted every other frame.
+   */
+  private drawBuildings(g: CanvasRenderingContext2D): void {
+    const bs = this.townPlan.buildings;
+    if (bs.length === 0) return;
+    const c = this.cutaway.activeCamera, bob = this.habitable ? Math.round(this.cutaway.drawGeom.bob) : 0;
+    // While anything is being built, the layer re-renders a few times a
+    // second so construction advances; otherwise only when the view changes.
+    let building = this.retired.some(r => r.until > this.elapsed);
+    for (const t0 of this.buildingBorn) if (t0 !== -Infinity && this.elapsed - t0 < BUILD_SECONDS) { building = true; break; }
+    const tick = building ? Math.floor(this.elapsed * 4) : 0;
+    const key = `${c.zoom}|${c.fx}|${c.fy}|${this.VW}|${this.VH}|${bob}|${this.townVersion}|${tick}`;
+    if (!this.propsCanvas) this.propsCanvas = document.createElement('canvas');
+    const pc = this.propsCanvas;
+    if (key !== this.propsKey) {
+      this.propsKey = key;
+      if (pc.width !== this.VW || pc.height !== this.VH) { pc.width = this.VW; pc.height = this.VH; }
+      const pg = pc.getContext('2d');
+      if (!pg) return;
+      pg.clearRect(0, 0, pc.width, pc.height);
+      pg.imageSmoothingEnabled = false;
+      const S = Math.max(1, Math.round(this.camZoom));
+      // Outgoing buildings still standing (back to front), under the new ones.
+      for (const r of this.retired) {
+        if (r.until <= this.elapsed) continue;
+        let spr = r.sprites.get(S);
+        if (!spr) {
+          const f = paintBuilding(r.b, S, r.st);
+          const cv = document.createElement('canvas');
+          cv.width = f.width; cv.height = f.height;
+          const cg = cv.getContext('2d');
+          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+          spr = { cv, fx: f.footX, fy: f.footY };
+          r.sprites.set(S, spr);
+        }
+        const sx = this.wsx(r.b.x), sy = this.wsy(r.b.y - r.lift) + bob;
+        pg.drawImage(spr.cv, Math.round(sx - spr.fx), Math.round(sy - spr.fy));
+      }
+      for (let i = 0; i < bs.length; i++) {
+        const b = bs[i];
+        const sx = this.wsx(b.x), sy = this.wsy(b.y - (this.townLift[i] ?? 0)) + bob;
+        const reach = (b.h + b.w) * S * 2 + 8;
+        if (sx < -reach || sx > this.VW + reach || sy < -8 || sy > this.VH + reach) continue;
+        const t0 = this.buildingBorn[i] ?? -Infinity;
+        const p = t0 === -Infinity ? 1 : (this.elapsed - t0) / BUILD_SECONDS;
+        if (p < 0) continue;                       // not begun yet
+        const spr = p >= 1 ? this.buildingSprite(i, S) : this.constructionSprite(i, S, p);
+        if (!spr) continue;
+        pg.drawImage(spr.cv, Math.round(sx - spr.fx), Math.round(sy - spr.fy));
+      }
+    }
+    g.drawImage(pc, 0, 0);
+  }
+
   /**
    * Populate the surface from the grid: creatures where life lives, settlements
    * where a civilisation has settled.
@@ -2451,61 +2739,29 @@ export class IsoDioramaRenderer {
       });
     }
 
-    /** Sample-lattice steps from a town to the nearest visual water / rim. */
-    const distToVisualCoast = (px: number, py: number): number => {
-      for (let rad = 0; rad < 48; rad++) {
-        for (let a = 0; a < 16; a++) {
-          const ang = (a / 16) * Math.PI * 2;
-          const sx = px + Math.cos(ang) * rad * step;
-          const sy = py + Math.sin(ang) * rad * step;
-          const dx = (sx - cx) / rx;
-          const dy = (sy - cy) / ry;
-          if (dx * dx + dy * dy > 0.97) return rad;
-          if (!landKeys.has(sampleKey(sx, sy))) return rad;
-        }
-      }
-      return 48;
-    };
-
-    // One entry per grid cell (screen oversampling otherwise floods the pool
-    // with the same coastal shelf pixel), scored for inland depth × fertility.
-    const byCell = new Map<string, {
-      x: number; y: number; row: number; col: number; fertility: number; score: number; dCoast: number;
-    }>();
-    for (const spot of settlementSpots) {
-      const dCoast = distToVisualCoast(spot.sx, spot.sy);
-      const inland = Math.min(1, dCoast / 6);
-      const score = spot.fertility * (0.2 + 0.8 * inland);
-      const key = `${spot.row},${spot.col}`;
-      const prev = byCell.get(key);
-      if (!prev || score > prev.score) {
-        byCell.set(key, {
-          x: spot.x, y: spot.y, row: spot.row, col: spot.col, fertility: spot.fertility, score, dCoast,
-        });
-      }
-    }
-    const scored = [...byCell.values()].sort((a, b) => b.score - a.score);
-    // Prefer sites at least ~2 sample steps inland; fall back if the landmasses
-    // are too thin to support that many towns.
-    const inlandEnough = scored.filter(s => s.dCoast >= 2);
-    const ranked = inlandEnough.length >= MAX_SETTLEMENTS ? inlandEnough : scored;
-    const townPool = ranked.slice(0, Math.max(60, ranked.length >> 2));
+    // Towns come from the settlement plan (planTowns, made before the bake so
+    // their fields and roads are in the ground). The entries here are the
+    // town centres; in the diorama their buildings are drawn by drawBuildings,
+    // the legacy flat view still blits one small sprite per town.
+    if (!this.habitable) this.planTowns(geom);
     const civLevel = this.star?.civLevel ?? 0;
     let idx = 0;
-    for (const spot of scatter(townPool, MAX_SETTLEMENTS, rx * 0.13)) {
-      const genome = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3)
-                  ?? this.species[0] ?? null;
+    const genome = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? this.species[0] ?? null;
+    for (const t of this.townPlan.towns) {
       const sprite = bakeSettlementSprite(genome, civLevel, idx++, 1);
-      const depth = (spot.y - (cy - ry)) / (ry * 2);
+      const ly = t.y - this.liftAtFace(t.x, t.y, geom);
+      const depth = (ly - (cy - ry)) / (ry * 2);
       const target = (5 + Math.min(civLevel, 6) * 0.7) * (0.85 + depth * 0.3);
       const aspect = sprite.height / sprite.width;
+      const gp = this.discToGrid((t.x - cx) / rx, (t.y - cy) / ry);
       this.settlements.push({
-        wx: spot.x, wy: spot.y, row: spot.row, col: spot.col, sprite,
+        wx: t.x, wy: ly, row: gp?.row ?? 0, col: gp?.col ?? 0, sprite,
         w: Math.max(3, target),
         h: Math.max(3, target * aspect),
         depth,
       });
     }
+    void settlementSpots; void landKeys; void step;
 
     // Painter's algorithm — back of the disc first.
     this.inhabitants.sort((a, b) => a.depth - b.depth);
@@ -2520,7 +2776,11 @@ export class IsoDioramaRenderer {
    * crowded world does not stall a frame).
    */
   private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): { cv: HTMLCanvasElement; foot: number } | null {
-    const target = Math.round(Math.max(c.w, c.h) * S);
+    // Sized from the species' nominal size, not the pixel sprite's box: the
+    // speck's outline and minimum anatomy pad it, and a forged body filling
+    // that box towered over trees and houses (play feedback).
+    const nominal = (CREATURE_SIZE_PX[c.genome.physicalTraits.size] ?? 4) + 1;
+    const target = Math.round(Math.min(Math.max(c.w, c.h), nominal) * S);
     if (target < FORGE_MIN_PX) return null;
     const gn = c.genome, d = gn.dna, p = gn.physicalTraits;
     const key = [gn.id, target, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
@@ -2629,7 +2889,7 @@ export class IsoDioramaRenderer {
       }
     }
 
-    for (const st of this.settlements) {
+    for (const st of this.habitable ? [] : this.settlements) {
       g.drawImage(st.sprite,
         Math.round(this.wsx(st.wx) - st.w * S / 2), Math.round(this.wsy(st.wy) + layerBob - st.h * S),
         Math.round(st.w) * S, Math.round(st.h) * S);
@@ -2677,6 +2937,7 @@ export class IsoDioramaRenderer {
           this.drawSky(g);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
+        drawProps: (g) => this.drawBuildings(g),
         drawSurfaceOverlays: (g) => {
           this.drawCityLights(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);

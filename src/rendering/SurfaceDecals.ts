@@ -81,7 +81,7 @@ export const PAINTER_SNOW_ELEVATION = 0.82;
 export const DECAL_SNOW_LINE = PAINTER_SNOW_ELEVATION - 0.04;
 
 /** Target site count at full lushness. A COUNT, not a per-cell probability. */
-export const DECAL_BUDGET = 900;
+export const DECAL_BUDGET = 1500;
 
 /**
  * Spacing bucket, in virtual pixels AT THE REFERENCE RADIUS below.
@@ -182,6 +182,8 @@ export function planSurfaceDecals(
       if (!gp) continue;
       const cell = grid[gp.row]?.[gp.col];
       if (!cell) continue;
+      // Towns, fields and roads are kept clear.
+      if (opts.decalBlocked?.(px, py)) continue;
 
       const biome = cell.biome as string;
       if (biome === 'volcanic' || biome === 'snow' || biome === 'beach') continue;
@@ -215,7 +217,9 @@ export function planSurfaceDecals(
       const sward = vnoise(bx, by, 88 * sc, seed ^ 0x5bd1) * 0.75
                   + vnoise(bx, by, 27 * sc, seed ^ 0x31af) * 0.25;
       const canopy = biome === 'forest' || biome === 'jungle';
-      if (grove < (canopy ? 0.58 : 0.74) - life * 0.04 && sward < 0.80 - life * 0.04) continue;
+      // Play feedback: forests read too thin. Groves start lower, and a
+      // forest or jungle biome is nearly closed canopy.
+      if (grove < (canopy ? 0.44 : 0.66) - life * 0.06 && sward < 0.78 - life * 0.04) continue;
 
       let kind: DecalKind;
       // Which stone a crag shows: ore seams, crystal (common on crystal
@@ -292,8 +296,12 @@ export function planSurfaceDecals(
       // genome is gigantic. A little extra toward the middle of the face.
       const body = opts.decalScale?.(gp.row, gp.col, kind)
         ?? defaultDecalScale(kind);
+      // Jitter off the 2-px sampling lattice so a dense canopy does not read
+      // as rows: up to ~1 px across, ~0.6 px deep (world-anchored hash).
+      const jx = (hash1(bx * 7919 + by * 13, seed ^ 0x77) - 0.5) * 1.9;
+      const jy = (hash1(bx * 31 + by * 7907, seed ^ 0x99) - 0.5) * 1.2;
       cand.push({
-        x: px, y: py - lift, kind,
+        x: px + jx, y: py - lift + jy, kind,
         scale: body * (0.9 + (1 - r) * 0.2),
         row: gp.row, col: gp.col,
         w: life * (woody ? grove : sward) * (0.6 + hash1(bx * 977 + by * 31, seed) * 0.8),
@@ -305,15 +313,18 @@ export function planSurfaceDecals(
   // pairwise `sites.some(...)` that planVolcanoChimneys uses — that is O(n^2)
   // and fine for a dozen cones, quadratic for several hundred decals.
   cand.sort((a, b) => b.w - a.w);
-  const taken = new Set<number>();
+  const taken = new Set<number>(), takenWoody = new Set<number>();
+  // Trees pack closer than ground cover: canopies overlap in a forest.
+  const bucketW = Math.max(2, Math.round(bucket * 0.62));
   const sites: DecalSite[] = [];
   for (const c of cand) {
     if (sites.length >= budget) break;
     // Body-relative buckets, like the sampling above: moving the body must
     // not move the bucket grid under the decals.
-    const key = (((c.x - cx + 4096) / bucket) | 0) * 4096 + (((c.y - cyTop + 4096) / bucket) | 0);
-    if (taken.has(key)) continue;
-    taken.add(key);
+    const bk = isWoody(c.kind) ? bucketW : bucket, set = isWoody(c.kind) ? takenWoody : taken;
+    const key = (((c.x - cx + 4096) / bk) | 0) * 4096 + (((c.y - cyTop + 4096) / bk) | 0);
+    if (set.has(key)) continue;
+    set.add(key);
     sites.push({ x: c.x, y: c.y, kind: c.kind, scale: c.scale, row: c.row, col: c.col });
   }
   sites.sort((a, b) => a.y - b.y);        // back to front, for correct overlap
