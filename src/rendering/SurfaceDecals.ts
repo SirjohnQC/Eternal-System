@@ -391,6 +391,7 @@ export function stampDecals(
   scale = 1, record = false,
   _camera = false,
   planetType?: HabitableType,
+  recordOnly = false,
 ): number {
   let drawn = 0;
   const S = Math.max(1, Math.round(scale)), half = S >> 1;
@@ -425,6 +426,8 @@ export function stampDecals(
       if (bx + reach < 0 || bx - reach >= bw || by - reach >= bh || by + 2 * S < 0) continue;
       ur = (s.foot >> 16) & 255; ug = (s.foot >> 8) & 255; ub = s.foot & 255;
     }
+    // The live flora layer draws the decal itself; this pass only records footing.
+    if (recordOnly) { drawn++; continue; }
 
     // lit 0..255 from the atlas mask -> a multiplier plus a small hue push, so
     // foliage reads greener than the ground without leaving its family.

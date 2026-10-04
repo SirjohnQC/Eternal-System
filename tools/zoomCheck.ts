@@ -1510,6 +1510,10 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
   {
     const r = ocean, e = r.cutaway, g = e.geom, k = 4, reachPx = 6 * k;
     setCam(r, ID);
+    // This measures decals STAMPED into the camera land: the baked path. (The
+    // game draws them live; FloraLayer culls by the sprite's reach, not its anchor.)
+    const wasLive = e.liveFlora;
+    e.liveFlora = false;
     const plan: any[] = e.planDecals ?? [];
     // A camera whose left edge cuts through decals that were stamped at identity.
     let cam: any = null, edge: any[] = [];
@@ -1542,7 +1546,7 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     const bare = edge.map(s => { const c = { ...s }; delete c.foot; return c; });
     const ctl = cam ? stampedEdge(plan.map(s => (edge.includes(s) ? bare[edge.indexOf(s)] : s)), bare) : 0;
     check('  control: sites without identity footing are culled at the edge', !(cam && ctl === edge.length), `${ctl}/${edge.length}`);
-    e.planDecals = plan; setCam(r, ID);
+    e.planDecals = plan; e.liveFlora = wasLive; setCam(r, ID);
   }
 }
 

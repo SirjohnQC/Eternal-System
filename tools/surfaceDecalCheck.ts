@@ -490,6 +490,9 @@ function makeStubCanvas(): any {
 // not "tidy" them toward the middle of the range without re-measuring.
 const { HabitableCutawayEngine } = await import('../src/rendering/HabitableCutawayEngine');
 const engine: any = new HabitableCutawayEngine();
+// These assertions measure decals STAMPED into the land: the baked path.
+// The live layer (the game's default) is checked after them.
+engine.liveFlora = false;
 engine.bake({
   w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
   discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
@@ -536,6 +539,7 @@ check('lushness change propagates into the paint', tintDelta > 2000, `${tintDelt
 // here is attributable to decal placement, not to the tint). This is what
 // actually proves decals — not just the tint — track the live bake.
 const engineAltSeed: any = new HabitableCutawayEngine();
+engineAltSeed.liveFlora = false;
 engineAltSeed.bake({
   w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
   discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
@@ -558,6 +562,27 @@ check('decal placement is decal-seed-specific, not just tint', decalDelta > 50,
 // bare `>` at these endpoints. Re-measure this floor if 0.05/0.95 ever change.
 check('a re-bake reflects the new biosphere', lushly - bare >= 10,
       `painted px ${bare} -> ${lushly} (+${lushly - bare})`);
+
+// Live flora (the game's path): the land carries no decals; the plan reaches
+// the engine's FloraLayer instead, and a richer biosphere grows more plants.
+{
+  const live: any = new HabitableCutawayEngine();
+  live.bake({
+    w: 480, h: 320, seed: 0xbeef, grid, planetType: 'ocean',
+    discToGrid, rimFalloff, liftOf, smoothElevation, maxLift: 9,
+    lush: 0.05, decalSeed: 0xC0FFEE,
+  });
+  const g2: any = live.land.getContext('2d');
+  const liveBare = countPainted(g2.getImageData(0, 0, live.w, live.h));
+  const n0 = live.flora.count;
+  live.updateSurfaceOpts({ lush: 0.95 });
+  live.rebakeSurface();
+  const liveLush = countPainted(g2.getImageData(0, 0, live.w, live.h));
+  check('live flora: decals leave the baked land', liveLush === liveBare,
+        `land painted px ${liveBare} -> ${liveLush}`);
+  check('live flora: a re-bake grows more plants', live.flora.count >= n0 + 10,
+        `${n0} -> ${live.flora.count} plants`);
+}
 
 // ─── planet-type bound on decal kind ──────────────────────────────────────────
 //

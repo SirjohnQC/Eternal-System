@@ -40,6 +40,7 @@ import {
   type DecalAtlas, type DecalKind, type DecalSite,
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
+import { FloraLayer, type FloraView } from './FloraLayer';
 import type { ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
@@ -312,6 +313,11 @@ export interface CutawayBakeOpts extends CutawayGeom {
   lush?: number;
   /** `planet.genomeSeed`. Decals are stable across saves and re-bakes. */
   decalSeed?: number;
+  /**
+   * Decals are drawn live by the engine's FloraLayer (sway, growth): the
+   * surface bake only records footing and leaves them out of the land.
+   */
+  decalLive?: boolean;
   /**
    * Atlas-cell multiplier for one decal. Ordinary cover is well under 1 so
    * the ground stays visible; a gigantic flora lineage can return about 1.
@@ -1270,7 +1276,13 @@ export function* surfaceSteps(
   // its identity footing (`storedFoot`): the stamp is then a function of the
   // plan alone, not of which pixels this bake's window holds, so two camera
   // bakes of the same zoom agree on every overlap pixel (spec 5b re-centre).
-  if (opts.decalSites) {
+  if (opts.decalSites && opts.decalLive) {
+    // Live flora (FloraLayer) draws decals every frame; the identity bake only
+    // records each site's footing, a camera bake does nothing.
+    if (opts.cameraZoom === undefined) {
+      stampDecals(d, bw, bh, x0, yTop, opts.decalSites, null, 1, true, false, opts.planetType, true);
+    }
+  } else if (opts.decalSites) {
     const camera = opts.cameraZoom !== undefined, one: DecalSite[] = [];
     for (const site of opts.decalSites) {
       one[0] = site;
@@ -2502,6 +2514,12 @@ export class HabitableCutawayEngine {
    */
   private planDecals: DecalSite[] | null = null;
   private planChimneys: VolcanoChimney[] = [];
+  /**
+   * Draw decals live (FloraLayer: sway, growth, wilt) instead of stamping
+   * them into the land. Tools that measure stamped land pixels turn it off.
+   */
+  liveFlora = true;
+  readonly flora = new FloraLayer();
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
@@ -2662,6 +2680,9 @@ export class HabitableCutawayEngine {
     const landG = this.land.getContext('2d');
     if (crustG) paintCutawayCrust(crustG, bakeOpts);
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
+    // After the paint, which records each site's footing. A new planet or
+    // size: everything is shown grown.
+    this.flora.setPlan(this.liveFlora ? this.planDecals : null, this.elapsed, true);
     this.idLandCover = this.snapshotLandCover(this.land);
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     // Weather: a fresh sim per bake — a new planet must never inherit the last
@@ -2972,6 +2993,7 @@ export class HabitableCutawayEngine {
     return {
       ...base,
       decalSites: this.planDecals ?? (base.decalSeed !== undefined ? [] : null),
+      decalLive: this.liveFlora,
       chimneySites: this.planChimneys,
     };
   }
@@ -2985,6 +3007,7 @@ export class HabitableCutawayEngine {
     const opts: CutawayBakeOpts = {
       ...set.opts,
       decalSites: this.planDecals ? this.planDecals.map(s => ({ ...s, ...at(s.wx ?? s.x, s.wy ?? s.y) })) : [],
+      decalLive: this.liveFlora,
       chimneySites: this.planChimneys.map(c => {
         const p = at(c.wx ?? c.x, c.wy ?? c.y);
         return { ...c, x: Math.round(p.x), y: Math.round(p.y) };
@@ -3009,6 +3032,8 @@ export class HabitableCutawayEngine {
     const landG = this.land.getContext('2d');
     this.planIdentity();
     if (landG && this.surfaceBakeOpts) paintCutawaySurface(landG, this.identityPaintOpts());
+    // Same planet, a changed biosphere: new plants grow in, lost ones wilt.
+    this.flora.setPlan(this.liveFlora ? this.planDecals : null, this.elapsed, false);
     this.idLandCover = this.snapshotLandCover(this.land);
     this.idShoreDist = bakeShoreDistance(this.idOccupancy, this.geom, this.w, this.h);
     this.surfaceEpoch++;
@@ -3168,6 +3193,9 @@ export class HabitableCutawayEngine {
       if (fluidG) {
         fluidG.putImageData(fluids, 0, 0);
         g.drawImage(this.fluidScratch, 0, 0);
+        // Plants and stones, live: over land and shore water, under the
+        // day/night veil and weather shadows.
+        if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
         fluids.data.fill(0);
         // maxLift: peaks rise above the face; veil must cover that column too.
         const veilLift = cs ? cs.opts.maxLift : (this.surfaceBakeOpts?.maxLift ?? 18);
@@ -3223,6 +3251,21 @@ export class HabitableCutawayEngine {
     input.drawNearMoons(g);
     this.drawVignette(g, this.geom, bob);
   }
+
+  private drawFlora(g: CanvasRenderingContext2D, elapsed: number, layerBob: number): void {
+    const cs = this.shown, m = this.viewMap, v = this.floraView;
+    if (cs) {
+      v.K = cs.camera.zoom; v.fx = cs.camera.fx; v.fy = cs.camera.fy; v.W = cs.W; v.H = cs.H;
+      v.r = m.r; v.dx = m.dx; v.dy = m.dy;
+    } else {
+      v.K = 1; v.fx = this.w / 2; v.fy = this.h / 2; v.W = this.w; v.H = this.h;
+      v.r = 1; v.dx = 0; v.dy = 0;
+    }
+    v.bob = layerBob; v.vw = this.w; v.vh = this.h;
+    this.flora.wind = this.planetType === 'storm' ? 1.6 : this.planetType === 'desert' ? 0.7 : 1;
+    this.flora.draw(g, elapsed, v, this.planetType, this.surfaceBakeOpts?.decalAtlas ?? null);
+  }
+  private floraView: FloraView = { K: 1, fx: 0, fy: 0, W: 1, H: 1, r: 1, dx: 0, dy: 0, bob: 0, vw: 1, vh: 1 };
 
   /**
    * Screen-space vignette: fixed to the canvas, so it is computed from the
