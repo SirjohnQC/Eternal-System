@@ -298,8 +298,9 @@ export function planSurfaceDecals(
         ?? defaultDecalScale(kind);
       // Jitter off the 2-px sampling lattice so a dense canopy does not read
       // as rows: up to ~1 px across, ~0.6 px deep (world-anchored hash).
-      const jx = (hash1(bx * 7919 + by * 13, seed ^ 0x77) - 0.5) * 1.9;
-      const jy = (hash1(bx * 31 + by * 7907, seed ^ 0x99) - 0.5) * 1.2;
+      // Snapped to 1/8 px so positions stay exact under a body shift.
+      const jx = Math.round((hash1(bx * 7919 + by * 13, seed ^ 0x77) - 0.5) * 1.9 * 8) / 8;
+      const jy = Math.round((hash1(bx * 31 + by * 7907, seed ^ 0x99) - 0.5) * 1.2 * 8) / 8;
       cand.push({
         x: px + jx, y: py - lift + jy, kind,
         scale: body * (0.9 + (1 - r) * 0.2),
