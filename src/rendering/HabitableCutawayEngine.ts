@@ -2428,6 +2428,9 @@ export type EngineBakeOpts = Omit<CutawayBakeOpts, 'cx' | 'cyTop' | 'rx' | 'ry'>
  * Owns static layers and composites moving habitable-world effects.
  * `drawGeom` includes bob for host-owned overlay placement.
  */
+/** Rate the live flora layer is re-rendered at (sway and growth steps). */
+const FLORA_HZ = 15;
+
 export class HabitableCutawayEngine {
   /**
    * Magma heat for the live fluid layer: 1 = open magma sea, lower while a
@@ -3252,19 +3255,48 @@ export class HabitableCutawayEngine {
     this.drawVignette(g, this.geom, bob);
   }
 
+  /**
+   * Plants, live but cheap: the whole layer is rendered into one canvas in
+   * the shown set's own pixels at FLORA_HZ (classic pixel-art animation
+   * rate: sway and growth step at 15 fps), and every frame just blits that
+   * canvas through the view map like the land. Re-rendered at once when the
+   * shown set or the plan changes.
+   */
   private drawFlora(g: CanvasRenderingContext2D, elapsed: number, layerBob: number): void {
     const cs = this.shown, m = this.viewMap, v = this.floraView;
-    if (cs) {
-      v.K = cs.camera.zoom; v.fx = cs.camera.fx; v.fy = cs.camera.fy; v.W = cs.W; v.H = cs.H;
-      v.r = m.r; v.dx = m.dx; v.dy = m.dy;
-    } else {
-      v.K = 1; v.fx = this.w / 2; v.fy = this.h / 2; v.W = this.w; v.H = this.h;
-      v.r = 1; v.dx = 0; v.dy = 0;
+    const W = cs ? cs.W : this.w, H = cs ? cs.H : this.h;
+    const c = this.floraCanvas;
+    const stale = this.floraFor !== (cs ?? this) || this.floraVersion !== this.flora.version
+      || c.width !== W || c.height !== H || elapsed - this.floraT >= 1 / FLORA_HZ || elapsed < this.floraT;
+    if (stale) {
+      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+      const fg = c.getContext('2d');
+      if (fg) {
+        fg.clearRect(0, 0, W, H);
+        if (cs) { v.K = cs.camera.zoom; v.fx = cs.camera.fx; v.fy = cs.camera.fy; }
+        else { v.K = 1; v.fx = this.w / 2; v.fy = this.h / 2; }
+        v.W = W; v.H = H; v.r = 1; v.dx = 0; v.dy = 0; v.bob = 0; v.vw = W; v.vh = H;
+        this.flora.wind = this.planetType === 'storm' ? 1.6 : this.planetType === 'desert' ? 0.7 : 1;
+        // Sample time on the 15 Hz grid so every plant steps together.
+        const t = Math.floor(elapsed * FLORA_HZ) / FLORA_HZ;
+        this.flora.draw(fg, t, v, this.planetType, this.surfaceBakeOpts?.decalAtlas ?? null);
+      }
+      this.floraFor = cs ?? this;
+      this.floraVersion = this.flora.version;
+      this.floraT = Math.floor(elapsed * FLORA_HZ) / FLORA_HZ;
     }
-    v.bob = layerBob; v.vw = this.w; v.vh = this.h;
-    this.flora.wind = this.planetType === 'storm' ? 1.6 : this.planetType === 'desert' ? 0.7 : 1;
-    this.flora.draw(g, elapsed, v, this.planetType, this.surfaceBakeOpts?.decalAtlas ?? null);
+    if (this.flora.count === 0) return;
+    const prev = g.imageSmoothingEnabled;
+    g.imageSmoothingEnabled = false;
+    if (!cs) g.drawImage(c, 0, layerBob);
+    else if (m.r === 1) g.drawImage(c, m.dx, m.dy + layerBob);
+    else g.drawImage(c, m.dx, m.dy + layerBob, W * m.r, H * m.r);
+    g.imageSmoothingEnabled = prev;
   }
+  private floraCanvas = document.createElement('canvas');
+  private floraFor: unknown = null;
+  private floraVersion = -1;
+  private floraT = -1;
   private floraView: FloraView = { K: 1, fx: 0, fy: 0, W: 1, H: 1, r: 1, dx: 0, dy: 0, bob: 0, vw: 1, vh: 1 };
 
   /**

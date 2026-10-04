@@ -94,6 +94,9 @@ export class FloraLayer {
   /** Wind strength (1 = a breeze; 0 stills every plant). */
   wind = 1;
 
+  /** Bumped on every new plan: a cached render of the layer is stale. */
+  version = 0;
+
   /** Number of plants currently drawn (growing, grown or wilting). */
   get count(): number { return this.order.length; }
 
@@ -103,6 +106,7 @@ export class FloraLayer {
    * forest spreads instead of popping, and dropped sites wilt.
    */
   setPlan(sites: DecalSite[] | null, now: number, mature: boolean): void {
+    this.version++;
     const next = new Map<string, Live>();
     const seen = new Map<string, number>();
     for (const s of sites ?? []) {
@@ -133,7 +137,7 @@ export class FloraLayer {
   }
 
   /** Forget everything (a gas giant, or decals switched off). */
-  clear(): void { this.live.clear(); this.order = []; }
+  clear(): void { this.live.clear(); this.order = []; this.version++; }
 
   draw(g: CanvasRenderingContext2D, now: number, v: FloraView, planetType: string, atlas: DecalAtlas | null): void {
     if (this.order.length === 0) return;
