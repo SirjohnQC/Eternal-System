@@ -32,7 +32,7 @@ import {
 } from './simulation/DnaBranches';
 import { assignDominantSpecies } from './simulation/SpeciesDistribution';
 import { initPlayerSpecies, stepEvolution } from './simulation/EvolutionEngine';
-import { clearSpriteCaches, bakeCreatureSprite, bakeCreatureAt } from './rendering/SpeciesSprite';
+import { clearSpriteCaches, bakeCreatureSprite, bakeCreaturePortrait } from './rendering/SpeciesSprite';
 import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
@@ -4831,8 +4831,7 @@ const roman = (n: number) => ROMAN[n - 1] ?? String(n);
 
 /** A crisp creature canvas whose long edge is about `px` screen pixels. */
 function creatureCanvas(g: SpeciesGenome, px: number): HTMLCanvasElement {
-  const n = ({ microscopic: 9, tiny: 10, small: 12, medium: 14, large: 16, massive: 18 } as Record<string, number>)[g.physicalTraits.size] ?? 12;
-  return bakeCreatureAt(g, n, Math.max(1, Math.floor(px / (n + 2))));
+  return bakeCreaturePortrait(g, px);
 }
 
 /** DNA awards this session, newest first — the lab's "how did I earn this". */

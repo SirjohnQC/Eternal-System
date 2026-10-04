@@ -10,7 +10,7 @@ import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { stepEvolution, createFoundingSpecies } from '../simulation/EvolutionEngine';
 import { assignDominantSpecies } from '../simulation/SpeciesDistribution';
 import { generateBranchSet, emptyInvestment } from '../simulation/DnaBranches';
-import { bakeCreatureSprite, bakeSettlementSprite } from '../rendering/SpeciesSprite';
+import { bakeCreaturePortrait, bakeSettlementSprite } from '../rendering/SpeciesSprite';
 import { SeedRNG } from '../utils/SeedRNG';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
@@ -236,7 +236,7 @@ tickFps();
   };
 
   for (const sp of species.filter(s => !s.isExtinct).slice(0, 6)) {
-    wrap.appendChild(cell(bakeCreatureSprite(sp, 1),
+    wrap.appendChild(cell(bakeCreaturePortrait(sp, 24),
       `${sp.name}\n${sp.dna.locomotion}/${sp.dna.diet}`));
   }
   const builder = species.find(s => !s.isExtinct) ?? null;

@@ -34,6 +34,7 @@ import type {
   SpeciesGenome, Metabolism, SpeciesSize, Environment,
 } from '../simulation/SpeciesGenome';
 import { isCoherent } from '../simulation/EvolutionEngine';
+import { forgeCreature } from './CreatureForge';
 
 // ─── Deterministic per-species randomness ─────────────────────────────────────
 
@@ -803,8 +804,40 @@ const PORTRAIT_PX: Record<SpeciesSize, number> = {
 export function bakeCreatureSprite(g: SpeciesGenome, scale = 1): HTMLCanvasElement {
   if (scale <= 1) return dioramaCreatureSprite(g, 'intelligent', 0.5);
   const n = PORTRAIT_PX[g.physicalTraits.size] ?? 12;
-  return bakeCreatureAt(g, n, Math.max(2, Math.round(scale * 0.8)));
+  return bakeCreaturePortrait(g, (n + 2) * Math.max(2, Math.round(scale * 0.8)));
 }
+
+const portraitCache = new Map<string, HTMLCanvasElement>();
+
+/**
+ * A portrait from the 3D body renderer (CreatureForge), its long edge about
+ * `px` screen pixels: rendered at up to PORTRAIT_MAX logical pixels, then
+ * scaled by a whole number so the pixel art stays crisp.
+ */
+export function bakeCreaturePortrait(g: SpeciesGenome, px: number): HTMLCanvasElement {
+  const up = Math.max(1, Math.ceil(px / PORTRAIT_MAX));
+  const logical = Math.max(16, Math.round(px / up));
+  const key = creatureKey(g, logical, up) + '|forge';
+  const hit = portraitCache.get(key);
+  if (hit) return hit;
+  const f = forgeCreature(g, logical);
+  const cv = document.createElement('canvas');
+  cv.width = f.width * up; cv.height = f.height * up;
+  const c = cv.getContext('2d');
+  if (c) {
+    const img = c.createImageData(cv.width, cv.height);
+    for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) {
+      const si = (((y / up) | 0) * f.width + ((x / up) | 0)) * 4, o = (y * cv.width + x) * 4;
+      img.data[o] = f.data[si]; img.data[o + 1] = f.data[si + 1]; img.data[o + 2] = f.data[si + 2]; img.data[o + 3] = f.data[si + 3];
+    }
+    c.putImageData(img, 0, 0);
+  }
+  portraitCache.set(key, cv);
+  return cv;
+}
+
+/** Largest logical size a portrait is rendered at before integer upscaling. */
+const PORTRAIT_MAX = 56;
 
 // ─── Settlements ──────────────────────────────────────────────────────────────
 
@@ -888,6 +921,7 @@ export function bakeSettlementSprite(
 
 /** Drop every cached sprite. Call on a new game so old species art is not reused. */
 export function clearSpriteCaches(): void {
+  portraitCache.clear();
   creatureCache.clear();
   settlementCache.clear();
 }
