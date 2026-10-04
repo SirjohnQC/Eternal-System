@@ -36,7 +36,7 @@ import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, 
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
-import { dioramaCreatureSprite, bakeSettlementSprite } from './SpeciesSprite';
+import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait } from './SpeciesSprite';
 import {
   HabitableCutawayEngine,
   type HabitableType,
@@ -55,6 +55,11 @@ import { ZoomController } from './ZoomController';
 import { applySettle, type SettleHooks } from './zoomSettle';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
+
+/** On-screen size (px, long edge) from which a creature is drawn by CreatureForge. */
+const FORGE_MIN_PX = 10;
+/** New CreatureForge sprites baked per frame at most. */
+const FORGE_BAKES_PER_FRAME = 3;
 
 export type PlanetType =
   | 'ocean' | 'rocky' | 'lava' | 'ice' | 'gas'
@@ -484,7 +489,17 @@ export class IsoDioramaRenderer {
     w: number; h: number; phase: number; sway: number; depth: number;
     /** 0 = fully above the surface, 1 = fully under. See waterSubmersion(). */
     submersion: number;
+    /** The genome drawn, for the detailed CreatureForge sprite when big enough. */
+    genome: SpeciesGenome;
   }> = [];
+  /**
+   * CreatureForge sprites for creatures large enough on screen to show a body
+   * (zoomed in, or massive species), keyed by genome and on-screen size.
+   * `foot` is the transparent margin under the feet, so the anchor stays put.
+   */
+  private forgeSprites = new Map<string, { cv: HTMLCanvasElement; foot: number }>();
+  /** Forge bakes allowed this frame; the pixel sprite stands in until baked. */
+  private forgeBudget = 0;
   /** Scratch for compositing a submerged creature without tinting the sea. */
   private subScratch: HTMLCanvasElement | null = null;
   private settlements: Array<{
@@ -2426,6 +2441,7 @@ export class IsoDioramaRenderer {
         sway: s.range(0.4, 1.5),
         depth,
         submersion: spot.onWater ? waterSubmersion(genome) : 0,
+        genome,
       });
     }
 
@@ -2491,6 +2507,39 @@ export class IsoDioramaRenderer {
   }
 
   /** Blit creatures and settlements onto the top face. */
+  /**
+   * The CreatureForge sprite for an inhabitant drawn at camera scale `S`, or
+   * null while it is too small to carry a body (or still waiting its turn to
+   * bake: at most FORGE_BAKES_PER_FRAME new ones per frame, so zooming in on a
+   * crowded world does not stall a frame).
+   */
+  private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): { cv: HTMLCanvasElement; foot: number } | null {
+    const target = Math.round(Math.max(c.w, c.h) * S);
+    if (target < FORGE_MIN_PX) return null;
+    const gn = c.genome, d = gn.dna, p = gn.physicalTraits;
+    const key = [gn.id, target, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
+      p.size, p.bodyStructure, p.mobilityType, p.sensorySystem].join('|');
+    const hit = this.forgeSprites.get(key);
+    if (hit) return hit;
+    if (this.forgeBudget <= 0) return null;
+    this.forgeBudget--;
+    const cv = bakeCreaturePortrait(gn, target);
+    // Transparent rows under the lowest opaque pixel: the feet sit on the anchor.
+    let foot = 0;
+    const cg = cv.getContext('2d');
+    if (cg) {
+      const data = cg.getImageData(0, 0, cv.width, cv.height).data;
+      outer: for (let y = cv.height - 1; y >= 0; y--) {
+        for (let x = 0; x < cv.width; x++) if (data[(y * cv.width + x) * 4 + 3] > 0) break outer;
+        foot++;
+      }
+    }
+    const entry = { cv, foot };
+    if (this.forgeSprites.size > 400) this.forgeSprites.clear();
+    this.forgeSprites.set(key, entry);
+    return entry;
+  }
+
   private drawInhabitants(g: CanvasRenderingContext2D, t: number): void {
     if (this.inhabitants.length === 0 && this.settlements.length === 0) return;
     const { cx, cy, rx, ry } = this;
@@ -2513,15 +2562,22 @@ export class IsoDioramaRenderer {
     g.ellipse(cx, cy + layerBob, rx + pad, ry + pad, 0, 0, Math.PI * 2);
     g.clip();
 
+    this.forgeBudget = FORGE_BAKES_PER_FRAME;
     for (const c of this.inhabitants) {
       // A small idle bob keeps the world alive without implying real movement.
       const bob = Math.sin(t * c.sway + c.phase) * 0.6 * S;
       const ax = this.wsx(c.wx), ay = this.wsy(c.wy);
-      const dx = Math.round(ax - c.w * S / 2);
-      const dy = Math.round(ay + layerBob - c.h * S + bob);
+      // Big enough on screen to show a body: the 3D-built creature at its true
+      // screen resolution instead of the speck magnified x S.
+      const forged = this.forgeSpriteFor(c, S);
+      const spr = forged ? forged.cv : c.sprite;
+      const sw = forged ? forged.cv.width : Math.round(c.w) * S;
+      const sh = forged ? forged.cv.height : Math.round(c.h) * S;
+      const dx = Math.round(ax - sw / 2);
+      const dy = Math.round(ay + layerBob - sh + (forged ? forged.foot : 0) + bob);
 
       if (c.submersion <= 0 || !surf) {
-        g.drawImage(c.sprite, dx, dy, Math.round(c.w) * S, Math.round(c.h) * S);
+        g.drawImage(spr, dx, dy, sw, sh);
         continue;
       }
 
@@ -2529,17 +2585,17 @@ export class IsoDioramaRenderer {
       // then tint what is under. The tint is applied INSIDE a scratch with
       // 'source-atop', so it lands on the animal's own pixels and never on the
       // sea — filling a rect straight onto the frame would leave a coloured box.
-      const w = Math.max(1, Math.round(c.w)) * S, h = Math.max(1, Math.round(c.h)) * S;
+      const w = Math.max(1, sw), h = Math.max(1, sh);
       if (!this.subScratch) this.subScratch = document.createElement('canvas');
       const sc = this.subScratch;
       if (sc.width < w || sc.height < h) { sc.width = Math.max(sc.width, w); sc.height = Math.max(sc.height, h); }
       const sg = sc.getContext('2d');
-      if (!sg) { g.drawImage(c.sprite, dx, dy, w, h); continue; }
+      if (!sg) { g.drawImage(spr, dx, dy, w, h); continue; }
 
       sg.clearRect(0, 0, w, h);
       sg.imageSmoothingEnabled = false;
       sg.globalCompositeOperation = 'source-over';
-      sg.drawImage(c.sprite, 0, 0, w, h);
+      sg.drawImage(spr, 0, 0, w, h);
 
       // Waterline in sprite-local pixels: everything at or below is underwater.
       const line = Math.round(h * (1 - c.submersion));
