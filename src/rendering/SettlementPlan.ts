@@ -284,9 +284,12 @@ function makeBuilding(era: Era, inp: PlanInput, R: () => number, sc: number, x: 
         : A.shape === 'hive' ? [1.8, 2.4, 1.8, 2.6] : A.shape === 'grown' ? [1.7, 2.3, 2.2, 3.2]
         : A.shape === 'carved' ? [2, 2.8, 1.4, 2.2] : A.shape === 'pod' ? [1.6, 2.2, 1.4, 2] : [1.8, 2.6, 0.5, 0.8];
       b.w = s(w0, w1) * A.scale; b.d = b.w * 0.9; b.h = s(h0, h1) * A.tall * grand;
+      // Ordinary buildings stay below a few trees' height, however tall the
+      // style; the landmark may tower.
+      b.h = Math.min(b.h, sc * 3.2);
       if (landmark) {
         const big = A.quirks.includes('colossal') ? 2.6 : 1.8;
-        b.w *= big * 0.8; b.d *= big * 0.8; b.h *= big;
+        b.w *= big * 0.8; b.d *= big * 0.8; b.h = Math.min(b.h * big, sc * 6);
       }
       return b;
     }

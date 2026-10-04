@@ -1483,11 +1483,16 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   } else if (star.hasLife && star.biologyPhase === 'intelligent') {
     const civPhase = civLevelToPhase(civLevel);
     setText('pi-era', CIV_PHASE_LABELS[civPhase] + ` — ${TECH_LEVELS[civLevel]}`);
+    // How this civilisation builds (its architecture genome), once it does.
+    const arch = star.isPlayerStar ? _dioramaRenderer?.townArch : null;
+    setStyle('pi-arch-row', 'display', arch ? '' : 'none');
+    if (arch) setText('pi-arch', arch.summary.charAt(0).toUpperCase() + arch.summary.slice(1));
     const biosphere = planet?.biosphere ?? 0;
     setText('pi-population', formatPop(calcPop(civLevel)));
     setText('pi-biosphere', Math.round(biosphere * 100) + '%');
     setStyle('pi-biosphere-bar', 'width', Math.round(biosphere * 100) + '%');
   } else {
+    setStyle('pi-arch-row', 'display', 'none');
     setText('pi-era', 'No Life Detected');
     setText('pi-population', '—');
     setText('pi-biosphere', '0%');
