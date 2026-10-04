@@ -1006,6 +1006,8 @@ export function* surfaceSteps(
   const lush = clamp01(opts.lush ?? 0.3);
   // Cliff face under extruded land — same role as diorama_test's terrain.cliff.
   const cliff = pal.strata[1];
+  /** Paler stratum for the banding on cliff faces. */
+  const cliffLit = pal.strata[2];
   // 1-px lines stay 1 px at any zoom: their thresholds narrow by k.
   const foamOuter = k === 1 ? 0.972 : 1 - 0.028 / k;
   const foamInner = k === 1 ? 0.988 : 1 - 0.012 / k;
@@ -1195,10 +1197,23 @@ export function* surfaceSteps(
           vr = c.r; vg = c.g; vb = c.b;
           if (river >= 2 && row === rEnd && rEnd >= top + 3 * lipRows) splash.push(px, rEnd + 1);
         } else {
-          // Solid cliff column under the crest (diorama_test language) — not a
-          // silt fade, so height reads as real ground you can put life on.
-          const shadeK = 0.78 + 0.14 * ((row - top) / lift);
-          vr = cliff.r * shadeK; vg = cliff.g * shadeK; vb = cliff.b * shadeK;
+          // Cliff face under the crest: still solid (height must read as real
+          // ground), but drawn as rock rather than one flat brown band. A dark
+          // lip of the plate's own ground overhangs the edge; below it, rock
+          // strata tinted by the ground above (olive under grass, pale under
+          // sand or snow), lit on the sunward side and darkening to the foot.
+          const kk = row - top;
+          if (kk <= lipRows) {
+            vr = cr * 0.58; vg = cg * 0.58; vb = cb * 0.6;
+          } else {
+            const t = (kk - lipRows) / Math.max(1, lift - lipRows);
+            const band = Math.floor(world.wy(row) / Math.max(1, Math.round(k)) + hash1(Math.floor(world.wx(px) / (6 * Math.max(1, Math.round(k)))), seed + 5) * 2) % 3;
+            const rock = band === 0 ? cliffLit : cliff;
+            const f2 = (sun > 1 ? 1.0 : 0.86) * (0.98 - 0.26 * t) * (band === 2 ? 0.9 : 1);
+            vr = (rock.r * 0.7 + cr * 0.3) * f2;
+            vg = (rock.g * 0.7 + cg * 0.3) * f2;
+            vb = (rock.b * 0.7 + cb * 0.3) * f2;
+          }
         }
         const o = ((row - yTop) * bw + (px - x0)) * 4;
         d[o]     = vr < 0 ? 0 : vr > 255 ? 255 : vr;
