@@ -32,7 +32,10 @@ import {
 } from './simulation/DnaBranches';
 import { assignDominantSpecies } from './simulation/SpeciesDistribution';
 import { initPlayerSpecies, stepEvolution } from './simulation/EvolutionEngine';
-import { clearSpriteCaches, bakeCreatureSprite } from './rendering/SpeciesSprite';
+import { clearSpriteCaches, bakeCreatureSprite, bakeCreatureAt } from './rendering/SpeciesSprite';
+import {
+  cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
+} from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
@@ -723,6 +726,31 @@ function wireEngineEvents(eng: BigBangEngine): void {
   eng.onDNAPointEarned = (total) => {
     updateDNAPanel();
     setResourceChip('dna-display', 'dna-display-val', total);
+  };
+  eng.onDNAAward = (n, why) => {
+    dnaEarnLog.unshift({ n, why });
+    if (dnaEarnLog.length > 40) dnaEarnLog.length = 40;
+    // The steady trickle goes to the lab's ledger only; events get a toast.
+    if (why !== 'Your species thrives') {
+      addFeedEntry(`🧬 +${n} DNA — ${why}`, 'milestone');
+      showToast('dna', `+${n} DNA · ${why}`, 5000);
+    }
+    refreshEvolutionUI();
+  };
+  eng.onSignatureDrift = (evt) => {
+    addFeedEntry(`🧬 Natural drift: ${evt.description}`, 'milestone');
+    refreshEvolutionUI();
+  };
+  eng.onSpontaneousMutation = (id) => {
+    const def = MUTATION_BY_ID[id];
+    if (!def) return;
+    addFeedEntry(`🧬 A spontaneous mutation appeared: ${def.label} (added to your queue, free)`, 'milestone');
+    showToast('dna', `Spontaneous mutation: ${def.glyph} ${def.label} — queued for free`, 7000);
+    refreshEvolutionUI();
+  };
+  eng.onSignatureSucceeded = (name) => {
+    addFeedEntry(`Your lineage carries on through ${name}.`, 'milestone');
+    refreshEvolutionUI();
   };
   eng.onTechPointEarned = (total) => {
     setResourceChip('tech-display', 'tech-display-val', total);
@@ -2225,7 +2253,6 @@ function updateDNAPanel(): void {
   if (!ps) return;
 
   const points = gameState.dnaPoints;
-  const dna = gameState.playerDNA;
 
   // Phase badge + name + progress
   const phIdx = BIO_PHASE_SEQUENCE.indexOf(ps.biologyPhase);
@@ -2241,140 +2268,59 @@ function updateDNAPanel(): void {
   if (phPct) phPct.textContent = progressPct + '%';
   if (phBar) (phBar as HTMLElement).style.width = progressPct + '%';
 
-  // Accumulation bar — shows unspent DNA points
+  // DNA count: unspent points, and the bar fills toward the cheapest card on offer.
+  const ctx = mutationContext();
+  const states = cardStates(ctx);
+  const cheapest = states.filter(c => c.status === 'available').reduce((m, c) => Math.min(m, c.def.cost), Infinity);
   const accumCount = document.getElementById('el-accum-count');
   const accumFill  = document.getElementById('el-accum-fill');
-  if (accumCount) accumCount.textContent = `${points} DNA pts`;
+  if (accumCount) accumCount.textContent = `${points} DNA`;
   if (accumFill) {
-    // Bar shows progress toward next 10-point threshold within unspent pool
-    const pct = Math.min(100, (points % 10) / 10 * 100) || (points > 0 ? 100 : 0);
+    const pct = Number.isFinite(cheapest) ? Math.min(100, (points / cheapest) * 100) : 0;
     (accumFill as HTMLElement).style.width = pct + '%';
-    accumFill.classList.toggle('full', points >= 10);
-  }
-
-  // Commit button — ready when ≥10 unspent points (one evolution step)
-  const commitBtn = document.getElementById('el-commit-btn') as HTMLButtonElement | null;
-  if (commitBtn) {
-    const ready = points >= 10;
-    commitBtn.disabled = !ready;
-    commitBtn.classList.toggle('ready', ready);
-    commitBtn.textContent = ready ? 'EVOLVE SPECIES ◈' : `Need ${10 - (points % 10 || 10)} more DNA`;
+    accumFill.classList.toggle('full', Number.isFinite(cheapest) && points >= cheapest);
   }
 
   // Top-bar DNA display + bottom segmented bar
   setResourceChip('dna-display', 'dna-display-val', points);
   const statusDna = document.getElementById('status-dna-count');
-  if (statusDna) statusDna.textContent = `${points} / 100`;
-  renderSegmentBar('status-dna-segs', (points / 100) * 20, 20);
+  if (statusDna) statusDna.textContent = `${points} DNA`;
+  renderSegmentBar('status-dna-segs', Math.min(20, points / 2), 20);
 
-  // Branch rows — build once, update values on subsequent calls
-  const container = document.getElementById('dna-branch-rows');
-  if (!container) return;
-
-  const defs = currentBranchDefs();
-  if (defs.length === 0) return;
-
-  // Rebuild whenever the universe's branch set changes, not just once.
-  const signature = defs.map(d => d.id).join(',');
-  if (container.dataset['built'] !== signature) {
-    container.dataset['built'] = signature;
-    container.innerHTML = defs.map(def => {
-      const key = def.id;
-      const color = def.color;
-      const val = dna[key] ?? 0;
-      const cost = dnaPointCost(val, phIdx);
-      return `<div class="el-branch-row" title="${def.blurb}">
-        <div class="el-branch-icon" style="color:${color};background:${color}18">${def.glyph}</div>
-        <span class="el-branch-name">${def.label}</span>
-        <div class="el-branch-track">
-          <div class="el-branch-fill" id="branch-fill-${key}"
-            style="width:${val}%;background:linear-gradient(90deg,${color}88,${color})"></div>
-        </div>
-        <span class="el-branch-val" style="color:${color}" id="branch-val-${key}">${val}</span>
-        <span class="el-branch-cost" id="branch-cost-${key}">${cost}</span>
-        <div class="el-branch-btns">
-          <button class="el-btn" id="branch-minus-${key}" ${val <= 0 ? 'disabled' : ''}>&#8722;</button>
-          <button class="el-btn" id="branch-plus-${key}"  ${points < cost || val >= 100 ? 'disabled' : ''}>&#43;</button>
-        </div>
-      </div>`;
-    }).join('');
-
-    defs.map(d => d.id).forEach(key => {
-      document.getElementById(`branch-plus-${key}`)?.addEventListener('click', () => {
-        const prevVal = gameState.playerDNA[key] ?? 0;
-        if (prevVal >= 100) return;
-        // One thing at a time: the first point of a phase fixes the direction.
-        if (gameState.dnaFocusBranch && gameState.dnaFocusBranch !== key) return;
-        const cost = dnaPointCost(prevVal, currentPhaseIndex());
-        if (gameState.dnaPoints < cost) return;
-
-        gameState.dnaPoints -= cost;
-        gameState.playerDNA[key] = prevVal + 1;
-        gameState.dnaFocusBranch = key;
-        const newVal = gameState.playerDNA[key];
-        updateDNAPanel();
-        // Trigger evolution modal every time a branch crosses a multiple of 10
-        if (newVal % 10 === 0 && newVal > prevVal) {
-          openTraitsModal();
-        }
-      });
-      document.getElementById(`branch-minus-${key}`)?.addEventListener('click', () => {
-        const cur = gameState.playerDNA[key] ?? 0;
-        if (cur <= 0) return;
-        // Refund exactly what that point cost, so undo cannot be used to farm
-        // points by buying cheap at an early phase and selling back at a later.
-        gameState.dnaPoints += dnaPointCost(cur - 1, currentPhaseIndex());
-        gameState.playerDNA[key] = cur - 1;
-        // Backing all the way out releases the commitment for this phase.
-        if (gameState.playerDNA[key] === 0 && gameState.dnaFocusBranch === key) {
-          gameState.dnaFocusBranch = null;
-        }
-        updateDNAPanel();
-      });
-    });
-    return;
-  }
-
-  // Update existing rows
-  const focus = gameState.dnaFocusBranch;
-  defs.forEach(def => {
-    const key = def.id;
-    const val = dna[key] ?? 0;
-    const color = def.color;
-    const cost = dnaPointCost(val, phIdx);
-    const valEl = document.getElementById(`branch-val-${key}`);
-    const fillEl = document.getElementById(`branch-fill-${key}`);
-    const costEl = document.getElementById(`branch-cost-${key}`);
-    const plusBtn = document.getElementById(`branch-plus-${key}`) as HTMLButtonElement | null;
-    const minusBtn = document.getElementById(`branch-minus-${key}`) as HTMLButtonElement | null;
-    const rowEl = plusBtn?.closest('.el-branch-row') as HTMLElement | null;
-
-    const locked = focus != null && focus !== key;
-    if (valEl) valEl.textContent = String(val);
-    if (fillEl) (fillEl as HTMLElement).style.width = val + '%';
-    if (fillEl) (fillEl as HTMLElement).style.background = `linear-gradient(90deg,${color}88,${color})`;
-    if (costEl) costEl.textContent = val >= 100 ? '\u2014' : String(cost);
-    if (rowEl) {
-      rowEl.classList.toggle('locked', locked);
-      rowEl.classList.toggle('focused', focus === key);
-      const focusLabel = defs.find(d => d.id === focus)?.label ?? 'another branch';
-      rowEl.title = locked
-        ? `Evolution this era already runs toward ${focusLabel}. This opens again next phase.`
-        : def.blurb;
+  // Summary of the signature species: the same state the lab shows.
+  const sp = labSpecimen();
+  const box = document.getElementById('dna-branch-rows');
+  const queue = gameState.mutationQueue;
+  const ready = !!sp && queueReady(queue);
+  if (box) {
+    box.innerHTML = '';
+    if (sp) {
+      const row = document.createElement('div');
+      row.className = 'el-sig-row';
+      row.appendChild(creatureCanvas(sp, 44));
+      const t = document.createElement('div');
+      t.innerHTML = '<div class="el-sig-name"></div><div class="el-sig-form"></div>';
+      t.querySelector('.el-sig-name')!.textContent = sp.name;
+      t.querySelector('.el-sig-form')!.textContent =
+        `Form ${roman(Math.max(1, gameState.speciesForms.length))} · ${gameState.mutationsOwned.length} mutations`;
+      row.appendChild(t);
+      box.appendChild(row);
     }
-    if (plusBtn)  plusBtn.disabled  = locked || points < cost || val >= 100;
-    if (minusBtn) minusBtn.disabled = locked || val <= 0;
-  });
-
-  // Say plainly what is going on, rather than leaving the player looking at
-  // seven greyed-out rows with no explanation.
-  const focusNote = document.getElementById('el-focus-note');
-  if (focusNote) {
-    const fdef = focus ? defs.find(d => d.id === focus) : null;
-    focusNote.textContent = fdef
-      ? `Evolution this era runs toward ${fdef.label}. A new course can be set at the next phase.`
-      : 'Choose one branch to evolve this era.';
-    focusNote.style.color = fdef ? fdef.color : '';
+  }
+  const note = document.getElementById('el-focus-note');
+  if (note) {
+    const affordable = states.filter(c => c.status === 'available' && c.affordable).length;
+    note.textContent = !sp ? 'Your species appears when life takes hold.'
+      : ready ? 'Mutations queued — your species is ready to evolve!'
+      : queue.length > 0 ? `${queue.length} mutation queued. Queue ${EVOLVE_THRESHOLD - queue.length} more, or one major card.`
+      : affordable > 0 ? `${affordable} mutation${affordable > 1 ? 's' : ''} affordable now.`
+      : 'Earn DNA as your species spreads, branches and outlasts rivals.';
+  }
+  const commitBtn = document.getElementById('el-commit-btn') as HTMLButtonElement | null;
+  if (commitBtn) {
+    commitBtn.disabled = false;
+    commitBtn.classList.toggle('ready', ready);
+    commitBtn.textContent = ready ? '◈ EVOLVE READY ◈' : 'OPEN EVOLUTION LAB';
   }
 }
 
@@ -2749,6 +2695,7 @@ function closeEventLog(): void {
 
 // ─── Notification Toast ───────────────────────────────────────────────────────
 const TOAST_ICONS: Record<string, string> = {
+  dna:             '🧬',
   supernova:       '💥',
   asteroid_impact: '☄',
   void_storm:      '🌀',
@@ -2761,6 +2708,7 @@ const TOAST_ICONS: Record<string, string> = {
 };
 
 const TOAST_TITLES: Record<string, string> = {
+  dna:             'EVOLUTION',
   supernova:       'STELLAR COLLAPSE',
   asteroid_impact: 'ASTEROID IMPACT',
   void_storm:      'VOID STORM',
@@ -4091,7 +4039,9 @@ window.addEventListener('DOMContentLoaded', () => {
     gameState.skipFormation = q.get('formed') === '1' || q.get('lab') === '1' || q.get('view') === 'home';
     const nameInput = document.getElementById('planet-name-input') as HTMLInputElement | null;
     if (nameInput) nameInput.value = q.get('planet') || 'Terra';
-    launchBigBang();
+    // The launch is async (it re-initialises game state when it lands), so the
+    // shortcuts below wait for it rather than racing it.
+    const launched = launchBigBangAsync();
     // Expose internals for console poking. Dev flag only.
     const dbg = window as unknown as Record<string, unknown>;
     dbg['__engine'] = engine;
@@ -4115,25 +4065,36 @@ window.addEventListener('DOMContentLoaded', () => {
       };
     }
     // &view=home also skips the Big Bang cinematic and opens the home world.
-    if (q.get('view') === 'home') {
+    if (q.get('view') === 'home') void launched.then(() => {
       enterUniverse();
       void openPlanetView();
-    }
+    });
 
     // &lab=1 seeds a grown biosphere and a DNA balance, then opens the
     // Evolution Lab. A real world needs tens of thousands of ticks before it has
     // either, and requestAnimationFrame is throttled in a background tab, so
     // there is otherwise no way to look at this screen while working on it.
-    if (q.get('lab') === '1') {
+    if (q.get('lab') === '1') void launched.then(() => {
       enterUniverse();
       const rngL = new SeedRNG('devlab');
       if (gameState.playerSpecies.length === 0) {
         gameState.playerSpecies = initPlayerSpecies(0, rngL);
       }
+      // The founder is the signature species (&phase= picks the card tier shown).
+      const founder = gameState.playerSpecies[0];
+      gameState.signatureSpeciesId = founder.id;
+      gameState.speciesForms = [{ form: 1, name: founder.name, tick: 0, genome: { ...founder,
+        dna: { ...founder.dna }, physicalTraits: { ...founder.physicalTraits },
+        habitat: { ...founder.habitat }, evolutionaryPotential: { ...founder.evolutionaryPotential } },
+        mutations: [] }];
+      const labPhase = (q.get('phase') as BiologyPhase | null) ?? 'complex';
+      const psL = engine?.getPlayerStar();
+      if (psL) psL.biologyPhase = labPhase;
       let bioL = gameState.playerBiosphere;
-      for (let i = 0; i < 400; i++) {
-        const r = stepEvolution('primitive', gameState.playerDNA, gameState.playerSpecies,
-                                bioL, rngL, i * 2000, runtimeState.branchDefs);
+      for (let i = 0; i < 60; i++) {
+        const r = stepEvolution(labPhase, gameState.playerDNA, gameState.playerSpecies,
+                                bioL, rngL, i * 2000, runtimeState.branchDefs,
+                                { id: founder.id, locked: new Set() });
         gameState.playerSpecies = r.updatedSpecies;
         bioL = r.updatedBiosphere;
       }
@@ -4142,7 +4103,7 @@ window.addEventListener('DOMContentLoaded', () => {
       // &codex=1 opens the Codex over the same seeded world instead of the lab.
       if (q.get('codex') === '1') openCodex();
       else openEvoLab();
-    }
+    });
   }
 
   document.querySelectorAll('.speed-btn').forEach(btn => {
@@ -4315,9 +4276,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // DNA Lab — commit button opens species traits modal
-  document.getElementById('el-commit-btn')?.addEventListener('click', () => {
-    if (gameState.dnaPoints >= 10) openTraitsModal();
-  });
+  document.getElementById('el-commit-btn')?.addEventListener('click', openEvoLab);
 
   // Species traits modal (close + evolve wired internally)
   wireTraitsModal();
@@ -4852,66 +4811,78 @@ function initPlanetMap(): void {
 // readout. This is the same data as a pixel-art CRT terminal, after
 // `dna_lab pop-up idea.jpg`.
 //
-// It is a VIEW, not a second source of truth: every button goes through the same
-// cost and focus rules as the side panel (`dnaPointCost`, `dnaFocusBranch`), and
-// both refresh together.
+// Since the signature-species rework (docs/superpowers/specs/
+// 2026-10-04-signature-species-evolution-design.md) it is where the player
+// buys mutation cards into a queue and evolves their own species; the side
+// panel is a summary of the same state and opens it.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** The species the lab is looking at — the most populous living lineage. */
+/** The lab's subject: the player's signature lineage (the most populous one as a fallback). */
 function labSpecimen(): SpeciesGenome | null {
+  const sig = engine?.signatureSpecies() ?? null;
+  if (sig) return sig;
   const living = gameState.playerSpecies.filter(s => !s.isExtinct);
   if (living.length === 0) return null;
   return living.reduce((a, b) => (b.population > a.population ? b : a));
 }
 
-/**
- * Draw a DNA double helix whose base pairs are derived from the genome.
- *
- * Decorative, but not arbitrary: the same species always produces the same
- * sequence, so the strip is a fingerprint of the lineage rather than noise that
- * reshuffles every time the panel opens.
- */
-function drawHelix(canvas: HTMLCanvasElement, sp: SpeciesGenome | null): void {
-  const g = canvas.getContext('2d');
-  if (!g) return;
-  const W = canvas.width = canvas.clientWidth || 520;
-  const H = canvas.height = 74;
-  g.clearRect(0, 0, W, H);
-  if (!sp) return;
+const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+const roman = (n: number) => ROMAN[n - 1] ?? String(n);
 
-  let h = 2166136261;
-  const src = sp.id + sp.dna.metabolism + sp.dna.locomotion + sp.dna.environment +
-              sp.dna.diet + sp.physicalTraits.bodyStructure;
-  for (let i = 0; i < src.length; i++) { h ^= src.charCodeAt(i); h = Math.imul(h, 16777619); }
-  const rnd = () => { h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h >>> 0) % 1000) / 1000; };
+/** A crisp creature canvas whose long edge is about `px` screen pixels. */
+function creatureCanvas(g: SpeciesGenome, px: number): HTMLCanvasElement {
+  const n = ({ microscopic: 9, tiny: 10, small: 12, medium: 14, large: 16, massive: 18 } as Record<string, number>)[g.physicalTraits.size] ?? 12;
+  return bakeCreatureAt(g, n, Math.max(1, Math.floor(px / (n + 2))));
+}
 
-  const BASES = ['A', 'T', 'G', 'C'];
-  const mid = H / 2, amp = H * 0.32, step = 13;
+/** DNA awards this session, newest first — the lab's "how did I earn this". */
+const dnaEarnLog: Array<{ n: number; why: string }> = [];
 
-  g.font = '9px "Courier New",monospace';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
+function mutationContext() {
+  const ps = engine?.getPlayerStar();
+  return {
+    genome: labSpecimen(),
+    phase: (ps?.biologyPhase ?? 'microbial') as BiologyPhase,
+    owned: gameState.mutationsOwned,
+    queued: gameState.mutationQueue,
+    offered: gameState.offeredMutations,
+    points: gameState.dnaPoints,
+  };
+}
 
-  for (let x = 8, i = 0; x < W - 8; x += step, i++) {
-    const phase = (x / W) * Math.PI * 6;
-    const y1 = mid + Math.sin(phase) * amp;
-    const y2 = mid - Math.sin(phase) * amp;
-    const depth = (Math.cos(phase) + 1) / 2;      // strand nearest the viewer
+/** Buy a card into the queue (DNA spent now; un-queue refunds). */
+function queueMutation(id: string): void {
+  const st = cardStates(mutationContext()).find(c => c.def.id === id);
+  if (!st || st.status !== 'available' || !st.affordable) return;
+  gameState.dnaPoints -= st.def.cost;
+  gameState.mutationQueue.push(id);
+  AudioManager.playSfx('ui_click');
+  refreshEvolutionUI();
+}
 
-    // Rung between the strands.
-    g.strokeStyle = `rgba(63,143,102,${0.25 + depth * 0.4})`;
-    g.lineWidth = 1;
-    g.beginPath(); g.moveTo(x, y1); g.lineTo(x, y2); g.stroke();
-
-    const b = Math.floor(rnd() * 4);
-    // Base pairs: A–T and G–C, so the strip reads as real complementary DNA.
-    const top = BASES[b];
-    const bot = BASES[b % 2 === 0 ? b + 1 : b - 1];
-    g.fillStyle = `rgba(125,255,180,${0.45 + depth * 0.55})`;
-    g.fillText(top, x, y1);
-    g.fillStyle = `rgba(125,255,180,${0.9 - depth * 0.5})`;
-    g.fillText(bot, x, y2);
+function unqueueMutation(id: string): void {
+  const i = gameState.mutationQueue.lastIndexOf(id);
+  if (i < 0) return;
+  gameState.mutationQueue.splice(i, 1);
+  // A spontaneous card was free: removing it refunds nothing.
+  const gi = gameState.mutationGifts.indexOf(id);
+  if (gi >= 0) gameState.mutationGifts.splice(gi, 1);
+  else gameState.dnaPoints += MUTATION_BY_ID[id]?.cost ?? 0;
+  // Cards that needed this one cannot stay queued without it.
+  for (let guard = 0; guard < 8; guard++) {
+    const bad = gameState.mutationQueue.find(q => {
+      const req = MUTATION_BY_ID[q]?.requiresAny;
+      return req && !req.some(r => gameState.mutationsOwned.includes(r) || gameState.mutationQueue.includes(r));
+    });
+    if (!bad) break;
+    unqueueMutation(bad);
   }
+  refreshEvolutionUI();
+}
+
+function refreshEvolutionUI(): void {
+  updateDNAPanel();
+  renderEvoLab();
 }
 
 function renderEvoLab(): void {
@@ -4920,43 +4891,33 @@ function renderEvoLab(): void {
 
   const ps = engine?.getPlayerStar();
   const sp = labSpecimen();
-  const defs = currentBranchDefs();
-  const phIdx = currentPhaseIndex();
-  const points = gameState.dnaPoints;
-  const focus = gameState.dnaFocusBranch;
-
+  const ctx = mutationContext();
   const set = (id: string, v: string) => {
     const el = document.getElementById(id);
     if (el) el.textContent = v;
   };
 
-  // ── Specimen ─────────────────────────────────────────────────────────────
+  // ── Your species: current form, next form, queue, EVOLVE ──────────────────
   const tank = document.getElementById('evo-tank')!;
   tank.innerHTML = '';
+  const form = Math.max(1, gameState.speciesForms.length);
   if (sp) {
-    // Baked large: this is a specimen tank, not a map marker. The sprite is
-    // pixel art scaled with nearest-neighbour, so a big integer factor is free.
-    const sprite = bakeCreatureSprite(sp, 10);
-    tank.appendChild(sprite);
-    set('evo-specimen-name', sp.name);
-    // "flying in the land" is the kind of phrasing that falls out of naive
-    // template stitching; each environment gets a preposition that fits it.
+    tank.appendChild(creatureCanvas(sp, 150));
+    set('evo-form-tag', `FORM ${roman(form)}`);
+    set('evo-specimen-name', gameState.playerSpeciesName && form === 1 ? `${gameState.playerSpeciesName}` : sp.name);
     const WHERE: Record<string, string> = {
       land: 'across open land', ocean: 'through open water',
       deep_sea: 'in the deep', coastal: 'along the shoreline', aerial: 'on the wing',
     };
     set('evo-specimen-kind',
-      `${sp.physicalTraits.size} ${sp.dna.diet} — ${sp.dna.locomotion} ` +
+      `${sp.physicalTraits.size} ${sp.physicalTraits.bodyStructure} ${sp.dna.diet} — ${sp.dna.locomotion} ` +
       `${WHERE[sp.dna.environment] ?? 'in the ' + sp.dna.environment.replace(/_/g, ' ')}`);
     const stats = document.getElementById('evo-specimen-stats')!;
     stats.innerHTML = '';
     const rows: Array<[string, string]> = [
-      ['INT', `${sp.dna.intelligence}/10`],
-      ['SOC', `${sp.dna.social}/10`],
-      ['AGG', `${sp.dna.aggression}/10`],
-      ['ADAPT', `${sp.dna.adaptability}/10`],
-      ['DOMINANCE', `${(sp.population * 100).toFixed(0)}%`],
-      ['BODY', sp.physicalTraits.bodyStructure],
+      ['INTELLECT', `${sp.dna.intelligence}/10`], ['SOCIAL', `${sp.dna.social}/10`],
+      ['AGGRESSION', `${sp.dna.aggression}/10`], ['ADAPTABILITY', `${sp.dna.adaptability}/10`],
+      ['SENSES', sp.physicalTraits.sensorySystem], ['DOMINANCE', `${(sp.population * 100).toFixed(0)}%`],
     ];
     for (const [k, v] of rows) {
       const d = document.createElement('div');
@@ -4966,98 +4927,222 @@ function renderEvoLab(): void {
       stats.appendChild(d);
     }
   } else {
+    set('evo-form-tag', '');
     set('evo-specimen-name', 'NO SPECIMEN');
-    set('evo-specimen-kind', 'Life has not yet taken hold on this world.');
+    set('evo-specimen-kind', ps?.formationStage
+      ? 'Your world is still forming. Life will come.'
+      : 'Life has not yet taken hold on this world.');
     document.getElementById('evo-specimen-stats')!.innerHTML = '';
   }
 
-  // ── Genome ───────────────────────────────────────────────────────────────
-  drawHelix(document.getElementById('evo-helix') as HTMLCanvasElement, sp);
-
-  const slots = document.getElementById('evo-slots')!;
-  slots.innerHTML = '';
-  BIO_PHASE_SEQUENCE.forEach((ph, i) => {
-    const el = document.createElement('span');
-    el.className = 'evo-slot' + (i <= phIdx ? ' on' : '');
-    el.textContent = ph.slice(0, 6).toUpperCase();
-    slots.appendChild(el);
-  });
-
-  const genes = document.getElementById('evo-genes')!;
-  genes.innerHTML = '';
-  if (sp) {
-    const cards: Array<[string, string, string]> = [
-      ['METABOLISM',  sp.dna.metabolism,                 'how it makes a living'],
-      ['LOCOMOTION',  sp.dna.locomotion,                 sp.physicalTraits.mobilityType],
-      ['ENVIRONMENT', sp.dna.environment.replace(/_/g, ' '), sp.habitat.biome.replace(/_/g, ' ')],
-      ['DIET',        sp.dna.diet,                       'trophic role'],
-      ['RESPIRATION', sp.dna.respiration,                'gas exchange'],
-      ['REPRODUCTION', sp.dna.reproduction,              'how it persists'],
-      ['BODY PLAN',   sp.physicalTraits.bodyStructure,   sp.physicalTraits.size],
-      ['SENSES',      sp.physicalTraits.sensorySystem,   sp.habitat.temperatureRange.replace(/_/g, ' ')],
-    ];
-    for (const [label, value, note] of cards) {
-      const d = document.createElement('div');
-      d.className = 'evo-gene';
-      d.innerHTML = `<div class="g-label"></div><div class="g-value"></div><div class="g-note"></div>`;
-      d.querySelector('.g-label')!.textContent = label;
-      d.querySelector('.g-value')!.textContent = value;
-      d.querySelector('.g-note')!.textContent = note;
-      genes.appendChild(d);
+  const next = document.getElementById('evo-next')!;
+  const queue = gameState.mutationQueue;
+  next.classList.toggle('hidden', !sp || queue.length === 0);
+  if (sp && queue.length > 0) {
+    const nt = document.getElementById('evo-next-tank')!;
+    nt.innerHTML = '';
+    nt.appendChild(creatureCanvas(previewGenome(sp, queue), 84));
+    const chips = document.getElementById('evo-queue')!;
+    chips.innerHTML = '';
+    for (const id of queue) {
+      const def = MUTATION_BY_ID[id];
+      if (!def) continue;
+      const b = document.createElement('button');
+      const gift = gameState.mutationGifts.includes(id);
+      b.className = 'evo-qchip' + (gift ? ' gift' : '');
+      b.textContent = `${def.glyph} ${def.label} ✕`;
+      b.title = gift ? 'A spontaneous mutation (free). Click to discard.' : `Click to un-queue (refunds ${def.cost} DNA)`;
+      b.addEventListener('click', () => unqueueMutation(id));
+      chips.appendChild(b);
     }
   }
+  const evolveBtn = document.getElementById('evo-evolve-btn') as HTMLButtonElement;
+  const ready = !!sp && queueReady(queue);
+  evolveBtn.disabled = !ready;
+  evolveBtn.classList.toggle('ready', ready);
+  evolveBtn.textContent = ready ? '◈ EVOLVE ◈'
+    : queue.length > 0 ? `QUEUE ${EVOLVE_THRESHOLD - queue.length} MORE (OR A MAJOR CARD)`
+    : 'QUEUE MUTATIONS TO EVOLVE';
 
-  // ── Gene bank ────────────────────────────────────────────────────────────
-  const list = document.getElementById('evo-bank-list')!;
-  list.innerHTML = '';
-  for (const def of defs) {
-    const val = gameState.playerDNA[def.id] ?? 0;
-    const cost = dnaPointCost(val, phIdx);
-    const locked = focus != null && focus !== def.id;
-    const affordable = points >= cost;
+  // ── Mutation tree, by phase ────────────────────────────────────────────────
+  const tree = document.getElementById('evo-tree')!;
+  tree.innerHTML = '';
+  const states = cardStates(ctx);
+  const phIdx = BIO_PHASE_SEQUENCE.indexOf(ctx.phase);
+  BIO_PHASE_SEQUENCE.forEach((ph, i) => {
+    const cards = states.filter(c => c.def.phase === ph);
+    if (cards.length === 0) return;
+    const tier = document.createElement('div');
+    const head = document.createElement('div');
+    head.className = 'evo-tier-head' + (i === phIdx ? ' now' : '');
+    head.innerHTML = `<span></span><span></span>`;
+    head.children[0].textContent = (BIO_PHASE_LABELS[ph] ?? ph).toUpperCase();
+    head.children[1].textContent = i > phIdx ? 'LOCKED' : i === phIdx ? 'NOW' : '';
+    tier.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = 'evo-tier-cards';
+    for (const c of cards) {
+      const b = document.createElement('button');
+      const poor = c.status === 'available' && !c.affordable;
+      b.className = `evo-card ${c.status}` + (c.def.major ? ' major' : '') + (poor ? ' poor' : '');
+      b.innerHTML = `<div class="c-top"><span class="c-glyph"></span><span class="c-name"></span><span class="c-cost"></span></div>`
+        + `<div class="c-blurb"></div><div class="c-tag"></div>`;
+      b.querySelector('.c-glyph')!.textContent = c.def.glyph;
+      b.querySelector('.c-name')!.textContent = c.def.label;
+      b.querySelector('.c-cost')!.textContent =
+        c.status === 'owned' ? '✓' : c.status === 'queued' ? 'QUEUED' : `${c.def.cost}`;
+      b.querySelector('.c-blurb')!.textContent = c.def.blurb;
+      const tag = c.status === 'locked' ? (c.reason ?? '')
+        : poor ? `Needs ${c.def.cost - gameState.dnaPoints} more DNA`
+        : c.def.group ? `Fork: pick one ${c.def.group} path` : '';
+      b.querySelector('.c-tag')!.textContent = tag;
+      b.disabled = c.status === 'owned' || c.status === 'locked' || poor;
+      if (c.status === 'available') b.addEventListener('click', () => queueMutation(c.def.id));
+      if (c.status === 'queued') { b.disabled = false; b.title = 'Click to un-queue'; b.addEventListener('click', () => unqueueMutation(c.def.id)); }
+      grid.appendChild(b);
+    }
+    tier.appendChild(grid);
+    tree.appendChild(tier);
+  });
 
-    const btn = document.createElement('button');
-    btn.className = 'evo-bank-row' + (locked ? ' locked' : '') + (focus === def.id ? ' focused' : '');
-    btn.disabled = locked || !affordable || val >= 100;
-    btn.title = locked
-      ? `Evolution this era already runs toward another branch. This opens again next phase.`
-      : !affordable ? `Needs ${cost} DNA` : def.blurb;
-    btn.innerHTML =
-      `<span class="evo-bank-glyph"></span>` +
-      `<span class="evo-bank-mid"><div class="evo-bank-name"></div><div class="evo-bank-sub"></div></span>` +
-      `<span class="evo-bank-cost"></span>`;
-    btn.querySelector('.evo-bank-glyph')!.textContent = def.glyph;
-    (btn.querySelector('.evo-bank-glyph') as HTMLElement).style.color = def.color;
-    btn.querySelector('.evo-bank-name')!.textContent = def.label;
-    btn.querySelector('.evo-bank-sub')!.textContent = `${val} expressed`;
-    btn.querySelector('.evo-bank-cost')!.textContent = val >= 100 ? 'MAX' : `${cost} DNA`;
-
-    btn.addEventListener('click', () => {
-      const cur = gameState.playerDNA[def.id] ?? 0;
-      if (cur >= 100) return;
-      if (gameState.dnaFocusBranch && gameState.dnaFocusBranch !== def.id) return;
-      const c = dnaPointCost(cur, currentPhaseIndex());
-      if (gameState.dnaPoints < c) return;
-      gameState.dnaPoints -= c;
-      gameState.playerDNA[def.id] = cur + 1;
-      gameState.dnaFocusBranch = def.id;
-      AudioManager.playSfx('ui_click');
-      // Both views read the same state, so both are refreshed together.
-      updateDNAPanel();
-      renderEvoLab();
-    });
-    list.appendChild(btn);
-  }
-
-  set('evo-dna-points', String(points));
+  // ── DNA, earnings, dex ─────────────────────────────────────────────────────
+  set('evo-dna-points', String(gameState.dnaPoints));
   set('evo-phase', ps ? (BIO_PHASE_LABELS[ps.biologyPhase] ?? ps.biologyPhase) : '—');
+  const earned = document.getElementById('evo-earned')!;
+  earned.innerHTML = '';
+  if (dnaEarnLog.length === 0) {
+    earned.innerHTML = '<div class="evo-earn" style="color:var(--phos-dim)">Nothing yet this session.</div>';
+  }
+  for (const e of dnaEarnLog.slice(0, 14)) {
+    const d = document.createElement('div');
+    d.className = 'evo-earn';
+    d.innerHTML = '<b></b><span></span>';
+    d.querySelector('b')!.textContent = `+${e.n}`;
+    d.querySelector('span')!.textContent = e.why;
+    earned.appendChild(d);
+  }
+  const dex = document.getElementById('evo-dex')!;
+  dex.innerHTML = '';
+  for (const f of [...gameState.speciesForms].reverse()) {
+    const row = document.createElement('div');
+    row.className = 'evo-dex-row';
+    row.appendChild(creatureCanvas(f.genome, 34));
+    const txt = document.createElement('div');
+    txt.innerHTML = '<div class="d-num"></div><div class="d-name"></div><div class="d-muts"></div>';
+    txt.querySelector('.d-num')!.textContent = `FORM ${roman(f.form)}`;
+    txt.querySelector('.d-name')!.textContent = f.name;
+    txt.querySelector('.d-muts')!.textContent = f.mutations.length
+      ? f.mutations.map(m => MUTATION_BY_ID[m]?.label ?? m).join(' · ') : 'founding organism';
+    row.appendChild(txt);
+    dex.appendChild(row);
+  }
+}
 
-  const focusLine = document.getElementById('evo-focus-line')!;
-  const fdef = focus ? defs.find(d => d.id === focus) : null;
-  focusLine.textContent = fdef
-    ? `Evolution this era runs toward ${fdef.label}. A new course can be set at the next phase.`
-    : 'Choose one branch to evolve this era.';
-  focusLine.style.color = fdef ? fdef.color : '';
+/** Press EVOLVE: apply the queue on the engine, then play the sequence. */
+function evolveNow(): void {
+  const r = engine?.evolveSignature();
+  if (!r) return;
+  gameState.mutationGifts = [];
+  playEvolutionSequence(r.before, r.after, r.form, r.diff);
+  addFeedEntry(`${r.before.name} evolved into ${r.after.name} (Form ${roman(r.form)})`, 'milestone');
+  addCodexEntry(`Form ${roman(r.form)}: ${r.after.name}`, 'biology');
+  // The planet's creatures are drawn from the same genomes.
+  if (_dioramaRenderer) {
+    _dioramaRenderer.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+    _dioramaRenderer.markSurfaceDirty();
+  }
+  refreshEvolutionUI();
+}
+
+/**
+ * The evolution moment: the old form turns to a white silhouette, old and new
+ * silhouettes trade places faster and faster, a flash, and the new form is
+ * revealed with what changed.
+ */
+function playEvolutionSequence(before: SpeciesGenome, after: SpeciesGenome, form: number, diff: string[]): void {
+  const box = document.getElementById('evo-seq');
+  const cv = document.getElementById('evo-seq-canvas') as HTMLCanvasElement | null;
+  const text = document.getElementById('evo-seq-text');
+  const diffEl = document.getElementById('evo-seq-diff');
+  const cont = document.getElementById('evo-seq-continue') as HTMLButtonElement | null;
+  if (!box || !cv || !text || !diffEl || !cont) return;
+  const g = cv.getContext('2d');
+  if (!g) return;
+  box.classList.remove('hidden');
+  cont.style.visibility = 'hidden';
+  diffEl.textContent = '';
+  text.textContent = `What? ${before.name} is evolving!`;
+  AudioManager.playSfx('revelation');
+
+  const W = cv.width, H = cv.height;
+  const A = creatureCanvas(before, 190), B = creatureCanvas(after, 190);
+  const silhouette = (src: HTMLCanvasElement): HTMLCanvasElement => {
+    const c = document.createElement('canvas');
+    c.width = src.width; c.height = src.height;
+    const x = c.getContext('2d')!;
+    x.drawImage(src, 0, 0);
+    x.globalCompositeOperation = 'source-in';
+    x.fillStyle = '#ffffff';
+    x.fillRect(0, 0, c.width, c.height);
+    return c;
+  };
+  const sA = silhouette(A), sB = silhouette(B);
+  const draw = (img: HTMLCanvasElement, alpha = 1) => {
+    g.globalAlpha = alpha;
+    g.drawImage(img, Math.round((W - img.width) / 2), Math.round((H - img.height) / 2));
+    g.globalAlpha = 1;
+  };
+  const t0 = performance.now();
+  const INTRO = 900, SWAP = 3200, FLASH = 450;
+  let done = false;
+  const frame = (now: number) => {
+    if (done) return;
+    const t = now - t0;
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, W, H);
+    // A ring of light that tightens as the change builds.
+    const build = Math.min(1, Math.max(0, (t - INTRO) / SWAP));
+    for (let i = 0; i < 3; i++) {
+      const r = (1 - ((t / 900 + i / 3) % 1)) * 160 * (1 - build * 0.5) + 30;
+      g.strokeStyle = `rgba(125,255,180,${0.08 + build * 0.25})`;
+      g.lineWidth = 2;
+      g.beginPath(); g.arc(W / 2, H / 2, r, 0, Math.PI * 2); g.stroke();
+    }
+    if (t < INTRO) {
+      draw(A);
+      draw(sA, t / INTRO * 0.85);
+    } else if (t < INTRO + SWAP) {
+      // Alternate, the period shrinking from ~420 ms to ~45 ms.
+      const u = (t - INTRO) / SWAP;
+      const period = 420 * Math.pow(1 - u, 1.6) + 45;
+      const which = Math.floor((t - INTRO) / period) % 2;
+      draw(which ? sB : sA);
+    } else if (t < INTRO + SWAP + FLASH) {
+      const u = (t - INTRO - SWAP) / FLASH;
+      draw(sB);
+      g.fillStyle = `rgba(255,255,255,${1 - Math.abs(u * 2 - 1)})`;
+      g.fillRect(0, 0, W, H);
+    } else {
+      const u = Math.min(1, (t - INTRO - SWAP - FLASH) / 600);
+      draw(B);
+      draw(sB, 1 - u);
+      // Sparkles.
+      for (let i = 0; i < 10; i++) {
+        const a = i * 0.628 + t / 700, r = 70 + 40 * Math.sin(t / 300 + i);
+        g.fillStyle = `rgba(255,236,150,${0.6 * (1 - u * 0.5)})`;
+        g.fillRect(Math.round(W / 2 + Math.cos(a) * r), Math.round(H / 2 + Math.sin(a) * r * 0.8), 3, 3);
+      }
+      if (cont.style.visibility === 'hidden') {
+        text.textContent = `Congratulations! ${before.name} evolved into ${after.name}! (Form ${roman(form)})`;
+        diffEl.textContent = diff.join('   ·   ');
+        cont.style.visibility = 'visible';
+        AudioManager.playSfx('discovery');
+      }
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  cont.onclick = () => { done = true; box.classList.add('hidden'); renderEvoLab(); };
 }
 
 function openEvoLab(): void {
@@ -5078,6 +5163,7 @@ function initEvoLab(): void {
   });
   // The DNA panel's header opens the full lab.
   document.getElementById('dna-panel-title')?.addEventListener('click', openEvoLab);
+  document.getElementById('evo-evolve-btn')?.addEventListener('click', evolveNow);
   document.getElementById('el-open-lab-btn')?.addEventListener('click', openEvoLab);
   document.getElementById('dna-display')?.addEventListener('click', openEvoLab);
 }

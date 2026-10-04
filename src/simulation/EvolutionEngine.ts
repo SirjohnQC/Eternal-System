@@ -61,6 +61,8 @@ export function shouldStepEvolution(tick: number): boolean {
 
 /** Ceiling on living species, to keep the sim and the renderer bounded. */
 const MAX_SPECIES = 10;
+/** The player's signature lineage never falls below this dominance. */
+const SIGNATURE_POP_FLOOR = 0.12;
 
 // ─── Trait spaces ─────────────────────────────────────────────────────────────
 
@@ -139,7 +141,7 @@ export function isCoherent(g: SpeciesGenome): boolean {
 }
 
 /** Nudge a genome back into coherence, or report that it cannot be. */
-function repair(g: SpeciesGenome): boolean {
+export function repair(g: SpeciesGenome): boolean {
   for (let attempt = 0; attempt < 6 && !isCoherent(g); attempt++) {
     const d = g.dna;
     const si = sizeIndex(g.physicalTraits.size);
@@ -166,7 +168,7 @@ function repair(g: SpeciesGenome): boolean {
 }
 
 /** Keep derived descriptive traits in step with the DNA that implies them. */
-function syncDescriptors(g: SpeciesGenome, rng: SeedRNG): void {
+export function syncDescriptors(g: SpeciesGenome, rng: SeedRNG): void {
   const parts = MOBILITY_PARTS[g.dna.locomotion];
   if (parts && !parts.includes(g.physicalTraits.mobilityType)) {
     g.physicalTraits.mobilityType = parts[rng.nextInt(0, parts.length - 1)];
@@ -349,17 +351,20 @@ function stepEnum<T>(list: T[], current: T, rng: SeedRNG): T {
  */
 function mutate(
   g: SpeciesGenome, rng: SeedRNG, defs: BranchDef[], dnaInv: Record<string, number>,
-  bioPhase: string, anomaly: boolean,
+  bioPhase: string, anomaly: boolean, locked?: ReadonlySet<string> | null,
 ): EvolutionEvent | null {
   const drift = driftOf(g.id);
 
-  // Weight each trait by lineage drift and the player's investments.
-  const weights = DRIFT_TRAITS.map(t =>
+  // Weight each trait by lineage drift and the player's investments. Traits the
+  // player's own mutations set are locked: drift never undoes a choice.
+  const weights = DRIFT_TRAITS.map(t => locked?.has(t) ? 0 :
     Math.max(0.02, drift[t] + Math.max(0, traitBias(dnaInv, defs, t)) * 1.5));
   const total = weights.reduce((a, b) => a + b, 0);
+  if (total <= 0) return null;
   let roll = rng.next() * total;
   let trait: DriftTrait = DRIFT_TRAITS[0];
   for (let i = 0; i < DRIFT_TRAITS.length; i++) {
+    if (weights[i] <= 0) continue;
     roll -= weights[i];
     if (roll <= 0) { trait = DRIFT_TRAITS[i]; break; }
   }
@@ -402,7 +407,17 @@ function mutate(
     case 'respiration': d.respiration = stepEnum(RESPIRATIONS, d.respiration, rng); break;
   }
 
-  if (!anomaly && !repair(g)) {
+  // Repair can move other traits to stay coherent. If that would move a
+  // locked one, the drift is refused outright (same revert as unrepairable).
+  const movedLock = (): boolean => {
+    if (!locked) return false;
+    for (const t of locked) {
+      const now = t === 'size' ? g.physicalTraits.size : (d as unknown as Record<string, unknown>)[t];
+      if (now !== (before as unknown as Record<string, unknown>)[t]) return true;
+    }
+    return false;
+  };
+  if (!anomaly && (!repair(g) || movedLock())) {
     // Unrepairable: revert rather than leave a broken organism standing.
     Object.assign(g.dna, {
       metabolism: before.metabolism, locomotion: before.locomotion,
@@ -528,6 +543,11 @@ export function stepEvolution(
   rng:       SeedRNG,
   tick:      number,
   defs:      BranchDef[] = [],
+  /**
+   * The player's signature lineage: drift skips its `locked` traits, it is
+   * never removed by extinction, and its population has a floor.
+   */
+  signature: { id: string; locked: ReadonlySet<string> } | null = null,
 ): EvolutionResult {
   const events: EvolutionEvent[] = [];
   const pool = species.map(s => ({
@@ -562,6 +582,10 @@ export function stepEvolution(
   // Normalise so total population stays bounded and relative dominance is real.
   const total = live().reduce((s, x) => s + x.population, 0);
   if (total > 1.6) for (const sp of live()) sp.population *= 1.6 / total;
+  if (signature) {
+    const sig = pool.find(s => s.id === signature.id && !s.isExtinct);
+    if (sig && sig.population < SIGNATURE_POP_FLOOR) sig.population = SIGNATURE_POP_FLOOR;
+  }
 
   // ── 2. Extinction ─────────────────────────────────────────────────────────
   for (const sp of live()) {
@@ -569,7 +593,7 @@ export function stepEvolution(
       || (biosphere.extinctionPressure > 0.8 && rng.chance(0.02 * (1 - sp.dna.adaptability / 14)));
     // Never drop below two lineages on a living world: a planet that keeps
     // collapsing to a single species has no ecology to look at.
-    if (doomed && live().length > 2) {
+    if (doomed && live().length > 2 && sp.id !== signature?.id) {
       sp.isExtinct = true;
       events.push({
         type: 'extinction', speciesId: sp.id, speciesName: sp.name,
@@ -586,8 +610,10 @@ export function stepEvolution(
     // Roughly one mutation in thirty ignores coherence entirely. Anomalies are
     // permanent — nothing repairs them later — so they accumulate, and a higher
     // rate turns the whole biosphere into oddities rather than a few.
-    const anomaly = rng.chance(0.033);
-    const evt = mutate(sp, rng, defs, dnaInv, bioPhase, anomaly);
+    const isSig = sp.id === signature?.id;
+    // The signature species never takes an anomaly: its strangeness is chosen.
+    const anomaly = !isSig && rng.chance(0.033);
+    const evt = mutate(sp, rng, defs, dnaInv, bioPhase, anomaly, isSig ? signature!.locked : null);
     if (evt) events.push(evt);
   }
 
@@ -634,6 +660,7 @@ export function applyNudgeMutation(
   rng:       SeedRNG,
   _tick:     number,
   defs:      BranchDef[] = [],
+  signature: { id: string; locked: ReadonlySet<string> } | null = null,
 ): EvolutionResult {
   const pool = species.map(s => ({
     ...s,
@@ -648,12 +675,14 @@ export function applyNudgeMutation(
   }
 
   active.sort((a, b) => b.population - a.population);
-  const target = active[0];
+  // The player's own lineage when there is one; drift there respects its locks.
+  const target = active.find(s => s.id === signature?.id) ?? active[0];
+  const locked = target.id === signature?.id ? signature.locked : null;
 
   // Try a few times — a nudge that silently does nothing feels broken.
   let evt: EvolutionEvent | null = null;
   for (let i = 0; i < 8 && !evt; i++) {
-    evt = mutate(target, rng, defs, dnaInv, bioPhase, false);
+    evt = mutate(target, rng, defs, dnaInv, bioPhase, false, locked);
   }
 
   return {

@@ -170,11 +170,36 @@ export interface GameStateData {
   leaderMemories: LeaderMemory[];
   factionFlags: Record<number, FactionFlag>;  // starId → flag
   firstContactFired: boolean;
+  // Signature species evolution (2026-10-04 spec)
+  /** The player's own lineage; null until life first takes hold. */
+  signatureSpeciesId: string | null;
+  /** Mutation cards applied to the signature species, in order. */
+  mutationsOwned: string[];
+  /** Cards bought and waiting for the next evolution (DNA already spent). */
+  mutationQueue: string[];
+  /** Queued cards that arrived as spontaneous mutations (free; no refund). */
+  mutationGifts: string[];
+  /** Cards this universe offers (core plus the rolled optional ones). */
+  offeredMutations: string[];
+  /** Each evolution's result: the dex. Form 1 is the founding organism. */
+  speciesForms: SpeciesForm[];
+  /** Biomes the signature species has dominated (each pays DNA once). */
+  signatureBiomes: string[];
   // M17: Living Biosphere
   playerSpecies:   SpeciesGenome[];
   playerBiosphere: PlanetBiosphere;
   /** Civilisation culture, keyed by starId. Generated at emergence (M23). */
   civilizations: Record<number, Civilization>;
+}
+
+/** One evolved form of the signature species. */
+export interface SpeciesForm {
+  form: number;
+  name: string;
+  tick: number;
+  genome: SpeciesGenome;
+  /** Cards applied to reach this form (empty for the founding form). */
+  mutations: string[];
 }
 
 /** Runtime-only planet grid — NOT serialized. Regenerated on load from seed. */
@@ -215,6 +240,13 @@ export const gameState: GameStateData = {
   leaderMemories: [],
   factionFlags: {},
   firstContactFired: false,
+  signatureSpeciesId: null,
+  mutationsOwned: [],
+  mutationQueue: [],
+  mutationGifts: [],
+  offeredMutations: [],
+  speciesForms: [],
+  signatureBiomes: [],
   playerSpecies:   [],
   playerBiosphere: { ...DEFAULT_BIOSPHERE },
   civilizations: {},

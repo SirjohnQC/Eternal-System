@@ -42,6 +42,11 @@ import {
 } from './Civilization';
 import { generateCulture } from '../ai/CultureGenerator';
 import {
+  rollUniverseMutations, lockedTraits, mutationEffect, cardStates, cloneGenome,
+  queueReady, applyMutation, genomeDiff,
+} from './Mutations';
+import { nameForGenome } from './SpeciesNaming';
+import {
   type DestinyType, rollDestiny, rollFormationBudget, stageDuration, nextStage,
   lifeEligible, addBoost, LIFE_BOOST, SEED_BOOST, formationFaceType,
   spontaneousLifeChance, ejectaChance, formationFraction,
@@ -547,6 +552,10 @@ const MERGER_CATASTROPHE_RATIO = 0.45;
 const MOON_CHECK_RATE = 1000;
 /** Ticks between planet-formation stage checks. */
 const FORMATION_CHECK_RATE = 60;
+/** DNA granted when the first life appears, so the player has a first choice. */
+const FIRST_LIFE_DNA = 6;
+/** Chance per evolution step that a free mutation card joins the queue. */
+const SPONTANEOUS_MUTATION_CHANCE = 0.06;
 /** How far debris from a living neighbour can carry life to a forming world. */
 const FORMATION_EJECTA_RANGE = 220;
 /** System-view colour of the home planet while it forms (by stage). */
@@ -745,6 +754,14 @@ export class BigBangEngine {
   onBioPhaseAdvance: ((phase: BiologyPhase, starName: string) => void) | null = null;
   onCodexMilestone:  ((entry: Omit<CodexEntry, 'body'>) => void) | null = null;
   onDNAPointEarned:  ((total: number) => void) | null = null;
+  /** DNA granted for a visible event, with the reason to show the player. */
+  onDNAAward:        ((amount: number, reason: string) => void) | null = null;
+  /** Natural drift changed the signature species (an unlocked trait). */
+  onSignatureDrift:  ((event: EvolutionEvent) => void) | null = null;
+  /** A free card dropped into the evolution queue on its own. */
+  onSpontaneousMutation: ((mutationId: string) => void) | null = null;
+  /** The signature lineage was lost and a descendant took its place. */
+  onSignatureSucceeded:  ((newName: string) => void) | null = null;
   onTechPointEarned: ((total: number) => void) | null = null;
   onTerraformProgress: ((stage: PlanetFormationStage, targetType: Planet['type']) => void) | null = null;
   onTerraformComplete: ((fromType: Planet['type'], toType: Planet['type'], planetName: string) => void) | null = null;
@@ -1049,6 +1066,14 @@ export class BigBangEngine {
     // and entire species roster.
     gameState.playerSpecies = [];
     gameState.playerBiosphere = { ...DEFAULT_BIOSPHERE };
+    // Signature species: nothing yet; this universe's mutation cards rolled now.
+    gameState.signatureSpeciesId = null;
+    gameState.mutationsOwned = [];
+    gameState.mutationQueue = [];
+    gameState.mutationGifts = [];
+    gameState.speciesForms = [];
+    gameState.signatureBiomes = [];
+    gameState.offeredMutations = rollUniverseMutations(seed);
 
     // Denser census now that cull + wall-clock pacing hold 120Hz — life roll
     // still sets the pool; morph weights how that pool splits across galaxies.
@@ -2086,7 +2111,9 @@ export class BigBangEngine {
             gameState.playerSpecies = initPlayerSpecies(
               this.tick, this.rng.fork(`founder_${star.id}`));
           }
+          this.ensureSignature();
           if (shouldStepEvolution(this.tick)) {
+            const sigId = gameState.signatureSpeciesId;
             const result = stepEvolution(
               star.biologyPhase,
               gameState.playerDNA,
@@ -2095,6 +2122,7 @@ export class BigBangEngine {
               this.rng,
               this.tick,
               runtimeState.branchDefs,
+              sigId ? { id: sigId, locked: lockedTraits(gameState.mutationsOwned) } : null,
             );
             gameState.playerSpecies   = result.updatedSpecies;
             gameState.playerBiosphere = result.updatedBiosphere;
@@ -2103,6 +2131,7 @@ export class BigBangEngine {
               if (evt.type === 'speciation')  this.onSpeciationEvent?.(evt);
               if (evt.type === 'extinction')  this.onExtinctionEvent?.(evt);
             }
+            this.afterSignatureStep(result.events, star.biologyPhase);
           }
         }
 
@@ -2263,7 +2292,130 @@ export class BigBangEngine {
    * whichever branches exist contribute to it.
    */
   private playerEffect(kind: Parameters<typeof branchEffect>[2]): number {
-    return branchEffect(gameState.playerDNA, runtimeState.branchDefs, kind);
+    // Older saves invested in branches; new games own mutation cards. Both count.
+    return branchEffect(gameState.playerDNA, runtimeState.branchDefs, kind)
+         + mutationEffect(gameState.mutationsOwned, kind);
+  }
+
+  // ── Signature species (2026-10-04 spec) ─────────────────────────────────
+
+  /** Grant DNA for a visible event and tell the UI why. */
+  awardDNA(amount: number, reason: string): void {
+    if (amount <= 0) return;
+    gameState.dnaPoints += amount;
+    this.onDNAAward?.(amount, reason);
+    this.onDNAPointEarned?.(gameState.dnaPoints);
+  }
+
+  /** The living signature genome, or null. */
+  signatureSpecies(): SpeciesGenome | null {
+    const id = gameState.signatureSpeciesId;
+    return gameState.playerSpecies.find(s => s.id === id && !s.isExtinct) ?? null;
+  }
+
+  /**
+   * Make sure the player has a signature lineage: the founder when life first
+   * appears (with the first DNA grant and Form I), or — if it was ever lost —
+   * its most populous descendant, else the most populous living lineage.
+   */
+  private ensureSignature(): void {
+    const living = gameState.playerSpecies.filter(s => !s.isExtinct);
+    if (living.length === 0 || this.signatureSpecies()) return;
+    const first = gameState.signatureSpeciesId === null;
+    let heir: SpeciesGenome | undefined;
+    if (!first) {
+      const lost = gameState.signatureSpeciesId;
+      const descends = (s: SpeciesGenome): boolean => {
+        let cur: SpeciesGenome | undefined = s;
+        for (let i = 0; i < 40 && cur; i++) {
+          if (cur.ancestorId === lost) return true;
+          const anc: string | null = cur.ancestorId;
+          cur = gameState.playerSpecies.find(x => x.id === anc);
+        }
+        return false;
+      };
+      heir = living.filter(descends).sort((a, b) => b.population - a.population)[0];
+    }
+    heir ??= [...living].sort((a, b) => b.population - a.population)[0];
+    gameState.signatureSpeciesId = heir.id;
+    if (first) {
+      gameState.speciesForms = [{
+        form: 1, name: heir.name, tick: this.tick, mutations: [],
+        genome: cloneGenome(heir),
+      }];
+      this.awardDNA(FIRST_LIFE_DNA, 'Life has taken hold: choose its first mutations');
+    } else {
+      this.onSignatureSucceeded?.(heir.name);
+    }
+  }
+
+  /**
+   * Evolve: apply every queued card to the signature species at once, give the
+   * new form a name, and record it in the dex. Returns null when the queue is
+   * not enough yet (see Mutations.queueReady) or there is no signature species.
+   */
+  evolveSignature(): { before: SpeciesGenome; after: SpeciesGenome; diff: string[]; form: number; cards: string[] } | null {
+    const sig = this.signatureSpecies();
+    const queue = [...gameState.mutationQueue];
+    if (!sig || !queueReady(queue)) return null;
+    const before = cloneGenome(sig);
+    for (const id of queue) applyMutation(sig, id);
+    // Every form gets a fresh name that fits what it became.
+    const rng = this.rng.fork(`form_${sig.id}_${gameState.speciesForms.length + 1}`);
+    let name = nameForGenome(sig, rng);
+    for (let i = 0; i < 4 && name === before.name; i++) name = nameForGenome(sig, rng);
+    sig.name = name;
+    gameState.mutationsOwned.push(...queue);
+    gameState.mutationQueue = [];
+    const form = gameState.speciesForms.length + 1;
+    gameState.speciesForms.push({ form, name, tick: this.tick, genome: cloneGenome(sig), mutations: queue });
+    return { before, after: cloneGenome(sig), diff: genomeDiff(before, sig), form, cards: queue };
+  }
+
+  /** DNA from the step's events, the biome census, and spontaneous mutations. */
+  private afterSignatureStep(events: EvolutionEvent[], phase: BiologyPhase): void {
+    const sig = this.signatureSpecies();
+    if (!sig) { this.ensureSignature(); return; }
+    for (const evt of events) {
+      if (evt.type === 'speciation' && evt.speciesId === sig.id) {
+        this.awardDNA(2, `${evt.newSpeciesName ?? 'A sub-species'} branched off your species`);
+      } else if (evt.type === 'extinction' && evt.speciesId !== sig.id) {
+        this.awardDNA(1, `Rival ${evt.speciesName} died out`);
+      } else if (evt.type === 'mutation' && evt.speciesId === sig.id) {
+        this.onSignatureDrift?.(evt);
+      }
+    }
+    // Dominance trickle.
+    this.awardDNA(sig.population > 0.4 ? 2 : 1, 'Your species thrives');
+    // New biomes held.
+    const grid = runtimeState.playerPlanetGrid;
+    if (grid) {
+      const held = new Set<string>();
+      for (const row of grid) for (const cell of row) {
+        if (cell.dominantSpeciesId === sig.id) held.add(cell.biome);
+      }
+      for (const b of held) {
+        if (gameState.signatureBiomes.includes(b)) continue;
+        gameState.signatureBiomes.push(b);
+        // The first biome is home, not a conquest.
+        if (gameState.signatureBiomes.length > 1) {
+          this.awardDNA(3, `Your species spread into ${b.replace(/_/g, ' ')}`);
+        }
+      }
+    }
+    // A surprise: a free card drops into the queue.
+    if (this.rng.chance(SPONTANEOUS_MUTATION_CHANCE)) {
+      const open = cardStates({
+        genome: sig, phase, owned: gameState.mutationsOwned, queued: gameState.mutationQueue,
+        offered: gameState.offeredMutations, points: Infinity,
+      }).filter(c => c.status === 'available');
+      if (open.length > 0) {
+        const pick = open[this.rng.nextInt(0, open.length - 1)].def.id;
+        gameState.mutationQueue.push(pick);
+        gameState.mutationGifts.push(pick);
+        this.onSpontaneousMutation?.(pick);
+      }
+    }
   }
 
   /**
@@ -4730,6 +4882,8 @@ export class BigBangEngine {
           this.rng,
           this.tick,
           runtimeState.branchDefs,
+          gameState.signatureSpeciesId
+            ? { id: gameState.signatureSpeciesId, locked: lockedTraits(gameState.mutationsOwned) } : null,
         );
         gameState.playerSpecies   = result.updatedSpecies;
         gameState.playerBiosphere = result.updatedBiosphere;

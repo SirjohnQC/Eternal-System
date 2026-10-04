@@ -816,6 +816,7 @@ html,body{
 .toast-void_storm{--toast-accent:#9966ff}
 .toast-plague{--toast-accent:#44cc88}
 .toast-warning{--toast-accent:#ffcc44}
+.toast-dna{--toast-accent:#7dffb4}
 .toast-smite{--toast-accent:#44ccff}
 .toast-war_start{--toast-accent:#ff5533}
 .toast-war_siege{--toast-accent:#ff3300}
@@ -2780,8 +2781,8 @@ input[type="range"], select, label[for],
       <div class="el-branches" id="dna-branch-rows"></div>
       <div id="el-focus-note">Choose one branch to evolve this era.</div>
       <div class="el-commit-wrap">
-        <button id="el-commit-btn" disabled>Accumulate 100 DNA</button>
-        <div class="el-hint">Invest points to shape your species traits.</div>
+        <button id="el-commit-btn">OPEN EVOLUTION LAB</button>
+        <div class="el-hint">Buy mutations in the lab; evolve when enough are queued.</div>
       </div>
     </div>
     <div id="tech-panel" style="display:none;padding:10px 14px;border-top:1px solid var(--border)">
@@ -3609,6 +3610,82 @@ input[type="range"], select, label[for],
   border-top:1px solid var(--panel-line); margin-top:8px; padding-top:8px; flex:0 0 auto;
 }
 #evo-focus-line{ color:var(--phos-dim); font-size:9px; line-height:1.5; margin-top:5px; }
+/* side panel: signature species summary */
+.el-sig-row{ display:flex; align-items:center; gap:10px; padding:6px 2px; }
+.el-sig-row canvas{ image-rendering:pixelated; }
+.el-sig-name{ color:var(--text); font-size:12px; }
+.el-sig-form{ color:var(--dim); font-size:10px; letter-spacing:1px; }
+#el-commit-btn.ready{ animation:evoPulse 1.1s ease-in-out infinite; }
+/* ── Signature species lab (2026-10-04) ── */
+#evo-specimen{ width:300px; flex:0 0 300px; overflow-y:auto; }
+#evo-tank{ height:180px; }
+#evo-form-tag{ color:#ffe08a; font-size:10px; letter-spacing:3px; margin-top:8px; }
+#evo-next{ border:1px dashed var(--phos-dim); border-radius:5px; padding:7px; margin:6px 0 8px; }
+#evo-next.hidden{ display:none; }
+.evo-next-head{ color:#ffe08a; font-size:9px; letter-spacing:2px; margin-bottom:5px; }
+#evo-next-tank{ height:96px; display:flex; align-items:center; justify-content:center;
+  background:rgba(255,224,138,0.06); border-radius:4px; }
+#evo-next-tank canvas{ image-rendering:pixelated; }
+#evo-queue{ display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.evo-qchip{ font:inherit; font-size:10px; color:#ffe08a; background:rgba(255,224,138,0.1);
+  border:1px solid rgba(255,224,138,0.4); border-radius:3px; padding:2px 6px; cursor:pointer; }
+.evo-qchip:hover{ border-color:#ffe08a; }
+.evo-qchip.gift{ color:#c8a0ff; border-color:rgba(200,160,255,0.5); background:rgba(200,160,255,0.1); }
+#evo-evolve-btn{ width:100%; font:inherit; font-size:13px; letter-spacing:3px; padding:9px 6px;
+  margin:4px 0 10px; border-radius:4px; cursor:not-allowed; color:var(--phos-dim);
+  background:transparent; border:1px solid var(--panel-line); }
+#evo-evolve-btn.ready{ cursor:pointer; color:#04140d; background:#ffe08a; border-color:#ffe08a;
+  animation:evoPulse 1.1s ease-in-out infinite; }
+@keyframes evoPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(255,224,138,0.6); } 50%{ box-shadow:0 0 18px 3px rgba(255,224,138,0.55); } }
+
+#evo-tree{ flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-right:2px; }
+.evo-tier-head{ color:var(--phos-dim); font-size:9px; letter-spacing:2.5px; margin-bottom:5px;
+  display:flex; justify-content:space-between; }
+.evo-tier-head.now{ color:var(--phos); }
+.evo-tier-cards{ display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:6px; }
+.evo-card{ position:relative; text-align:left; font:inherit; color:var(--phos); cursor:pointer;
+  border:1px solid var(--panel-line); border-radius:5px; padding:7px 8px 6px;
+  background:rgba(20,60,44,0.3); display:flex; flex-direction:column; gap:3px; min-height:74px; }
+.evo-card:hover:not(:disabled){ border-color:var(--phos); background:rgba(40,110,80,0.4); }
+.evo-card .c-top{ display:flex; align-items:center; gap:6px; }
+.evo-card .c-glyph{ font-size:16px; width:20px; text-align:center; }
+.evo-card .c-name{ font-size:11px; flex:1; }
+.evo-card .c-cost{ font-size:10px; color:#ffe08a; }
+.evo-card .c-blurb{ font-size:9px; color:var(--phos-dim); line-height:1.35; }
+.evo-card .c-tag{ font-size:8px; letter-spacing:1px; color:var(--phos-dim); opacity:0.85; }
+.evo-card.major::after{ content:'MAJOR'; position:absolute; top:-6px; right:6px; font-size:7px; letter-spacing:1px;
+  background:#0b1a14; color:#ffe08a; border:1px solid rgba(255,224,138,0.5); padding:0 3px; border-radius:2px; }
+.evo-card.owned{ border-color:var(--phos); background:rgba(60,150,110,0.28); cursor:default; }
+.evo-card.owned .c-cost{ color:var(--phos); }
+.evo-card.queued{ border-color:#ffe08a; background:rgba(255,224,138,0.10); }
+.evo-card.queued .c-cost{ color:#ffe08a; }
+.evo-card.locked{ opacity:0.35; cursor:not-allowed; filter:grayscale(0.5); }
+.evo-card.poor{ opacity:0.6; cursor:not-allowed; }
+.evo-card.poor .c-cost{ color:#ff8a6a; }
+
+#evo-dna-big{ text-align:center; margin:2px 0 8px; }
+#evo-dna-big b{ font-size:34px; color:#ffe08a; font-weight:normal; text-shadow:0 0 12px rgba(255,224,138,0.4); }
+#evo-dna-big span{ font-size:11px; color:var(--phos-dim); margin-left:6px; letter-spacing:2px; }
+.evo-sub-head{ color:var(--phos-dim); font-size:9px; letter-spacing:2px; margin:6px 0 4px; }
+#evo-earned{ display:flex; flex-direction:column; gap:3px; max-height:150px; overflow-y:auto; }
+.evo-earn{ font-size:10px; color:var(--phos); display:flex; gap:6px; }
+.evo-earn b{ color:#ffe08a; font-weight:normal; flex:0 0 26px; }
+#evo-dex{ flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:5px; }
+.evo-dex-row{ display:flex; align-items:center; gap:8px; border:1px solid var(--panel-line);
+  border-radius:4px; padding:4px 6px; background:rgba(20,60,44,0.25); }
+.evo-dex-row canvas{ image-rendering:pixelated; flex:0 0 auto; }
+.evo-dex-row .d-num{ color:#ffe08a; font-size:9px; letter-spacing:1px; }
+.evo-dex-row .d-name{ color:var(--phos); font-size:11px; }
+.evo-dex-row .d-muts{ color:var(--phos-dim); font-size:9px; }
+
+#evo-seq{ position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:10px; background:radial-gradient(ellipse at 50% 42%, #12301f, #020806 75%); }
+#evo-seq.hidden{ display:none; }
+#evo-seq-canvas{ width:540px; height:450px; max-width:80vw; image-rendering:pixelated; }
+#evo-seq-text{ color:#e8fff2; font-size:17px; letter-spacing:1px; text-align:center; min-height:24px;
+  text-shadow:0 0 10px rgba(125,255,180,0.5); }
+#evo-seq-diff{ color:var(--phos); font-size:11px; text-align:center; line-height:1.6; min-height:18px; }
+
 
 #evo-actions{
   display:flex; gap:10px; justify-content:center; flex:0 0 auto; padding-top:2px;
@@ -3628,33 +3705,49 @@ input[type="range"], select, label[for],
 
     <div id="evo-body">
       <div class="evo-col" id="evo-specimen">
-        <div class="evo-head">SPECIMEN</div>
+        <div class="evo-head">YOUR SPECIES</div>
         <div id="evo-tank"></div>
+        <div id="evo-form-tag">FORM I</div>
         <div id="evo-specimen-name">—</div>
         <div id="evo-specimen-kind">—</div>
+        <div id="evo-next" class="hidden">
+          <div class="evo-next-head">NEXT FORM</div>
+          <div id="evo-next-tank"></div>
+          <div id="evo-queue"></div>
+        </div>
+        <button id="evo-evolve-btn" disabled>QUEUE MUTATIONS TO EVOLVE</button>
         <div id="evo-specimen-stats"></div>
       </div>
 
       <div class="evo-col" id="evo-genome">
-        <div class="evo-head">GENOME SEQUENCING</div>
-        <canvas id="evo-helix"></canvas>
-        <div id="evo-slots"></div>
-        <div id="evo-genes"></div>
+        <div class="evo-head">MUTATIONS</div>
+        <div id="evo-tree"></div>
       </div>
 
       <div class="evo-col" id="evo-bank">
-        <div class="evo-head">GENE BANK</div>
-        <div id="evo-bank-list"></div>
+        <div class="evo-head">DNA &amp; DEX</div>
+        <div id="evo-dna-big"><b id="evo-dna-points">0</b><span>DNA</span></div>
+        <div class="evo-sub-head">RECENTLY EARNED</div>
+        <div id="evo-earned"></div>
+        <div class="evo-sub-head">FORMS</div>
+        <div id="evo-dex"></div>
         <div id="evo-bank-foot">
-          <div class="evo-stat"><span>DNA POINTS</span><b id="evo-dna-points">0</b></div>
           <div class="evo-stat"><span>BIOLOGY PHASE</span><b id="evo-phase">—</b></div>
-          <div id="evo-focus-line">Choose one branch to evolve this era.</div>
+          <div id="evo-focus-line">Earn DNA as your species spreads, branches and outlasts its rivals.</div>
         </div>
       </div>
     </div>
 
     <div id="evo-actions">
       <button class="evo-btn" id="evo-close-btn">[ CLOSE ]</button>
+    </div>
+
+    <!-- The evolution sequence plays over the lab. -->
+    <div id="evo-seq" class="hidden">
+      <canvas id="evo-seq-canvas" width="360" height="300"></canvas>
+      <div id="evo-seq-text"></div>
+      <div id="evo-seq-diff"></div>
+      <button class="evo-btn" id="evo-seq-continue" style="visibility:hidden">[ CONTINUE ]</button>
     </div>
   </div>
 </div>
