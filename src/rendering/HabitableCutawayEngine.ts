@@ -2015,6 +2015,27 @@ function noise2(x: number, y: number, seed: number): number {
   return mix(mix(a, b, ux), mix(c, d, ux), uy);
 }
 
+/**
+ * Cheap Worley edge field — bright on cell boundaries, dark in pocket centres.
+ * Returns √F2 − √F1 style ridge strength in roughly [0, ~0.7].
+ */
+function cellRidge(x: number, y: number, seed: number): number {
+  const ix = Math.floor(x), iy = Math.floor(y);
+  let f1 = 9, f2 = 9;
+  for (let oy = -1; oy <= 1; oy++) {
+    for (let ox = -1; ox <= 1; ox++) {
+      const jx = ix + ox, jy = iy + oy;
+      const px = jx + hash1(jx + jy * 113, seed);
+      const py = jy + hash1(jx * 57 + jy, seed + 19);
+      const ddx = x - px, ddy = y - py;
+      const d = ddx * ddx + ddy * ddy;
+      if (d < f1) { f2 = f1; f1 = d; }
+      else if (d < f2) f2 = d;
+    }
+  }
+  return Math.sqrt(f2) - Math.sqrt(f1);
+}
+
 /** Surface-wave tuning for the caustic (non-magma) fluid path. */
 const SWELL_K = 0.30;        // radians per px of shore distance → wavelength ≈ 21 px
 const SWELL_W = 1.6;         // radians per second at speed 1
@@ -2038,10 +2059,20 @@ function barrenGround(biome: BiomeType, elevation: number, moisture: number): RG
 /** Formation crust over cooling magma (see paintFluids `heat`). */
 const CRUST_DARK: RGB = { r: 38, g: 26, b: 24 };
 const CRUST_WARM: RGB = { r: 78, g: 34, b: 22 };
-/** Wave-dash lattice (world px) and how fast each dash fades in and out. */
-const WAVE_CELL_X = 11;
-const WAVE_CELL_Y = 5;
-const WAVE_TWINKLE = 1.3;
+/**
+ * Caustic web tuning (see paintFluids). Scale is cells per world px; warp is
+ * how far, in cells, the scrolling noise bends the web; move its scroll speed.
+ * FADE_CUT hides the web wherever the slow fade noise is below it (most of
+ * the sea); LINE is the ridge width of a line; SPECULAR the glint threshold.
+ */
+const CAUSTIC_SCALE = 0.075;
+const CAUSTIC_WARP = 0.9;
+const CAUSTIC_MOVE = 0.08;
+const CAUSTIC_FADE_CUT = 0.36;
+const CAUSTIC_LINE = 0.068;
+const CAUSTIC_SPECULAR = 0.48;
+/** World rows between glint strokes. */
+const GLINT_ROW = 3;
 /** 4x4 ordered dither, 0..1 — pixel-art band transitions, keyed on world px. */
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
 
@@ -2134,6 +2165,11 @@ export function paintFluids(
   const omega = SWELL_W * speed;
   // The shelf band sits between the body and the light crest colour.
   const shelf: RGB = rgb((pal.mid.r + pal.light.r) >> 1, (pal.mid.g + pal.light.g) >> 1, (pal.mid.b + pal.light.b) >> 1);
+  // Translucent caustic tints: the line colour over each band, quantised to
+  // one step each so the sea keeps a small palette.
+  const tint = (a: RGB, k: number): RGB => rgb(
+    Math.round(a.r + (pal.light.r - a.r) * k), Math.round(a.g + (pal.light.g - a.g) * k), Math.round(a.b + (pal.light.b - a.b) * k));
+  const causticMid = tint(pal.mid, 0.42), causticDeep = tint(pal.deep, 0.3);
 
   for (let py = y0; py <= y1; py++) {
     const sourceY = py - layerBob;
@@ -2172,24 +2208,37 @@ export function paintFluids(
         const band = tone * 2.6 + (bayer - 0.5) * 0.9;
         c = band < 0.7 ? shelf : band < 1.75 ? pal.mid : pal.deep;
 
-        // Wave dashes: one per jittered lattice cell, 2–4 px long, 1 screen
-        // px tall, fading in and out on their own clocks. Horizontal, because
-        // the board is seen low and flat.
-        const offShore = !hasShore || shore <= 0 || shoreW > FOAM_REACH;
+        // Caustic web (after jess-hammer's 2d pixel water shader): a Voronoi
+        // edge field, seen flat (rows stretched by the board squash), whose
+        // domain is warped by slowly scrolling noise so the web wobbles like
+        // refracted light. A second, very slow noise fades whole patches in
+        // and out so it never covers the sea. Lines are 1 screen px and drawn
+        // as a translucent tint of the band they cross, not as bright paint;
+        // only where two moving noises line up does a line catch a glint.
+        const offShore = !hasShore || shore <= 0 || shoreW > FOAM_REACH * 2.2;
         if (offShore) {
-          const ix = Math.floor(lx / WAVE_CELL_X), iy = Math.floor(ly / WAVE_CELL_Y);
-          const hA = hash1(ix * 7919 + iy * 104729, seed + 31);
-          const hB = hash1(ix * 104729 + iy * 7919, seed + 37);
-          const gx = (ix + 0.2 + hA * 0.6) * WAVE_CELL_X;
-          const gy = (iy + 0.2 + hB * 0.6) * WAVE_CELL_Y;
-          const half = 1 + Math.floor(hA * 2.99) * 0.5;
-          const ddx = lx - gx, ddy = (ly - gy) * lineK;
-          if (ddy >= -0.5 && ddy < 0.5 && ddx >= -half && ddx < half) {
-            const live = Math.sin(t * WAVE_TWINKLE * speed + hB * 6.283);
-            if (live > -0.05) {
-              c = pal.light;
-              if (live > 0.75 && ddx >= -1 && ddx < 1) c = pal.glint;
+          const fade = noise2(lx * 0.018 + t * 0.03 * speed, ly * 0.03, seed + 61);
+          if (fade > CAUSTIC_FADE_CUT) {
+            const wx2 = lx * CAUSTIC_SCALE, wy2 = ly * CAUSTIC_SCALE / BOARD_SQUASH;
+            const wob = t * CAUSTIC_MOVE * speed;
+            const qx = wx2 + (noise2(wx2 * 0.7 + wob, wy2 * 0.7, seed + 3) - 0.5) * CAUSTIC_WARP;
+            const qy = wy2 + (noise2(wx2 * 0.7, wy2 * 0.7 - wob, seed + 5) - 0.5) * CAUSTIC_WARP;
+            const ridge = cellRidge(qx, qy, seed) * lineK;
+            // Patches fade in from their edge: thinner lines near the cut.
+            const strength = clamp01((fade - CAUSTIC_FADE_CUT) / 0.18);
+            if (ridge < CAUSTIC_LINE * (0.45 + 0.55 * strength)) {
+              c = strength > 0.65 ? pal.light : c === pal.deep ? causticDeep : causticMid;
             }
+          }
+          // Specular glints, a separate layer as in the reference: two slowly
+          // moving noises multiplied and thresholded. Drawn only on every
+          // third world row, one screen px tall, so a glint is a short bright
+          // stroke at any zoom rather than a blob.
+          const row = ((ly % GLINT_ROW) + GLINT_ROW) % GLINT_ROW;
+          if (row * lineK < 1) {
+            const spec = noise2(lx * 0.32 + t * 0.12 * speed, ly * 0.15, seed + 71)
+                       * noise2(lx * 0.06 - t * 0.1 * speed, ly * 0.12 + 9.1, seed + 73);
+            if (spec > CAUSTIC_SPECULAR) c = pal.glint;
           }
         }
 
