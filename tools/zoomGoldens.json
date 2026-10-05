@@ -1,6 +1,6 @@
 {
   "ocean": {
-    "crust": "a9f350be",
+    "crust": "0986d58f",
     "land": "8665fbc8",
     "fluids": "989c7459",
     "dayNight": "cf8a8acb",
@@ -11,7 +11,7 @@
     "backdrop": "c604f381"
   },
   "lava": {
-    "crust": "22742b6d",
+    "crust": "64739750",
     "land": "0b09e8be",
     "fluids": "633b91a6",
     "dayNight": "cf8a8acb",
@@ -22,7 +22,7 @@
     "backdrop": "c604f381"
   },
   "gas": {
-    "crust": "925c21e0",
+    "crust": "ad1922a1",
     "land": "1a5a0cb4",
     "fluids": "bae41dc5",
     "dayNight": "cf8a8acb",

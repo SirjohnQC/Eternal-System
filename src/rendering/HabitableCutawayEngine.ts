@@ -1534,6 +1534,7 @@ export function* crustSteps(
   const cols = rimX1 - rimX0 + 1;
   if (cols <= 0) return;
   const wallBottom = new Float32Array(cols);
+  const rimWater = new Uint8Array(cols);
   const crustH = opts.crustDepthPx ?? (k === 1 ? crustDepthOf(rx) : crustDepthOf(baseRx) * k);
   const waterBand = k === 1 ? Math.max(6, Math.round(wall * 0.40)) : Math.max(6, Math.round(baseWall * 0.40)) * k;
   let iters = 0;
@@ -1550,6 +1551,7 @@ export function* crustSteps(
     const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
     const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
+    rimWater[i] = water ? 1 : 0;
     // Facet stripe every 14 WORLD px, 1 screen px wide.
     const wk = Math.round(wx * k), period = 14 * k;
     const facetCol = ((wk % period) + period) % period < 1;
@@ -1580,110 +1582,221 @@ export function* crustSteps(
     yield;
   }
 
-  // ── Jagged hanging keel ───────────────────────────────────────────────────
-  // The profile is smoothed over neighbouring columns, so on a camera bake it
-  // is computed a few kernel widths past the canvas edge (still inside the
-  // body): a column at the edge of the view gets the same profile as it does
-  // mid-view. Kernels (smoothing, median) reach round(k) columns — world
-  // class (Ruling 6).
+  // ── Inverted mountains ────────────────────────────────────────────────────
+  // The underside is the terrain turned upside down: a shallow slab under the
+  // wall, a keystone peak hanging beneath the middle of the body, and a range
+  // of smaller hanging peaks around it, each lit on its sun-facing flank.
+  // Peaks are keyed on WORLD px from the body centre (Ruling 6), so a pan
+  // never reshuffles them and a zoom only scales them.
   const s = Math.max(1, Math.round(k));
-  const margin = k === 1 ? 0 : 3 * s;
-  const P0 = Math.max(E0, rimX0 - margin), P1 = Math.min(E1, rimX1 + margin);
-  const pcols = P1 - P0 + 1;
-  const raw = new Float32Array(pcols);
+  const life = MOSSY_TYPES.has(opts.planetType);
+  const fallPal = FALL_TYPES.has(opts.planetType)
+    ? (opts.planetType === 'lava'
+      ? { edge: pal.ember, core: pal.emberHot, glint: rgb(255, 236, 170) }
+      : { edge: pal.waterSurf.mid, core: pal.waterSurf.light, glint: pal.waterSurf.glint })
+    : null;
+  const env = (ox: number): number => { const n = ox / baseRx; return Math.max(0, 1 - n * n); };
+  const keyW = baseRx * 0.42;
+  const majorW = Math.max(6, baseRx * 0.17), minorW = majorW * 0.45;
+  // One peak field: the deepest peak over `ox` (world depth) and its apex.
+  let pkDepth = 0, pkApex = 0, pkHw = 1;
+  const field = (ox: number, w: number, salt: number, scale: number): void => {
+    const c0 = Math.floor(ox / w);
+    for (let c = c0 - 2; c <= c0 + 2; c++) {
+      const apexX = (c + 0.2 + hash1(c * 31 + salt, seed + salt) * 0.6) * w;
+      const e = env(apexX);
+      if (e <= 0.02) continue;
+      const hw = w * (0.7 + hash1(c * 57 + salt, seed + 3) * 0.55);
+      const u = Math.abs(ox - apexX) / hw;
+      if (u >= 1) continue;
+      const d = baseCrust * scale * Math.pow(e, 1.2) * (0.45 + hash1(c * 91 + salt, seed + 7) * 0.55)
+        * Math.pow(1 - u, 1.15);
+      if (d > pkDepth) { pkDepth = d; pkApex = apexX; pkHw = hw; }
+    }
+  };
+  const baseCrust = crustH / k;          // world rows
+  const P0 = rimX0, pcols = cols;
+  const prof = new Float32Array(pcols);   // hanging depth below the wall (screen px)
+  const apexOf = new Float32Array(pcols); // world x of the owning peak's apex
+  const hwOf = new Float32Array(pcols);
   for (let j = 0; j < pcols; j++) {
     const x = P0 + j;
-    const dxn = (x - cx) / rx;
-    const ox = (x - cx) / k;      // world px from the body centre
-    // Flatter than a circle on purpose — a (1−x²)^0.78 bowl hugged the
-    // atmospheric shell and the underside read as a sphere again.
-    const keel = Math.pow(Math.max(0, 1 - dxn * dxn), 1.35);
-    const jag  = fbm1(ox * 0.038, seed, 4) * 0.70
-               + fbm1(ox * 0.14, seed + 77, 3) * 0.38
-               + fbm1(ox * 0.48,  seed + 401, 2) * 0.22;
-    const spur = Math.sin(fbm1(ox * 0.048, seed + 1234, 2) * Math.PI * 2.8) * 0.28;
-    const cleft = hash1((Math.floor(world.wx(x)) - colKey0) * 17, seed + 5) > 0.82 ? -0.22 : 0;
-    raw[j] = Math.min(
-      crustH,
-      crustH * Math.max(0, 0.06 + keel * 0.52 + (jag - 0.5) * 0.78 + spur + cleft),
-    );
-  }
-
-  const prof = new Float32Array(pcols);
-  for (let pass = 0; pass < 2; pass++) {
-    const src = pass === 0 ? raw : prof.slice();
-    for (let j = 0; j < pcols; j++) {
-      const a = src[Math.max(0, j - s)], b = src[j], c = src[Math.min(pcols - 1, j + s)];
-      prof[j] = (a + b * 2 + c) / 4;
+    const ox = Math.floor(world.wx(x)) - Math.round(world.wx(cx));   // world px from the body centre
+    // The slab: the underside of the plate itself, hugging the wall.
+    pkDepth = baseCrust * (0.10 * Math.sqrt(env(ox)) + (fbm1(ox * 0.11, seed + 77, 2) - 0.5) * 0.05);
+    pkApex = ox; pkHw = majorW;
+    // The keystone: one big inverted mountain under the centre.
+    const ku = Math.abs(ox) / keyW;
+    if (ku < 1) {
+      const d = baseCrust * Math.pow(1 - ku, 1.05);
+      if (d > pkDepth) { pkDepth = d; pkApex = 0; pkHw = keyW; }
     }
-  }
-  for (let j = 0; j < pcols; j++) {
-    const ledge = (2 + Math.round(fbm1((world.wx(P0 + j) - colKey0) * 0.035, seed + 909, 2) * 3)) * k;
-    prof[j] = Math.round(prof[j] / ledge) * ledge;
-  }
-  const terr = prof.slice();
-  for (let j = s; j < pcols - s; j++) {
-    const a = terr[j - s], b = terr[j], c = terr[j + s];
-    prof[j] = Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+    field(ox, majorW, 101, 0.78);
+    field(ox, minorW, 503, 0.36);
+    // Ragged flanks: a little noise that grows away from the apex.
+    const flank = Math.min(1, Math.abs(ox - pkApex) / pkHw);
+    const jag = (fbm1(ox * 0.45, seed + 401, 2) - 0.5) * (1 + flank * 4);
+    let dw = Math.max(0, Math.min(baseCrust, pkDepth + jag));
+    // Ledges: whole steps of 2 world rows, like a terraced cliff upside down.
+    dw = Math.round(dw / 2) * 2;
+    prof[j] = dw * k;
+    apexOf[j] = pkApex; hwOf[j] = pkHw;
   }
 
   const bands = pal.strata.length;
   const strataSpan = ry + wall + crustH;
   const lipRows = 3 * k;
   const glowRows = k === 1 ? 2 : Math.max(2, Math.round(2 * k));
+  const moss = pal.biome.forest, mossLit = pal.biome.grassland;
   for (let x = rimX0; x <= rimX1; x++) {
     const i = x - rimX0;
     const depth = prof[x - P0];
     if (depth < 2 * k) continue;
     const top = wallBottom[i];
     const dxn = (x - cx) / rx;
-    const lit = 0.55 + 0.62 * clamp01(dxn * 0.9 + 0.45);
     const wx = world.wx(x);
     const fwx = Math.floor(wx);
-    // Embers are 1-px dots: only the first screen column of their world column.
+    const ox = fwx - Math.round(world.wx(cx));
+    // Which flank of its peak this column is on: the sun-side flank is lit,
+    // the far one in shade, the apex column catches a ridge highlight.
+    const side = (ox - apexOf[x - P0]) / Math.max(1, hwOf[x - P0]);
+    const ridge = Math.abs(ox - apexOf[x - P0]) < 1;
+    const flankLit = ridge ? 1.18 : side > 0 ? 0.95 + 0.15 * clamp01(1 - side) : 0.62 + 0.12 * clamp01(1 + side);
+    const lit = flankLit * (0.80 + 0.30 * clamp01(dxn * 0.9 + 0.45));
     const firstCol = k === 1 || Math.floor(world.wx(x - 1)) !== fwx;
     const wave = (fbm1(wx * 0.022, seed + 311, 3) - 0.5) * 0.55
                + (fbm1(wx * 0.075, seed + 733, 2) - 0.5) * 0.22;
+    // Moss: a ragged mat under the plate, plus the odd vine down a flank.
+    const mossRows = life ? (2 + Math.floor(fbm1(wx * 0.16, seed + 61, 2) * 5)) * k : 0;
+    const vine = life && hash1(fwx * 7 + 3, seed + 29) > 0.88
+      ? (4 + Math.floor(hash1(fwx * 13, seed + 31) * 14)) * k : 0;
 
-    // Rows on the canvas only: absY = top + y in [0, VH).
     const y0 = Math.max(0, Math.ceil(-top));
     const yEnd = Math.min(depth, VH - top);
     for (let y = y0; y < yEnd; y++) {
       iters++;
       const absY = top + y;
-      const faceX = dxn;
       const faceY = (absY - cyTop) / ry;
-      if (faceX * faceX + faceY * faceY <= 1) continue;
+      if (dxn * dxn + faceY * faceY <= 1) continue;
 
       const t = y / depth;
       const bandPos = clamp01((absY - cyTop) / strataSpan) * bands + wave;
       const bi = Math.max(0, Math.min(bands - 1, Math.floor(bandPos)));
-      const ao = 1 - t * 0.26 - (y < lipRows ? (lipRows - y) / lipRows : 0) * 0.28;
-      const wy = y / k;                        // world rows below the wall
+      const ao = 1 - t * 0.30 - (y < lipRows ? (lipRows - y) / lipRows : 0) * 0.28;
+      const wy = y / k;
       const fwy = Math.floor(wy);
       const grain = 0.90 + hash1(fwx * 733 + fwy * 13, seed) * 0.20;
       const streak = 0.94 + fbm1(wx * 0.09 + wy * 1.7, seed + 55, 2) * 0.14;
       let f = lit * ao * grain * streak;
       const frac = bandPos - Math.floor(bandPos);
-      if (frac < 0.07) f *= 0.68;
-      else if (frac < 0.16) f *= 1.12;
-      const ember = t > 0.78 && hash1(fwx * 179 + fwy * 991, seed + 19) > 0.986
+      if (frac < 0.07) f *= 0.72;
+      else if (frac < 0.16) f *= 1.10;
+      // The tip of every peak goes dark: it hangs furthest from the sun.
+      if (t > 0.85) f *= 0.80;
+      let c: RGB = shade(pal.strata[bi], f);
+      if (y < mossRows || y < vine) {
+        const lush = hash1(fwx * 29 + fwy * 7, seed + 41) > 0.5;
+        c = shade(lush ? mossLit : moss, (y < mossRows ? 0.95 : 0.80) * (side > 0 ? 1 : 0.78));
+      }
+      const ember = !life && t > 0.78 && hash1(fwx * 179 + fwy * 991, seed + 19) > 0.986
         && (k === 1 || (firstCol && Math.floor((y - 1) / k) !== fwy));
-      g.fillStyle = css(ember ? pal.emberHot : shade(pal.strata[bi], f));
+      g.fillStyle = css(ember ? pal.emberHot : c);
       g.fillRect(x, Math.round(absY), 1, 1);
     }
 
-    if (dxn > 0.1) {
+    if (!life && dxn > 0.1) {
       g.fillStyle = css(pal.ember, clamp01((dxn - 0.1) / 0.9) * 0.25);
       g.fillRect(x, Math.round(top + depth) - glowRows, 1, glowRows);
     }
     g.fillStyle = 'rgba(2,2,6,0.55)';
-    g.fillRect(x, Math.round(top + depth) - 1, 1, 1);
+    g.fillRect(x, Math.round(top + depth) - s, 1, s);
     yield;
+  }
+
+  // ── Floating shards ───────────────────────────────────────────────────────
+  // Small chunks torn off the keel drift beneath the shallow outer peaks:
+  // grassy (or bare) top, an inverted point below. Never deeper than crustH,
+  // so they stay inside keelBottomOf.
+  const shardW = Math.max(8, baseRx * 0.21);
+  const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
+  const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
+  for (let c = Math.floor(ox0 / shardW) - 1; c <= Math.floor(ox1 / shardW) + 1; c++) {
+    if (hash1(c * 61 + 9, seed + 71) < 0.45) continue;
+    const scx = (c + 0.25 + hash1(c * 43, seed + 73) * 0.5) * shardW;    // world x
+    const n = scx / baseRx;
+    if (Math.abs(n) > 0.92 || Math.abs(n) < 0.22) continue;
+    const half = 2 + Math.floor(hash1(c * 17, seed + 79) * 4);          // world px
+    const hgt = half * 2 + 1;
+    const sx = cx + scx * k;                                            // screen x of its centre
+    const j = Math.round(sx) - P0;
+    if (j < 0 || j >= pcols) continue;
+    const below = prof[j] / k + 4;
+    const room = baseCrust - below - hgt - 1;
+    if (room < 2) continue;
+    const yTopW = below + 2 + Math.floor(hash1(c * 23, seed + 83) * room); // world rows under the wall
+    for (let dx = -half; dx <= half; dx++) {
+      const span = Math.max(1, Math.round(hgt * (1 - Math.abs(dx) / (half + 1))));
+      for (let px = 0; px < s; px++) {
+        const X = Math.round(sx + dx * k) + px;
+        if (X < rimX0 || X > rimX1) continue;
+        const topY = wallBottom[X - rimX0] + yTopW * k;
+        for (let dy = 0; dy < span; dy++) {
+          const lit = dx >= 0 ? 1.0 : 0.66;
+          const cap = life && dy < 1;
+          const col = cap ? shade(pal.biome.grassland, lit) : shade(pal.strata[2], lit * (1 - dy / (span + 2) * 0.4));
+          for (let py = 0; py < s; py++) {
+            const Y = Math.round(topY + dy * k) + py;
+            if (Y < 0 || Y >= VH) continue;
+            iters++;
+            g.fillStyle = css(col);
+            g.fillRect(X, Y, 1, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // ── Falls ─────────────────────────────────────────────────────────────────
+  // Where the sea meets the rim, it spills: a few columns pour off the plate
+  // and down past the peaks, glowing, thinning to mist (lava worlds: lava).
+  if (fallPal) {
+    const fallW = Math.max(10, baseRx * 0.19);
+    for (let c = Math.floor(ox0 / fallW) - 1; c <= Math.floor(ox1 / fallW) + 1; c++) {
+      if (hash1(c * 37 + 5, seed + 91) < 0.5) continue;
+      const fcx = (c + 0.3 + hash1(c * 11, seed + 93) * 0.4) * fallW;
+      if (Math.abs(fcx / baseRx) > 0.86) continue;
+      const fw = 2 + Math.floor(hash1(c * 19, seed + 97) * 3);               // world px wide
+      const lenW = baseCrust * (0.55 + hash1(c * 29, seed + 99) * 0.45);
+      const sx0 = Math.round(cx + (fcx - fw / 2) * k);
+      for (let X = sx0; X < sx0 + fw * k; X++) {
+        if (X < rimX0 || X > rimX1 || !rimWater[X - rimX0]) continue;
+        const fwxL = Math.floor((X - sx0) / k);                             // world column within the fall
+        const edge = fwxL === 0 || fwxL === fw - 1;
+        const top = wallBottom[X - rimX0];
+        const len = lenW * k;
+        const yA = Math.max(0, Math.ceil(top)), yB = Math.min(VH - 1, Math.floor(top + len));
+        for (let Y = yA; Y <= yB; Y++) {
+          iters++;
+          const t = (Y - top) / len;
+          const wy = Math.floor((Y - top) / k);
+          // Broken streaks down the sheet, and a ragged dissolving tail.
+          const streak = hash1((fwxL + c * 7) * 131 + wy, seed + 101);
+          if (t > 0.6 && streak < (t - 0.6) * 2.4) continue;
+          const glint = !edge && streak > 0.93;
+          g.fillStyle = css(glint ? fallPal.glint : edge ? fallPal.edge : fallPal.core, 1 - t * 0.55);
+          g.fillRect(X, Y, 1, 1);
+        }
+      }
+    }
   }
   const it = zoomIters();
   if (it) it.crust = iters;
 }
+
+/** Worlds whose underside carries moss and vines instead of embers. */
+const MOSSY_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm']);
+/** Worlds whose liquid pours off the rim in falls (lava worlds pour lava). */
+const FALL_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm', 'lava']);
 
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
 
@@ -2797,8 +2910,10 @@ export class HabitableCutawayEngine {
     this.planIdentity();
     const crustG = this.crust.getContext('2d');
     const landG = this.land.getContext('2d');
-    if (crustG) paintCutawayCrust(crustG, bakeOpts);
+    // Surface first: it fills occupancy, which the crust reads to know where
+    // the sea meets the rim (water column, falls).
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
+    if (crustG) paintCutawayCrust(crustG, bakeOpts);
     // After the paint, which records each site's footing. A new planet or
     // size: everything is shown grown.
     this.flora.setPlan(this.liveFlora ? this.planDecals : null, this.elapsed, true);
@@ -3007,9 +3122,10 @@ export class HabitableCutawayEngine {
   private *fullSteps(set: CameraLayerSet, base: CutawayBakeOpts): BakeSteps {
     set.occupancy.fill(0);
     yield;
+    // Surface first, so the crust reads this set's occupancy (see bake()).
+    yield* this.paintCameraSurface(set);
     const crustG = set.crust.getContext('2d');
     if (crustG) yield* crustSteps(crustG, set.opts);
-    yield* this.paintCameraSurface(set);
     set.painter = yield* this.cameraPainterSteps(set, base);
   }
 
