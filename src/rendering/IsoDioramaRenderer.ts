@@ -440,6 +440,8 @@ export class IsoDioramaRenderer {
   private crustLayer!:   HTMLCanvasElement;   // rock underside + rim cut band
   private surfaceLayer!: HTMLCanvasElement;   // top face terrain
   private cutaway = new HabitableCutawayEngine();
+  /** Creature bodies for a new zoom are forged inside the camera bake (see prewarmCreatures). */
+  private readonly hookBakeExtras = (this.cutaway.bakeExtras = (zoom: number) => this.prewarmCreatures(zoom));
 
   private mount:  HTMLElement | null = null;
   private raf = 0;
@@ -543,7 +545,9 @@ export class IsoDioramaRenderer {
    * (zoomed in, or massive species), keyed by genome and on-screen size.
    * `foot` is the transparent margin under the feet, so the anchor stays put.
    */
-  private forgeSprites = new Map<string, { cv: HTMLCanvasElement; foot: number }>();
+  private forgeSprites = new Map<string, { cv: HTMLCanvasElement; foot: number; scale: number }>();
+  /** Last forged body per species (any size): the stand-in while a new size is forged. */
+  private readonly forgeLast = new Map<string, { cv: HTMLCanvasElement; foot: number; target: number }>();
   /** Forge bakes allowed this frame; the pixel sprite stands in until baked. */
   private forgeBudget = 0;
   /** Scratch for compositing a submerged creature without tinting the sea. */
@@ -2624,6 +2628,23 @@ export class IsoDioramaRenderer {
         g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
       } });
     }
+    // Land animals join the same back-to-front pass, so a tree in front of
+    // one hides it (they were drawn over every tree).
+    if (this.habitable) {
+      for (const c of this.inhabitants) {
+        if (c.submersion > 0) continue;
+        list.push({ wy: c.wy, draw: (g, v) => {
+          const S = Math.max(1, Math.round(v.K));
+          const hop = Math.sin((this.elapsed / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
+          const [X, Y] = at(v, c.wx, c.wy);
+          const forged = this.forgeSpriteFor(c, S);
+          const sw = forged ? Math.round(forged.cv.width * forged.scale) : Math.round(c.w) * S;
+          const sh = forged ? Math.round(forged.cv.height * forged.scale) : Math.round(c.h) * S;
+          const foot = forged ? Math.round(forged.foot * forged.scale) : 0;
+          g.drawImage(forged ? forged.cv : c.sprite, Math.round(X - sw / 2), Math.round(Y - sh + foot + hop), sw, sh);
+        } });
+      }
+    }
     flora.setProps(list);
   }
 
@@ -2742,6 +2763,12 @@ export class IsoDioramaRenderer {
    * their identity on-screen size; a camera blits them x round(k).
    */
   private buildInhabitants(geom = this.placeGeom): void {
+    this.planInhabitants(geom);
+    // The flora pass draws land animals among the trees: hand it the new set.
+    this.pushTownProps();
+  }
+
+  private planInhabitants(geom: { cx: number; cy: number; rx: number; ry: number }): void {
     this.inhabitants = [];
     this.settlements = [];
 
@@ -2911,7 +2938,19 @@ export class IsoDioramaRenderer {
    * bake: at most FORGE_BAKES_PER_FRAME new ones per frame, so zooming in on a
    * crowded world does not stall a frame).
    */
-  private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): { cv: HTMLCanvasElement; foot: number } | null {
+  /** Forge every creature body a view at `zoom` needs, one per step (run inside the camera bake). */
+  private *prewarmCreatures(zoom: number): Generator<void, void, unknown> {
+    const S = Math.max(1, Math.round(zoom));
+    for (const c of this.inhabitants) {
+      const before = this.forgeSprites.size;
+      this.forgeBudget = 1;
+      this.forgeSpriteFor(c, S);
+      if (this.forgeSprites.size !== before) yield;
+    }
+    this.forgeBudget = 0;
+  }
+
+  private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): { cv: HTMLCanvasElement; foot: number; scale: number } | null {
     // Sized from the species' nominal size, not the pixel sprite's box: the
     // speck's outline and minimum anatomy pad it, and a forged body filling
     // that box towered over trees and houses (play feedback).
@@ -2919,11 +2958,18 @@ export class IsoDioramaRenderer {
     const target = Math.round(Math.min(Math.max(c.w, c.h), nominal) * S);
     if (target < FORGE_MIN_PX) return null;
     const gn = c.genome, d = gn.dna, p = gn.physicalTraits;
-    const key = [gn.id, target, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
+    const body = [gn.id, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
       p.size, p.bodyStructure, p.mobilityType, p.sensorySystem].join('|');
+    const key = `${target}|${body}`;
     const hit = this.forgeSprites.get(key);
     if (hit) return hit;
-    if (this.forgeBudget <= 0) return null;
+    if (this.forgeBudget <= 0) {
+      // Out of budget (a zoom just changed every size): the last body forged
+      // for this species stands in, scaled, until its sharp one is made — no
+      // pop back to the speck.
+      const prev = this.forgeLast.get(body);
+      return prev ? { cv: prev.cv, foot: prev.foot, scale: target / prev.target } : null;
+    }
     this.forgeBudget--;
     // Small: the forge rendered straight at the target size (the portrait
     // path renders at least 16 px and would not shrink).
@@ -2947,9 +2993,11 @@ export class IsoDioramaRenderer {
         foot++;
       }
     }
-    const entry = { cv, foot };
+    const entry = { cv, foot, scale: 1 };
     if (this.forgeSprites.size > 400) this.forgeSprites.clear();
     this.forgeSprites.set(key, entry);
+    if (this.forgeLast.size > 400) this.forgeLast.clear();
+    this.forgeLast.set(body, { cv, foot, target });
     return entry;
   }
 
@@ -3173,6 +3221,9 @@ export class IsoDioramaRenderer {
 
     this.forgeBudget = FORGE_BAKES_PER_FRAME;
     for (const c of this.inhabitants) {
+      // Land animals on a cutaway world are drawn by the flora pass (see
+      // pushTownProps), depth-sorted with the trees; swimmers stay here.
+      if (this.habitable && c.submersion <= 0) continue;
       // A small idle bob keeps the world alive without implying real movement.
       // The shared idle hop: one pixel (x S) up for the high half of the cycle.
       const bob = Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
@@ -3181,10 +3232,10 @@ export class IsoDioramaRenderer {
       // screen resolution instead of the speck magnified x S.
       const forged = this.forgeSpriteFor(c, S);
       const spr = forged ? forged.cv : c.sprite;
-      const sw = forged ? forged.cv.width : Math.round(c.w) * S;
-      const sh = forged ? forged.cv.height : Math.round(c.h) * S;
+      const sw = forged ? Math.round(forged.cv.width * forged.scale) : Math.round(c.w) * S;
+      const sh = forged ? Math.round(forged.cv.height * forged.scale) : Math.round(c.h) * S;
       const dx = Math.round(ax - sw / 2);
-      const dy = Math.round(ay + layerBob - sh + (forged ? forged.foot : 0) + bob);
+      const dy = Math.round(ay + layerBob - sh + (forged ? Math.round(forged.foot * forged.scale) : 0) + bob);
 
       if (c.submersion <= 0 || !surf) {
         g.drawImage(spr, dx, dy, sw, sh);

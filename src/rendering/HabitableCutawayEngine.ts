@@ -2854,6 +2854,11 @@ export class HabitableCutawayEngine {
    */
   liveFlora = true;
   readonly flora = new FloraLayer();
+  /**
+   * Host work run at the end of every camera bake, sliced like it (one unit
+   * per yield): the renderer forges creature bodies for the new zoom here.
+   */
+  bakeExtras: ((zoom: number) => Iterable<void>) | null = null;
 
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
@@ -3240,6 +3245,11 @@ export class HabitableCutawayEngine {
     const crustG = set.crust.getContext('2d');
     if (crustG) yield* crustSteps(crustG, set.opts);
     set.painter = yield* this.cameraPainterSteps(set, base);
+    // Sprites for the new zoom, made before the set is shown (see prewarmSteps).
+    const cam = set.camera;
+    yield* this.flora.prewarmSteps(cam.zoom, cam.fx, cam.fy, set.W, set.H, this.elapsed,
+      this.planetType, this.surfaceBakeOpts?.decalAtlas ?? null);
+    if (this.bakeExtras) yield* this.bakeExtras(cam.zoom);
   }
 
   /** The 4 s surface rebake of a camera set: its crust copied (unchanged), surface and shore repainted. */

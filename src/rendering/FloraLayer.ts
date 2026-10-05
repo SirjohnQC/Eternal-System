@@ -45,6 +45,8 @@ interface Sheet {
   footY: number;
   /** 'sway' frames follow the wind; 'twinkle' frame 1 is a sparkle. */
   mode: 'still' | 'sway' | 'twinkle';
+  /** Forged sheets: the sprite size it was made at (a stand-in is scaled from it). */
+  px?: number;
 }
 
 interface Live {
@@ -140,6 +142,8 @@ export class FloraLayer {
   private live = new Map<string, Live>();
   private order: Live[] = [];
   private cache = new Map<string, Sheet>();
+  /** Last forged sheet per plant look, any size: the stand-in while a new size is forged. */
+  private lastForged = new Map<string, Sheet>();
   private forgesLeft = 0;
   /** Wind strength (1 = a breeze; 0 stills every plant). */
   wind = 1;
@@ -209,6 +213,40 @@ export class FloraLayer {
     this.order = [...next.values()].sort((a, b) => (a.site.wy ?? a.site.y) - (b.site.wy ?? b.site.y));
   }
 
+  /**
+   * Forge, ahead of time, every sheet a view at zoom `K` (camera focus fx, fy;
+   * set size W x H) will need — one forge per step. The host runs this inside
+   * the time-sliced camera bake, so the sharp set swaps in with its plants
+   * already made instead of restyling a few per frame afterwards.
+   */
+  *prewarmSteps(
+    K: number, fx: number, fy: number, W: number, H: number,
+    now: number, planetType: string, atlas: DecalAtlas | null,
+  ): Generator<void, void, unknown> {
+    for (const l of this.order) {
+      const s = l.site;
+      if (s.foot === undefined || s.foot < 0 || l.died !== null) continue;
+      const full = Math.max(2, Math.round(16 * clamp(s.scale, 0.2, 1.35))) * K;
+      const X = ((s.wx ?? s.x) - fx) * K + W / 2, Y = ((s.wy ?? s.y) - fy) * K + H / 2;
+      const reach = full * 1.4 + 4;
+      if (X < -reach || X > W + reach || Y < -4 || Y > H + reach) continue;
+      // The stage it shows now, and grown (where a young plant is heading).
+      let stage = STAGES.length - 1;
+      if (now < l.born) continue;
+      if (l.born !== -Infinity) {
+        const gr = (now - l.born) / GROW_SECONDS;
+        if (gr < 1) stage = Math.min(STAGES.length - 2, Math.floor(gr * (STAGES.length - 1)));
+      }
+      for (const st of stage === STAGES.length - 1 ? [stage] : [stage, STAGES.length - 1]) {
+        const before = this.cache.size;
+        this.forgesLeft = 1;
+        this.sheetFor(l, Math.max(2, Math.round(full * STAGES[st])), planetType, atlas, false);
+        if (this.cache.size !== before) yield;
+      }
+    }
+    this.forgesLeft = 0;
+  }
+
   /** Forget everything (a gas giant, or decals switched off). */
   clear(): void { this.live.clear(); this.order = []; this.version++; }
 
@@ -256,7 +294,8 @@ export class FloraLayer {
       } else if (sheet.mode === 'twinkle') {
         f = ((now * 0.45 + l.phase * 7) % 1) < 0.06 ? 1 : 0;
       }
-      const r = v.r;
+      // A stand-in sheet forged at another size is scaled to this one.
+      const r = v.r * (sheet.px ? Math.min(FORGE_MAX_PX, px) / sheet.px : 1);
       g.drawImage(sheet.canvas, f * sheet.fw, 0, sheet.fw, sheet.fh,
         Math.round(sx - sheet.footX * r), Math.round(sy - sheet.footY * r), sheet.fw * r, sheet.fh * r);
     }
@@ -283,6 +322,7 @@ export class FloraLayer {
     const key = `${forge ? 'F' : 'A'}|${s.kind}|${variant}|${pxk}|${planetType}|${gk}|${wilt ? 1 : 0}|${season}`;
     const hit = this.cache.get(key);
     if (hit) return hit;
+    const look = `${s.kind}|${variant}|${planetType}|${gk}|${wilt ? 1 : 0}|${season}`;
     let rgba: { width: number; height: number; data: Uint8ClampedArray; footX: number; footY: number } | null = null;
     if (forge && this.forgesLeft > 0) {
       this.forgesLeft--;
@@ -295,7 +335,12 @@ export class FloraLayer {
       }
       rgba = { width: f.width, height: f.height, data: d, footX: f.footX, footY: f.footY };
     } else if (forge) {
-      // Out of forge budget this frame: the atlas stands in until it is made.
+      // Out of forge budget this frame (a zoom changes every size at once):
+      // the last forged sheet of this look stands in, scaled by the caller,
+      // so plants sharpen in place instead of vanishing or swapping art.
+      const prev = this.lastForged.get(look);
+      if (prev) return prev;
+      // Never forged yet: the atlas stands in until it is made.
       const tk = 'T' + key.slice(1);
       const t = this.cache.get(tk);
       if (t) return t;
@@ -311,6 +356,11 @@ export class FloraLayer {
     const sheet = this.makeSheet(rgba, s.kind, wilt, season, variant);
     if (this.cache.size >= CACHE_MAX) this.cache.clear();
     this.cache.set(key, sheet);
+    if (forge) {
+      sheet.px = pxk;
+      if (this.lastForged.size >= CACHE_MAX) this.lastForged.clear();
+      this.lastForged.set(look, sheet);
+    }
     return sheet;
   }
 
