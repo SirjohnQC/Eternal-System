@@ -3113,9 +3113,10 @@ export class IsoDioramaRenderer {
     if (!this.habitable || this.inhabitants.length === 0) return;
     const k = this.camZoom, fade = Math.min(1, (k - BIRD_ZOOM) / 0.6);
     if (fade <= 0) return;
-    const { cx, cy, rx, ry } = this;
+    // BASE geometry: wsx / wsy apply the camera, so the active cx/cy/rx/ry
+    // here would zoom twice and fling flocks off the disc into space.
+    const { cx, cy, rx, ry } = this.placeGeom;
     const S = Math.max(1, Math.round(k));
-    const bob = this.cutaway.drawGeom.bob;
     g.save();
     g.globalAlpha = 0.85 * fade;
     g.fillStyle = 'rgb(232,234,240)';
@@ -3124,8 +3125,8 @@ export class IsoDioramaRenderer {
       const h = ((this.planetSeed * 2654435761 + f * 40503) >>> 0) / 4294967296;
       const dir = f % 2 ? 1 : -1, speed = 0.035 + h * 0.03;
       const a = (h + f / flocks) * Math.PI * 2 + dir * t * speed;
-      const lr = 0.25 + ((h * 7.31) % 1) * 0.6;
-      const fx = cx + Math.cos(a) * rx * lr, fy = cy + bob + Math.sin(a) * ry * lr - 18 - h * 14;
+      const lr = 0.2 + ((h * 7.31) % 1) * 0.55;
+      const fx = cx + Math.cos(a) * rx * lr, fy = cy + Math.sin(a) * ry * lr - 6 - h * 6;
       // Heading along the loop, so the V points the way it flies.
       const hx = -Math.sin(a) * dir * rx, hy = Math.cos(a) * dir * ry, hl = Math.hypot(hx, hy) || 1;
       const ux = hx / hl, uy = hy / hl;
