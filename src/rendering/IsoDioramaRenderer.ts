@@ -47,6 +47,7 @@ import {
   type HabitableType,
   cutawayWaterSurf,
   habitableGeom,
+  volcanoProfile,
 } from './HabitableCutawayEngine';
 import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
@@ -1468,6 +1469,7 @@ export class IsoDioramaRenderer {
       grid: this.grid,
       planetType: this.planetType as HabitableType,
       barren: this.forming,
+      volcanoes: volcanoProfile(this.planetType, this.planetSeed, this.forming ? this.star?.formationStage ?? null : null),
       // No rivers until the rains: only the sea / ice stages carry them.
       noRivers: this.forming && this.star?.formationStage !== 'primordial' && this.star?.formationStage !== 'ice_age',
       discToGrid: (dx, dy) => this.discToGrid(dx, dy),

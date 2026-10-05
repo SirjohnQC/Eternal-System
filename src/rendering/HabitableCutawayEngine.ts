@@ -306,6 +306,8 @@ export interface CutawayBakeOpts extends CutawayGeom {
   crustDepthPx?: number;
   /** Volcano chimneys to paint, in this bake's screen coordinates; same rule as `decalSites`. */
   chimneySites?: VolcanoChimney[] | null;
+  /** This world's volcanoes (see `volcanoProfile`). Omitted: lava worlds get active ones. */
+  volcanoes?: VolcanoProfile | null;
   /** Tallest lift `liftOf` can return, so the bake can reserve rows above the rim. */
   maxLift: number;
 
@@ -1328,9 +1330,7 @@ export function* surfaceSteps(
 
   g.putImageData(img, x0, yTop);
 
-  if (opts.planetType === 'lava') {
-    paintVolcanoChimneys(g, opts.chimneySites ?? planVolcanoChimneys(opts), VW, VH, k);
-  }
+  paintVolcanoChimneys(g, opts.chimneySites ?? planVolcanoChimneys(opts), VW, VH, k);
 }
 
 export interface VolcanoChimney {
@@ -1347,6 +1347,40 @@ export interface VolcanoChimney {
   /** Base-world position, set by the engine when it stores its plan. */
   wx?: number;
   wy?: number;
+  state?: VolcanoState;
+  /** Terrain lift under the cone (planner bookkeeping). */
+  lift?: number;
+}
+
+export type VolcanoState = 'active' | 'dormant' | 'extinct';
+export interface VolcanoProfile { count: number; scale: number; state: VolcanoState }
+
+/**
+ * Whether a world has volcanoes, how big, and how alive they are.
+ *
+ * - A forming world always does, and they are huge while the crust is young:
+ *   magma x2.2, cooling x1.9, volcanic x1.6, then smaller as it settles.
+ * - A finished world rolls by type (lava 100%, rocky 70%, toxic 65%,
+ *   desert 55%, ocean 50% as island chains, carbon 50%, storm 45%,
+ *   crystal 35%, ice 30%).
+ * - Its state rolls too (lava is always active): about 35% active,
+ *   40% dormant (dark, cold crater, a wisp of steam), 25% extinct
+ *   (worn down, crater filled, weathered to the land around it).
+ * Pure and seeded: the same world always gets the same volcanoes.
+ */
+export function volcanoProfile(planetType: string, seed: number, formationStage: string | null): VolcanoProfile | null {
+  const r = (n: number) => hash1(seed * 31 + n * 977, seed ^ 0x5eed);
+  const young: Record<string, number> = { magma: 2.2, cooling: 1.9, volcanic: 1.6, atmosphere: 1.35, ice_age: 1.2, primordial: 1.15 };
+  if (formationStage && young[formationStage]) {
+    const early = formationStage === 'magma' || formationStage === 'cooling' || formationStage === 'volcanic';
+    return { count: early ? 7 : 5, scale: young[formationStage], state: early || r(1) < 0.6 ? 'active' : 'dormant' };
+  }
+  if (planetType === 'lava') return { count: 10, scale: 1.2, state: 'active' };
+  const chance: Record<string, number> = { rocky: 0.7, toxic: 0.65, desert: 0.55, ocean: 0.5, carbon: 0.5, storm: 0.45, crystal: 0.35, ice: 0.3 };
+  if (r(2) >= (chance[planetType] ?? 0.4)) return null;
+  const roll = r(3);
+  const state: VolcanoState = roll < 0.35 ? 'active' : roll < 0.75 ? 'dormant' : 'extinct';
+  return { count: 1 + Math.floor(r(4) * 4), scale: 1.1 + r(5) * 0.5, state };
 }
 
 /**
@@ -1354,8 +1388,12 @@ export interface VolcanoChimney {
  */
 export function planVolcanoChimneys(opts: CutawayBakeOpts): VolcanoChimney[] {
   const { w: VW, h: VH, cx, cyTop, rx, ry, seed, grid } = opts;
-  if (!grid || opts.planetType !== 'lava') return [];
-  const sites: VolcanoChimney[] = [];
+  const prof = opts.volcanoes !== undefined ? opts.volcanoes
+    : opts.planetType === 'lava' ? { count: 10, scale: 1, state: 'active' as const } : null;
+  if (!grid || !prof) return [];
+  // The highest land wins (with a little seeded jitter), spaced apart, so a
+  // flat young world still gets its volcanoes on whatever high ground it has.
+  const cands: Array<{ px: number; py: number; score: number; row: number; col: number; r: number }> = [];
   const x0 = Math.max(0, cx - rx), x1 = Math.min(VW - 1, cx + rx);
   const yFace0 = cyTop - ry, yFace1 = Math.min(VH - 1, cyTop + ry);
   for (let py = yFace0; py <= yFace1; py += 2) {
@@ -1363,22 +1401,26 @@ export function planVolcanoChimneys(opts: CutawayBakeOpts): VolcanoChimney[] {
     for (let px = x0; px <= x1; px += 2) {
       const dx = (px - cx) / rx;
       const r = Math.hypot(dx, dy);
-      if (r > 0.88 || r < 0.12) continue;
+      if (r > 0.85 || r < 0.1) continue;
       const gp = opts.discToGrid(dx, dy);
       if (!gp) continue;
       const cell = grid[gp.row]?.[gp.col];
-      if (!cell) continue;
+      if (!cell || isWater(cell.biome)) continue;
       const elev = cell.elevation - opts.rimFalloff(r);
-      if (elev < 0.70) continue;
-      if (hash1(px * 733 + py * 197 + seed, seed ^ 0x71) < 0.955) continue;
-      // Keep chimneys from stacking on top of each other.
-      if (sites.some(s => Math.hypot(s.x - px, s.y - py) < rx * 0.14)) continue;
-      const lift = opts.liftOf(opts.smoothElevation(grid, gp.row, gp.col) - opts.rimFalloff(r));
-      const h = Math.max(6, 5 + Math.floor(lift * 0.7) + Math.floor(hash1(px + py, seed) * 4));
-      const w = 2 + Math.floor(hash1(px * 3 + py, seed + 9) * 2);
-      sites.push({ x: px, y: py - lift, h, w, row: gp.row, col: gp.col });
-      if (sites.length >= 10) return sites;
+      cands.push({ px, py, score: elev + hash1(px * 733 + py * 197 + seed, seed ^ 0x71) * 0.25, row: gp.row, col: gp.col, r });
     }
+  }
+  cands.sort((a, b) => b.score - a.score);
+  const sites: VolcanoChimney[] = [];
+  const worn = prof.state === 'extinct' ? 0.7 : 1;
+  for (const c of cands) {
+    if (sites.length >= prof.count) break;
+    if (sites.some(s => Math.hypot(s.x - c.px, s.y + (s.lift ?? 0) - c.py) < rx * 0.16)) continue;
+    const lift = opts.liftOf(opts.smoothElevation(grid, c.row, c.col) - opts.rimFalloff(c.r));
+    const h = Math.round(Math.max(7, 6 + Math.floor(lift * 0.7) + Math.floor(hash1(c.px + c.py, seed) * 4)) * prof.scale * worn);
+    const w = Math.round((3 + Math.floor(hash1(c.px * 3 + c.py, seed + 9) * 2)) * prof.scale * (2 - worn));
+    // A volcano is a broad cone, never a spike: base about as wide as it is tall.
+    sites.push({ x: c.px, y: c.py - lift, h, w: Math.max(w, Math.round(h * 0.55)), row: c.row, col: c.col, state: prof.state, lift });
   }
   return sites;
 }
@@ -1401,19 +1443,40 @@ export function paintVolcanoChimneys(
     const tipY = v.y - hS;
     // Bounded to the view: a cone wholly off the canvas draws nothing.
     if (baseY < 0 || tipY - 8 * S >= VH || v.x + wS + 2 * S < 0 || v.x - wS - 2 * S >= VW) continue;
-    // Cone body — dark basalt tapering upward.
+    const state = v.state ?? 'active';
+    // Extinct cones are weathered to grey-brown rock; dormant ones stay dark.
+    const [r0, g0, b0] = state === 'extinct' ? [62, 54, 46] : state === 'dormant' ? [58, 46, 42] : [28, 12, 10];
+    // Cone body — dark basalt tapering upward (an extinct one is blunter).
+    const taper = state === 'extinct' ? 0.7 : 0.85;
     for (let kk = 0; kk <= hS; kk++) {
       const t = kk / Math.max(1, hS);
-      const halfW = Math.max(1, Math.round(wS * (1 - t * 0.85)));
+      const halfW = Math.max(1, Math.round(wS * (1 - t * taper)));
       const y = baseY - kk;
-      g.fillStyle = `rgb(${28 + Math.round(t * 18)},${12 + Math.round(t * 8)},${10 + Math.round(t * 6)})`;
+      g.fillStyle = `rgb(${r0 + Math.round(t * 18)},${g0 + Math.round(t * 8)},${b0 + Math.round(t * 6)})`;
       g.fillRect(v.x - halfW, y, halfW * 2 + 1, 1);
       // Lit right flank.
-      g.fillStyle = `rgba(90,40,25,${0.35 + t * 0.25})`;
+      g.fillStyle = state === 'active' ? `rgba(90,40,25,${0.35 + t * 0.25})` : `rgba(120,108,96,${0.3 + t * 0.2})`;
       g.fillRect(v.x + halfW - 1, y, 1, 1);
+      // Old lava channels down the flank of a big active cone.
+      if (state === 'active' && hS > 14 && (kk * 7 + Math.round(v.x)) % 11 === 0) {
+        g.fillStyle = 'rgba(255,110,30,0.75)';
+        g.fillRect(v.x - Math.round(halfW * 0.4), y, 1, 1);
+      }
     }
     // Crater rim + magma throat (sprite pixels, x S about the tip).
     const X = v.x - half, T = tipY;
+    if (state !== 'active') {
+      const rimW = Math.max(3, Math.round(wS * (1 - taper)) + 2);
+      g.fillStyle = state === 'extinct' ? 'rgb(48,42,36)' : 'rgb(18,12,10)';
+      g.fillRect(v.x - (rimW >> 1), T - S, rimW, S);
+      if (state === 'dormant') {
+        // A thin wisp of steam from a sleeping vent.
+        g.fillStyle = 'rgba(200,200,205,0.35)';
+        g.fillRect(X, T - 4 * S, S, 2 * S);
+        g.fillRect(X + S, T - 7 * S, S, 2 * S);
+      }
+      continue;
+    }
     g.fillStyle = 'rgb(22,10,8)';
     g.fillRect(X - 2 * S, T - 1 * S, 5 * S, 2 * S);
     g.fillStyle = 'rgb(255,140,40)';
@@ -3036,9 +3099,7 @@ export class HabitableCutawayEngine {
       ? planSurfaceDecals(base, clamp01(base.lush ?? 0.3), base.decalSeed, undefined, !!base.barren)
         .map(d => ({ ...d, wx: d.x, wy: d.y }))
       : null;
-    this.planChimneys = base.planetType === 'lava'
-      ? planVolcanoChimneys(base).map(c => ({ ...c, wx: c.x, wy: c.y }))
-      : [];
+    this.planChimneys = planVolcanoChimneys(base).map(c => ({ ...c, wx: c.x, wy: c.y }));
   }
 
   /** The identity options with the stored plans to stamp (1:1; the stamp records footing). */
