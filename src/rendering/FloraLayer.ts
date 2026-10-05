@@ -77,6 +77,18 @@ function hashStr(s: string): number {
 
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
+/**
+ * The zoom a plant's SPRITE is sized for: the camera zoom snapped to half
+ * steps (positions still follow the exact zoom). A finite ladder of sizes,
+ * so every sheet a zoom can need is known up front and preloadable.
+ */
+export function plantZoomOf(K: number): number {
+  return K <= 1 ? K : Math.max(1, Math.round(K * 2) / 2);
+}
+
+/** The sprite zoom steps above 1x, nearest first: what preloadSteps forges. */
+export const PLANT_ZOOM_STEPS = [1.5, 2, 2.5, 3, 3.5, 4];
+
 /** Worlds whose plants follow the seasons (green, temperate foliage). */
 const SEASONAL_WORLDS = new Set(['ocean', 'rocky', 'ice', 'storm']);
 /** Autumn foliage: rust, amber, crimson. */
@@ -226,7 +238,7 @@ export class FloraLayer {
     for (const l of this.order) {
       const s = l.site;
       if (s.foot === undefined || s.foot < 0 || l.died !== null) continue;
-      const full = Math.max(2, Math.round(16 * clamp(s.scale, 0.2, 1.35))) * K;
+      const full = Math.max(2, Math.round(16 * clamp(s.scale, 0.2, 1.35))) * plantZoomOf(K);
       const X = ((s.wx ?? s.x) - fx) * K + W / 2, Y = ((s.wy ?? s.y) - fy) * K + H / 2;
       const reach = full * 1.4 + 4;
       if (X < -reach || X > W + reach || Y < -4 || Y > H + reach) continue;
@@ -242,6 +254,34 @@ export class FloraLayer {
         this.forgesLeft = 1;
         this.sheetFor(l, Math.max(2, Math.round(full * STAGES[st])), planetType, atlas, false);
         if (this.cache.size !== before) yield;
+      }
+    }
+    this.forgesLeft = 0;
+  }
+
+  /**
+   * Preload, like shaders compiled up front: forge every sheet any zoom step
+   * (PLANT_ZOOM_STEPS) will need for every plant — grown, and at the stage a
+   * young plant shows now — one forge per step. The host runs it in idle
+   * frames, so a later zoom finds its sprites made.
+   */
+  *preloadSteps(now: number, planetType: string, atlas: DecalAtlas | null): Generator<void, void, unknown> {
+    for (const Z of PLANT_ZOOM_STEPS) {
+      for (const l of this.order) {
+        const s = l.site;
+        if (s.foot === undefined || s.foot < 0 || l.died !== null) continue;
+        const full = Math.max(2, Math.round(16 * clamp(s.scale, 0.2, 1.35))) * Z;
+        let stage = STAGES.length - 1;
+        if (l.born !== -Infinity && now >= l.born) {
+          const gr = (now - l.born) / GROW_SECONDS;
+          if (gr < 1) stage = Math.min(STAGES.length - 2, Math.floor(gr * (STAGES.length - 1)));
+        }
+        for (const st of stage === STAGES.length - 1 ? [stage] : [stage, STAGES.length - 1]) {
+          const before = this.cache.size;
+          this.forgesLeft = 1;
+          this.sheetFor(l, Math.max(2, Math.round(full * STAGES[st])), planetType, atlas, false);
+          if (this.cache.size !== before) yield;
+        }
       }
     }
     this.forgesLeft = 0;
@@ -280,7 +320,7 @@ export class FloraLayer {
       const X = (wx - v.fx) * v.K + v.W / 2, Y = (wy - v.fy) * v.K + v.H / 2;
       const sx = X * v.r + v.dx, sy = Y * v.r + v.dy + v.bob;
       const dest = Math.max(2, Math.round(16 * clamp(s.scale, 0.2, 1.35)));
-      const full = dest * v.K;
+      const full = dest * plantZoomOf(v.K);
       const reach = full * v.r * 1.4 + 4;
       if (sx < -reach || sx > v.vw + reach || sy < -4 || sy > v.vh + reach) continue;
       const px = Math.max(2, Math.round(full * STAGES[stage]));

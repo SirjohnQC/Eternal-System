@@ -2860,6 +2860,11 @@ export class HabitableCutawayEngine {
    */
   bakeExtras: ((zoom: number) => Iterable<void>) | null = null;
 
+  /** Plant sprites for every zoom step, forged in idle time (see FloraLayer.preloadSteps). */
+  floraPreloadSteps(): Generator<void, void, unknown> {
+    return this.flora.preloadSteps(this.elapsed, this.planetType, this.surfaceBakeOpts?.decalAtlas ?? null);
+  }
+
   private crust = document.createElement('canvas');
   private land = document.createElement('canvas');
   /** Identity land bake RGBA — fluids skip opaque pixels (decal overhang). */

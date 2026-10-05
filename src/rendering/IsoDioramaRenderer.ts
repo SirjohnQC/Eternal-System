@@ -58,7 +58,7 @@ import { orbitSky, axialTilt, seasonZero, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
 import { paintSky, skyLayout, farLayout, trackX, trackY, BLOOM_CORE, WASH_ALPHA, bloomScale, type SkyLayout } from './sky/SkyPainter';
 import { farScale, isIdentity, type Camera } from './ZoomCamera';
-import { ZoomController } from './ZoomController';
+import { ZoomController, MAX_ZOOM } from './ZoomController';
 import { applySettle, type SettleHooks } from './zoomSettle';
 
 // ─── Planet type palettes ──────────────────────────────────────────────────────
@@ -441,6 +441,11 @@ export class IsoDioramaRenderer {
   private surfaceLayer!: HTMLCanvasElement;   // top face terrain
   private cutaway = new HabitableCutawayEngine();
   /** Creature bodies for a new zoom are forged inside the camera bake (see prewarmCreatures). */
+  private static readonly PRELOAD_MS = 1.5;
+  private preload: Generator<void, void, unknown> | null = null;
+  private preloadVer = -1;
+  private preloadN = -1;
+  private preloadSeed = -1;
   private readonly hookBakeExtras = (this.cutaway.bakeExtras = (zoom: number) => this.prewarmCreatures(zoom));
 
   private mount:  HTMLElement | null = null;
@@ -955,6 +960,7 @@ export class IsoDioramaRenderer {
       this.rebakeDue = this.surfaceDirty &&
         this.elapsed - this.lastSurfaceBake > IsoDioramaRenderer.SURFACE_REBAKE_INTERVAL;
       applySettle(this.cutaway, this.zoom, now, this.settleHooks, this.bakeBudgetMs);
+      this.stepPreload();
       if (this.rebakeDue) {
         this.rebakeDue = false;
         this.rebakeSurfaceAndPlacement(true);
@@ -2938,6 +2944,33 @@ export class IsoDioramaRenderer {
    * bake: at most FORGE_BAKES_PER_FRAME new ones per frame, so zooming in on a
    * crowded world does not stall a frame).
    */
+  /**
+   * Sharp-view preload, like shaders compiled up front: while nothing else is
+   * baking, spend up to PRELOAD_MS a frame forging the plant sheets and
+   * creature bodies of every zoom step, so a zoom finds them made. Restarted
+   * when the plants or animals change (cached sprites are skipped quickly).
+   */
+  private stepPreload(): void {
+    if (!this.habitable || this.cutaway.bakePending) return;
+    // Compared as numbers: this runs every frame and must not allocate.
+    const v = this.cutaway.flora.version, n = this.inhabitants.length, seed = this.planetSeed;
+    if (v !== this.preloadVer || n !== this.preloadN || seed !== this.preloadSeed) {
+      this.preloadVer = v; this.preloadN = n; this.preloadSeed = seed;
+      this.preload = this.preloadAll();
+    }
+    const it = this.preload;
+    if (!it) return;
+    const t0 = performance.now();
+    while (performance.now() - t0 < IsoDioramaRenderer.PRELOAD_MS) {
+      if (it.next().done) { this.preload = null; return; }
+    }
+  }
+
+  private *preloadAll(): Generator<void, void, unknown> {
+    yield* this.cutaway.floraPreloadSteps();
+    for (let S = 2; S <= MAX_ZOOM; S++) yield* this.prewarmCreatures(S);
+  }
+
   /** Forge every creature body a view at `zoom` needs, one per step (run inside the camera bake). */
   private *prewarmCreatures(zoom: number): Generator<void, void, unknown> {
     const S = Math.max(1, Math.round(zoom));
