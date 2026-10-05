@@ -705,6 +705,10 @@ export class IsoDioramaRenderer {
     return this.cutaway.activeCamera.zoom;
   }
 
+  /** wsx / wsy as stable callbacks, so per-frame painters never allocate. */
+  private readonly wsxFn = (x: number): number => this.wsx(x);
+  private readonly wsyFn = (y: number): number => this.wsy(y);
+
   /** Base-world x -> active screen x. Exactly `x` at identity (no float round trip). */
   private wsx(x: number): number {
     const c = this.cutaway.activeCamera;
@@ -3282,6 +3286,7 @@ export class IsoDioramaRenderer {
         // pass (townProps); otherwise as their own layer.
         drawProps: this.cutaway.liveFlora ? undefined : (g) => this.drawBuildings(g),
         drawSurfaceOverlays: (g) => {
+          this.cutaway.drawFalls(g, this.elapsed, this.wsxFn, this.wsyFn);
           this.drawCityLights(g, this.elapsed);
           this.drawVentFx(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);

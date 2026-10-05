@@ -137,7 +137,7 @@ export type CutawayPlanetType = HabitableType;
 
 export const BOARD_SQUASH = 0.52;
 export const BOARD_WIDTH = 0.91;
-export const WALL_RATIO = 0.38;
+export const WALL_RATIO = 0.20;
 export const ATMO_RATIO = 0.25;
 export const ATMO_MIN_PX = 14;
 export const CY_TOP_DROP = 0.67; // cyTop = cyBody - 0.67 * R
@@ -304,6 +304,11 @@ export interface CutawayBakeOpts extends CutawayGeom {
    * keel depth is one world value scaled once.
    */
   crustDepthPx?: number;
+  /**
+   * Identity crust bakes only: filled with the falls pouring off the rim, so
+   * the host can animate them every frame (they are not baked into the crust).
+   */
+  fallsOut?: CrustFall[] | null;
   /** Volcano chimneys to paint, in this bake's screen coordinates; same rule as `decalSites`. */
   chimneySites?: VolcanoChimney[] | null;
   /** This world's volcanoes (see `volcanoProfile`). Omitted: lava worlds get active ones. */
@@ -1523,7 +1528,6 @@ export function* crustSteps(
   const world = worldMapOf(opts);
   if (rx < 8 * k) return;
   const baseRx = k === 1 ? rx : Math.round(rx / k);
-  const baseWall = k === 1 ? wall : Math.round(wall / k);
   // Column keys (cleft hash, ledge noise) count from the body's left rim in
   // WORLD columns, not from the first canvas column.
   const colKey0 = Math.max(0, Math.ceil(Math.round(world.wx(cx)) - baseRx));
@@ -1536,7 +1540,6 @@ export function* crustSteps(
   const wallBottom = new Float32Array(cols);
   const rimWater = new Uint8Array(cols);
   const crustH = opts.crustDepthPx ?? (k === 1 ? crustDepthOf(rx) : crustDepthOf(baseRx) * k);
-  const waterBand = k === 1 ? Math.max(6, Math.round(wall * 0.40)) : Math.max(6, Math.round(baseWall * 0.40)) * k;
   let iters = 0;
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
@@ -1557,26 +1560,58 @@ export function* crustSteps(
     const facetCol = ((wk % period) + period) % period < 1;
 
     const ys = Math.max(0, Math.ceil(frontY)), ye = Math.min(VH - 1, Math.floor(bottomY));
+    const wallH = Math.max(1, bottomY - frontY);
+    // Sea columns: the water is a window onto the sea floor — a silt bed
+    // whose height wanders along the rim, kelp rising from it on living worlds.
+    const floorY = bottomY - wallH * (0.28 + fbm1(wx * 0.045, seed + 515, 3) * 0.42);
+    const fwx = Math.floor(wx);
+    const kelp = WALL_LIFE.has(opts.planetType) && hash1(fwx * 41 + 7, seed + 523) > 0.86
+      ? (2 + Math.floor(hash1(fwx * 53, seed + 529) * 6)) * k : 0;
     for (let y = ys; y <= ye; y++) {
       iters++;
       const faceY = (y - cyTop) / ry;
       if (faceX * faceX + faceY * faceY <= 1) continue;
       const depth = y - frontY;
       const light = quantise(0.70 + 0.30 * clamp01(faceX * KEY_X + 0.42), 0.08);
-      const fluidLayer = depth < waterBand || water;
-      if (fluidLayer) {
-        const t = clamp01(depth / Math.max(1, water ? (bottomY - frontY) : waterBand));
-        const facet = facetCol ? 0.20 : 0;
-        g.fillStyle = css(shade(rgb(
+      const wy = Math.floor(depth / k);
+      let c: RGB;
+      // Under land the sea still rings the rim: a thin water lip on top.
+      if (water || depth < 2 * k) {
+        const t = clamp01(depth / wallH);
+        const sea = rgb(
           mix(pal.waterLip.r, pal.waterDeep.r, t),
           mix(pal.waterLip.g, pal.waterDeep.g, t),
           mix(pal.waterLip.b, pal.waterDeep.b, t),
-        ), light + facet));
+        );
+        if (y >= floorY) {
+          // The bed, seen through the water: silt tinted by the sea above it.
+          const top = y - floorY < k;
+          const bed = top ? pal.strata[2] : pal.strata[hash1(fwx * 7 + wy * 31, seed + 531) > 0.8 ? 1 : 0];
+          c = shade(rgb(mix(bed.r, sea.r, 0.45), mix(bed.g, sea.g, 0.45), mix(bed.b, sea.b, 0.45)),
+            light * (top ? 1.1 : 0.85));
+        } else if (kelp && y >= floorY - kelp) {
+          const leaf = pal.biome.forest;
+          c = shade(rgb(mix(leaf.r, sea.r, 0.5), mix(leaf.g, sea.g, 0.5), mix(leaf.b, sea.b, 0.5)), light);
+        } else {
+          c = shade(sea, light + (facetCol ? 0.20 : 0));
+        }
       } else {
-        const t = clamp01((depth - waterBand) / Math.max(1, bottomY - frontY - waterBand));
+        // Land at the rim: strata riddled with caverns.
+        const t = clamp01(depth / wallH);
         const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
-        g.fillStyle = css(shade(pal.strata[stripe], light));
+        const n = noise2(wx / 7, depth / k / 4, seed + 541);
+        // Water worlds keep a clean cliff face; caverns are for land worlds.
+        const inner = opts.planetType !== 'ocean' && depth > 1.5 * k && depth < wallH - 1.5 * k;
+        if (inner && n > 0.66) {
+          // Cavern: near-black, the odd crystal glint in the dark.
+          c = hash1(fwx * 61 + wy * 97, seed + 547) > 0.985 ? pal.facet : shade(pal.strata[pal.strata.length - 1], 0.32);
+        } else if (inner && n > 0.60) {
+          c = shade(pal.strata[stripe], light * 0.62);
+        } else {
+          c = shade(pal.strata[stripe], light);
+        }
       }
+      g.fillStyle = css(c);
       g.fillRect(x, y, 1, 1);
     }
     yield;
@@ -1596,8 +1631,12 @@ export function* crustSteps(
       : { edge: pal.waterSurf.mid, core: pal.waterSurf.light, glint: pal.waterSurf.glint })
     : null;
   const env = (ox: number): number => { const n = ox / baseRx; return Math.max(0, 1 - n * n); };
-  const keyW = baseRx * 0.42;
-  const majorW = Math.max(6, baseRx * 0.17), minorW = majorW * 0.45;
+  // Per-world character: where the keystone hangs, how deep, how crowded
+  // the range is. Two worlds never share a silhouette.
+  const keyW = baseRx * (0.30 + hash1(1, seed + 601) * 0.18);
+  const keyOff = Math.round((hash1(2, seed + 601) - 0.5) * 0.24 * baseRx);
+  const keyDepth = 0.70 + hash1(3, seed + 601) * 0.30;
+  const majorW = Math.max(6, baseRx * (0.11 + hash1(4, seed + 601) * 0.10)), minorW = majorW * 0.45;
   // One peak field: the deepest peak over `ox` (world depth) and its apex.
   let pkDepth = 0, pkApex = 0, pkHw = 1;
   const field = (ox: number, w: number, salt: number, scale: number): void => {
@@ -1609,7 +1648,11 @@ export function* crustSteps(
       const hw = w * (0.7 + hash1(c * 57 + salt, seed + 3) * 0.55);
       const u = Math.abs(ox - apexX) / hw;
       if (u >= 1) continue;
-      const d = baseCrust * scale * Math.pow(e, 1.2) * (0.45 + hash1(c * 91 + salt, seed + 7) * 0.55)
+      // Lengths spread wide: mostly stubs, now and then a long fang; some
+      // cells hang nothing at all.
+      const hl = hash1(c * 91 + salt, seed + 7);
+      if (hl < 0.14) continue;
+      const d = baseCrust * scale * Math.pow(e, 1.2) * (0.18 + Math.pow(hl, 1.7) * 0.92)
         * Math.pow(1 - u, 1.15);
       if (d > pkDepth) { pkDepth = d; pkApex = apexX; pkHw = hw; }
     }
@@ -1626,10 +1669,10 @@ export function* crustSteps(
     pkDepth = baseCrust * (0.10 * Math.sqrt(env(ox)) + (fbm1(ox * 0.11, seed + 77, 2) - 0.5) * 0.05);
     pkApex = ox; pkHw = majorW;
     // The keystone: one big inverted mountain under the centre.
-    const ku = Math.abs(ox) / keyW;
+    const ku = Math.abs(ox - keyOff) / keyW;
     if (ku < 1) {
-      const d = baseCrust * Math.pow(1 - ku, 1.05);
-      if (d > pkDepth) { pkDepth = d; pkApex = 0; pkHw = keyW; }
+      const d = baseCrust * keyDepth * Math.pow(1 - ku, 1.05);
+      if (d > pkDepth) { pkDepth = d; pkApex = keyOff; pkHw = keyW; }
     }
     field(ox, majorW, 101, 0.78);
     field(ox, minorW, 503, 0.36);
@@ -1717,15 +1760,18 @@ export function* crustSteps(
   // Small chunks torn off the keel drift beneath the shallow outer peaks:
   // grassy (or bare) top, an inverted point below. Never deeper than crustH,
   // so they stay inside keelBottomOf.
-  const shardW = Math.max(8, baseRx * 0.21);
+  const shardW = Math.max(8, baseRx * (0.14 + hash1(5, seed + 601) * 0.14));
+  // How many break off varies per world: a few, or a swarm.
+  const shardSkip = 0.25 + hash1(6, seed + 601) * 0.55;
   const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
   const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
   for (let c = Math.floor(ox0 / shardW) - 1; c <= Math.floor(ox1 / shardW) + 1; c++) {
-    if (hash1(c * 61 + 9, seed + 71) < 0.45) continue;
+    if (hash1(c * 61 + 9, seed + 71) < shardSkip) continue;
     const scx = (c + 0.25 + hash1(c * 43, seed + 73) * 0.5) * shardW;    // world x
     const n = scx / baseRx;
     if (Math.abs(n) > 0.92 || Math.abs(n) < 0.22) continue;
-    const half = 2 + Math.floor(hash1(c * 17, seed + 79) * 4);          // world px
+    const hs = hash1(c * 17, seed + 79);
+    const half = hs > 0.9 ? 5 + Math.floor(hs * 40) % 4 : 1 + Math.floor(hs * 5);   // world px; the odd big one
     const hgt = half * 2 + 1;
     const sx = cx + scx * k;                                            // screen x of its centre
     const j = Math.round(sx) - P0;
@@ -1734,69 +1780,125 @@ export function* crustSteps(
     const room = baseCrust - below - hgt - 1;
     if (room < 2) continue;
     const yTopW = below + 2 + Math.floor(hash1(c * 23, seed + 83) * room); // world rows under the wall
+    // One anchor row for the whole shard (the wall's ridge must not shear it),
+    // and whole world cells filled edge to edge, so no zoom leaves gaps.
+    const topY = wallBottom[j] + yTopW * k;
     for (let dx = -half; dx <= half; dx++) {
       const span = Math.max(1, Math.round(hgt * (1 - Math.abs(dx) / (half + 1))));
-      for (let px = 0; px < s; px++) {
-        const X = Math.round(sx + dx * k) + px;
-        if (X < rimX0 || X > rimX1) continue;
-        const topY = wallBottom[X - rimX0] + yTopW * k;
-        for (let dy = 0; dy < span; dy++) {
-          const lit = dx >= 0 ? 1.0 : 0.66;
-          const cap = life && dy < 1;
-          const col = cap ? shade(pal.biome.grassland, lit) : shade(pal.strata[2], lit * (1 - dy / (span + 2) * 0.4));
-          for (let py = 0; py < s; py++) {
-            const Y = Math.round(topY + dy * k) + py;
-            if (Y < 0 || Y >= VH) continue;
-            iters++;
-            g.fillStyle = css(col);
-            g.fillRect(X, Y, 1, 1);
-          }
-        }
+      const X0 = Math.max(rimX0, Math.round(sx + dx * k)), X1 = Math.min(rimX1 + 1, Math.round(sx + (dx + 1) * k));
+      if (X1 <= X0) continue;
+      const lit = dx > 0 ? 1.0 : dx === 0 ? 0.86 : 0.64;
+      for (let dy = 0; dy < span; dy++) {
+        const Y0 = Math.max(0, Math.round(topY + dy * k)), Y1 = Math.min(VH, Math.round(topY + (dy + 1) * k));
+        if (Y1 <= Y0) continue;
+        iters += (X1 - X0) * (Y1 - Y0);
+        const cap = life && dy < 1;
+        g.fillStyle = css(cap ? shade(pal.biome.grassland, lit) : shade(pal.strata[2], lit * (1 - dy / (span + 2) * 0.4)));
+        g.fillRect(X0, Y0, X1 - X0, Y1 - Y0);
       }
     }
   }
 
   // ── Falls ─────────────────────────────────────────────────────────────────
   // Where the sea meets the rim, it spills: a few columns pour off the plate
-  // and down past the peaks, glowing, thinning to mist (lava worlds: lava).
-  if (fallPal) {
-    const fallW = Math.max(10, baseRx * 0.19);
+  // and down past the peaks (lava worlds: lava). Planned here, on the identity
+  // bake only, and animated per frame by drawCrustFalls — never baked.
+  const out = opts.fallsOut;
+  if (fallPal && out && !opts.camera && k === 1) {
+    out.length = 0;
+    const fallW = Math.max(10, baseRx * (0.14 + hash1(7, seed + 601) * 0.12));
+    const skip = 0.35 + hash1(8, seed + 601) * 0.35;
     for (let c = Math.floor(ox0 / fallW) - 1; c <= Math.floor(ox1 / fallW) + 1; c++) {
-      if (hash1(c * 37 + 5, seed + 91) < 0.5) continue;
+      if (hash1(c * 37 + 5, seed + 91) < skip) continue;
       const fcx = (c + 0.3 + hash1(c * 11, seed + 93) * 0.4) * fallW;
       if (Math.abs(fcx / baseRx) > 0.86) continue;
-      const fw = 2 + Math.floor(hash1(c * 19, seed + 97) * 3);               // world px wide
-      const lenW = baseCrust * (0.55 + hash1(c * 29, seed + 99) * 0.45);
-      const sx0 = Math.round(cx + (fcx - fw / 2) * k);
-      for (let X = sx0; X < sx0 + fw * k; X++) {
-        if (X < rimX0 || X > rimX1 || !rimWater[X - rimX0]) continue;
-        const fwxL = Math.floor((X - sx0) / k);                             // world column within the fall
-        const edge = fwxL === 0 || fwxL === fw - 1;
-        const top = wallBottom[X - rimX0];
-        const len = lenW * k;
-        const yA = Math.max(0, Math.ceil(top)), yB = Math.min(VH - 1, Math.floor(top + len));
-        for (let Y = yA; Y <= yB; Y++) {
-          iters++;
-          const t = (Y - top) / len;
-          const wy = Math.floor((Y - top) / k);
-          // Broken streaks down the sheet, and a ragged dissolving tail.
-          const streak = hash1((fwxL + c * 7) * 131 + wy, seed + 101);
-          if (t > 0.6 && streak < (t - 0.6) * 2.4) continue;
-          const glint = !edge && streak > 0.93;
-          g.fillStyle = css(glint ? fallPal.glint : edge ? fallPal.edge : fallPal.core, 1 - t * 0.55);
-          g.fillRect(X, Y, 1, 1);
-        }
+      const fw = 1 + Math.floor(hash1(c * 19, seed + 97) * 4);
+      const x0 = Math.round(cx + fcx - fw / 2);
+      const tops: number[] = [];
+      let any = false;
+      for (let X = x0; X < x0 + fw; X++) {
+        const ok = X >= rimX0 && X <= rimX1 && rimWater[X - rimX0] === 1;
+        tops.push(ok ? Math.ceil(wallBottom[X - rimX0]) - 1 : NaN);
+        any = any || ok;
       }
+      if (!any) continue;
+      out.push({
+        x0, w: fw, tops, id: c,
+        len: Math.round(baseCrust * (0.45 + hash1(c * 29, seed + 99) * 0.55)),
+        speed: opts.planetType === 'lava' ? 7 + hash1(c, seed + 103) * 4 : 30 + hash1(c, seed + 103) * 16,
+      });
     }
   }
   const it = zoomIters();
   if (it) it.crust = iters;
 }
 
+/** Worlds whose sea floor grows kelp behind the wall's water. */
+const WALL_LIFE: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm']);
 /** Worlds whose underside carries moss and vines instead of embers. */
 const MOSSY_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm']);
 /** Worlds whose liquid pours off the rim in falls (lava worlds pour lava). */
 const FALL_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm', 'lava']);
+
+/** One fall off the rim, in base-world px (the identity bake's). */
+export interface CrustFall {
+  /** Left column and width. */
+  x0: number;
+  w: number;
+  /** First row per column (NaN: land at the rim there, no fall). */
+  tops: number[];
+  /** Rows it falls before dissolving. */
+  len: number;
+  /** Rows per second the streaks travel. */
+  speed: number;
+  id: number;
+}
+
+const FALL_ALPHAS = 6;
+
+/** CSS for a world's falls: [edge, core, glint, dim] x FALL_ALPHAS fades. Null: this world has none. */
+export function fallLutFor(type: HabitableType): string[] | null {
+  if (!FALL_TYPES.has(type)) return null;
+  const pal = paletteFor(type);
+  const cols = type === 'lava'
+    ? [pal.ember, pal.emberHot, rgb(255, 236, 170), shade(pal.ember, 0.7)]
+    : [pal.waterSurf.mid, pal.waterSurf.light, pal.waterSurf.glint, pal.waterLip];
+  const lut: string[] = [];
+  for (const c of cols) for (let a = 0; a < FALL_ALPHAS; a++) lut.push(css(c, 1 - (a / FALL_ALPHAS) * 0.6));
+  return lut;
+}
+
+/**
+ * Draw the falls for time `t` through a base-world -> screen map. Streaks
+ * slide down the sheet, the tail frays and dissolves as it falls, and the
+ * lip churns where the water leaves the rim. Allocation-free.
+ */
+export function drawCrustFalls(
+  g: CanvasRenderingContext2D, falls: readonly CrustFall[], lut: readonly string[], t: number,
+  sx: (x: number) => number, sy: (y: number) => number, seed: number,
+): void {
+  for (let f = 0; f < falls.length; f++) {
+    const fall = falls[f];
+    const scroll = t * fall.speed;
+    for (let i = 0; i < fall.w; i++) {
+      const top = fall.tops[i];
+      if (top !== top) continue;
+      const edge = fall.w > 2 && (i === 0 || i === fall.w - 1);
+      const X0 = Math.round(sx(fall.x0 + i)), X1 = Math.max(X0 + 1, Math.round(sx(fall.x0 + i + 1)));
+      const key = (i + fall.id * 7) * 131;
+      for (let r = 0; r < fall.len; r++) {
+        const tr = r / fall.len;
+        // Dashes three rows long, moving down at the fall's speed.
+        const v = hash1(key + Math.floor((r - scroll) / 3), seed + 101);
+        if (tr > 0.5 && hash1(key * 3 + Math.floor((r - scroll * 0.8) / 2), seed + 107) < (tr - 0.5) * 2.2) continue;
+        const kind = r < 2 ? 2 : edge ? 0 : v > 0.9 ? 2 : v < 0.28 ? 3 : 1;
+        g.fillStyle = lut[kind * FALL_ALPHAS + Math.min(FALL_ALPHAS - 1, Math.floor(tr * FALL_ALPHAS))];
+        const Y0 = Math.round(sy(top + r));
+        g.fillRect(X0, Y0, X1 - X0, Math.max(1, Math.round(sy(top + r + 1)) - Y0));
+      }
+    }
+  }
+}
 
 // ─── Atmosphere shell ─────────────────────────────────────────────────────────
 
@@ -2776,6 +2878,16 @@ export class HabitableCutawayEngine {
   private atmoImage: ImageData | null = null;
   private fluidImage: ImageData | null = null;
   private surfaceBakeOpts: CutawayBakeOpts | null = null;
+  /** Falls off the rim (identity bake), animated by `drawFalls`. */
+  private readonly falls: CrustFall[] = [];
+  private fallLut: string[] | null = null;
+
+  /** Animate the falls through the host's base-world -> screen map (see drawCrustFalls). */
+  drawFalls(g: CanvasRenderingContext2D, t: number, sx: (x: number) => number, sy: (y: number) => number): void {
+    if (this.fallLut && this.falls.length && this.surfaceBakeOpts) {
+      drawCrustFalls(g, this.falls, this.fallLut, t, sx, sy, this.surfaceBakeOpts.seed);
+    }
+  }
   private w = 1;
   private h = 1;
   private planetType: HabitableType = 'ocean';
@@ -2913,7 +3025,8 @@ export class HabitableCutawayEngine {
     // Surface first: it fills occupancy, which the crust reads to know where
     // the sea meets the rim (water column, falls).
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
-    if (crustG) paintCutawayCrust(crustG, bakeOpts);
+    if (crustG) paintCutawayCrust(crustG, { ...bakeOpts, fallsOut: this.falls });
+    this.fallLut = fallLutFor(opts.planetType);
     // After the paint, which records each site's footing. A new planet or
     // size: everything is shown grown.
     this.flora.setPlan(this.liveFlora ? this.planDecals : null, this.elapsed, true);
