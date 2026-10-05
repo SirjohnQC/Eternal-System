@@ -47,7 +47,7 @@ import {
   type HabitableType,
   cutawayWaterSurf,
   habitableGeom,
-  volcanoProfile,
+  volcanoProfile, type VolcanoProfile, type VolcanoState,
 } from './HabitableCutawayEngine';
 import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
@@ -71,7 +71,23 @@ import { applySettle, type SettleHooks } from './zoomSettle';
  */
 const FORGE_MIN_PX = 4;
 /** The shared idle hop (seconds per cycle); the lab specimen uses the same. */
-export /** Camera zoom where birds start to fade in over living worlds. */
+export interface Vent {
+  row: number; col: number; dx: number; dy: number;
+  /** Cone radius in grid cells. */
+  R: number;
+  base: number; peak: number;
+  state: VolcanoState;
+  crater: { x: number; y: number } | null;
+  flows: Array<Array<{ x: number; y: number }>>;
+}
+
+function hash01(n: number, seed: number): number {
+  let h = Math.imul(n ^ seed, 2654435761) ^ (n >>> 7);
+  h = Math.imul(h ^ (h >>> 15), 2246822519);
+  return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+}
+
+/** Camera zoom where birds start to fade in over living worlds. */
 const BIRD_ZOOM = 1.4;
 const CREATURE_HOP_PERIOD = 2.4;
 /** New CreatureForge sprites baked per frame at most. */
@@ -482,6 +498,10 @@ export class IsoDioramaRenderer {
 
   // Data
   private grid:        PlanetGrid | null = null;
+  /** The simulation's grid; `grid` is this with the volcano cones raised in. */
+  private rawGrid:     PlanetGrid | null = null;
+  private vents: Vent[] = [];
+  private ventKey = '';
   private biosphere:   PlanetBiosphere | null = null;
   private species:     SpeciesGenome[] = [];
   private planet:      Planet | null = null;
@@ -964,6 +984,7 @@ export class IsoDioramaRenderer {
     star?: StarBody,
     planetIndex = 0,
   ): void {
+    this.rawGrid     = grid;
     this.grid        = grid;
     this.biosphere   = biosphere;
     this.species     = species;
@@ -1328,7 +1349,7 @@ export class IsoDioramaRenderer {
     // the common step at 3px on a board only 210px wide — about 1.4% of the
     // width — so the relief was present in the data and invisible on screen.
     // Legacy keeps its taller disc lift.
-    if (this.habitable) return 18;
+    if (this.habitable) return 32;
     return Math.max(LIFT_STEP, Math.round(this.rx * 0.11));
   }
 
@@ -1351,6 +1372,10 @@ export class IsoDioramaRenderer {
       // Five tiers rather than three: with three, ~80% of the visible face sat
       // on one tier and the surface read as a painted disc. Measured inside the
       // rendered disc at 480x320: lift2 16%, lift5 14%, lift9 1.5%.
+      // Above 0.92 only volcano cones reach (ventedGrid): their upper terraces.
+      if (elev > 1.06) return 32;
+      if (elev > 1.0) return 27;
+      if (elev > 0.92) return 22;
       if (elev > 0.80) return 18;
       if (elev > 0.70) return 13;
       if (elev > 0.62) return 9;
@@ -1487,7 +1512,9 @@ export class IsoDioramaRenderer {
   private bakeHabitableCutaway(keepSim = false): void {
     // Towns first: their fields and roads are painted by the bake. The
     // geometry is the one the bake is about to lay out.
+    if (this.habitable && this.rawGrid) this.grid = this.ventedGrid(this.rawGrid);
     this.planTowns(this.geomForBake());
+    this.placeVentFx(this.geomForBake());
     const bio = this.biosphere;
     const grid = this.grid;
     // keepSim: a resize of the same planet (the engine keeps the weather sim).
@@ -1498,7 +1525,8 @@ export class IsoDioramaRenderer {
       grid: this.grid,
       planetType: this.planetType as HabitableType,
       barren: this.forming,
-      volcanoes: volcanoProfile(this.planetType, this.planetSeed, this.forming ? this.star?.formationStage ?? null : null),
+      // Volcanoes are terrain now (ventedGrid), not pasted cones.
+      volcanoes: null,
       // No rivers until the rains: only the sea / ice stages carry them.
       noRivers: this.forming && this.star?.formationStage !== 'primordial' && this.star?.formationStage !== 'ice_age',
       discToGrid: (dx, dy) => this.discToGrid(dx, dy),
@@ -2922,6 +2950,161 @@ export class IsoDioramaRenderer {
   }
 
   /**
+   * Volcanoes as TERRAIN: pick vent sites on the visible face (highest land,
+   * spaced apart), then raise a terraced cone into a copy of the grid so the
+   * normal bake draws it — cliffs, terraces, lighting and all. Active cones
+   * are fresh basalt with a crater; dormant ones dark rock up top; extinct
+   * ones are worn hills that weather to the land around them (trees, snow).
+   * The simulation's grid is never touched.
+   */
+  private ventedGrid(raw: PlanetGrid): PlanetGrid {
+    const prof = this.habitable
+      ? volcanoProfile(this.planetType, this.planetSeed, this.forming ? this.star?.formationStage ?? null : null)
+      : null;
+    const key = prof ? `${this.planetSeed}|${this.planetType}|${prof.count}|${prof.scale}|${prof.state}|${this.focusLat.toFixed(3)}|${this.focusLon.toFixed(3)}` : '';
+    if (key !== this.ventKey) {
+      this.ventKey = key;
+      this.vents = prof ? this.planVents(raw, prof) : [];
+    }
+    if (this.vents.length === 0) return raw;
+    const out = raw.slice();
+    for (const v of this.vents) {
+      const R = Math.ceil(v.R);
+      for (let dr = -R; dr <= R; dr++) {
+        const row = v.row + dr;
+        if (row < 0 || row >= GRID_SIZE) continue;
+        if (out[row] === raw[row]) out[row] = raw[row].slice();
+        for (let dc = -R; dc <= R; dc++) {
+          const col = (v.col + dc + GRID_SIZE) % GRID_SIZE;
+          const d = Math.hypot(dr, dc) / v.R;
+          if (d >= 1) continue;
+          const cell = out[row][col];
+          // Concave flanks, steeper near the top; a little noise breaks the
+          // perfect circle into ridges.
+          const jag = (hash01(row * 131 + col * 17, this.planetSeed) - 0.5) * 0.03;
+          let e = v.base + (v.peak - v.base) * Math.pow(1 - d, 1.1) + jag * (1 - d);
+          if (v.state !== 'extinct' && d < 0.1) e = v.peak - 0.06;   // crater
+          if (e <= cell.elevation && d > 0.1) continue;
+          const vent = v.state === 'active' && d < 0.95;
+          out[row][col] = {
+            ...cell, elevation: e,
+            biome: vent ? 'volcanic' : cell.biome,
+            fertility: vent ? 0 : cell.fertility,
+          };
+        }
+      }
+    }
+    return out;
+  }
+
+  private planVents(grid: PlanetGrid, prof: VolcanoProfile): Vent[] {
+    const cands: Array<{ row: number; col: number; score: number; dx: number; dy: number; e: number }> = [];
+    for (let row = 0; row < GRID_SIZE; row += 2) {
+      for (let col = 0; col < GRID_SIZE; col += 2) {
+        const d = this.gridToDisc(row, col);
+        if (!d) continue;
+        const r = Math.hypot(d.dx, d.dy);
+        if (r > 0.62 || r < 0.08 || d.dy < -0.4) continue;   // keep off the squashed back rim
+        const cell = grid[row]?.[col];
+        if (!cell || cell.elevation - this.rimFalloff(r) < SEA_LEVEL + 0.03) continue;
+        cands.push({ row, col, dx: d.dx, dy: d.dy, e: cell.elevation, score: cell.elevation + hash01(row * 977 + col, this.planetSeed ^ 0x71) * 0.3 });
+      }
+    }
+    cands.sort((a, b) => b.score - a.score);
+    const vents: Vent[] = [];
+    const R = 12 * prof.scale * (prof.state === 'extinct' ? 1.2 : 1);
+    const spacing = R / GRID_SIZE * 3;
+    for (const c of cands) {
+      if (vents.length >= prof.count) break;
+      if (vents.some(v => Math.hypot(v.dx - c.dx, v.dy - c.dy) < spacing)) continue;
+      const big = prof.state === 'extinct' ? 0.8 + prof.scale * 0.02 : 0.9 + prof.scale * 0.08;
+      vents.push({ row: c.row, col: c.col, dx: c.dx, dy: c.dy, R, base: c.e, peak: Math.max(big, c.e + 0.12), state: prof.state, crater: null, flows: [] });
+    }
+    return vents;
+  }
+
+  /** Screen anchors (base world px) for the crater and the lava flows. */
+  private placeVentFx(geom: { cx: number; cy: number; rx: number; ry: number }): void {
+    const at = (row: number, col: number): { x: number; y: number } | null => {
+      const d = this.gridToDisc(row, col);
+      if (!d) return null;
+      const x = geom.cx + d.dx * geom.rx, y = geom.cy + d.dy * geom.ry;
+      return { x, y: y - this.liftAtFace(x, y, geom) };
+    };
+    for (const v of this.vents) {
+      v.crater = at(v.row, v.col);
+      v.flows = [];
+      if (v.state !== 'active') continue;
+      const n = 2 + Math.floor(hash01(v.row * 7 + v.col, this.planetSeed) * 3);
+      for (let f = 0; f < n; f++) {
+        // Down the FRONT half of the cone mostly, so the player sees them.
+        const a = Math.PI * (0.15 + 0.7 * (f + hash01(f * 31 + v.row, this.planetSeed)) / n);
+        const pts: Array<{ x: number; y: number }> = [];
+        for (let t = 0.12; t < 1.15; t += 0.04) {
+          const w = Math.sin(t * 9 + f * 2) * 0.12;
+          const p = at(Math.round(v.row + Math.sin(a + w) * v.R * t), Math.round(v.col + Math.cos(a + w) * v.R * t));
+          if (!p) continue;
+          // Densify to one point per base pixel: a continuous ribbon of lava.
+          const q = pts[pts.length - 1];
+          const steps = q ? Math.floor(Math.hypot(p.x - q.x, p.y - q.y)) : 0;
+          for (let i = 1; i < steps; i++) pts.push({ x: q.x + (p.x - q.x) * i / steps, y: q.y + (p.y - q.y) * i / steps });
+          pts.push(p);
+        }
+        v.flows.push(pts);
+      }
+    }
+  }
+
+  /** Lava pulsing down the active flanks, crater glow, and smoke. */
+  private drawVentFx(g: CanvasRenderingContext2D, t: number): void {
+    if (!this.habitable || this.vents.length === 0) return;
+    const k = this.camZoom, S = Math.max(1, Math.round(k));
+    const bob = this.cutaway.drawGeom.bob;
+    g.save();
+    for (const v of this.vents) {
+      const c = v.crater;
+      if (!c) continue;
+      const cx = this.wsx(c.x), cy = this.wsy(c.y + bob);
+      if (v.state === 'active') {
+        v.flows.forEach((pts, fi) => {
+          const n = pts.length;
+          for (let j = 0; j < n; j++) {
+            const p = pts[j];
+            // A hot pulse runs down each flow; the rest glows dull red and
+            // cools (darker) towards the toe.
+            const ph = ((t * 0.45 + fi * 0.37 - j / n) % 1 + 1) % 1;
+            const cool = j / n;
+            g.fillStyle = ph < 0.12 ? 'rgb(255,214,110)'
+              : ph < 0.3 ? 'rgb(255,128,36)'
+              : `rgb(${Math.round(210 - cool * 90)},${Math.round(60 - cool * 30)},${Math.round(20 - cool * 8)})`;
+            g.fillRect(Math.round(this.wsx(p.x)), Math.round(this.wsy(p.y + bob)), S, S);
+          }
+        });
+        const fl = Math.sin(t * 7 + v.row) > 0;
+        g.fillStyle = fl ? 'rgb(255,190,80)' : 'rgb(255,140,40)';
+        g.fillRect(Math.round(cx - S), Math.round(cy - S), 3 * S, 2 * S);
+        g.fillStyle = 'rgb(255,236,160)';
+        g.fillRect(Math.round(cx), Math.round(cy - S), S, S);
+      }
+      // Smoke: an active vent billows dark ash, a sleeping one breathes a
+      // thin white wisp. Puffs rise, drift downwind, swell and fade.
+      const puffs = v.state === 'active' ? 22 : v.state === 'dormant' ? 6 : 0;
+      for (let i = 0; i < puffs; i++) {
+        const age = ((t * (v.state === 'active' ? 0.22 : 0.12) + i / puffs) % 1);
+        const px = cx + (Math.sin(age * 4 + i * 1.3) * 2 + age * 14) * k;
+        const py = cy - (3 + age * (v.state === 'active' ? 34 : 18)) * k;
+        const sz = Math.max(S, Math.round((1 + age * (v.state === 'active' ? 2.2 : 1.2)) * k));
+        g.globalAlpha = (v.state === 'active' ? 0.7 : 0.35) * (1 - age);
+        const gr = v.state === 'active' ? Math.round(70 + age * 80) : 225;
+        g.fillStyle = `rgb(${gr},${gr - 4},${gr - 8})`;
+        g.fillRect(Math.round(px - sz / 2), Math.round(py - sz / 2), sz, sz);
+      }
+      g.globalAlpha = 1;
+    }
+    g.restore();
+  }
+
+  /**
    * Small flocks wheeling over a living world once the camera is close
    * (they fade in from BIRD_ZOOM). Each flock flies a slow loop over the
    * disc in a loose V; every bird flaps on its own two-frame beat, 1 px x S.
@@ -3099,6 +3282,7 @@ export class IsoDioramaRenderer {
         drawProps: this.cutaway.liveFlora ? undefined : (g) => this.drawBuildings(g),
         drawSurfaceOverlays: (g) => {
           this.drawCityLights(g, this.elapsed);
+          this.drawVentFx(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
           this.drawBirds(g, this.elapsed);
         },

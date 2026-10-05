@@ -1095,6 +1095,8 @@ export function* surfaceSteps(
       // keep decals below this line; see SurfaceDecals.ts.
       if (opts.planetType !== 'lava'
           && biome === 'mountain' && cell.elevation > PAINTER_SNOW_ELEVATION) biome = 'snow';
+      // Volcano cones (the renderer's vented grid) keep their basalt.
+      if (cell.biome === 'volcanic' && !isWater(biome)) biome = 'volcanic';
 
       if (isWater(biome)) {
         if (inCanvas) {
@@ -1375,7 +1377,7 @@ export function volcanoProfile(planetType: string, seed: number, formationStage:
     const early = formationStage === 'magma' || formationStage === 'cooling' || formationStage === 'volcanic';
     return { count: early ? 7 : 5, scale: young[formationStage], state: early || r(1) < 0.6 ? 'active' : 'dormant' };
   }
-  if (planetType === 'lava') return { count: 10, scale: 1.2, state: 'active' };
+  if (planetType === 'lava') return { count: 6, scale: 1.2, state: 'active' };
   const chance: Record<string, number> = { rocky: 0.7, toxic: 0.65, desert: 0.55, ocean: 0.5, carbon: 0.5, storm: 0.45, crystal: 0.35, ice: 0.3 };
   if (r(2) >= (chance[planetType] ?? 0.4)) return null;
   const roll = r(3);
