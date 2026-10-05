@@ -5,6 +5,7 @@
  * simulation. Every physics term has an ablation switch so tools/weatherCheck
  * can prove each metric measures the term it claims to.
  */
+import { WeatherEvents } from './WeatherEvents';
 import { WX_NX, WX_NY, WX_N, weatherRng, type ClimateSources } from './WeatherClimate';
 
 export const WX_DT = 0.25;
@@ -133,6 +134,8 @@ export class WeatherSim {
   sunLat = 0;
   anomaly: Anomaly | null = null;
   anomalyCount = 0;
+  /** Tornadoes and typhoons (own random stream; they never touch the fields). */
+  readonly events = new WeatherEvents(0);
 
   private nv = new Float32Array(WX_N);
   private nc = new Float32Array(WX_N);
@@ -195,6 +198,7 @@ export class WeatherSim {
     this.anomaly = null;
     this.anomalyCount = 0;
     this.anomalyRng = weatherRng(this.climate.personality.anomalySeed);
+    this.events.reset(this.climate.personality.anomalySeed);
     this.nextAnomaly = 300 + this.anomalyRng() * 300;
     this.rainRng = weatherRng((this.climate.personality.anomalySeed ^ 0x51a15eed) >>> 0);
     this.sysN = this.rainRegionCount();
@@ -447,6 +451,12 @@ export class WeatherSim {
   }
 
   /** Band wind without meander or anomalies, cells/s; +i is eastward. */
+  /** A raining storm cell (kind STORM) or a shower under way at field cell k: where tornadoes drop. */
+  isStorm(k: number): boolean {
+    if (this.snow[k]) return false;             // no tornado out of a snow squall
+    return this.raining[k] > 0.5 || kindAt(this, k) === WK.STORM;
+  }
+
   baseWindU(j: number): number {
     if (this.ablate.wind) return 0;
     const g = this.climate.personality.bandGain;
@@ -671,6 +681,7 @@ export class WeatherSim {
     const td = this.dryness; this.dryness = nd; this.nd = td;
 
     this.scheduleAnomaly();
+    this.events.step(this, dt);
     this.writeForms();
   }
 

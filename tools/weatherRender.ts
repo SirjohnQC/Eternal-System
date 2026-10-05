@@ -13,12 +13,13 @@ import { generatePlanetGrid, GRID_SIZE, SEA_LEVEL, BIOME_COLORS } from '../src/s
 import { buildClimate, type ClimateInput } from '../src/rendering/weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from '../src/rendering/weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut } from '../src/rendering/weather/WeatherPainter';
+import { VX_NAMES } from '../src/rendering/weather/WeatherEvents';
 
 const outDir = process.argv[2] ?? 'renders/weather';
 const SEED = Number(process.argv[3] ?? 7);
 const FRAMES = Number(process.argv[4] ?? 300);
 const SCALE = 2;
-const TYPES = ['ocean', 'rocky', 'ice', 'lava', 'desert', 'storm', 'toxic', 'carbon', 'crystal'];
+const TYPES = process.env.WX_TYPES ? process.env.WX_TYPES.split(',') : ['ocean', 'rocky', 'ice', 'lava', 'desert', 'storm', 'toxic', 'carbon', 'crystal'];
 
 const PW = 480, PH = 260;
 const pgeom = { cx: 240, cyTop: 140, rx: 150, ry: 78 };
@@ -46,6 +47,16 @@ function renderType(type: string, seed: number, frames: number): Uint8ClampedArr
   const c = buildClimate(input);
   const sim = new WeatherSim(c); sim.warmUp(WX_WARMUP);
   const painter = new WeatherPainter(lut, c, 24, seed);
+  // WX_FORCE=<VX name> (tornado, typhoon, dust_devil, haboob, blizzard,
+  // supercell, fire_whirl): put one on the face (reproducible spot) to look at.
+  const kind = (VX_NAMES as readonly string[]).indexOf(process.env.WX_FORCE ?? '');
+  if (kind >= 0) {
+    let h = seed | 0 || 1;
+    const rnd = () => { h = (Math.imul(h, 1664525) + 1013904223) | 0; return (h >>> 0) / 4294967296; };
+    const sea = kind === 1, land = kind === 0 || kind === 2 || kind === 3 || kind === 6;
+    const spot = painter.faceSpot(k => (sea ? c.water[k] > 0.6 : land ? c.water[k] < 0.35 : true), rnd);
+    if (spot) sim.events.force(sim, kind, spot.x, spot.y);
+  }
   const img = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   const shadow = { width: PW, height: PH, data: new Uint8ClampedArray(PW * PH * 4) };
   let acc = 0;

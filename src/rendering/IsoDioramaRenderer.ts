@@ -3791,6 +3791,11 @@ export class IsoDioramaRenderer {
    *   uses and raised onto the extruded surface, so the effect sits on the
    *   ground the player clicked rather than floating over it.
    */
+  /** Dev: force a tornado (0) or typhoon (1) into view (see HabitableCutawayEngine.forceVortex). */
+  forceVortex(kind: number, onlyIfNone = false): boolean {
+    return this.habitable && this.cutaway.forceVortex(kind, onlyIfNone);
+  }
+
   playDivineEffect(kind: DivineEffectKind, cell?: { row: number; col: number } | null): void {
     const style = EFFECT_STYLES[kind];
     // Cast in BASE-WORLD units (spec 3), whatever the camera: centre, reach,

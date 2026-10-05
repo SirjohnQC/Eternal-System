@@ -2877,6 +2877,22 @@ export class HabitableCutawayEngine {
   private weatherImage: ImageData | null = null;
   private weatherSim: WeatherSim | null = null;
   private weatherPainter: WeatherPainter | null = null;
+
+  /**
+   * Dev: spin up a severe-weather event (WeatherEvents VX kind) on the
+   * visible face, on land or sea as its kind needs. Returns false if there is no weather or
+   * no such spot. `onlyIfNone`: skip when one of that kind is already up.
+   */
+  forceVortex(kind: number, onlyIfNone = false): boolean {
+    const sim = this.weatherSim, painter = this.weatherPainter;
+    if (!sim || !painter) return false;
+    if (onlyIfNone && sim.events.count(kind) > 0) return true;
+    const water = sim.climate.water;
+    // Sea for spirals that need it (typhoon), land for funnels and dust; anywhere else.
+    const sea = kind === 1, land = kind === 0 || kind === 2 || kind === 3 || kind === 6;
+    const spot = painter.faceSpot(k => (sea ? water[k] > 0.6 : land ? water[k] < 0.35 : true), Math.random);
+    return !!spot && !!sim.events.force(sim, kind, spot.x, spot.y);
+  }
   /** Climate the painters were last given (a camera painter is built from it). */
   private weatherClimate: ClimateSources | null = null;
   /** Entries in the identity weather lookup: a camera painter's particle cap scales from it. */

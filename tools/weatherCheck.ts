@@ -19,7 +19,7 @@ import {
   WeatherSim, WX_DT, WX_WARMUP, WK, kindAt, latOf, fieldIndex, COLD, type SimAblation,
 } from '../src/rendering/weather/WeatherSim';
 import {
-  WeatherPainter, buildWeatherLut, type WeatherLut,
+  WeatherPainter, buildWeatherLut, CLOUD_TOWER_MAX, type WeatherLut,
 } from '../src/rendering/weather/WeatherPainter';
 
 const QUICK = process.argv.includes('--quick');
@@ -770,7 +770,8 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   const allowed = new Uint8Array(PW * PH);
   for (let n = 0; n < p.lut.count; n++) {
     const x = p.lut.px[n];
-    const yTop = p.lut.py[n] - 24 - 4, yBot = Math.max(p.lut.py[n], p.lut.ground[n]) + 1;
+    // The cloud deck (24) + its 4-px dither, plus the tallest heap above it.
+    const yTop = p.lut.py[n] - 24 - 4 - CLOUD_TOWER_MAX, yBot = Math.max(p.lut.py[n], p.lut.ground[n]) + 1;
     for (let xx = x - 3; xx <= x + 3; xx++) for (let y = yTop; y <= yBot; y++) {
       if (xx >= 0 && y >= 0 && xx < PW && y < PH) allowed[y * PW + xx] = 1;
     }
@@ -891,6 +892,50 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   for (let f = 0; f < 200; f++) { const t0 = performance.now(); b.frame(); times.push(performance.now() - t0); }
   times.sort((x, y) => x - y);
   console.log(`  info  headless frame (sim amortised + paint) median ${times[100].toFixed(2)} ms`);
+}
+
+// ─── Severe weather: each world its own ──────────────────────────────────────
+console.log('\n  SEVERE WEATHER');
+{
+  /** Events first seen per kind per hour, and whether typhoons formed at sea. */
+  const brewOf = (type: string, seed: number) => {
+    const grid = generatePlanetGrid(type, seed * 7777, null, null);
+    const sim = new WeatherSim(buildClimate(input(grid, type, seed))); sim.warmUp(WX_WARMUP);
+    const seen = new Set<object>(), n = new Array(7).fill(0);
+    let tyAtSea = 0, maxLive = 0;
+    const steps = (QUICK ? 1200 : 3600) / WX_DT;
+    for (let s = 0; s < steps; s++) {
+      sim.step(WX_DT);
+      maxLive = Math.max(maxLive, sim.events.list.length);
+      for (const v of sim.events.list) {
+        if (seen.has(v)) continue;
+        seen.add(v); n[v.kind]++;
+        const k = Math.floor(v.y) * WX_NX + Math.floor(v.x);
+        if (v.kind === 1 && sim.climate.water[k] > 0.6) tyAtSea++;
+      }
+    }
+    const hours = steps * WX_DT / 3600;
+    return { per: n.map(x => x / hours), n, tyAtSea, maxLive };
+  };
+  const show = (rs: ReturnType<typeof brewOf>[]) => rs.map(r => r.n.join('/')).join(', ');
+  const only = (r: ReturnType<typeof brewOf>, kinds: number[]) => r.n.every((x, i) => x === 0 || kinds.includes(i));
+  const ocean = [1, 7, 42].map(s => brewOf('ocean', s));
+  const storm = [1, 7, 42].map(s => brewOf('storm', s));
+  const desert = [1, 7].map(s => brewOf('desert', s));
+  const ice = [1, 7].map(s => brewOf('ice', s));
+  const lava = [1, 7].map(s => brewOf('lava', s));
+  const gas = brewOf('gas', 1);
+  // Kinds: 0 tornado, 1 typhoon, 2 dust devil, 3 haboob, 4 blizzard, 5 supercell, 6 fire whirl.
+  check('ordinary worlds: rare tornadoes, typhoons only at sea', ocean.every(r => only(r, [0, 1]) && r.per[0] < 12 && r.tyAtSea === r.n[1])
+    && ocean.some(r => r.n[1] > 0), `tornado/typhoon/... per run: ${show(ocean)}`);
+  check('storm worlds: supercells (>= 6/h) and hypercanes', storm.every(r => only(r, [1, 5]) && r.per[5] >= 6 && r.n[1] > 0),
+    show(storm));
+  check('desert worlds: dust devils and haboobs', desert.every(r => only(r, [2, 3]) && r.n[2] > 0 && r.n[3] > 0), show(desert));
+  check('ice worlds: blizzards', ice.every(r => only(r, [4]) && r.n[4] > 0), show(ice));
+  check('lava worlds: fire whirls', lava.every(r => only(r, [6]) && r.n[6] > 0), show(lava));
+  check('gas giants: none', gas.n.every(x => x === 0), gas.n.join('/'));
+  check('a handful live at once at most', [...ocean, ...storm, ...desert, ...ice, ...lava].every(r => r.maxLive <= 4),
+    [...ocean, ...storm, ...desert, ...ice, ...lava].map(r => r.maxLive).join(' '));
 }
 
 console.log(failed === 0 ? '\n  all weather checks passed\n' : `\n  ${failed} weather check(s) FAILED\n`);

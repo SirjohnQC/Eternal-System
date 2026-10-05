@@ -51,6 +51,8 @@ export interface ClimateSources {
    */
   raininess: number;
   personality: WeatherPersonality;
+  /** The world's type: picks its kinds of severe weather (WeatherEvents). */
+  planetType?: string;
 }
 
 export interface ClimateInput {
@@ -200,5 +202,6 @@ export function buildClimate(input: ClimateInput, opts: ClimateOptions = {}): Cl
     acid: planetType === 'toxic' ? 1 : clamp01((0.42 - input.oxygenLevel) / 0.42) * 0.6,
     nebula: Math.max(tc.nebula, input.inNebula ? 1 : 0),
     personality: personalityFor(input.seed),
+    planetType,
   };
 }

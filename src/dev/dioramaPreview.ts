@@ -3,6 +3,7 @@
  * Served at /diorama-preview.html — lets the diorama be iterated on without
  * replaying a full game. Not imported by the game bundle.
  */
+import { VX_NAMES } from '../rendering/weather/WeatherEvents';
 import { IsoDioramaRenderer } from '../rendering/IsoDioramaRenderer';
 import { generatePlanetGrid, isHabitable, isWater, GRID_SIZE } from '../simulation/PlanetGrid';
 import { DEFAULT_BIOSPHERE } from '../simulation/SpeciesGenome';
@@ -175,6 +176,14 @@ if (fx) {
   setTimeout(fire, 300);
   setInterval(fire, 3000);
 }
+// Dev console / test access.
+(window as unknown as { __renderer?: unknown }).__renderer = renderer;
+
+// ?storm=tornado|typhoon|dust_devil|haboob|blizzard|supercell|fire_whirl —
+// keep one of that kind on the visible face.
+const storm = params.get('storm');
+const stormKind = storm ? (VX_NAMES as readonly string[]).indexOf(storm) : -1;
+if (stormKind >= 0) setInterval(() => renderer.forceVortex(stormKind, true), 1000);
 rebuild();
 renderer.start();
 
