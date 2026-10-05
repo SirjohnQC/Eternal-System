@@ -1267,6 +1267,35 @@ export class IsoDioramaRenderer {
     return this.discToGrid(dx, dy);
   }
 
+  /**
+   * A cell as the player SEES it: biome and elevation after the rim
+   * falloff the bake applies (near the rim the land sinks into the sea, so
+   * the raw grid biome can say savanna where the view shows ocean), and a
+   * climate in real units for this kind of world.
+   */
+  shownCell(row: number, col: number): { biome: BiomeType; elevation: number; tempC: number; humidity: number } | null {
+    const cell = this.grid?.[row]?.[col];
+    if (!cell) return null;
+    const d = this.gridToDisc(row, col);
+    const rim = this.habitable && d ? this.rimFalloff(Math.hypot(d.dx, d.dy)) : 0;
+    const elevation = cell.elevation - rim;
+    const biome = this.habitable ? classifyBiome(elevation, cell.moisture, cell.temperature, this.planetType as HabitableType) : cell.biome;
+    // [cold end, hot end] in °C and how much water the air can hold, by world.
+    const stage = this.forming ? this.star?.formationStage ?? '' : '';
+    const RANGE: Record<string, [number, number, number]> = {
+      lava: [180, 900, 0.03], toxic: [60, 460, 0.6], desert: [5, 55, 0.3], ice: [-120, -10, 0.35],
+      ocean: [-5, 32, 1], rocky: [-25, 35, 1], storm: [-40, 22, 1], carbon: [-60, 40, 0.5], crystal: [-80, 12, 0.3],
+    };
+    const STAGE: Record<string, [number, number, number]> = {
+      magma: [900, 1600, 0], cooling: [350, 900, 0.02], volcanic: [90, 420, 0.08], atmosphere: [40, 140, 0.4],
+    };
+    const [lo, hi, wet] = STAGE[stage] ?? RANGE[this.planetType] ?? RANGE.rocky;
+    const tempC = Math.round(lo + cell.temperature * (hi - lo));
+    // Water can't stay in the air above boiling (pressure aside); ice holds little.
+    const humidity = tempC >= 100 ? Math.min(cell.moisture * wet, 0.05) : cell.moisture * wet;
+    return { biome, elevation, tempC, humidity };
+  }
+
   /** Cell to outline on the surface, or null. Set by the planet-view UI. */
   setHighlight(cell: { row: number; col: number } | null): void {
     this.highlight = cell;

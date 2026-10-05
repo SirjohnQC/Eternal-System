@@ -1343,17 +1343,21 @@ function showTileInfo(target: TileRef | null, clearMessage = true): void {
   if (clearMessage) setText('pi-tile-msg', '');
 
   setText('pi-tile-coord', target.row + ', ' + target.col);
-  setText('pi-tile-biome', BIOME_LABELS[cell.biome] ?? cell.biome);
+  // What the view shows (rim falloff, this world's climate), not the raw grid.
+  const shown = _dioramaRenderer?.shownCell(target.row, target.col) ?? null;
+  const biome = shown?.biome ?? cell.biome;
+  setText('pi-tile-biome', BIOME_LABELS[biome] ?? biome);
 
   // Shown relative to sea level, which is what the player can actually see.
-  const rel = cell.elevation - SEA_LEVEL;
-  setText('pi-tile-elev', isWater(cell.biome)
+  const rel = (shown?.elevation ?? cell.elevation) - SEA_LEVEL;
+  setText('pi-tile-elev', rel < 0
     ? Math.round(-rel * 8000) + ' m below sea level'
     : Math.round(rel * 8000) + ' m above sea level');
 
-  const tempC = Math.round(cell.temperature * 60 - 25);   // 0–1 → −25…35 °C
-  setText('pi-tile-climate', tempC + '°C · ' + Math.round(cell.moisture * 100) + '% humidity');
-  setText('pi-tile-fert', isHabitable(cell.biome)
+  const tempC = shown?.tempC ?? Math.round(cell.temperature * 60 - 25);
+  const humid = shown?.humidity ?? cell.moisture;
+  setText('pi-tile-climate', tempC + '°C · ' + Math.round(humid * 100) + '% humidity');
+  setText('pi-tile-fert', isHabitable(biome)
     ? Math.round(cell.fertility * 100) + '%' : 'Barren');
   setText('pi-tile-life', cell.lifeDensity > 0.01
     ? Math.round(cell.lifeDensity * 100) + '% coverage' : 'None');
