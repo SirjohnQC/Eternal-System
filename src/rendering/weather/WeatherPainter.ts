@@ -150,7 +150,7 @@ const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (
 const PAL = [
   0, 0, 0, 0, 0, 0,                       // CLEAR (unused)
   252, 252, 255, 150, 176, 212,           // CUMULUS
-  128, 134, 150, 48, 54, 70,              // STORM
+  214, 218, 228, 52, 56, 74,              // STORM: sunlit cumulonimbus top, dark base
   230, 244, 252, 160, 196, 224,           // ICE
   110, 100, 96, 42, 36, 36,               // ASH
   168, 146, 112, 86, 72, 56,              // SMOG
@@ -159,11 +159,25 @@ const PAL = [
   255, 255, 250, 176, 198, 224,           // CAP
 ];
 const ACID = [206, 224, 120, 120, 140, 48];
+/**
+ * Volume clouds: how tall a fully dense cloud of each kind towers above its
+ * base, in base px (x the painter's zoom). Cumulus heaps, storms build tall
+ * (and flatten into an anvil at the top), a cap hugs the peak. 0: flat layer.
+ */
+const TOWER = [0, 9, 20, 0, 0, 0, 0, 0, 5];
+/** A storm's tower flattens into an anvil above this share of its height. */
+const ANVIL = 0.78;
 /** Precipitation kinds: rain, acid rain, snow, ash — the legacy PRECIP_STYLE. */
 const P_SPEED = [48, 42, 14, 20];
 const P_LEN = [4, 4, 1, 1];
-const P_RGBA = [150, 190, 232, 0.55, 190, 222, 105, 0.6, 240, 250, 255, 0.8, 64, 56, 54, 0.75];
+const P_RGBA = [170, 206, 240, 0.7, 190, 222, 105, 0.6, 240, 250, 255, 0.8, 64, 56, 54, 0.75];
 const PMAX = 320, FMAX = 8;
+/** Seconds a rain drop shows as a splash after it lands (two 1-px frames). */
+const SPLASH_T = 0.14;
+/** Steepest rain slant (x per y), reached in the windiest band. */
+const SLANT_MAX = 0.5;
+/** Wind gusts: live cap (identity view), lifetime (s), and speed (base px/s) at the windiest band. */
+const GMAX = 28, GUST_LIFE = 1.3, GUST_SPEED = 46;
 /**
  * Minimum cloud→ground travel for rain/acid (base px, × scale). Perspective
  * lift parks the near-rim cloud only ~6 px above the face — drops lived
@@ -274,6 +288,15 @@ export class WeatherPainter {
   readonly pVel: Float32Array;
   private pPhase: Float32Array;
   private pKind: Uint8Array;
+  /** Rain slant of each drop (x per y), and its splash time left (> 0: landed). */
+  private pSlant: Float32Array;
+  /** Wind gusts: thin streaks skimming the ground with the band wind. */
+  private gCount = 0;
+  private readonly gmax: number;
+  private readonly gX: Float32Array; private readonly gY: Float32Array;
+  private readonly gVx: Float32Array; private readonly gLife: Float32Array; private readonly gLen: Float32Array;
+  private readonly gustScale: number;
+  private pSplash: Float32Array;
   /** Particle cap: WEATHER_PMAX, or the camera painter's scaled cap. */
   readonly pmax: number;
   /** P_SPEED x scale, per kind (no per-drop jitter). */
@@ -300,6 +323,10 @@ export class WeatherPainter {
   readonly stats = { drawn: 0, midOrDense: 0 };
 
   private dens = new Float32Array(WX_N);
+  /** Rain falling from each cell (precip in the drifting rain mask; 0 for snow). */
+  private rainF = new Float32Array(WX_N);
+  /** Painter clock (s), advanced by prepare: the rain curtains scroll on it. */
+  private clock = 0;
   private kind = new Uint8Array(WX_N);
   private shift = new Float32Array(WX_NY);
   /**
@@ -314,10 +341,17 @@ export class WeatherPainter {
   /** Scratch for one weather row during the polar longitudinal blur. */
   private poleScratch = new Float32Array(WX_NX);
   private detail = new Float32Array(DT_W * DT_H);
+  /** Cauliflower domes (overlapping spherical puffs), same lattice as `detail`. */
+  private puff = new Float32Array(DT_W * DT_H);
+  /** TOWER x the painter's zoom (lookup px). */
+  private readonly tower = new Float32Array(TOWER.length);
+  private towerMax = 0;
   /** Nearest field cell of each lookup pixel. Fixed, so computed once. */
   private cell: Int32Array;
   /** Band wind per row, cached per (sim, climate): baseWindU returns a double. */
   private bandU = new Float32Array(WX_NY);
+  /** Rain slant per band (x per y), from the band wind. */
+  private slant = new Float32Array(WX_NY);
   private bandSim: WeatherSim | null = null;
   private bandClimate: ClimateSources | null = null;
   /** False until the first onStep: a fresh painter over a warm sim primes itself. */
@@ -368,6 +402,11 @@ export class WeatherPainter {
     this.pGround = new Float32Array(pmax); this.pSpawn = new Int32Array(pmax);
     this.pVel = new Float32Array(pmax);
     this.pPhase = new Float32Array(pmax); this.pKind = new Uint8Array(pmax);
+    this.pSlant = new Float32Array(pmax); this.pSplash = new Float32Array(pmax);
+    const gmax = this.gmax = Math.max(GMAX, Math.ceil(GMAX * Math.max(1, opts.area ?? 1)));
+    this.gX = new Float32Array(gmax); this.gY = new Float32Array(gmax); this.gVx = new Float32Array(gmax);
+    this.gLife = new Float32Array(gmax); this.gLen = new Float32Array(gmax);
+    this.gustScale = k;
     const area = Math.max(1, opts.area ?? 1);
     const fmax = this.fmax = Math.max(FMAX, Math.ceil(FMAX * area));
     this.boltsPerStep = Math.max(1, Math.round(area));
@@ -377,6 +416,8 @@ export class WeatherPainter {
     for (let i = 0; i < 4; i++) this.pLen[i] = Math.max(1, Math.round(P_LEN[i] * (opts.streakScale ?? 1)));
     for (let i = 0; i < 4; i++) this.pSpeed[i] = P_SPEED[i] * k;
     this.tune[0] = 1.5 * k; this.tune[1] = 2 * k;
+    for (let i = 0; i < TOWER.length; i++) this.tower[i] = TOWER[i] * k;
+    this.towerMax = Math.ceil(Math.max(...TOWER) * k);
     this.minRainFall = Math.max(1, Math.round(MIN_RAIN_FALL * k));
     this.haloR = Math.max(1, Math.round(3 * k));
     this.wander = Math.max(1, Math.round(3 * k));
@@ -467,8 +508,10 @@ export class WeatherPainter {
       this.pX[q] = from.pX[q] + dx; this.pY[q] = from.pY[q] + dy; this.pGround[q] = from.pGround[q] + dy;
       this.pSpawn[q] = 0; this.pVel[q] = from.pVel[q];
       this.pPhase[q] = from.pPhase[q]; this.pKind[q] = from.pKind[q];
+      this.pSlant[q] = from.pSlant[q]; this.pSplash[q] = from.pSplash[q];
     }
     this.pCount = n;
+    this.gCount = 0;
     const f = Math.min(from.fCount, this.fmax);
     for (let i = 0; i < f; i++) {
       this.fX[i] = from.fX[i] + dx; this.fY[i] = from.fY[i] + dy; this.fGround[i] = from.fGround[i] + dy;
@@ -530,6 +573,25 @@ export class WeatherPainter {
     for (let y = 0; y < DT_H; y++) for (let x = 0; x < DT_W; x++) {
       this.detail[y * DT_W + x] = 0.65 * octave(x, y, 8) + 0.35 * octave(x, y, 4);
     }
+    // Puffs: a few hundred spheres stamped on the wrapped lattice, the max
+    // kept. Their heights are what makes a cumulus top heap into domes.
+    const puff = this.puff;
+    puff.fill(0);
+    let h = (seed | 0) ^ 0x5bd1e995;
+    const rnd = () => { h = (Math.imul(h, 1664525) + 1013904223) | 0; return (h >>> 0) / 4294967296; };
+    for (let i = 0; i < 520; i++) {
+      const cx = rnd() * DT_W, cy = rnd() * DT_H, r = 1.6 + rnd() * 2.6, top = 0.55 + rnd() * 0.45;
+      const R = Math.ceil(r);
+      for (let oy = -R; oy <= R; oy++) for (let ox = -R; ox <= R; ox++) {
+        const x = Math.floor(cx) + ox, y = Math.floor(cy) + oy;
+        const ddx = x + 0.5 - cx, ddy = (y + 0.5 - cy) * 1.4;
+        const q = 1 - (ddx * ddx + ddy * ddy) / (r * r);
+        if (q <= 0) continue;
+        const v = top * Math.sqrt(q);
+        const o = (((y % DT_H) + DT_H) % DT_H) * DT_W + (((x % DT_W) + DT_W) % DT_W);
+        if (v > puff[o]) puff[o] = v;
+      }
+    }
   }
 
   private spawn(n: number, kind: number): void {
@@ -559,7 +621,20 @@ export class WeatherPainter {
     this.roll();
     this.pPhase[q] = (rs[0] >>> 0) * INV32 * 6.28;
     this.pKind[q] = kind;
+    // Rain leans with its band's wind; snow and ash sway instead.
+    const fy = this.lut.fy[n], jr = fy < 0 ? 0 : fy > WX_NY - 1 ? WX_NY - 1 : Math.round(fy);
+    this.pSlant[q] = kind <= 1 ? this.slant[jr] : 0;
+    this.pSplash[q] = 0;
     // A particle already at or below its ground dies on the next prepare().
+  }
+
+  /** Free drop slot `q` (swap with the last live drop). */
+  private removeDrop(q: number): void {
+    const last = --this.pCount;
+    this.pX[q] = this.pX[last]; this.pY[q] = this.pY[last]; this.pGround[q] = this.pGround[last];
+    this.pSpawn[q] = this.pSpawn[last]; this.pVel[q] = this.pVel[last];
+    this.pPhase[q] = this.pPhase[last]; this.pKind[q] = this.pKind[last];
+    this.pSlant[q] = this.pSlant[last]; this.pSplash[q] = this.pSplash[last];
   }
 
   /** Once per sim step: spawn precipitation and lightning from the new state. */
@@ -607,6 +682,21 @@ export class WeatherPainter {
         }
       }
     }
+    // Gusts: a few per step where the band wind is strong, more the windier.
+    for (let i = 0; i < 3 && this.gCount < this.gmax; i++) {
+      this.roll();
+      const m = (rs[0] >>> 0) % nLut;
+      const fy = lut.fy[m], jr = fy < 0 ? 0 : fy > WX_NY - 1 ? WX_NY - 1 : Math.round(fy);
+      const u = this.slant[jr] / SLANT_MAX, au = u < 0 ? -u : u;
+      this.roll();
+      if (au < 0.3 || (rs[0] >>> 0) * INV32 > au * 0.8) continue;
+      const g = this.gCount++, k = this.gustScale;
+      this.roll();
+      const r = (rs[0] >>> 0) * INV32;
+      this.gX[g] = lut.px[m]; this.gY[g] = lut.ground[m] - (2 + r * 4) * k;
+      this.gVx[g] = (u < 0 ? -1 : 1) * GUST_SPEED * (0.6 + 0.4 * au) * k;
+      this.gLife[g] = GUST_LIFE; this.gLen[g] = (5 + r * 7) * k;
+    }
   }
 
   /** Once per frame, before painting: interpolate the field, move particles. */
@@ -647,6 +737,7 @@ export class WeatherPainter {
       const hi = sim.highCloud[k];
       const water = Math.min(1, c * mask * (1 - 0.72 * sim.leeCloud[k]) + hi * 0.55);
       this.dens[k] = (water * CLOUD_GAIN + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
+      this.rainF[k] = sim.snow[k] ? 0 : sim.precip[k] * sim.seedMask(k % WX_NX, (k / WX_NX) | 0, true);
     }
     // Polar anti-spoke: longitudinal box blur (not a flat row mean). A mean
     // erased every lon difference, so the disc's N/S tips — which project to
@@ -673,18 +764,35 @@ export class WeatherPainter {
       }
     }
     if (sim !== this.bandSim || sim.climate !== this.bandClimate) {
-      for (let j = 0; j < WX_NY; j++) this.bandU[j] = sim.baseWindU(j);
+      let maxU = 0;
+      for (let j = 0; j < WX_NY; j++) {
+        this.bandU[j] = sim.baseWindU(j);
+        const u = this.bandU[j] < 0 ? -this.bandU[j] : this.bandU[j];
+        if (u > maxU) maxU = u;
+      }
+      for (let j = 0; j < WX_NY; j++) this.slant[j] = maxU > 0 ? (this.bandU[j] / maxU) * SLANT_MAX : 0;
       this.bandSim = sim; this.bandClimate = sim.climate;
     }
     for (let j = 0; j < WX_NY; j++) this.shift[j] = this.bandU[j] * simTime;
+    this.clock += dt;
     for (let q = this.pCount - 1; q >= 0; q--) {
-      this.pY[q] += this.pVel[q] * dt;
+      if (this.pSplash[q] > 0) {
+        // Landed: the splash shows its frames, then the slot frees.
+        this.pSplash[q] -= dt;
+        if (this.pSplash[q] <= 0) this.removeDrop(q);
+        continue;
+      }
+      const fall = this.pVel[q] * dt;
+      this.pY[q] += fall;
+      this.pX[q] += fall * this.pSlant[q];
       this.pPhase[q] += dt * 2.2;
       if (this.pY[q] >= this.pGround[q]) {
-        const last = --this.pCount;
-        this.pX[q] = this.pX[last]; this.pY[q] = this.pY[last]; this.pGround[q] = this.pGround[last];
-        this.pSpawn[q] = this.pSpawn[last]; this.pVel[q] = this.pVel[last];
-        this.pPhase[q] = this.pPhase[last]; this.pKind[q] = this.pKind[last];
+        if (this.pKind[q] <= 1) {
+          this.pY[q] = this.pGround[q];
+          this.pSplash[q] = SPLASH_T;
+        } else {
+          this.removeDrop(q);
+        }
       }
     }
     for (let f = this.fCount - 1; f >= 0; f--) {
@@ -693,6 +801,15 @@ export class WeatherPainter {
         const last = --this.fCount;
         this.fX[f] = this.fX[last]; this.fY[f] = this.fY[last]; this.fGround[f] = this.fGround[last];
         this.fLife[f] = this.fLife[last]; this.fSeed[f] = this.fSeed[last];
+      }
+    }
+    for (let g = this.gCount - 1; g >= 0; g--) {
+      this.gX[g] += this.gVx[g] * dt;
+      this.gLife[g] -= dt;
+      if (this.gLife[g] <= 0) {
+        const last = --this.gCount;
+        this.gX[g] = this.gX[last]; this.gY[g] = this.gY[last]; this.gVx[g] = this.gVx[last];
+        this.gLife[g] = this.gLife[last]; this.gLen[g] = this.gLen[last];
       }
     }
   }
@@ -756,6 +873,22 @@ export class WeatherPainter {
     const vr = this.vr, vdx = this.vdx, vdy = this.vdy, one = vr === 1;
     const dX = this.ditherX, dY = this.ditherY;
 
+    // Gusts: 1-px streaks fading in and out, brightest at the head, a tail behind.
+    for (let g = 0; g < this.gCount; g++) {
+      const life = this.gLife[g] / GUST_LIFE, fade = life > 0.5 ? (1 - life) * 2 : life * 2;
+      const a0 = 0.38 * fade * intensity * A_ONE;
+      const dir = this.gVx[g] < 0 ? 1 : -1;            // the tail trails behind the head
+      const yb = Math.round(this.gY[g]), Y = one ? yb + vdy : Math.floor(yb * vr + vdy);
+      if (Y < yLo || Y >= h) continue;
+      const len = this.gLen[g] * (one ? 1 : vr);
+      const hx = one ? Math.round(this.gX[g]) + vdx : Math.floor(this.gX[g] * vr + vdx);
+      for (let i = 0; i < len; i++) {
+        const X = hx + dir * i;
+        if (X < 0 || X >= w) continue;
+        over(d, (Y * w + X) * 4, 236, 244, 255, (a0 * (1 - i / len)) | 0);
+      }
+    }
+
     // Drops: 1-px strokes at their mapped spot (a stroke, so never scaled).
     // Snow/ash sway; rain stays on its spawn x — phase drift strobed 1-px columns.
     for (let q = 0; q < this.pCount; q++) {
@@ -767,10 +900,23 @@ export class WeatherPainter {
       const ai = (P_RGBA[o4 + 3] * intensity * A_ONE) | 0;
       const len = this.pLen[kind];
       const ys = one ? y0 + vdy : Math.floor(y0 * vr + vdy);
+      const sp = this.pSplash[q];
+      if (sp > 0) {
+        // Splash: a crown (two dots up and out), then a wider ring at the ground.
+        const ring = sp < SPLASH_T * 0.5;
+        const ox = ring ? 2 : 1, oy = ring ? 0 : -1;
+        for (let e = -1; e <= 1; e += 2) {
+          const X = x + e * ox, Y = ys + oy;
+          if (X >= 0 && Y >= yLo && X < w && Y < h) over(d, (Y * w + X) * 4, 220, 236, 255, (ai * 0.9) | 0);
+        }
+        continue;
+      }
+      // A streak leaning with the wind: each row steps across by the slant.
+      const sl = this.pSlant[q];
       for (let l = 0; l < len; l++) {
-        const y = ys + l;
-        if (x < 0 || y < yLo || x >= w || y >= h || y0 + l > this.pGround[q]) continue;
-        over(d, (y * w + x) * 4, P_RGBA[o4], P_RGBA[o4 + 1], P_RGBA[o4 + 2], ai);
+        const y = ys + l, X = x + Math.round((l - len + 1) * sl);
+        if (X < 0 || y < yLo || X >= w || y >= h || y0 + l > this.pGround[q]) continue;
+        over(d, (y * w + X) * 4, P_RGBA[o4], P_RGBA[o4 + 1], P_RGBA[o4 + 2], ai);
       }
     }
 
@@ -781,8 +927,13 @@ export class WeatherPainter {
     // View-bounded (spec 5b): lookup rows whose cloud (skyY, ≥ py - cloudLift)
     // can land in the view. cloudLift is still the max lift (far rim).
     const cl = this.cloudLift;
-    const rA = Math.floor((yLo - vdy) / vr) + cl - 1, rB = Math.ceil((h - vdy) / vr) + cl + 1;
+    // Volume clouds rise up to towerMax above their base: rows that far below
+    // the band can still reach into it.
+    // A band below the top also takes the rows whose rain curtains hang down
+    // into it from clouds above it (up to cloudLift).
+    const rA = Math.floor((yLo - vdy) / vr) + (yLo > 0 ? -1 : cl - 1), rB = Math.ceil((h - vdy) / vr) + cl + 1 + this.towerMax;
     const xA = Math.floor(-vdx / vr) - 1, xB = Math.ceil((w - vdx) / vr) + 1;
+    const puffT = this.puff, tower = this.tower;
     let visited = 0;
     for (let row = rA; row <= rB; row++) {
       const end = this.rowFirst(row + 1);
@@ -795,16 +946,16 @@ export class WeatherPainter {
       const yl = sky[n], yh = skyH[n];
       const x = xl + dX, y = yl + dY;
       let X0: number, X1: number, Y0: number, Y1: number;
+      // Unclipped base footprint; a volume cloud rises above it, so the band
+      // clip comes after its height is known.
       if (one) {
         X0 = xl + vdx; Y0 = yl + vdy; Y1 = Y0 + yh; X1 = X0 + 1;
-        if (X0 < 0 || X0 >= w || Y1 <= yLo || Y0 >= h) continue;
-        if (Y0 < yLo) Y0 = yLo; if (Y1 > h) Y1 = h;
-        if (Y1 <= Y0) continue;
+        if (X0 < 0 || X0 >= w || Y1 <= yLo || Y0 - this.towerMax >= h) continue;
       } else {
         X0 = Math.floor(xl * vr + vdx); X1 = Math.floor((xl + 1) * vr + vdx);
         Y0 = Math.floor(yl * vr + vdy); Y1 = Math.floor((yl + yh) * vr + vdy);
-        if (X0 < 0) X0 = 0; if (Y0 < yLo) Y0 = yLo; if (X1 > w) X1 = w; if (Y1 > h) Y1 = h;
-        if (X1 <= X0 || Y1 <= Y0) continue;
+        if (X0 < 0) X0 = 0; if (X1 > w) X1 = w;
+        if (X1 <= X0 || Y1 <= yLo || Y0 - this.towerMax * vr >= h) continue;
       }
       const fx = lut.fx[n], fy = lut.fy[n];
 
@@ -816,6 +967,9 @@ export class WeatherPainter {
       const dr0 = (((dj0 % DT_H) + DT_H) % DT_H) * DT_W, dr1 = (((dj0 + 1) % DT_H + DT_H) % DT_H) * DT_W;
       const det = tex[dr0 + da] * (1 - dfx) * (1 - dfy) + tex[dr0 + db] * dfx * (1 - dfy)
                 + tex[dr1 + da] * (1 - dfx) * dfy + tex[dr1 + db] * dfx * dfy;
+      // Puff domes on the same lattice: the heap's outline and its height.
+      const pf = puffT[dr0 + da] * (1 - dfx) * (1 - dfy) + puffT[dr0 + db] * dfx * (1 - dfy)
+               + puffT[dr1 + da] * (1 - dfx) * dfy + puffT[dr1 + db] * dfx * dfy;
 
       // sampleField(dens, fx, fy), inlined.
       let i0 = Math.floor(fx), j0 = Math.floor(fy), tx = fx - i0, ty = fy - j0;
@@ -829,6 +983,9 @@ export class WeatherPainter {
       // cells by ordered dither on the bilinear weights. The nearest cell's kind
       // switched cumulus/storm colour along cell edges, in rectangles.
       const kind = this.kind[(ty > BAYER4[(x & 3) * 4 + (y & 3)] ? r1 : r0) + (tx > bay ? b : a)];
+      // This pixel's four cells and weights (a, b, r0, r1, tx, ty are reused
+      // for the sunward sample below).
+      const c00 = r0 + a, c01 = r0 + b, c10 = r1 + a, c11 = r1 + b, wtx = tx, wty = ty;
       // Cumulus stays puffy. Stratus is a flat layer, a cap hugs the slope,
       // and cirrus is filaments running with the zonal wind.
       let dd: number;
@@ -841,6 +998,9 @@ export class WeatherPainter {
         dd = dens * (0.58 + 0.32 * det);
       } else if (kind === WK.CAP) {
         dd = dens * (0.72 + 0.22 * det);
+      } else if (kind === WK.CUMULUS || kind === WK.STORM) {
+        // Heaps: the outline bulges with the puff domes, not the field cells.
+        dd = dens * (0.12 + 1.15 * pf + 0.45 * det * det);
       } else {
         dd = dens * (0.2 + 1.6 * det * det);
       }
@@ -878,7 +1038,86 @@ export class WeatherPainter {
       r *= lit; g *= lit; bl *= lit;
       if (neb > 0 && facing && (kind === WK.CUMULUS || kind === WK.CAP || kind === WK.STRATUS)) { r += 40 * neb; g += 10 * neb; bl += 60 * neb; }
       const ai = (this.levelAlpha[lv] * intensity * A_ONE) | 0;
-      for (let Y = Y0; Y < Y1; Y++) for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, r | 0, g | 0, bl | 0, ai);
+      // Rain curtain: under a raining cloud, faint streaks from its base to the
+      // ground, every third world column, scrolling down. They read as the
+      // grey shafts hanging under a shower; the drops still fall through them.
+      if (((xl + dX) % 3 + 3) % 3 === 0) {
+        const rf = this.rainF;
+        const rain = rf[c00] * (1 - wtx) * (1 - wty) + rf[c01] * wtx * (1 - wty) + rf[c10] * (1 - wtx) * wty + rf[c11] * wtx * wty;
+        if (rain > 0.01) {
+          const ra = ((rain > 0.12 ? 0.3 : rain * 2.5) * intensity * A_ONE) | 0;
+          const gy = one ? lut.ground[n] + vdy : Math.floor(lut.ground[n] * vr + vdy);
+          const roll = (this.clock * 34 * vr) | 0;
+          for (let Y = Y1 < yLo ? yLo : Y1, Ye = gy < h ? gy : h; Y < Ye; Y++) {
+            // Dashes 3 on / 2 off, moving down.
+            if ((((Y - roll) % 5) + 5) % 5 > 2) continue;
+            for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, 150, 170, 196, ra);
+          }
+        }
+      }
+      // Tower height blended over the four cells' kinds (bilinear), never the
+      // dithered kind: a storm/cumulus dither made a comb of tall/short columns.
+      const kc = this.kind;
+      const tw = tower[kind] === 0 ? 0
+        : tower[kc[c00]] * (1 - wtx) * (1 - wty) + tower[kc[c01]] * wtx * (1 - wty)
+        + tower[kc[c10]] * (1 - wtx) * wty + tower[kc[c11]] * wtx * wty;
+      if (tw <= 0.5) {
+        // Flat layers, and the thin fringe of a heap: one sheet at the base.
+        const ya = Y0 < yLo ? yLo : Y0, yb = Y1 > h ? h : Y1;
+        for (let Y = ya; Y < yb; Y++) for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, r | 0, g | 0, bl | 0, ai);
+        continue;
+      }
+      // Volume: a column from the cloud's top down to its base. The top is
+      // the puff field (cauliflower domes) over the density; nearer columns
+      // (later rows) cover the sides of farther ones, so only a heap's front
+      // and its top read. Four tones: lit dome, body, shaded side, base.
+      // Sunward neighbour on the puff field: a dome facet facing the sun.
+      const qx = dtx + sunX * 0.7, qy = dty - 0.45;
+      const qi = Math.floor(qx), qj = Math.floor(qy), qfx = qx - qi, qfy = qy - qj;
+      const qa = ((qi % DT_W) + DT_W) % DT_W, qb = (qa + 1) % DT_W;
+      const qr0 = (((qj % DT_H) + DT_H) % DT_H) * DT_W, qr1 = (((qj + 1) % DT_H + DT_H) % DT_H) * DT_W;
+      const pq = puffT[qr0 + qa] * (1 - qfx) * (1 - qfy) + puffT[qr0 + qb] * qfx * (1 - qfy)
+               + puffT[qr1 + qa] * (1 - qfx) * qfy + puffT[qr1 + qb] * qfx * qfy;
+      // Height eases from 0 at the fringe, so the edge never dithers between
+      // a flat sheet and a column.
+      // Height saturates just inside the edge (smoothstep over 0.34..0.56): a
+      // linear ramp to the centre made every heap a cone. The body is level and
+      // the puffs dome it; the fringe is a short wall, not a slope.
+      let core = dd >= 0.56 ? 1 : dd <= 0.34 ? 0 : (dd - 0.34) / 0.22;
+      core = core * core * (3 - 2 * core);
+      let T = tw * (0.15 + 0.85 * core) * (0.45 + 0.55 * pf);
+      if (kind === WK.STORM && T > tw * ANVIL) T = tw * ANVIL;
+      const Ts = Math.round(T * vr);
+      const topRows = Math.max(1, Math.round(2 * vr));
+      // Tones from the kind's palette (body = sunlit, under = shade), lit by
+      // the disc light; the dome facet facing the sun lifts toward white.
+      const ob = kind * 6;
+      const bR = PAL[ob] * lit, bG = PAL[ob + 1] * lit, bB = PAL[ob + 2] * lit;
+      const uR = PAL[ob + 3] * lit, uG = PAL[ob + 4] * lit, uB = PAL[ob + 5] * lit;
+      // Dome facets: toward the sun (the puff falls off sunward) lit, away
+      // from it in shade — the cauliflower read. Three steps.
+      const slope = pf - pq;
+      const sh = slope > 0.03 ? 0 : slope > -0.03 ? (facing ? 0.12 : 0.3) : 0.5;
+      const lift = slope > 0.03 ? 0.3 : 0;
+      const tR = bR + (255 - bR) * lift + (uR - bR) * sh;
+      const tG = bG + (255 - bG) * lift + (uG - bG) * sh;
+      const tB = bB + (255 - bB) * lift + (uB - bB) * sh;
+      const top = Y0 - Ts;
+      const ya = top < yLo ? yLo : top, yb = Y1 > h ? h : Y1;
+      for (let Y = ya; Y < yb; Y++) {
+        let cr: number, cg: number, cb: number;
+        const fromTop = Y - top;
+        if (fromTop < topRows) { cr = tR; cg = tG; cb = tB; }
+        else {
+          // The side darkens toward the base, keyed on the height above the
+          // base (not this column's own span), so the steps run as level
+          // bands across the whole heap instead of stripes down each column.
+          const above = (Y1 - Y) / (tw * vr + 1);
+          const s2 = above > 0.6 ? 0.15 : above > 0.3 ? 0.42 : above > 0.1 ? 0.7 : 1;
+          cr = bR + (uR - bR) * s2; cg = bG + (uG - bG) * s2; cb = bB + (uB - bB) * s2;
+        }
+        for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, cr | 0, cg | 0, cb | 0, ai);
+      }
       }
     }
     this.visited.clouds = visited;
@@ -890,7 +1129,9 @@ export class WeatherPainter {
       let s = this.fSeed[f], bx = this.fX[f];
       const x0 = this.fX[f];
       const bolt = (0.95 * intensity * A_ONE) | 0, halo = 0.35 * intensity * A_ONE;
-      for (let y = Math.round(this.fY[f]); y < this.fGround[f]; y++) {
+      let forks = 0;
+      const yTop = Math.round(this.fY[f]), yEnd = this.fGround[f];
+      for (let y = yTop; y < yEnd; y++) {
         s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
         const r = s * INV32;
         if (r < 0.15) bx--; else if (r > 0.85) bx++;
@@ -898,6 +1139,25 @@ export class WeatherPainter {
         // A 1-px stroke at its mapped spot.
         const X = one ? bx + vdx : Math.floor(bx * vr + vdx), Y = one ? y + vdy : Math.floor(y * vr + vdy);
         if (X >= 0 && Y >= yLo && X < w && Y < h) over(d, (Y * w + X) * 4, 255, 255, 230, bolt);
+        // Forks: up to two short dimmer branches splitting off sideways and down.
+        if (forks < 2 && y > yTop + 2 && r > 0.47 && r < 0.53) {
+          forks++;
+          const dir = r < 0.5 ? -1 : 1, flen = 3 + (s & 3);
+          let fx = X, fy = Y;
+          for (let i = 0; i < flen; i++) {
+            fx += dir; if (i & 1) fy++;
+            if (fx >= 0 && fy >= yLo && fx < w && fy < h) over(d, (fy * w + fx) * 4, 220, 228, 255, (bolt * 0.6) | 0);
+          }
+        }
+      }
+      // The strike: a small bright burst where the bolt meets the ground.
+      {
+        const X = one ? bx + vdx : Math.floor(bx * vr + vdx);
+        const Y = one ? Math.round(yEnd) - 1 + vdy : Math.floor((yEnd - 1) * vr + vdy);
+        for (let e = -1; e <= 1; e++) {
+          const xx = X + e;
+          if (xx >= 0 && Y >= yLo && xx < w && Y < h) over(d, (Y * w + xx) * 4, 255, 250, 220, e === 0 ? bolt : (bolt * 0.5) | 0);
+        }
       }
       const fy0 = Math.round(this.fY[f]);
       const cxs = one ? x0 + vdx : Math.floor(x0 * vr + vdx), fy = one ? fy0 + vdy : Math.floor(fy0 * vr + vdy);
