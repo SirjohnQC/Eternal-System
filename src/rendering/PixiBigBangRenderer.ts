@@ -1300,7 +1300,9 @@ export class PixiBigBangRenderer {
           );
         }
 
-        const kind = (planet.type as PlanetKind) || 'rocky';
+        // A forming home world shows its molten stage, like the planet view.
+        const formingHome = star.isPlayerStar && !!star.formationDestiny && !!star.formationStage;
+        const kind = formingHome ? 'lava' as PlanetKind : (planet.type as PlanetKind) || 'rocky';
         const withRings = kind === 'gas' && !planet.isDead;
         const seed = (star.id * 17 + i * 31) | 0;
         const landedIdx = star.planets.findIndex(p => p.discovery === 'landing');
@@ -1321,11 +1323,11 @@ export class PixiBigBangRenderer {
           // resolution so it stays crisp pixel art instead of 3x blocks.
           const onScreen = Math.max(planet.radius * 3.2, 2.0 / camera.scale) * camera.scale;
           const gs = onScreen > 80 ? 96 : 48;
-          const texKey = `globe|${star.id}|${i}|${kind}|${lifeKey}|${dnaKey}|${bioPhase ?? ''}|${withRings ? 1 : 0}|${gs}`;
+          const texKey = `globe|${star.id}|${i}|${kind}|${isHome ? star.formationStage ?? '' : ''}|${lifeKey}|${dnaKey}|${bioPhase ?? ''}|${withRings ? 1 : 0}|${gs}`;
           let cached = this.planetTextures.get(texKey);
           if (!cached) {
             const equirect = bakePlanetTexture(
-              star.id, i, planet.type, dna, gs * 2, bioPhase, grid,
+              star.id, i, kind, dna, gs * 2, bioPhase, grid,
             );
             const ringTint = parseHexColor(planet.color, [200, 190, 160]);
             const globe = wrapEquirectToGlobe(equirect, gs, {

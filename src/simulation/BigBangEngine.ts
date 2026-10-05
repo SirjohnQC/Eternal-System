@@ -4159,15 +4159,16 @@ export class BigBangEngine {
         const bioPhase = (isHome && p.hasLife)
           ? (star.biologyPhase ?? null) : null;
         const grid = isHome ? runtimeState.playerPlanetGrid : null;
-        const kind = p.type as CosmicPlanetKind;
+        const formingHome = !!grid && !!star.formationDestiny && !!star.formationStage;
+        const kind = (formingHome ? 'lava' : p.type) as CosmicPlanetKind;
         const withRings = kind === 'gas';
         const seed = (star.id * 17 + i * 31) | 0;
 
         if (useGlobe) {
-          const texKey = `globe_${star.id}_${i}_${p.hasLife ? 1 : 0}_${dna.climate}_${dna.oceans}_${dna.chaos}_${bioPhase ?? ''}`;
+          const texKey = `globe_${star.id}_${i}_${kind}_${grid ? star.formationStage ?? '' : ''}_${p.hasLife ? 1 : 0}_${dna.climate}_${dna.oceans}_${dna.chaos}_${bioPhase ?? ''}`;
           let globe = this.planetTextureCache.get(texKey);
           if (!globe) {
-            const equirect = bakePlanetTexture(star.id, i, p.type, dna, 96, bioPhase, grid);
+            const equirect = bakePlanetTexture(star.id, i, kind, dna, 96, bioPhase, grid);
             globe = wrapEquirectToGlobe(equirect, 48, {
               rings: withRings,
               ringTint: parseHexColor(p.color, [200, 190, 160]),

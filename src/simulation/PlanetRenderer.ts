@@ -3,7 +3,7 @@ import { StarBody, PlanetFormationStage } from './BigBangEngine';
 import { TECH_LEVELS, gameState, runtimeState, DEFAULT_PLANET_DNA, PlanetDNA } from './GameState';
 import { drawBiosphereTerrainLayer, drawBiosphereHUDLayer } from './BiosphereRenderer';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
-import { type PlanetGrid, BIOME_COLORS, sampleGrid } from './PlanetGrid';
+import { type PlanetGrid, BIOME_COLORS, sampleGrid, classifyBiome } from './PlanetGrid';
 
 interface Cloud {
   x: number; y: number;
@@ -1217,7 +1217,10 @@ export function bakePlanetTexture(
       if (grid) {
         // Data-driven path: sample biome color from simulation grid
         const cell = sampleGrid(grid, px / W, py / H);
-        [r, g, b] = BIOME_COLORS[cell.biome];
+        // Classify for THIS world type, as the planet view does: the stored
+        // biome can be stale (a formation stage's lava labels on a world that
+        // has since become an ocean).
+        [r, g, b] = BIOME_COLORS[classifyBiome(cell.elevation, cell.moisture, cell.temperature, type)];
         // Blend in life density as a subtle green tint on land
         if (cell.lifeDensity > 0) {
           const lt = cell.lifeDensity * 0.35;

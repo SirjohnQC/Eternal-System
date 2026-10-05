@@ -5540,7 +5540,7 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
         const g = src.getContext('2d'); if (g) { const img = g.createImageData(f.width, f.height); img.data.set(f.data); g.putImageData(img, 0, 0); }
       } else if (!planet.isDead) {
         const dna = isHome ? (gameState.playerPlanetDNA ?? planet.dna ?? DEFAULT_PLANET_DNA) : (planet.dna ?? DEFAULT_PLANET_DNA);
-        const eq = bakePlanetTexture(star.id, planetIndex, planet.type, dna, 96, isHome && planet.hasLife ? (star.biologyPhase ?? null) : null,
+        const eq = bakePlanetTexture(star.id, planetIndex, isHome && star.formationDestiny && star.formationStage ? 'lava' : planet.type, dna, 96, isHome && planet.hasLife ? (star.biologyPhase ?? null) : null,
           isHome ? runtimeState.playerPlanetGrid : null);
         src = wrapEquirectToGlobe(eq, 48, { rings: planet.type === 'gas', seed: star.id * 17 + planetIndex * 31 });
       }
