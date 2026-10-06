@@ -2757,34 +2757,41 @@ export class IsoDioramaRenderer {
       om[p] = id <= 0 || occ[p] === 1 ? -2 : own[id - 1];
     }
     const meets = (o: number, q: number) => q >= 0 && q !== o;
-    const wide = eng.activeCamera.zoom >= 2;
+    // Frontier band: `reach` px each side of the line, its own colour
+    // inside and a dark rim on the outer px, so it reads on snow, sand and
+    // forest alike. Wider zoomed in.
+    const reach = eng.activeCamera.zoom >= 2 ? 3 : 2;
+    const foreign = (p: number, x: number, y: number, o: number): number => {
+      for (let s = 1; s <= reach; s++) {
+        if ((x + s < W && meets(o, om[p + s])) || (x >= s && meets(o, om[p - s]))
+          || (y + s < H && meets(o, om[p + s * W])) || (y >= s && meets(o, om[p - s * W]))) return s;
+      }
+      return 0;
+    };
+    const coastal = (p: number, x: number, y: number): boolean => {
+      for (let s = 1; s <= 2; s++) {
+        if ((x + s < W && om[p + s] === -2 && pick[p + s] > 0) || (x >= s && om[p - s] === -2 && pick[p - s] > 0)
+          || (y + s < H && om[p + s * W] === -2 && pick[p + s * W] > 0) || (y >= s && om[p - s * W] === -2 && pick[p - s * W] > 0)) return true;
+      }
+      return false;
+    };
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const p = y * W + x, o = om[p];
         if (o < 0) continue;
         const c = rgb[o], k = p * 4;
-        const r = x + 1 < W ? om[p + 1] : -2, l = x > 0 ? om[p - 1] : -2;
-        const dn = y + 1 < H ? om[p + W] : -2, up = y > 0 ? om[p - W] : -2;
-        // Zoomed in, the frontier is two pixels wide each side (four in all).
-        if (meets(o, r) || meets(o, l) || meets(o, dn) || meets(o, up) || (wide
-          && ((x + 2 < W && meets(o, om[p + 2])) || (x > 1 && meets(o, om[p - 2]))
-          || (y + 2 < H && meets(o, om[p + 2 * W])) || (y > 1 && meets(o, om[p - 2 * W]))))) {
-          // A frontier: the nation's full colour, with a dark pixel under it
-          // so it reads on snow, sand and forest alike.
-          L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2];
-          L[k + 3] = 255;
-          if (dn >= -1) {
-            const u = k + W * 4;
-            if (L[u + 3] < 255) { L[u] = 24; L[u + 1] = 18; L[u + 2] = 14; L[u + 3] = 200; }
-          }
-        } else if (r === -2 && x + 1 < W && pick[p + 1] > 0 || l === -2 && x > 0 && pick[p - 1] > 0
-          || dn === -2 && y + 1 < H && pick[p + W] > 0 || up === -2 && y > 0 && pick[p - W] > 0) {
-          // The coast of a realm: a solid line in its colour, so a nation alone
-          // on its island still shows whose it is.
-          if (L[k + 3] === 0) { L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2]; L[k + 3] = 170; }
+        const f = foreign(p, x, y, o);
+        if (f > 0 && f < reach) {
+          L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2]; L[k + 3] = 255;
+        } else if (f === reach) {
+          L[k] = c[0] >> 2; L[k + 1] = c[1] >> 2; L[k + 2] = c[2] >> 2; L[k + 3] = 220;
+        } else if (coastal(p, x, y)) {
+          // The coast of a realm, in its colour: a nation alone on its
+          // island still shows whose it is.
+          L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2]; L[k + 3] = 190;
         }
         // Territory tint on the ground.
-        d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 56;
+        d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 72;
       }
     }
     g.putImageData(img, 0, 0);
