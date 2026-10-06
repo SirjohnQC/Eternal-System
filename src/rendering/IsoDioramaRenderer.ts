@@ -42,6 +42,8 @@ import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './S
 import { archGenome, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { motionRate, STRIDE } from './CreatureForge';
+import type { NationSystem } from '../simulation/Nations';
+import { paintFlag, mapColor } from './NationFlagArt';
 import {
   HabitableCutawayEngine,
   type HabitableType,
@@ -452,6 +454,18 @@ export class IsoDioramaRenderer {
   private preloadVer = -1;
   private preloadN = -1;
   private preloadSeed = -1;
+  /** The planet's nations (borders + capital flags); null: none drawn. */
+  private nationSource: (() => NationSystem | null) | null = null;
+  private nationVer = -1;
+  private nationEpoch = -1;
+  private nationPick: Int32Array | null = null;
+  private nationNext = 0;
+  private nationFlagVer = -1;
+  private nationOverlay: HTMLCanvasElement | null = null;
+  private nationLines: HTMLCanvasElement | null = null;
+  /** Where each nation's flag stands (base-world face px), null: none of its land shows. */
+  private nationSpots: Array<{ x: number; y: number } | null> = [];
+  private nationSpotKey = '';
   private readonly hookBakeExtras = (this.cutaway.bakeExtras = (zoom: number) => this.prewarmCreatures(zoom));
 
   private mount:  HTMLElement | null = null;
@@ -2677,7 +2691,164 @@ export class IsoDioramaRenderer {
         } });
       }
     }
+    this.pushNationFlags(list, at);
     flora.setProps(list);
+  }
+
+  /**
+   * Where the planet's nations come from (a live getter, as the engine
+   * founds them later in the game). Borders and capital flags follow it.
+   */
+  setNationSource(fn: (() => NationSystem | null) | null): void {
+    this.nationSource = fn;
+    this.nationVer = -1; this.nationFlagVer = -1; this.nationNext = 0;
+  }
+
+  /**
+   * Keep the border overlay in step with the nations and the shown layer
+   * set (checked a few times a second; rebuilt only when something changed).
+   * The overlay lives in pick space: each pixel's cell gives its owner, a
+   * land pixel beside land of another owner is a border.
+   */
+  private updateNationOverlay(now: number): void {
+    if (now < this.nationNext) return;
+    this.nationNext = now + 250;
+    const ns = this.nationSource?.() ?? null;
+    const eng = this.cutaway;
+    if (!ns || !ns.isFounded || !this.habitable || this.forming) {
+      eng.groundOverlay = null; eng.lineOverlay = null;
+      if (this.nationFlagVer !== -1) { this.nationFlagVer = -1; this.nationSpots = []; this.nationSpotKey = ''; this.pushTownProps(); }
+      this.nationVer = -1;
+      return;
+    }
+    const spotKey = `${ns.version}|${this.focusLat}|${this.focusLon}|${this.VW}x${this.VH}|${this.townVersion}`;
+    if (spotKey !== this.nationSpotKey) {
+      this.nationSpotKey = spotKey;
+      this.nationSpots = this.placeNationFlags(ns);
+      this.nationFlagVer = ns.version;
+      this.pushTownProps();
+    }
+    const pick = eng.pick;
+    if (ns.version === this.nationVer && eng.pickEpoch === this.nationEpoch && pick === this.nationPick
+      && eng.groundOverlay) return;
+    this.nationVer = ns.version; this.nationEpoch = eng.pickEpoch; this.nationPick = pick;
+    const W = eng.pickW, H = eng.pickH;
+    if (W <= 0 || H <= 0 || pick.length < W * H) { eng.groundOverlay = null; eng.lineOverlay = null; return; }
+    const occ = eng.occupancy;
+    const cv = this.nationOverlay && this.nationOverlay.width === W && this.nationOverlay.height === H
+      ? this.nationOverlay : document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    this.nationOverlay = cv;
+    const lv = this.nationLines && this.nationLines.width === W && this.nationLines.height === H
+      ? this.nationLines : document.createElement('canvas');
+    lv.width = W; lv.height = H;
+    this.nationLines = lv;
+    const g = cv.getContext('2d'), lg = lv.getContext('2d');
+    if (!g || !lg) return;
+    const img = g.createImageData(W, H), d = img.data;
+    const limg = lg.createImageData(W, H), L = limg.data;
+    const rgb = ns.nations.map(n => mapColor(n.color));
+    const own = ns.owner;
+    // Owner per pixel: -2 off the face or water, -1 unclaimed land. A border
+    // runs only where two nations meet (unclaimed pockets would speckle).
+    const om = new Int8Array(W * H);
+    for (let p = 0; p < W * H; p++) {
+      const id = pick[p];
+      om[p] = id <= 0 || occ[p] === 1 ? -2 : own[id - 1];
+    }
+    const meets = (o: number, q: number) => q >= 0 && q !== o;
+    const wide = eng.activeCamera.zoom >= 2;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const p = y * W + x, o = om[p];
+        if (o < 0) continue;
+        const c = rgb[o], k = p * 4;
+        const r = x + 1 < W ? om[p + 1] : -2, l = x > 0 ? om[p - 1] : -2;
+        const dn = y + 1 < H ? om[p + W] : -2, up = y > 0 ? om[p - W] : -2;
+        // Zoomed in, the frontier is two pixels wide each side (four in all).
+        if (meets(o, r) || meets(o, l) || meets(o, dn) || meets(o, up) || (wide
+          && ((x + 2 < W && meets(o, om[p + 2])) || (x > 1 && meets(o, om[p - 2]))
+          || (y + 2 < H && meets(o, om[p + 2 * W])) || (y > 1 && meets(o, om[p - 2 * W]))))) {
+          // A frontier: the nation's full colour, with a dark pixel under it
+          // so it reads on snow, sand and forest alike.
+          L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2];
+          L[k + 3] = 255;
+          if (dn >= -1) {
+            const u = k + W * 4;
+            if (L[u + 3] < 255) { L[u] = 24; L[u + 1] = 18; L[u + 2] = 14; L[u + 3] = 200; }
+          }
+        } else if (r === -2 && x + 1 < W && pick[p + 1] > 0 || l === -2 && x > 0 && pick[p - 1] > 0
+          || dn === -2 && y + 1 < H && pick[p + W] > 0 || up === -2 && y > 0 && pick[p - W] > 0) {
+          // The coast of a realm: a solid line in its colour, so a nation alone
+          // on its island still shows whose it is.
+          if (L[k + 3] === 0) { L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2]; L[k + 3] = 170; }
+        }
+        // Territory tint on the ground.
+        d[k] = c[0]; d[k + 1] = c[1]; d[k + 2] = c[2]; d[k + 3] = 56;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    lg.putImageData(limg, 0, 0);
+    eng.groundOverlay = cv;
+    eng.lineOverlay = lv;
+  }
+
+  /**
+   * Flag spots: the capital when the face shows it, else the shown land of
+   * that nation nearest its capital (a capital over the horizon still flies
+   * its flag on the near side of its realm).
+   */
+  private placeNationFlags(ns: NationSystem): Array<{ x: number; y: number } | null> {
+    const grid = this.grid;
+    if (!grid) return [];
+    const geom = this.geomForBake();
+    const best = ns.nations.map(() => ({ d: Infinity, x: 0, y: 0 }));
+    for (let row = 0; row < GRID_SIZE; row += 2) {
+      for (let col = 0; col < GRID_SIZE; col += 2) {
+        const k = ns.owner[row * GRID_SIZE + col];
+        if (k < 0) continue;
+        const cap = ns.nations[k].capital;
+        let dc = Math.abs(col - cap.col); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc;
+        const dist = Math.hypot(row - cap.row, dc);
+        if (dist >= best[k].d) continue;
+        const dd = this.gridToDisc(row, col);
+        if (!dd) continue;
+        const r = Math.hypot(dd.dx, dd.dy);
+        const cell = grid[row][col];
+        if (r > 0.9 || cell.elevation - this.rimFalloff(r) < SEA_LEVEL) continue;
+        best[k] = { d: dist, x: geom.cx + dd.dx * geom.rx, y: geom.cy + dd.dy * geom.ry - this.liftAtCell(cell, r) };
+      }
+    }
+    return best.map(b => (b.d < Infinity ? { x: b.x, y: b.y } : null));
+  }
+
+  /**
+   * A banner on a pole at each nation's capital, drawn in the depth pass
+   * with the trees and buildings. Placed on the owned land nearest the
+   * capital that the face shows (the rim sinks some land into the sea).
+   */
+  private pushNationFlags(
+    list: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView) => void }>,
+    at: (v: import('./FloraLayer').FloraView, x: number, y: number) => readonly [number, number],
+  ): void {
+    const ns = this.nationSource?.() ?? null;
+    if (!ns || !ns.isFounded || !this.habitable || this.forming) return;
+    this.nationSpots.forEach((spot, k) => {
+      const n = ns.nations[k];
+      if (!spot || !n) return;
+      const { x, y } = spot, flag = n.flag, phase = k * 1.7;
+      list.push({ wy: y + 0.01, draw: (g, v) => {
+        const S = Math.max(1, Math.round(v.K));
+        const [X, Y] = at(v, x, y);
+        const bx = Math.round(X), by = Math.round(Y);
+        const pole = 14 * S;
+        g.fillStyle = '#3b2a1c';
+        g.fillRect(bx, by - pole, S, pole);
+        g.fillStyle = '#d8c48a';
+        g.fillRect(bx, by - pole - S, S, S);
+        paintFlag(g, flag, bx + S, by - pole, 10, 6, S, this.elapsed * 4 + phase, S);
+      } });
+    });
   }
 
   /** Building `i` under construction, `p` of the way (12 cached steps). */
@@ -3415,6 +3586,7 @@ export class IsoDioramaRenderer {
       this.updateSeason();
       // Settle + throttled rebake, before drawing (see updateView).
       this.updateView(now);
+      this.updateNationOverlay(now);
       this.cutaway.frame({
         g: this.ctx,
         dt,

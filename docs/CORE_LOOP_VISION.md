@@ -169,7 +169,7 @@ story. The player is disturbing the conditions under which the story emerges.**
 | §1/§8 tech emerges from pressure | `BigBangEngine` steps `star.civLevel` on a timer (`CIV_TICK_RATE`, culture curiosity nudges the rate) through 9 `TECH_LEVELS` | Tech is a clock, not a response. No pressures, no causes. |
 | §4 civs are agents | `Civilization` = culture values (militarism, piety, curiosity, collectivism, xenophobia), government, ideology, architecture — generated from the genome, bounded by `cultureMultiplier` | Good seed. No dynamic state (food, resources, cohesion, population) and no decisions. |
 | §5 multiple civilizations | One civilization per **star**; mergers between stars exist | No nations on a planet; no relations, trade, war between them. |
-| flags / countries | `FactionFlag` (colors + 6 symbols) per faction | Not shown on the planet; no territory. |
+| flags / countries | `Nations.ts`: 2–6 nations per home world once civLevel ≥ 1, culture drifted from the species, territory by terrain-cost flood, procedural flags; borders + capital flags on the diorama; tile panel shows symptoms (not pressure labels) | No relations yet (phase 3); pressures do not yet drive tech (phase 2). |
 | §7 species | `SpeciesGenome` + DNA branches + `EvolutionEngine`; `CreatureForge` bodies | Body plans limited; generation is the right shape. |
 | §10–13 Faith Cards | A small fixed deck in `main.ts`; DP economy | Not procedural; no discovery, burning, side effects. |
 | §15 causal history | Event log / chat messages | No cause links. |

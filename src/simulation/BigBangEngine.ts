@@ -1,3 +1,4 @@
+import { NationSystem } from './Nations';
 import { SeedRNG } from '../utils/SeedRNG';
 import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
@@ -22,7 +23,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation,
   type EvolutionEvent,
 } from './EvolutionEngine';
-import { stepLifeSpread } from './PlanetGrid';
+import { stepLifeSpread, type PlanetGrid } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
@@ -37,7 +38,7 @@ import {
   type LifeArchetype, type PlanetKind,
 } from './LifeSystem';
 import {
-  cultureMultiplier, proceduralCulture, summariseGenome,
+  cultureMultiplier, proceduralCulture, summariseGenome, valuesFromGenome,
   type Civilization, type GenomeSummary,
 } from './Civilization';
 import { generateCulture } from '../ai/CultureGenerator';
@@ -720,6 +721,8 @@ export class BigBangEngine {
 
   // Event callbacks
   onCivEvent: ((msg: string) => void) | null = null;
+  /** Hash of the universe seed (init): seeds per-world systems such as the nations. */
+  private tick0Seed = 0;
   /**
    * Biology events that are not simple phase advances: stalls, mass extinctions,
    * explosive radiations and biosphere catastrophes.
@@ -1029,6 +1032,8 @@ export class BigBangEngine {
   init(stats: UniverseStats, seed: string): void {
     this.stats = stats;
     this.rng = new SeedRNG(seed);
+    this.tick0Seed = SeedRNG.hashString(seed);
+    runtimeState.playerNations = null;
     this.tick = 0;
     this.phase = 'inflation';
     this.stars = [];
@@ -2110,6 +2115,7 @@ export class BigBangEngine {
         // Record WHERE each species lives. Without this, `dominantSpeciesId`
         // stays null forever and nothing can render or inspect the biosphere.
         assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
+        if (star.civLevel >= 1) this.stepNations(star, runtimeState.playerPlanetGrid);
       }
 
       // ── Moons: settled once a civilisation can actually reach them ──────
@@ -2772,6 +2778,29 @@ export class BigBangEngine {
   }
 
   /** The culture of a star's civilisation, or null if it has none yet. */
+  /**
+   * The home world's nations: founded once the civilisation holds enough land
+   * (Ancient era on), then stepped with the surface. Their culture drifts from
+   * the civilisation's; without one yet, from the intelligent species' genome.
+   */
+  private stepNations(star: StarBody, grid: PlanetGrid): void {
+    let ns = runtimeState.playerNations;
+    if (!ns) ns = runtimeState.playerNations = new NationSystem((star.id * 2654435761 + this.tick0Seed) >>> 0);
+    if (!ns.isFounded) {
+      const civ = this.cultureFor(star);
+      const lead = gameState.playerSpecies.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+      const genome = civ?.sourceGenome ?? (lead ? summariseGenome(lead) : null);
+      if (!genome) return;
+      ns.found(grid, civ?.values ?? valuesFromGenome(genome), genome, this.tick);
+      if (ns.isFounded) {
+        const names = ns.nations.map(n => n.name);
+        this.onCivEvent?.(`Your people have split into ${names.length} nations: ${names.join(', ')}.`);
+      }
+      return;
+    }
+    ns.step(grid, this.tick);
+  }
+
   cultureFor(star: StarBody): Civilization | null {
     return gameState.civilizations[star.id] ?? null;
   }

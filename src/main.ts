@@ -41,6 +41,8 @@ import {
 import { runtimeState } from './simulation/GameState';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
+import { symptomsOf } from './simulation/Nations';
+import { flagCanvas } from './rendering/NationFlagArt';
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -1110,6 +1112,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       await _dioramaRenderer.init(diMount);
       // Live binding: a new game replaces `engine`, and its animTick restarts.
       _dioramaRenderer.setClock(() => engine?.currentAnimTick ?? 0);
+      _dioramaRenderer.setNationSource(() => runtimeState.playerNations);
     }
 
     if (runtimeState.playerPlanetGrid && planet) {
@@ -1364,6 +1367,7 @@ function showTileInfo(target: TileRef | null, clearMessage = true): void {
   setText('pi-tile-civ', cell.civId != null
     ? (gameState.playerSpeciesName || engine?.getPlayerStar()?.civName || 'Settled')
     : 'Uninhabited');
+  showTileNation(target);
 
   const occupant = cell.dominantSpeciesId
     ? gameState.playerSpecies.find(sp => sp.id === cell.dominantSpeciesId)
@@ -1374,6 +1378,30 @@ function showTileInfo(target: TileRef | null, clearMessage = true): void {
     : '');
 
   buildTileActionButtons(cell, target);
+}
+
+/** The Nation row of the tile panel: flag, name, ways, and what a visitor would notice. */
+function showTileNation(target: TileRef): void {
+  const val = document.getElementById('pi-tile-nation');
+  const ns = runtimeState.playerNations;
+  const n = ns?.isFounded ? ns.nationAt(target.row, target.col) : null;
+  if (val) {
+    val.textContent = n ? n.name : 'None';
+    if (n) {
+      const f = flagCanvas(n.flag, 2);
+      f.style.verticalAlign = 'middle';
+      f.style.marginRight = '6px';
+      val.prepend(f);
+    }
+  }
+  if (!n) { setText('pi-tile-nation-detail', ''); return; }
+  const signs = symptomsOf(n);
+  const last = n.history[n.history.length - 1];
+  setText('pi-tile-nation-detail', [
+    `${n.government} · ${n.ideology}`,
+    signs.length ? signs.join('. ') + '.' : 'Life is calm.',
+    last && n.history.length > 1 ? last.what : '',
+  ].filter(Boolean).join(' — '));
 }
 
 /** Wire pointer interaction on the diorama. Safe to call more than once. */

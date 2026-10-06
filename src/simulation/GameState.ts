@@ -207,6 +207,8 @@ export const runtimeState = {
   /** This universe's DNA branch definitions, rebuilt from `gameState.branchIds`. */
   branchDefs: [] as import('./DnaBranches').BranchDef[],
   playerPlanetGrid: null as PlanetGrid | null,
+  /** The home world's nations (phase 1 of docs/CORE_LOOP_VISION.md); founded once a civilisation holds land. */
+  playerNations: null as import('./Nations').NationSystem | null,
 };
 
 export const gameState: GameStateData = {

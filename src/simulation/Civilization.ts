@@ -180,7 +180,7 @@ export function valuesFromGenome(g: GenomeSummary): CultureValues {
 }
 
 /** The government a set of values implies. */
-function governmentFor(v: CultureValues, g: GenomeSummary): Government {
+export function governmentFor(v: CultureValues, g: GenomeSummary): Government {
   if (v.collectivism > 0.78 && g.social >= 8)          return 'Hive';
   if (v.piety > 0.62 && v.piety >= v.curiosity)        return 'Theocracy';
   if (v.militarism > 0.68)                             return v.collectivism > 0.5 ? 'Empire' : 'Warband';
@@ -190,7 +190,7 @@ function governmentFor(v: CultureValues, g: GenomeSummary): Government {
 }
 
 /** The ideology a set of values implies. */
-function ideologyFor(v: CultureValues): Ideology {
+export function ideologyFor(v: CultureValues): Ideology {
   const ranked: Array<[Ideology, number]> = [
     ['Militarist',   v.militarism],
     ['Devout',       v.piety],

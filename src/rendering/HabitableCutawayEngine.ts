@@ -2817,6 +2817,8 @@ export class HabitableCutawayEngine {
   private idShoreDist: Float32Array = new Float32Array(1);
   private idPick = new Int32Array(1);
   private camSet: CameraLayerSet | null = null;
+  /** Bumped whenever camSet is replaced (its pick may then hold other cells). */
+  private setSerial = 0;
   /** `identityCamera(w, h)`, kept so `activeCamera` never allocates per frame. */
   private idCamera: Camera = identityCamera(1, 1);
   /** The live camera the host draws the shown set through (`setView`), when set. */
@@ -2941,6 +2943,31 @@ export class HabitableCutawayEngine {
   get shoreDist(): Float32Array { return this.shown?.shoreDist ?? this.idShoreDist; }
   /** Pick buffer of the ACTIVE layer set (a camera set's: W x H; `hitTest` maps screen px into it). */
   get pick(): Int32Array { return this.shown?.pick ?? this.idPick; }
+  /** Width and height of `pick` (the shown set's, or the identity view's). */
+  get pickW(): number { return this.shown ? this.shown.W : this.w; }
+  get pickH(): number { return this.shown ? this.shown.H : this.h; }
+  /** Bumps whenever `pick` may hold different cells (any bake, rebake or set swap). */
+  get pickEpoch(): number { return this.surfaceEpoch * 4096 + this.setSerial; }
+
+  /**
+   * Host-drawn overlays in `pick` space, through the same view map as the
+   * static layers. `groundOverlay` (territory tint) lies on the ground, under
+   * plants and props; `lineOverlay` (border lines) is drawn over the plants
+   * so a forest does not hide a frontier, still under the day/night veil and
+   * the weather. Null: none.
+   */
+  groundOverlay: HTMLCanvasElement | null = null;
+  lineOverlay: HTMLCanvasElement | null = null;
+
+  private drawGroundOverlay(g: CanvasRenderingContext2D, layerBob: number, o: HTMLCanvasElement | null): void {
+    if (!o) return;
+    const cs = this.shown;
+    if (!cs) { if (o.width === this.w) g.drawImage(o, 0, layerBob); return; }
+    if (o.width !== cs.W) return;                       // stale: built for another set
+    const m = this.viewMap;
+    if (m.r === 1) g.drawImage(o, m.dx, m.dy + layerBob);
+    else g.drawImage(o, m.dx, m.dy + layerBob, cs.W * m.r, cs.H * m.r);
+  }
   /** Geometry on screen: the live camera's while a camera set is shown, else the base geometry. */
   get activeGeom(): HabitableGeom { return this.shown ? this.liveGeom : this.geom; }
   /** The camera the screen shows: the live one while a camera set is shown, else identity. Never allocates. */
@@ -3020,7 +3047,7 @@ export class HabitableCutawayEngine {
     // A new bake is a new planet (or a new size): back to the identity view.
     this.camera = identityCamera(this.w, this.h);
     this.idCamera = identityCamera(this.w, this.h);
-    this.camSet = null;
+    this.camSet = null; this.setSerial++;
     this.camShown = false;
     this.job = null;
     this.nextCam = null;
@@ -3148,7 +3175,7 @@ export class HabitableCutawayEngine {
 
   private dropCameraSet(): void {
     const was = this.shown !== null;
-    this.camSet = null;
+    this.camSet = null; this.setSerial++;
     this.job = null;
     this.nextCam = null;
     this.surfaceStale = false;
@@ -3295,7 +3322,7 @@ export class HabitableCutawayEngine {
       const dy = Math.round((old.camera.fy - set.camera.fy) * k + (set.H - old.H) / 2);
       set.painter.adopt(old.painter, dx, dy);
     }
-    this.camSet = set;
+    this.camSet = set; this.setSerial++;
     this.camera = set.camera;
     if (job.epoch !== this.surfaceEpoch) this.surfaceStale = true;
     this.syncView();
@@ -3548,6 +3575,7 @@ export class HabitableCutawayEngine {
     const sunAzimuth = input.sunAzimuth ?? 0;
     if (this.planetType === 'gas') this.drawGasRings(g, true, bob, geom, k);
     this.drawStatic(g, layerBob);
+    this.drawGroundOverlay(g, layerBob, this.groundOverlay);
 
     // Weather sim: fixed steps, every frame (cheap; it is the clock the
     // painters interpolate). At most 4 steps per frame: a refocused tab hands
@@ -3608,6 +3636,7 @@ export class HabitableCutawayEngine {
     // day/night veil and weather shadows.
     if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
     input.drawProps?.(g);
+    this.drawGroundOverlay(g, layerBob, this.lineOverlay);
     const veil = this.veilImage, veilG = this.veilG;
     if (veil && veilG) {
       if (doVeil) {

@@ -16,10 +16,14 @@ import { SeedRNG } from '../utils/SeedRNG';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
 import { installZoomBench } from './zoomBench';
+import { NationSystem } from '../simulation/Nations';
+import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
+let nations: NationSystem | null = null;
+renderer.setNationSource(() => nations);
 
 const params = new URLSearchParams(location.search);
 // BigBangEngine's PLANET_ORBIT_MU (0.0012 rad per 60 Hz tick at radius 10), so
@@ -155,6 +159,17 @@ function rebuild(): void {
 
   (document.getElementById('fps') as HTMLElement).title =
     species.filter(sp => !sp.isExtinct).map(sp => sp.name).join(', ');
+  // Nations, as BigBangEngine founds them once a civilisation stands
+  // (?nations=0 hides them). Stepped a while so their pressures have moved.
+  nations = null;
+  const lead = species.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+  if (!formation && star.civLevel >= 1 && lead && params.get('nations') !== '0') {
+    const ns = new NationSystem(seed);
+    const g = summariseGenome(lead);
+    ns.found(grid, valuesFromGenome(g), g, 0);
+    for (let t = 1; t <= 200; t++) ns.step(grid, t);
+    if (ns.isFounded) nations = ns;
+  }
   renderer.refreshData(grid, bio, species, planet, star, 0);
   (window as any).__gallery?.(species, star.civLevel);
 }
@@ -178,6 +193,7 @@ if (fx) {
 }
 // Dev console / test access.
 (window as unknown as { __renderer?: unknown }).__renderer = renderer;
+(window as unknown as { __nations?: () => unknown }).__nations = () => nations;
 
 // ?storm=tornado|typhoon|dust_devil|haboob|blizzard|supercell|fire_whirl —
 // keep one of that kind on the visible face.
