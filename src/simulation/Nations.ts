@@ -108,7 +108,8 @@ export interface Nation {
 export type OmenOp =
   | 'harvest' | 'blight' | 'fertility' | 'pestilence' | 'inspire' | 'stagnation' | 'veins'
   | 'cleanse' | 'smoke' | 'concord' | 'discord' | 'zeal' | 'calm' | 'fervor' | 'exodus'
-  | 'greed' | 'insularity' | 'dependency' | 'unrest';
+  | 'greed' | 'insularity' | 'dependency' | 'unrest'
+  | 'theft' | 'foe' | 'schism' | 'golden' | 'revolt' | 'cure' | 'seafaring';
 
 /** When an omen works: always, or only while the nation is in some state. */
 export type OmenCondition = 'always' | 'hunger' | 'scarcity' | 'crowding' | 'unrest' | 'war' | 'peace' | 'pious' | 'curious';
@@ -136,9 +137,13 @@ export interface OmenMods {
   food: number; materials: number; research: number; strength: number;
   growth: number; death: number; emigrate: number; pollution: number;
   attitude: number; cohesion: number; weariness: number;
+  /** All others turn against this nation (and toward each other). */
+  foe: number;
+  /** Reaches every nation by sea, frontier or not. */
+  contact: number;
 }
 
-const NO_MODS: OmenMods = { food: 1, materials: 1, research: 1, strength: 1, growth: 0, death: 0, emigrate: 0, pollution: 0, attitude: 0, cohesion: 0, weariness: 0 };
+const NO_MODS: OmenMods = { food: 1, materials: 1, research: 1, strength: 1, growth: 0, death: 0, emigrate: 0, pollution: 0, attitude: 0, cohesion: 0, weariness: 0, foe: 0, contact: 0 };
 
 /** How each omen pulls on the state, per unit of strength. */
 function addOp(o: OmenMods, op: OmenOp, m: number): void {
@@ -162,6 +167,12 @@ function addOp(o: OmenMods, op: OmenOp, m: number): void {
     case 'fervor': o.strength *= 1 + 0.5 * m; o.cohesion += 0.03 * m; break;
     case 'exodus': o.emigrate += 0.05 * m; break;
     case 'unrest': o.cohesion -= 0.12 * m; break;
+    case 'foe': o.foe += 0.5 * m; break;
+    case 'schism': o.cohesion -= 0.18 * m; o.research *= 1 + 0.25 * m; break;
+    case 'golden': o.cohesion += 0.08 * m; o.research *= 1 + 0.35 * m; o.food *= 1 + 0.1 * m; o.materials *= 1 + 0.1 * m; break;
+    case 'cure': o.death -= 0.06 * m; break;
+    case 'seafaring': o.contact += 1; break;
+    case 'theft': case 'revolt': break;          // one-off, at the start (tendOmens)
   }
 }
 
@@ -177,6 +188,10 @@ const OMEN_SIGN: Record<OmenOp, string> = {
   zeal: 'Temples overflow at every hour', calm: 'A strange stillness lies over the land',
   fervor: 'War-drums sound in the squares', exodus: 'Long columns of people take the roads out',
   unrest: 'Factions shout each other down in the squares',
+  theft: 'Foreign instruments turn up in the workshops', foe: 'Every border bristles against them',
+  schism: 'Rival preachers condemn each other in the streets', golden: 'Poets, builders and scholars flourish',
+  revolt: 'New banners fly over the old palaces', cure: 'Healers walk the streets and the sick rise again',
+  seafaring: 'Ships come and go from distant shores',
 };
 
 /** The history line when an omen takes hold in `n`. */
@@ -201,6 +216,13 @@ function omenStart(op: OmenOp, n: string): string {
     case 'fervor': return `${n} took up arms with a new fervour.`;
     case 'exodus': return `Many people left ${n} for the lands beyond its borders.`;
     case 'unrest': return `Quarrels broke out across ${n}.`;
+    case 'theft': return `Spies of ${n} brought home the secrets of a rival.`;
+    case 'foe': return `The other nations turned as one against ${n}.`;
+    case 'schism': return `A schism split the faithful of ${n}.`;
+    case 'golden': return `A golden age dawned in ${n}.`;
+    case 'revolt': return `The people of ${n} rose against their rulers.`;
+    case 'cure': return `Healers in ${n} learned to turn back the fevers.`;
+    case 'seafaring': return `Ships of ${n} found the far shores.`;
   }
 }
 
@@ -458,12 +480,48 @@ export class NationSystem {
           if (o.op === 'insularity') n.values.xenophobia = clamp(n.values.xenophobia + 0.1 * o.m);
           if (o.op === 'greed') n.state.inequality = clamp(n.state.inequality + 0.1 * o.m);
           if (o.op === 'calm') n.values.militarism = clamp(n.values.militarism - 0.05 * o.m);
-          this.log(n, tick, omenStart(o.op, n.name), o.aftermath ? [`the ${o.card} had passed`] : [`the ${o.card}`]);
+          if (o.op === 'revolt') this.overthrow(n, o.m);
+          const stole = o.op === 'theft' ? this.steal(n) : null;
+          if (o.op === 'theft' && !stole) { this.log(n, tick, `Spies of ${n.name} found nothing worth stealing.`, [`the ${o.card}`]); continue; }
+          this.log(n, tick, omenStart(o.op, n.name), [o.aftermath ? `the ${o.card} had passed` : `the ${o.card}`, ...(stole ? [`it learned ${stole}`] : [])]);
         }
         o.active = o.started && now < o.until && this.holds(n, o.cond);
       }
       n.omens = n.omens.filter(o => now < o.until + 1);
     }
+  }
+
+  /** Theft: learn one technology a nation in contact already knows. Returns its name. */
+  private steal(n: Nation): string | null {
+    const opts = available(n.techs).filter(t => this.teacherOf(n.id, t.id) || this.nations.some(o => !o.fallen && o !== n && o.techs.includes(t.id)));
+    if (!opts.length) return null;
+    const t = opts.reduce((a, b) => (b.era > a.era ? b : a));
+    n.techs.push(t.id);
+    n.era = eraOf(n.techs);
+    this.discoveries.push({ nation: n, tech: t, tick: this.lastTick });
+    this.version++;
+    return t.name;
+  }
+
+  /** Revolt: the rulers fall; the gains are shared out, the realm is shaken, and it takes a new form. */
+  private overthrow(n: Nation, m: number): void {
+    const clamp = (x: number) => Math.max(0, Math.min(1, x));
+    n.state.inequality *= 0.3;
+    n.state.cohesion = Math.min(n.state.cohesion, 0.35);
+    n.values.collectivism = clamp(n.values.collectivism + 0.15 * m);
+    const next: Government = n.values.collectivism > 0.6 ? 'Council' : n.values.piety > 0.65 ? 'Theocracy' : 'Republic';
+    if (next === n.government) return;
+    const place = n.name.slice(n.form.length).trim();
+    const form = this.rng.pick(FORM_OF[next]);
+    n.government = next; n.form = form; n.name = `${form} ${place}`;
+    n.ideology = ideologyFor(n.values);
+    this.version++;
+  }
+
+  /** Something outside the nations (a quake, a comet) killed a share of `k`'s people. */
+  harm(k: number, share: number): void {
+    const n = this.nations[k];
+    if (n && !n.fallen) n.state.population = Math.max(10, n.state.population * (1 - Math.max(0, Math.min(0.9, share))));
   }
 
   /** Cards that worked on `n` lately, as causes for what happens to it now. */
@@ -754,7 +812,8 @@ export class NationSystem {
 
   /** Whether two nations know of each other: a shared frontier, or both have ships (Industrial+). */
   private inContact(r: Relation): boolean {
-    return r.border > 0 || (this.nations[r.a].era >= 3 && this.nations[r.b].era >= 3);
+    const A = this.nations[r.a], B = this.nations[r.b];
+    return r.border > 0 || (A.era >= 3 && B.era >= 3) || this.modsOf(A).contact > 0 || this.modsOf(B).contact > 0;
   }
 
   /** A nation in contact with `k` that already knows `tech`, and how they meet. */
@@ -797,7 +856,8 @@ export class NationSystem {
       const target = r.feud + (similarity - 0.75) * 1.6 - insular * 0.5 + (r.trade ? 0.15 : 0)
         + (A.ideology === B.ideology ? 0.15 : -0.1) + (A.government === B.government ? 0.05 : -0.1)
         - competition - r.grievance * 0.8 - (r.war ? 0.6 : 0)
-        + this.modsOf(A).attitude + this.modsOf(B).attitude;
+        + this.modsOf(A).attitude + this.modsOf(B).attitude - this.modsOf(A).foe - this.modsOf(B).foe
+        + this.allyBonus(r);
       // Sown rumours leave wrongs remembered even after they fade.
       r.grievance = Math.min(1, r.grievance + eras * 0.4 * Math.max(0, -(this.modsOf(A).attitude + this.modsOf(B).attitude)));
       r.attitude = Math.max(-1, Math.min(1, r.attitude + (target - r.attitude) * k));
@@ -855,6 +915,13 @@ export class NationSystem {
         }
       }
     }
+  }
+
+  /** A common foe draws the others together: + for two nations that both hate the same marked one. */
+  private allyBonus(r: Relation): number {
+    let b = 0;
+    for (const n of this.nations) if (!n.fallen && n.id !== r.a && n.id !== r.b) b += this.modsOf(n).foe * 0.5;
+    return b;
   }
 
   /** Strength in the field: numbers, the age, martial know-how, and how well the people hold together. */
@@ -1001,7 +1068,7 @@ export class NationSystem {
       // Famine kills, but not everyone at once: at most 30% a step.
       // Omens: a fertile year adds to it, fever takes from it, an exodus sends people away.
       s.population = Math.max(10, s.population * (1 + Math.max(-0.3, 0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding)
-        + om.growth - om.death));
+        + om.growth - Math.max(-0.02, om.death)));
       if (om.emigrate > 0) { leaving[k] = s.population * Math.min(0.3, om.emigrate); s.population -= leaving[k]; }
       s.foodNeed = s.population * FOOD_PER_PERSON;
       s.knowledge += s.population * 0.0004 * (0.5 + n.values.curiosity) * fx.knowledge;

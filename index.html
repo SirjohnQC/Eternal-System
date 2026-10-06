@@ -2800,27 +2800,8 @@ input[type="range"], select, label[for],
   <div class="faith-deck folded">
     <div class="faith-deck-label">FAITH <span class="fold-mark">▸</span></div>
     <div class="divine-panel" id="faith-panel">
-      <button class="divine-action-btn faith-gold" id="divine-explore-btn" disabled>
-        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
-        <span class="divine-action-name">DIVINE SIGHT</span>
-        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/sight.png" alt="" width="32" height="32"/></span>
-        <span class="divine-action-desc">Reveal uncharted regions of the cosmos.</span>
-        <span class="divine-action-cost">✦ 20 DP</span>
-      </button>
-      <button class="divine-action-btn faith-green" id="bless-harvest-btn" disabled>
-        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
-        <span class="divine-action-name">BLESS HARVEST</span>
-        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/harvest.png" alt="" width="32" height="32"/></span>
-        <span class="divine-action-desc">Enrich your world's biosphere.</span>
-        <span class="divine-action-cost">✦ 5 DP</span>
-      </button>
-      <button class="divine-action-btn faith-purple" id="nudge-evolution-btn" disabled>
-        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
-        <span class="divine-action-name">NUDGE EVOLUTION</span>
-        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/evolution.png" alt="" width="32" height="32"/></span>
-        <span class="divine-action-desc">Advance your civilization one tech tier.</span>
-        <span class="divine-action-cost">✦ 10 DP</span>
-      </button>
+      <!-- Procedural Faith Cards (src/ui/FaithHand.ts) are prepended here; sight, harvest,
+           evolution, meteor and terraform are cards now, not fixed buttons. -->
       <button class="divine-action-btn faith-violet" id="send-prophet-btn" disabled>
         <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
         <span class="divine-action-name">SEND PROPHET</span>
@@ -2835,13 +2816,6 @@ input[type="range"], select, label[for],
         <span class="divine-action-desc">Send a divine sign. Deepen your faith's devotion.</span>
         <span class="divine-action-cost">✦ 15 DP</span>
       </button>
-      <button class="divine-action-btn faith-red" id="send-meteor-btn" disabled>
-        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
-        <span class="divine-action-name">SEND METEOR</span>
-        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/meteor.png" alt="" width="32" height="32"/></span>
-        <span class="divine-action-desc">Hurl a life-seeding meteor at the nearest lifeless world.</span>
-        <span class="divine-action-cost">✦ 20 DP</span>
-      </button>
       <button class="divine-action-btn faith-green" id="place-life-btn" style="display:none">
         <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
         <span class="divine-action-name">PLACE LIFE</span>
@@ -2855,13 +2829,6 @@ input[type="range"], select, label[for],
         <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/smite.png" alt="" width="32" height="32"/></span>
         <span class="divine-action-desc">Destroy inbound threat</span>
         <span class="divine-action-cost">✦ 25 DP</span>
-      </button>
-      <button class="divine-action-btn faith-green" id="terraform-btn" disabled style="display:none">
-        <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
-        <span class="divine-action-name">TERRAFORM</span>
-        <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/terraform.png" alt="" width="32" height="32"/></span>
-        <span class="divine-action-desc">Reshape the home world</span>
-        <span class="divine-action-cost" id="terraform-cost">✦ 50 DP</span>
       </button>
     </div>
     <div class="faith-dots" aria-hidden="true">
@@ -4178,6 +4145,8 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
   font-family:var(--font-pixel);font-size:8.5px;letter-spacing:1px;color:#e0866b;text-transform:uppercase;opacity:.85;
 }
 .faith-proc-forged{position:absolute;top:3px;right:6px;font-size:8px;color:var(--faith-accent);letter-spacing:1px}
+.divine-action-cost.fc-up{color:#ffb070 !important}
+#faith-tip .ft-up{color:#ff9f6a;font-family:var(--font-ui);letter-spacing:0;font-size:10px}
 .divine-action-btn.faith-off{opacity:0.42}
 .divine-action-btn.faith-off:hover{opacity:0.7}
 .faith-burning .faith-proc{animation:faithEmber 1.6s ease-in-out infinite;opacity:1}

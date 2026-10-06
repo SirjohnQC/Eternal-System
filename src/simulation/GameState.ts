@@ -126,6 +126,8 @@ export interface GameStateData {
   faithHand?: import('./FaithCards').FaithCard[];
   /** Seeds each seek, burn and cast. */
   faithSeq?: number;
+  /** Recent casts per kind of card (FaithCards.Wear): the heavens tire of repeats. */
+  faithWear?: import('./FaithCards').Wear;
   techPoints: number;
   dnaPoints: number;
   playerDNA: DNABranch;
@@ -223,6 +225,7 @@ export const gameState: GameStateData = {
   divinePoints: 0,
   faithHand: [],
   faithSeq: 0,
+  faithWear: {},
   techPoints: 0,
   dnaPoints: 0,
   playerDNA: { ...DEFAULT_DNA_BRANCH },

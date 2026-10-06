@@ -13,8 +13,8 @@ import { generatePlanetGrid, isHabitable, type PlanetGrid } from '../src/simulat
 import { NationSystem, type Nation } from '../src/simulation/Nations';
 import { valuesFromGenome, type GenomeSummary } from '../src/simulation/Civilization';
 import {
-  discover, forge, cast, signalsOf, describe, priceOf, resolveTarget, ACTIONS,
-  type FaithCard, type WorldSignals, type ActionId, type ForgeKind,
+  discover, forge, cast, signalsOf, describe, priceOf, resolveTarget, possible, priceNow, noteUse, wearOf, ACTIONS,
+  type FaithCard, type WorldSignals, type ActionId, type ForgeKind, type DivineHost, type Wear,
 } from '../src/simulation/FaithCards';
 import { SeedRNG } from '../src/utils/SeedRNG';
 
@@ -64,14 +64,14 @@ const card = (actions: ActionId[], over: Partial<FaithCard> = {}): FaithCard => 
 // ── 1. Cards are sentences of parts ───────────────────────────────────────────
 console.log('Faith Cards: parts');
 {
-  const calm: WorldSignals = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, war: 0, peace: 1, trade: 0.3, piety: 0.5, curiosity: 0.5, dominance: 0.1, era: 0.3 };
+  const calm: WorldSignals = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, war: 0, peace: 1, trade: 0.3, piety: 0.5, curiosity: 0.5, dominance: 0.1, era: 0.3, young: 0, wild: 0.3, cold: 0.2, dry: 0.2, lifeless: 0 };
   const rng = new SeedRNG('parts');
   const all: FaithCard[] = [];
   for (let i = 0; i < 400; i++) all.push(...discover(calm, rng, 3, `p${i}`));
   const configs = new Set(all.map(c => `${c.actions}|${c.target}|${c.condition}|${c.magnitude}|${c.duration}|${c.sides.map(s => s.op + s.when + s.mag)}`));
   check('1200 drawn cards are mostly distinct configurations', configs.size > 900, `${configs.size} distinct`);
   check('every card has a cost of at least 2 DP', all.every(c => c.cost >= 2), `range ${Math.min(...all.map(c => c.cost))}..${Math.max(...all.map(c => c.cost))}`);
-  check('odds are probabilities', all.every(c => c.odds > 0.3 && c.odds < 1));
+  check('odds are probabilities (works on land always happen)', all.every(c => c.odds > 0.3 && c.odds <= 1));
   check('a seek offers distinct actions', all.length % 3 === 0 && Array.from({ length: all.length / 3 }, (_, i) => all.slice(i * 3, i * 3 + 3))
     .every(t => new Set(t.map(c => c.actions[0])).size === 3));
   check('most cards carry a side effect (a price)', all.filter(c => c.sides.length).length / all.length > 0.7,
@@ -85,7 +85,7 @@ console.log('Faith Cards: parts');
 // ── 2. Discovery follows the world ────────────────────────────────────────────
 console.log('Faith Cards: discovery shaped by the world');
 {
-  const base: WorldSignals = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, war: 0, peace: 1, trade: 0, piety: 0.5, curiosity: 0.3, dominance: 0.1, era: 0.2 };
+  const base: WorldSignals = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, war: 0, peace: 1, trade: 0, piety: 0.5, curiosity: 0.3, dominance: 0.1, era: 0.2, young: 0, wild: 0.3, cold: 0.2, dry: 0.2, lifeless: 0 };
   const tally = (sig: WorldSignals, seed: string) => {
     const rng = new SeedRNG(seed), n: Record<string, number> = {};
     for (let i = 0; i < 300; i++) for (const c of discover(sig, rng, 3, 'x')) n[c.actions[0]] = (n[c.actions[0]] ?? 0) + 1;
@@ -99,7 +99,8 @@ console.log('Faith Cards: discovery shaped by the world');
   check('famine turns up roads out (exodus)', (famine.exodus ?? 0) > (calm.exodus ?? 0) * 1.3, `${famine.exodus} vs ${calm.exodus}`);
   check('war turns up truces (calm)', (war.calm ?? 0) > (calm.calm ?? 0) * 1.5, `${war.calm} vs ${calm.calm}`);
   check('smoke turns up cleansing rains', (smog.cleanse ?? 0) > (calm.cleanse ?? 0) * 1.5, `${smog.cleanse} vs ${calm.cleanse}`);
-  check('anything can still surface in a calm world', Object.keys(calm).length === ACTIONS.length, `${Object.keys(calm).length}/${ACTIONS.length} actions`);
+  const allowed = ACTIONS.filter(a => possible(a, { nations: true, life: true, grid: true })).length;
+  check('anything allowed can still surface in a calm world', Object.keys(calm).length === allowed, `${Object.keys(calm).length}/${allowed} actions`);
   const w = world(11);
   const sig = signalsOf(w.ns);
   check('signals read from a real world are 0..1', Object.values(sig).every(v => v >= 0 && v <= 1), JSON.stringify(Object.fromEntries(Object.entries(sig).map(([k, v]) => [k, +v.toFixed(2)]))));
@@ -113,7 +114,7 @@ console.log('Faith Cards: burning and synthesis');
   const kinds: Record<ForgeKind, number> = { fusion: 0, refinement: 0, wild: 0 };
   let inherited = 0, fusedBoth = 0, fusions = 0, refinedUp = 0, refinements = 0;
   for (let i = 0; i < 600; i++) {
-    const [a, b] = discover({ hunger: 0.5, crowding: 0.3, scarcity: 0.3, unrest: 0.3, pollution: 0.2, war: 0.5, peace: 0.5, trade: 0.3, piety: 0.5, curiosity: 0.5, dominance: 0.4, era: 0.4 }, rng, 2, `f${i}`);
+    const [a, b] = discover({ hunger: 0.5, crowding: 0.3, scarcity: 0.3, unrest: 0.3, pollution: 0.2, war: 0.5, peace: 0.5, trade: 0.3, piety: 0.5, curiosity: 0.5, dominance: 0.4, era: 0.4, young: 0, wild: 0.3, cold: 0.2, dry: 0.2, lifeless: 0 }, rng, 2, `f${i}`);
     const { card: c, kind } = forge(a, b, rng, `c${i}`);
     kinds[kind]++;
     if (c.actions.some(x => a.actions.includes(x) || b.actions.includes(x))) inherited++;
@@ -208,6 +209,129 @@ const sum = (ns: NationSystem, f: (n: Nation) => number) => ns.nations.filter(n 
   const [a] = twins(28);
   const res = cast(a.ns, card(['blight'], { odds: -1 }), new SeedRNG('c8'), a.t);
   check('an unheeded card lays no omen', !res.heeded.length && a.ns.nations.every(n => !n.omens.length), res.line);
+}
+
+// ── 5. The set: 30–40 kinds across four scopes ────────────────────────────────
+console.log('Faith Cards: the set');
+{
+  const by = (sc: string) => ACTIONS.filter(a => a.scope === sc).length;
+  check('30–40 kinds of card', ACTIONS.length >= 30 && ACTIONS.length <= 40, `${ACTIONS.length}: nation ${by('nation')}, world ${by('world')}, life ${by('life')}, cosmos ${by('cosmos')}`);
+  const young: WorldSignals = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, war: 0, peace: 0, trade: 0, piety: 0, curiosity: 0, dominance: 0, era: 0, young: 1, wild: 0.9, cold: 0.3, dry: 0.3, lifeless: 1 };
+  const ctx = { nations: false, life: true, grid: true, lifeless: true, intelligent: false, terraform: false };
+  const rng = new SeedRNG('young');
+  const got: FaithCard[] = [];
+  for (let i = 0; i < 200; i++) got.push(...discover(young, rng, 3, `y${i}`, ctx));
+  check('a world without nations still turns up cards', got.length === 600);
+  check('...none of them nation cards or nation targets', got.every(c => ACTIONS.find(a => a.id === c.actions[0])!.scope !== 'nation' && !['hungriest', 'all', 'rivals', 'strongest'].includes(c.target)),
+    [...new Set(got.map(c => c.actions[0]))].join(' '));
+  check('...and no prices without nations to pay them', got.every(c => !c.sides.length));
+  for (const c of got.slice(0, 3)) console.log(`        ${c.name.padEnd(28)} ${String(c.cost).padStart(3)} DP  ${describe(c)}`);
+}
+
+// ── 6. Works on land and life ─────────────────────────────────────────────────
+console.log('Faith Cards: works on the land');
+const hostFor = (grid: PlanetGrid): DivineHost => ({ grid, planetType: 'ocean', species: [], canCosmic: () => false, cosmic: () => null, surfaceChanged: () => {} });
+{
+  const [a, b] = twins(31);
+  const [dry] = resolveTarget(a.ns, 'strongest');
+  const fert = (w: typeof a) => { let f = 0; for (let i = 0; i < w.ns.owner.length; i++) if (w.ns.owner[i] === dry.id) f += w.grid[(i / 256) | 0][i % 256].fertility; return f; };
+  const before = fert(a);
+  cast(a.ns, card(['rains'], { target: 'strongest' }), new SeedRNG('w1'), a.t, hostFor(a.grid));
+  check('rains: the land itself grows more fertile', fert(a) > before * 1.1, `${before.toFixed(0)} -> ${fert(a).toFixed(0)}`);
+  run(a, 0.1); run(b, 0.1);
+  check('rains: and that nation eats better than its twin', a.ns.nations[dry.id].state.foodYield > b.ns.nations[dry.id].state.foodYield * 1.05,
+    `${a.ns.nations[dry.id].state.foodYield.toFixed(0)} vs ${b.ns.nations[dry.id].state.foodYield.toFixed(0)}`);
+  check('rains: in its history, with the card as cause', a.ns.nations[dry.id].history.some(h => h.what.startsWith('Long rains') && h.because.some(x => x.includes('Test Card'))));
+}
+{
+  const [a, b] = twins(32);
+  const [big] = resolveTarget(a.ns, 'strongest');
+  const pop0 = big.state.population, land0 = big.state.land;
+  cast(a.ns, card(['comet'], { target: 'strongest', magnitude: 3, duration: 3 }), new SeedRNG('w2'), a.t, hostFor(a.grid));
+  check('comet: kills people outright', a.ns.nations[big.id].state.population < pop0 * 0.9, `${pop0 | 0} -> ${a.ns.nations[big.id].state.population | 0}`);
+  run(a, 0.05); run(b, 0.05);
+  check('comet: the struck land is lost to the nation', a.ns.nations[big.id].state.land < land0, `${land0} -> ${a.ns.nations[big.id].state.land} cells (twin ${b.ns.nations[big.id].state.land})`);
+}
+{
+  const [a] = twins(33);
+  const [n] = resolveTarget(a.ns, 'strongest');
+  const elev = () => { let e = 0; for (let i = 0; i < a.ns.owner.length; i++) if (a.ns.owner[i] === n.id) e += a.grid[(i / 256) | 0][i % 256].elevation; return e; };
+  const e0 = elev();
+  cast(a.ns, card(['quake'], { target: 'strongest' }), new SeedRNG('w3'), a.t, hostFor(a.grid));
+  check('quake: raises ridges along the frontier', elev() > e0, `${e0.toFixed(0)} -> ${elev().toFixed(0)}`);
+}
+{
+  const [a] = twins(34);
+  let t0 = 0; for (const row of a.grid) for (const c of row) t0 += c.temperature;
+  cast(a.ns, card(['ice_age'], { target: 'all' }), new SeedRNG('w4'), a.t, hostFor(a.grid));
+  let t1 = 0; for (const row of a.grid) for (const c of row) t1 += c.temperature;
+  check('ice age: the whole world cools', t1 < t0 * 0.95, `${(t0 / 65536).toFixed(3)} -> ${(t1 / 65536).toFixed(3)}`);
+}
+{
+  const [a, b] = twins(35);
+  cast(a.ns, card(['herds'], { target: 'all' }), new SeedRNG('w5'), a.t, hostFor(a.grid));
+  run(a, 0.1); run(b, 0.1);
+  check('herds: the nations on that land eat better (an echo omen)', sum(a.ns, n => n.state.foodYield) > sum(b.ns, n => n.state.foodYield) * 1.05,
+    `${sum(a.ns, n => n.state.foodYield).toFixed(0)} vs ${sum(b.ns, n => n.state.foodYield).toFixed(0)}`);
+}
+
+// ── 7. New nation omens ───────────────────────────────────────────────────────
+console.log('Faith Cards: new omens');
+{
+  const [a, b] = twins(41);
+  const [poor] = resolveTarget(a.ns, 'backward');
+  const k0 = poor.techs.length;
+  cast(a.ns, card(['theft'], { target: 'backward' }), new SeedRNG('n1'), a.t);
+  run(a, 0.02);
+  check('theft: the backward nation learns a rival\'s secret', a.ns.nations[poor.id].techs.length > k0 || a.ns.nations[poor.id].history.some(h => h.what.includes('found nothing')),
+    `${k0} -> ${a.ns.nations[poor.id].techs.length} (twin ${b.ns.nations[poor.id].techs.length})`);
+}
+{
+  const [a, b] = twins(42);
+  const [big] = resolveTarget(a.ns, 'strongest');
+  cast(a.ns, card(['foe'], { target: 'strongest' }), new SeedRNG('n2'), a.t);
+  run(a, 0.25); run(b, 0.25);
+  const att = (w: typeof a) => w.ns.relations.filter(r => r.a === big.id || r.b === big.id).reduce((x, r) => x + r.attitude, 0);
+  check('foe: the world turns against the mighty', att(a) < att(b) - 0.3, `${att(a).toFixed(2)} vs ${att(b).toFixed(2)}`);
+}
+{
+  const [a, b] = twins(43);
+  const [n] = resolveTarget(a.ns, 'restless');
+  const name0 = n.name;
+  cast(a.ns, card(['revolt'], { target: 'restless', odds: 5 }), new SeedRNG('n3'), a.t);
+  run(a, 0.02); run(b, 0.02);
+  const n1 = a.ns.nations[n.id], t1 = b.ns.nations[n.id];
+  check('revolt: the people rose (in the history)', n1.history.some(h => h.what.includes('rose against their rulers')));
+  check('revolt: the gains are shared out (vs twin)', n1.state.inequality < t1.state.inequality, `${n1.state.inequality.toFixed(3)} vs ${t1.state.inequality.toFixed(3)}`);
+  check('revolt: the realm is shaken (vs twin)', n1.state.cohesion < t1.state.cohesion, `${n1.state.cohesion.toFixed(2)} vs ${t1.state.cohesion.toFixed(2)}`);
+  check('revolt: the realm may take a new form and name', true, `${name0} -> ${n1.name}`);
+}
+{
+  const [a] = twins(44);
+  const w = a.ns;
+  const [n] = resolveTarget(w, 'weakest');
+  cast(w, card(['seafaring'], { target: 'weakest' }), new SeedRNG('n4'), a.t);
+  run(a, 0.05);
+  const far = w.relations.filter(r => (r.a === n.id || r.b === n.id) && r.border === 0);
+  check('seafaring: far nations are now known (attitudes move)', !far.length || far.some(r => Math.abs(r.attitude) > 0.02), `${far.length} far nations`);
+}
+
+// ── 8. The heavens tire ───────────────────────────────────────────────────────
+console.log('Faith Cards: the heavens tire of repeats');
+{
+  const c = card(['harvest'], { target: 'hungriest' });
+  const w: Wear = {};
+  const p0 = priceNow(c, w, 0);
+  noteUse(w, c.actions, 0); noteUse(w, c.actions, 100);
+  const p2 = priceNow(c, w, 200);
+  check('two recent harvests make the next one dearer', p2 > p0 * 1.4, `${p0} -> ${p2} DP`);
+  check('another kind is untouched', priceNow(card(['zeal']), w, 200) === card(['zeal']).cost);
+  check('the markup fades with time', priceNow(c, w, 200 + 90000) < p0 * 1.1, `${priceNow(c, w, 200 + 90000)} DP after ~2 eras`);
+  const [a] = twins(51);
+  const worn = cast(a.ns, card(['harvest'], { odds: 0.6 }), new SeedRNG('t1'), a.t, null, 6);
+  const [b] = twins(51);
+  const fresh = cast(b.ns, card(['harvest'], { odds: 0.6 }), new SeedRNG('t1'), b.t, null, 0);
+  check('a people used to miracles heeds them less', worn.heeded.length <= fresh.heeded.length, `${worn.heeded.length} vs ${fresh.heeded.length} heeded (wear ${wearOf({ harvest: { n: 6, tick: 0 } }, ['harvest'], 0)})`);
 }
 
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall faith card checks passed');

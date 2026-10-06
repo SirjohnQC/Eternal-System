@@ -9,13 +9,15 @@
  *  - THE CRUCIBLE burns two cards into one new card (fusion, refinement, or
  *    something wild) — shown only after the fact.
  *
- * The hand lives in gameState (saved); what a card does lives in the nations
- * (runtime). Hovering a card shows its anatomy.
+ * The hand lives in gameState (saved); what a card does lives in the nations,
+ * the land and the heavens. Hovering a card shows its anatomy. Each recent
+ * use of a kind of card marks the next one up (gameState.faithWear).
  */
 import { gameState, runtimeState } from '../simulation/GameState';
 import {
-  discover, forge, cast, signalsOf, describe, anatomy, isBane, iconOf,
-  DURATIONS, type FaithCard, type ForgeKind, type ActionId,
+  discover, forge, cast, castable, signalsOf, describe, anatomy, isBane, iconOf, scopeOf, spanOf,
+  priceNow, wearOf, noteUse, ACTION_BY_ID,
+  type FaithCard, type ForgeKind, type ActionId, type DivineHost, type WorldContext,
 } from '../simulation/FaithCards';
 import { SeedRNG } from '../utils/SeedRNG';
 import type { DivineEffectKind } from '../rendering/IsoDioramaRenderer';
@@ -30,6 +32,10 @@ export interface FaithHandDeps {
   tick(): number;
   /** Show a card taking hold on the diorama (at a capital, if any). */
   effect?(kind: DivineEffectKind, cell: { row: number; col: number } | null): void;
+  /** The engine side of the heavens, and the home surface. */
+  host(): DivineHost | null;
+  /** What the world allows now (which cards can turn up). */
+  context(): WorldContext;
 }
 
 let deps: FaithHandDeps | null = null;
@@ -38,13 +44,36 @@ let lastSig = '';
 
 const hand = (): FaithCard[] => (gameState.faithHand ??= []);
 const rng = (what: string) => new SeedRNG(`${gameState.masterSeed}:faith:${what}:${gameState.faithSeq = (gameState.faithSeq ?? 0) + 1}`);
-const nationsReady = () => !!runtimeState.playerNations?.isFounded && runtimeState.playerNations.nations.some(n => !n.fallen);
+const nationsOf = () => runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+const wear = () => (gameState.faithWear ??= {});
+const now = () => deps?.tick() ?? 0;
+const priceOfNow = (c: FaithCard) => priceNow(c, wear(), now());
+/** Something can turn up: any scope the world allows. */
+const canSeek = () => { const c = deps?.context(); return !!c && (c.grid || c.nations || c.lifeless); };
 
 const EFFECT_OF: Record<ActionId, DivineEffectKind> = {
   harvest: 'bless', fertility: 'fertility', inspire: 'sight', veins: 'raise', cleanse: 'water',
   concord: 'prophet', discord: 'smite', zeal: 'revelation', calm: 'prophet', fervor: 'smite',
-  exodus: 'nudge', blight: 'sink', pestilence: 'smite',
+  exodus: 'nudge', blight: 'sink', pestilence: 'smite', theft: 'sight', foe: 'smite', schism: 'revelation',
+  golden: 'revelation', revolt: 'smite', cure: 'bless', seafaring: 'water',
+  rains: 'water', drought: 'sink', quake: 'raise', volcano: 'smite', ice_age: 'sink', comet: 'smite',
+  hardy: 'fertility', herds: 'fertility', murrain: 'sink', awaken: 'nudge', mutate: 'nudge',
+  sight: 'sight', meteor: 'smite', seed: 'fertility', terraform: 'revelation',
 };
+
+/** Card colour: curses red, the heavens violet, land and life green, nations gold. */
+function toneOf(c: FaithCard): string {
+  if (isBane(c)) return 'faith-red';
+  const sc = scopeOf(c);
+  return sc === 'cosmos' ? 'faith-violet' : sc === 'world' || sc === 'life' ? 'faith-green' : 'faith-gold';
+}
+
+/** "+50%: the heavens tire of harvests" — or '' when the kind is fresh. */
+function markup(c: FaithCard): string {
+  const w = wearOf(wear(), c.actions, now());
+  if (w < 0.2) return '';
+  return `+${Math.round(w * 25)}%: the heavens tire of ${ACTION_BY_ID[c.actions[0]].nouns[0].toLowerCase()}s`;
+}
 
 const KIND_LINE: Record<ForgeKind, string> = {
   fusion: 'The two burned into one: both purposes, both prices.',
@@ -58,16 +87,16 @@ function esc(s: string): string {
 
 /** Card face markup (same chrome as the fixed deck). */
 function face(c: FaithCard, big = false): string {
-  const tone = isBane(c) ? 'faith-red' : c.forged ? 'faith-purple' : c.actions[0] === 'harvest' || c.actions[0] === 'fertility' || c.actions[0] === 'cleanse' ? 'faith-green' : 'faith-gold';
+  const tone = toneOf(c), price = priceOfNow(c), up = price > c.cost;
   return `<button class="divine-action-btn faith-proc ${tone}${big ? ' faith-proc-big' : ''}" data-card="${esc(c.id)}">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">${esc(c.name)}</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/${iconOf(c)}.png" alt="" width="32" height="32"/></span>
-    <span class="fc-meta"><span class="fc-pips">${[1, 2, 3].map(i => `<i${i <= c.magnitude ? ' class="on"' : ''}></i>`).join('')}</span>${DURATIONS[c.duration - 1].replace(/^an? /, '')}</span>
+    <span class="fc-meta"><span class="fc-pips">${[1, 2, 3].map(i => `<i${i <= c.magnitude ? ' class="on"' : ''}></i>`).join('')}</span>${esc(spanOf(c))}</span>
     <span class="divine-action-desc">${esc(describe(c))}</span>
     ${c.sides.length ? `<span class="faith-proc-side">${c.sides.length === 1 ? '1 price' : `${c.sides.length} prices`}</span>` : ''}
     ${c.forged ? `<span class="faith-proc-forged">${'✦'.repeat(Math.min(3, c.forged))}</span>` : ''}
-    <span class="divine-action-cost">✦ ${c.cost} DP</span>
+    <span class="divine-action-cost${up ? ' fc-up' : ''}">✦ ${price} DP${up ? ' ▲' : ''}</span>
   </button>`;
 }
 
@@ -76,7 +105,7 @@ function tipFor(c: FaithCard): string {
     <div class="ft-desc">${esc(describe(c))}</div>
     <table>${anatomy(c).map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>
     <div class="ft-origin">${esc(c.origin)}</div>
-    <div class="ft-cost">✦ ${c.cost} DP to cast</div>`;
+    <div class="ft-cost">✦ ${priceOfNow(c)} DP to cast${markup(c) ? ` <span class="ft-up">(${c.cost} base; ${esc(markup(c))})</span>` : ''}</div>`;
 }
 
 function showTip(c: FaithCard, el: HTMLElement): void {
@@ -117,13 +146,14 @@ const closeModal = () => { document.getElementById('faith-modal')?.remove(); hid
 
 function seek(): void {
   if (!deps) return;
-  if (!nationsReady()) { deps.chat('There are no nations yet for a sign to fall upon.', 'system'); return; }
+  if (!canSeek()) { deps.chat('Your world has no shape yet for a sign to fall upon.', 'system'); return; }
   if (hand().length >= HAND_MAX) { deps.chat('Your hand is full. Cast a card, or burn two in the crucible.', 'system'); return; }
   if (gameState.divinePoints < SEEK_COST) { deps.chat(`Seeking a sign takes ${SEEK_COST} DP.`, 'system'); return; }
   gameState.divinePoints -= SEEK_COST;
   deps.dpChanged();
   const r = rng('seek');
-  const offer = discover(signalsOf(runtimeState.playerNations!), r, 3, `c${gameState.faithSeq}-${Math.floor(r.next() * 1e6).toString(36)}`);
+  const ctx = deps.context();
+  const offer = discover(signalsOf(nationsOf(), deps.host()?.grid ?? null, ctx), r, 3, `c${gameState.faithSeq}-${Math.floor(r.next() * 1e6).toString(36)}`, ctx);
   const m = modal('SIGNS IN THE DARK', 'The world shows you what it could become. Keep one.',
     offer.map(c => face(c, true)).join(''), '<button class="fm-btn" data-act="fade">LET THEM FADE</button>');
   wireTips(m, offer);
@@ -140,7 +170,7 @@ function seek(): void {
 
 function burn(a: FaithCard, b: FaithCard): void {
   if (!deps) return;
-  const { card, kind } = forge(a, b, rng('forge'), `f${gameState.faithSeq}-${a.id.slice(-3)}${b.id.slice(-3)}`);
+  const { card, kind } = forge(a, b, rng('forge'), `f${gameState.faithSeq}-${a.id.slice(-3)}${b.id.slice(-3)}`, deps.context());
   gameState.faithHand = hand().filter(c => c !== a && c !== b);
   hand().push(card);
   burnPick = null;
@@ -155,14 +185,18 @@ function burn(a: FaithCard, b: FaithCard): void {
 
 function play(c: FaithCard): void {
   if (!deps) return;
-  if (!nationsReady()) { deps.chat('There are no nations yet for a sign to fall upon.', 'system'); return; }
-  if (gameState.divinePoints < c.cost) { deps.chat(`${c.name} takes ${c.cost} DP.`, 'system'); return; }
-  gameState.divinePoints -= c.cost;
-  const ns = runtimeState.playerNations!;
-  const res = cast(ns, c, rng('cast'), deps.tick());
+  const ns = nationsOf(), host = deps.host();
+  const why = castable(c, ns, host);
+  if (why) { deps.chat(`${c.name}: ${why}`, 'system'); return; }
+  const price = priceOfNow(c);
+  if (gameState.divinePoints < price) { deps.chat(`${c.name} takes ${price} DP.`, 'system'); return; }
+  gameState.divinePoints -= price;
+  const worn = wearOf(wear(), c.actions, now());
+  const res = cast(ns, c, rng('cast'), deps.tick(), host, worn);
+  noteUse(wear(), c.actions, now());
   gameState.faithHand = hand().filter(x => x !== c);
   deps.chat(res.line, 'god');
-  if (res.heeded.length) deps.effect?.(EFFECT_OF[c.actions[0]], res.heeded[0].capital);
+  if (res.where || scopeOf(c) !== 'nation') deps.effect?.(EFFECT_OF[c.actions[0]], res.where);
   hideTip();
   deps.dpChanged();
   refresh(true);
@@ -174,8 +208,10 @@ function play(c: FaithCard): void {
 export function refresh(force = false): void {
   const panel = document.getElementById('faith-panel');
   if (!panel || !deps) return;
-  const dp = gameState.divinePoints, ready = nationsReady();
-  const sig = `${dp >= SEEK_COST}|${ready}|${burnPick?.join(',') ?? '-'}|${hand().map(c => `${c.id}:${dp >= c.cost}`).join(',')}`;
+  const dp = gameState.divinePoints, ready = canSeek();
+  const ns = nationsOf(), host = deps.host();
+  const can = (c: FaithCard) => !castable(c, ns, host) && dp >= priceOfNow(c);
+  const sig = `${dp >= SEEK_COST}|${ready}|${burnPick?.join(',') ?? '-'}|${hand().map(c => `${c.id}:${can(c)}:${priceOfNow(c)}`).join(',')}`;
   if (!force && sig === lastSig && panel.querySelector('#faith-seek-btn')) return;
   lastSig = sig;
   hideTip();   // the card it hung over is about to be replaced
@@ -185,7 +221,7 @@ export function refresh(force = false): void {
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">SEEK A SIGN</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/sight.png" alt="" width="32" height="32"/></span>
-    <span class="divine-action-desc">${ready ? `Glimpse what the world could become. ${hand().length}/${HAND_MAX} in hand.` : 'No nations yet for a sign to fall upon.'}</span>
+    <span class="divine-action-desc">${ready ? `Glimpse what the world could become. ${hand().length}/${HAND_MAX} in hand.` : 'Your world has no shape yet for a sign to fall upon.'}</span>
     <span class="divine-action-cost">✦ ${SEEK_COST} DP</span></button>`;
   const cards = hand().map(c => face(c)).join('');
   const crucible = hand().length >= 2 ? `<button class="divine-action-btn faith-orange faith-hand-el${burning ? ' selected' : ' affordable'}" id="faith-crucible-btn">
@@ -203,8 +239,8 @@ export function refresh(force = false): void {
   for (const el of els) {
     const c = hand().find(x => x.id === el.dataset['card']);
     if (c) {
-      el.classList.toggle('affordable', dp >= c.cost && ready);
-      el.classList.toggle('faith-off', !(dp >= c.cost && ready) && !burning);
+      el.classList.toggle('affordable', can(c));
+      el.classList.toggle('faith-off', !can(c) && !burning);
       el.classList.toggle('faith-pick', !!burnPick?.includes(c.id));
       el.addEventListener('mouseenter', () => showTip(c, el));
       el.addEventListener('mouseleave', hideTip);

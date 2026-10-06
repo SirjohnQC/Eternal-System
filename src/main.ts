@@ -1,5 +1,6 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
+import type { DivineHost } from './simulation/FaithCards';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
@@ -5637,6 +5638,78 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
 
 
 /**
+ * The engine side of the Faith Cards (FaithCards.DivineHost): the home
+ * surface for works on land and life, and the heavens — sight, meteors,
+ * seeding life, terraforming, stirring evolution — through the engine.
+ */
+function faithHost(): DivineHost | null {
+  if (!engine) return null;
+  const eng = engine;
+  const ps = eng.getPlayerStar();
+  const planet = ps?.planets.find(p => p.discovery === 'landing' || p.hasLife);
+  return {
+    grid: runtimeState.playerPlanetGrid,
+    planetType: planet?.type ?? 'rocky',
+    species: gameState.playerSpecies,
+    canCosmic: (w) => {
+      const star = eng.getPlayerStar();
+      if (!star) return false;
+      if (w === 'meteor') return !!eng.getMeteorTarget();
+      if (w === 'terraform') { const tf = eng.getTerraformInfo(); return !!tf && tf.options.length > 0 && !star.terraformStage; }
+      if (w === 'mutate') return star.hasLife;
+      if (w === 'seed') return !star.formationDestiny;
+      return true;
+    },
+    cosmic: (w, rng, mag) => {
+      const star = eng.getPlayerStar();
+      if (!star) return null;
+      switch (w) {
+        case 'sight': {
+          const dirs = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+          const seen: string[] = [];
+          for (let i = 0; i < mag; i++) {
+            const angle = rng.next() * Math.PI * 2;
+            eng.spendDPToExplore(angle);
+            seen.push(dirs[Math.floor((angle / (Math.PI * 2)) * 8) % 8]);
+          }
+          return `Your sight opens to the ${[...new Set(seen)].join(', ')}.`;
+        }
+        case 'meteor': {
+          const t = eng.getMeteorTarget();
+          if (!t) return null;
+          eng.sendMeteor();
+          return `A seed-stone falls toward ${t.civName}.`;
+        }
+        case 'seed':
+          for (let i = 0; i < mag; i++) eng.blessHarvest();
+          return `Life swells across ${gameState.playerPlanetName}.`;
+        case 'terraform': {
+          const tf = eng.getTerraformInfo();
+          if (!tf?.options.length) return null;
+          const opt = tf.options[Math.floor(rng.next() * tf.options.length)];
+          if (!eng.startTerraform(opt.targetType)) return null;
+          addCodexEntry(`Terraforming of ${gameState.playerPlanetName}`, 'divine');
+          return `The crust of ${gameState.playerPlanetName} cracks open: it is becoming a ${opt.targetType} world.`;
+        }
+        case 'mutate': {
+          let said = '';
+          for (let i = 0; i < mag; i++) {
+            const r = eng.nudgePlayerEvolution();
+            if (r.mutationDesc) said = r.mutationDesc;
+            if (r.outcome === 'dna') updateDNAPanel();
+          }
+          return said || `Something shifts in the blood of ${gameState.playerSpeciesName || 'your world\'s life'}.`;
+        }
+      }
+    },
+    surfaceChanged: () => {
+      _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+      _dioramaRenderer?.markSurfaceDirty(true);
+    },
+  };
+}
+
+/**
  * Faith deck: folded into a stack until the top card is clicked; the label
  * toggles; a click elsewhere folds it again. While folded, the click that
  * unfolds never fires a card.
@@ -5678,4 +5751,17 @@ initFaithHand({
   },
   tick: () => engine?.tick ?? 0,
   effect: (kind, cell) => _dioramaRenderer?.playDivineEffect(kind, cell),
+  host: faithHost,
+  context: () => {
+    const ps = engine?.getPlayerStar();
+    const tf = engine?.getTerraformInfo();
+    return {
+      nations: !!runtimeState.playerNations?.isFounded && runtimeState.playerNations.nations.some(n => !n.fallen),
+      life: !!ps?.hasLife,
+      grid: !!runtimeState.playerPlanetGrid,
+      intelligent: ps?.biologyPhase === 'intelligent',
+      lifeless: !!engine?.getMeteorTarget(),
+      terraform: !!tf && tf.options.length > 0 && !ps?.terraformStage,
+    };
+  },
 });
