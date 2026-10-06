@@ -36,12 +36,12 @@ import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, 
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
-import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreaturePortrait, CREATURE_SIZE_PX } from './SpeciesSprite';
+import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATURE_SIZE_PX } from './SpeciesSprite';
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { archGenome, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
-import { forgeCreature } from './CreatureForge';
+import { motionRate, STRIDE } from './CreatureForge';
 import {
   HabitableCutawayEngine,
   type HabitableType,
@@ -90,6 +90,12 @@ function hash01(n: number, seed: number): number {
 /** Camera zoom where birds start to fade in over living worlds. */
 const BIRD_ZOOM = 1.4;
 const CREATURE_HOP_PERIOD = 2.4;
+/** Frames in a forged creature's motion loop. */
+const CREATURE_FRAMES = 6;
+/** A creature body from CreatureForge: its motion loop, drawn at `scale`. */
+interface ForgedBody { cvs: HTMLCanvasElement[]; foot: number; rate: number; scale: number }
+/** Seconds per wander leg (walk then idle), and the radius it roams from home (base px). */
+const WANDER_LEG = 6, WANDER_R = 3.5;
 /** New CreatureForge sprites baked per frame at most. */
 const FORGE_BAKES_PER_FRAME = 3;
 
@@ -550,9 +556,9 @@ export class IsoDioramaRenderer {
    * (zoomed in, or massive species), keyed by genome and on-screen size.
    * `foot` is the transparent margin under the feet, so the anchor stays put.
    */
-  private forgeSprites = new Map<string, { cv: HTMLCanvasElement; foot: number; scale: number }>();
+  private forgeSprites = new Map<string, ForgedBody>();
   /** Last forged body per species (any size): the stand-in while a new size is forged. */
-  private readonly forgeLast = new Map<string, { cv: HTMLCanvasElement; foot: number; target: number }>();
+  private readonly forgeLast = new Map<string, { cvs: HTMLCanvasElement[]; foot: number; rate: number; target: number }>();
   /** Forge bakes allowed this frame; the pixel sprite stands in until baked. */
   private forgeBudget = 0;
   /** Scratch for compositing a submerged creature without tinting the sea. */
@@ -2641,13 +2647,33 @@ export class IsoDioramaRenderer {
         if (c.submersion > 0) continue;
         list.push({ wy: c.wy, draw: (g, v) => {
           const S = Math.max(1, Math.round(v.K));
-          const hop = Math.sin((this.elapsed / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
-          const [X, Y] = at(v, c.wx, c.wy);
           const forged = this.forgeSpriteFor(c, S);
-          const sw = forged ? Math.round(forged.cv.width * forged.scale) : Math.round(c.w) * S;
-          const sh = forged ? Math.round(forged.cv.height * forged.scale) : Math.round(c.h) * S;
-          const foot = forged ? Math.round(forged.foot * forged.scale) : 0;
-          g.drawImage(forged ? forged.cv : c.sprite, Math.round(X - sw / 2), Math.round(Y - sh + foot + hop), sw, sh);
+          const t = this.elapsed;
+          if (!forged) {
+            // The speck (too small to forge) keeps the shared hop.
+            const hop = Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
+            const [X, Y] = at(v, c.wx, c.wy);
+            const sw = Math.round(c.w) * S, sh = Math.round(c.h) * S;
+            g.drawImage(c.sprite, Math.round(X - sw / 2), Math.round(Y - sh + hop), sw, sh);
+            return;
+          }
+          // Walkers wander near home at the speed their stride carries them;
+          // flyers hover and drift; the rest hold their spot. While walking the
+          // loop plays, while idle it rests on its first frame.
+          const spr0 = forged.cvs[0], sw = Math.round(spr0.width * forged.scale), sh = Math.round(spr0.height * forged.scale);
+          const wd = this.wanderOf(c, t, sw / S, forged);
+          const [X, Y] = at(v, c.wx + wd.dx, c.wy + wd.dy);
+          const spr = wd.moving || forged.rate <= 3 || c.genome.dna.locomotion !== 'walking'
+            ? IsoDioramaRenderer.frameOf(forged, t, c.phase) : spr0;
+          const foot = Math.round(forged.foot * forged.scale);
+          const lift = Math.round(wd.lift * S);
+          const x0 = Math.round(X - sw / 2), y0 = Math.round(Y - sh + foot - lift);
+          if (wd.left) {
+            // Facing the way it walks: sprites face +x, so mirror for -x.
+            g.save(); g.translate(x0 + sw, y0); g.scale(-1, 1); g.drawImage(spr, 0, 0, sw, sh); g.restore();
+          } else {
+            g.drawImage(spr, x0, y0, sw, sh);
+          }
         } });
       }
     }
@@ -2983,7 +3009,7 @@ export class IsoDioramaRenderer {
     this.forgeBudget = 0;
   }
 
-  private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): { cv: HTMLCanvasElement; foot: number; scale: number } | null {
+  private forgeSpriteFor(c: { w: number; h: number; genome: SpeciesGenome }, S: number): ForgedBody | null {
     // Sized from the species' nominal size, not the pixel sprite's box: the
     // speck's outline and minimum anatomy pad it, and a forged body filling
     // that box towered over trees and houses (play feedback).
@@ -3001,37 +3027,73 @@ export class IsoDioramaRenderer {
       // for this species stands in, scaled, until its sharp one is made — no
       // pop back to the speck.
       const prev = this.forgeLast.get(body);
-      return prev ? { cv: prev.cv, foot: prev.foot, scale: target / prev.target } : null;
+      return prev ? { cvs: prev.cvs, foot: prev.foot, rate: prev.rate, scale: target / prev.target } : null;
     }
     this.forgeBudget--;
-    // Small: the forge rendered straight at the target size (the portrait
-    // path renders at least 16 px and would not shrink).
-    let cv: HTMLCanvasElement;
-    if (target < 16) {
-      const f = forgeCreature(gn, target);
-      cv = document.createElement('canvas');
-      cv.width = f.width; cv.height = f.height;
-      const g2 = cv.getContext('2d');
-      if (g2) { const img = g2.createImageData(f.width, f.height); img.data.set(f.data); g2.putImageData(img, 0, 0); }
-    } else {
-      cv = bakeCreaturePortrait(gn, target);
-    }
-    // Transparent rows under the lowest opaque pixel: the feet sit on the anchor.
-    let foot = 0;
-    const cg = cv.getContext('2d');
-    if (cg) {
-      const data = cg.getImageData(0, 0, cv.width, cv.height).data;
-      outer: for (let y = cv.height - 1; y >= 0; y--) {
-        for (let x = 0; x < cv.width; x++) if (data[(y * cv.width + x) * 4 + 3] > 0) break outer;
-        foot++;
+    // Its own motion (legs, wings, fins, pulse): a loop of frames in one box.
+    const cvs = bakeCreatureFrames(gn, target, CREATURE_FRAMES);
+    // Transparent rows under the lowest opaque pixel over the whole loop: the
+    // planted feet of the stride sit on the anchor.
+    let foot = Infinity;
+    for (const cv of cvs) {
+      let f = 0;
+      const cg = cv.getContext('2d');
+      if (cg) {
+        const data = cg.getImageData(0, 0, cv.width, cv.height).data;
+        outer: for (let y = cv.height - 1; y >= 0; y--) {
+          for (let x = 0; x < cv.width; x++) if (data[(y * cv.width + x) * 4 + 3] > 0) break outer;
+          f++;
+        }
       }
+      foot = Math.min(foot, f);
     }
-    const entry = { cv, foot, scale: 1 };
+    if (!Number.isFinite(foot)) foot = 0;
+    const rate = motionRate(gn);
+    const entry: ForgedBody = { cvs, foot, rate, scale: 1 };
     if (this.forgeSprites.size > 400) this.forgeSprites.clear();
     this.forgeSprites.set(key, entry);
     if (this.forgeLast.size > 400) this.forgeLast.clear();
-    this.forgeLast.set(body, { cv, foot, target });
+    this.forgeLast.set(body, { cvs, foot, rate, target });
     return entry;
+  }
+
+  /**
+   * Where a creature is relative to home at time t (base px), deterministic in
+   * t: each WANDER_LEG seconds it picks a point within WANDER_R of home and
+   * walks there from the last one at the speed of its stride (CreatureForge
+   * STRIDE x body length per gait cycle), then idles. Flyers hover above the
+   * ground and drift faster; swimmers and the sessile stay put.
+   */
+  private wanderOf(c: { genome: SpeciesGenome; phase: number }, t: number, bodyLen: number, f: ForgedBody):
+    { dx: number; dy: number; left: boolean; moving: boolean; lift: number } {
+    const loc = c.genome.dna.locomotion;
+    const flyer = loc === 'flying', walker = loc === 'walking' || loc === 'crawling';
+    if (!flyer && !walker) return { dx: 0, dy: 0, left: false, moving: false, lift: 0 };
+    const seed = Math.floor(c.phase * 9973);
+    // Stride speed: one STRIDE of body length per gait cycle (frames / rate seconds).
+    const speed = flyer ? 3 : Math.max(0.3, STRIDE * bodyLen * f.rate / f.cvs.length);
+    // Every point within `reach` of home, so any leg (at most 2 x reach) is
+    // walked inside its time: a leg never ends short and jumps to the next.
+    const reach = Math.min(WANDER_R * (flyer ? 1.6 : 1), speed * WANDER_LEG * 0.75 / 2);
+    const pt = (k: number): [number, number] => {
+      const a = (Math.sin((k + seed) * 12.9898) * 43758.5453) % 1, r = (Math.sin((k + seed) * 78.233) * 12543.21) % 1;
+      const ang = a * Math.PI * 2, rad = reach * (0.3 + 0.7 * Math.abs(r));
+      return [Math.cos(ang) * rad, Math.sin(ang) * rad * 0.5];
+    };
+    const tt = t + c.phase * WANDER_LEG, k = Math.floor(tt / WANDER_LEG), u = tt - k * WANDER_LEG;
+    const [ax, ay] = pt(k - 1), [bx, by] = pt(k);
+    const dist = Math.hypot(bx - ax, by - ay);
+    const walkT = dist / speed;
+    const q = walkT > 0 ? Math.min(1, u / walkT) : 1;
+    const moving = u < walkT;
+    const lift = flyer ? 5 + Math.sin(t * 1.7 + c.phase * 6) * 1.2 : 0;
+    return { dx: ax + (bx - ax) * q, dy: ay + (by - ay) * q, left: bx < ax, moving, lift };
+  }
+
+  /** The frame of a forged body's loop at time t; `phase` desyncs individuals. */
+  private static frameOf(f: ForgedBody, t: number, phase: number): HTMLCanvasElement {
+    const n = f.cvs.length;
+    return f.cvs[((Math.floor(t * f.rate + phase * n) % n) + n) % n];
   }
 
   /**
@@ -3259,14 +3321,15 @@ export class IsoDioramaRenderer {
       if (this.habitable && c.submersion <= 0) continue;
       // A small idle bob keeps the world alive without implying real movement.
       // The shared idle hop: one pixel (x S) up for the high half of the cycle.
-      const bob = Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
       const ax = this.wsx(c.wx), ay = this.wsy(c.wy);
       // Big enough on screen to show a body: the 3D-built creature at its true
       // screen resolution instead of the speck magnified x S.
       const forged = this.forgeSpriteFor(c, S);
-      const spr = forged ? forged.cv : c.sprite;
-      const sw = forged ? Math.round(forged.cv.width * forged.scale) : Math.round(c.w) * S;
-      const sh = forged ? Math.round(forged.cv.height * forged.scale) : Math.round(c.h) * S;
+      // A forged body moves by its own loop; only the speck keeps the shared hop.
+      const bob = forged ? 0 : Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
+      const spr = forged ? IsoDioramaRenderer.frameOf(forged, t, c.phase) : c.sprite;
+      const sw = forged ? Math.round(spr.width * forged.scale) : Math.round(c.w) * S;
+      const sh = forged ? Math.round(spr.height * forged.scale) : Math.round(c.h) * S;
       const dx = Math.round(ax - sw / 2);
       const dy = Math.round(ay + layerBob - sh + (forged ? Math.round(forged.foot * forged.scale) : 0) + bob);
 

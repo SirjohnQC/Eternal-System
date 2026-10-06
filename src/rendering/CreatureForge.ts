@@ -158,6 +158,40 @@ export class Body {
 
 const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
+// ─── Animation ───────────────────────────────────────────────────────────────
+//
+// Plans read the pose phase PH (0..1, one gait / beat cycle) while they build:
+// legs step, wings beat, tails sweep, bells pulse. 0 is the old still pose
+// (or close to it), so portraits forged at phase 0 look as they always did.
+let PH = 0;
+/** False for a still pose (portraits): limbs at rest, feet down. */
+let MOVING = false;
+const TAU = Math.PI * 2;
+/** Swing, -1..1, at a phase offset (fraction of a cycle). */
+const sw = (o = 0) => MOVING ? Math.sin((PH + o) * TAU) : 0;
+/** Lift, 0..1: a foot is up for the forward half of its stride. */
+const up = (o = 0) => MOVING ? Math.max(0, Math.cos((PH + o) * TAU)) : 0;
+
+/**
+ * A stepping foot (after procedural-pixel-creatures' LeggedLocomotion): it
+ * is PLANTED for `duty` of the cycle, sliding back at constant speed as the
+ * body walks over it, then swings forward on an eased arc with a lift.
+ * Returns [dx, lift] in units of the stride (dx -0.5..0.5, lift 0..1).
+ * The creature moves forward one stride per cycle, so a planted foot holds
+ * still on the ground.
+ */
+function step(o: number, duty = 0.64): [number, number] {
+  if (!MOVING) return [0, 0];
+  const p = ((PH + o) % 1 + 1) % 1;
+  if (p < duty) return [0.5 - p / duty, 0];
+  const t = (p - duty) / (1 - duty);
+  return [-0.5 + (0.5 - 0.5 * Math.cos(Math.PI * t)), Math.sin(Math.PI * t)];
+}
+/** Stride length of the walkers, in body units (the renderer moves them by it). */
+export const STRIDE = 0.16;
+/** Wing beat, skewed: a fast downstroke and a slower upstroke. 1 up … -1 down. */
+const flap = () => Math.cos(PH * TAU + 0.45 * Math.sin(PH * TAU));
+
 // ─── Signed distances (Inigo Quilez) ─────────────────────────────────────────
 
 function sdEllipsoid(px: number, py: number, pz: number, r: V3): number {
@@ -323,16 +357,21 @@ function planQuadruped(B: Body, t: Traits): void {
   if (t.carn) B.cone([h[0] + hr * 0.9, h[1] - hr * 0.75, hr * 0.3], [h[0] + hr * 0.95, h[1] - hr * 1.1, hr * 0.3], 0.018, 0.004, BONE, gHead);
   headParts(B, t, h, hr, gHead, gNear, gFar);
   // Legs: front pair straight, hind pair with a bent hock.
+  // A trot: diagonal pairs move together (near-front with far-hind).
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     const z = s * 0.1 * k;
-    B.cone([0.24, legTop, z], [0.27, -0.3, z], 0.07 * k, 0.05 * k, PRIMARY, g);
-    B.cone([0.27, -0.3, z], [0.26, ground, z], 0.05 * k, 0.04 * k, PRIMARY, g);
-    B.ell([0.29, ground + 0.015, z], [0.05, 0.022, 0.035], s > 0 ? BELLY : MARK, g);
-    B.cone([-0.25, legTop, z], [-0.31, -0.25, z], 0.09 * k, 0.06 * k, PRIMARY, g);
-    B.cone([-0.31, -0.25, z], [-0.26, ground, z], 0.05 * k, 0.04 * k, PRIMARY, g);
-    B.ell([-0.23, ground + 0.015, z], [0.05, 0.022, 0.035], s > 0 ? BELLY : MARK, g);
+    const of = s > 0 ? 0 : 0.5, oh = s > 0 ? 0.5 : 0;
+    const [fs, fl] = step(of, 0.66), [hs, hl] = step(oh, 0.66);
+    const fx = STRIDE * fs, fy = 0.06 * fl, hx = STRIDE * hs, hy = 0.06 * hl;
+    B.cone([0.24, legTop, z], [0.27 + fx * 0.5, -0.3 + fy * 0.5, z], 0.07 * k, 0.05 * k, PRIMARY, g);
+    B.cone([0.27 + fx * 0.5, -0.3 + fy * 0.5, z], [0.26 + fx, ground + fy, z], 0.05 * k, 0.04 * k, PRIMARY, g);
+    B.ell([0.29 + fx, ground + 0.015 + fy, z], [0.05, 0.022, 0.035], s > 0 ? BELLY : MARK, g);
+    B.cone([-0.25, legTop, z], [-0.31 + hx * 0.5, -0.25 + hy * 0.5, z], 0.09 * k, 0.06 * k, PRIMARY, g);
+    B.cone([-0.31 + hx * 0.5, -0.25 + hy * 0.5, z], [-0.26 + hx, ground + hy, z], 0.05 * k, 0.04 * k, PRIMARY, g);
+    B.ell([-0.23 + hx, ground + 0.015 + hy, z], [0.05, 0.022, 0.035], s > 0 ? BELLY : MARK, g);
   }
-  B.chain([[-0.36, 0.06, 0], [-0.52, 0.13, 0], [-0.66, 0.1, 0]], 0.06 * k, 0.018, PRIMARY, gBody);
+  const tw = 0.04 * sw(0.25);
+  B.chain([[-0.36, 0.06, 0], [-0.52, 0.13 + tw * 0.5, 0], [-0.66, 0.1 + tw, 0]], 0.06 * k, 0.018, PRIMARY, gBody);
   spikes(B, t, -0.3, 0.28, x => 0.15 * k + 0.02 * Math.cos(x * 4), gBody);
 }
 
@@ -349,15 +388,18 @@ function planBiped(B: Body, t: Traits): void {
   headParts(B, t, h, hr, gHead, gNear, gFar);
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     const z = s * 0.08 * k;
-    B.cone([0, -0.1, z], [0.03, -0.3, z], 0.065 * k, 0.05 * k, PRIMARY, g);
-    B.cone([0.03, -0.3, z], [0, -0.5, z], 0.05 * k, 0.04 * k, PRIMARY, g);
-    B.ell([0.04, -0.49, z], [0.06, 0.022, 0.035], MARK, g);
+    // Legs alternate; each arm swings against its leg.
+    const o = s > 0 ? 0 : 0.5, [ls, ll] = step(o, 0.62);
+    const lx = STRIDE * ls, ly = 0.07 * ll, ax = -0.4 * STRIDE * ls;
+    B.cone([0, -0.1, z], [0.03 + lx * 0.5, -0.3 + ly * 0.6, z], 0.065 * k, 0.05 * k, PRIMARY, g);
+    B.cone([0.03 + lx * 0.5, -0.3 + ly * 0.6, z], [lx, -0.5 + ly, z], 0.05 * k, 0.04 * k, PRIMARY, g);
+    B.ell([0.04 + lx, -0.49 + ly, z], [0.06, 0.022, 0.035], MARK, g);
     // Arms: the near one reaches forward, as if to grasp.
     const az = s * 0.17 * k;
     B.ell([0.0, 0.27, az * 0.85], [0.06, 0.05, 0.05], PRIMARY, g);
-    B.cone([0.0, 0.27, az], [s > 0 ? 0.08 : 0.04, 0.08, az * 1.1], 0.05 * k, 0.038 * k, PRIMARY, g);
-    B.cone([s > 0 ? 0.08 : 0.04, 0.08, az * 1.1], [s > 0 ? 0.2 : 0.1, 0.02, az * 1.1], 0.038 * k, 0.03 * k, PRIMARY, g);
-    B.ell([s > 0 ? 0.22 : 0.11, 0.01, az * 1.1], [0.035, 0.03, 0.03], BELLY, g);
+    B.cone([0.0, 0.27, az], [(s > 0 ? 0.08 : 0.04) + ax * 0.6, 0.08, az * 1.1], 0.05 * k, 0.038 * k, PRIMARY, g);
+    B.cone([(s > 0 ? 0.08 : 0.04) + ax * 0.6, 0.08, az * 1.1], [(s > 0 ? 0.2 : 0.1) + ax, 0.02, az * 1.1], 0.038 * k, 0.03 * k, PRIMARY, g);
+    B.ell([(s > 0 ? 0.22 : 0.11) + ax, 0.01, az * 1.1], [0.035, 0.03, 0.03], BELLY, g);
   }
   spikes(B, t, -0.05, 0.05, () => 0.32, gBody);
 }
@@ -373,9 +415,13 @@ function planInsectWalker(B: Body, t: Traits, legsPerSide = 3): void {
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     for (let i = 0; i < legsPerSide; i++) {
       const x = 0.12 - i * 0.12, z = s * 0.08;
-      const knee: V3 = [x + 0.06 - i * 0.05, 0.12, z * 2.6];
+      // Tripod gait: legs 0 and 2 of one side step with leg 1 of the other.
+      const o = ((i & 1) === (s > 0 ? 0 : 1)) ? 0 : 0.5;
+      const [ss, sl] = step(o, 0.6);
+      const fx = STRIDE * ss, fy = 0.06 * sl;
+      const knee: V3 = [x + 0.06 - i * 0.05 + fx * 0.5, 0.12 + fy, z * 2.6];
       B.cone([x, 0, z], knee, 0.03, 0.022, MARK, g);
-      B.cone(knee, [x + 0.08 - i * 0.12, -0.3, z * 3.2], 0.022, 0.012, MARK, g);
+      B.cone(knee, [x + 0.08 - i * 0.12 + fx, -0.3 + fy * 0.6, z * 3.2], 0.022, 0.012, MARK, g);
     }
   }
   if (t.carn) {
@@ -392,10 +438,11 @@ function planCrawler(B: Body, t: Traits): void {
   const segs = 6;
   for (let i = 0; i < segs; i++) {
     const u = i / (segs - 1), x = 0.32 - u * 0.7, r = (0.12 - u * 0.05) * k;
-    const y = -0.32 + r + Math.sin(u * 4) * 0.02;
+    // A wave runs back along the body; the little legs ripple with it.
+    const y = -0.32 + r + Math.sin(u * 4) * 0.02 + 0.025 * sw(-u * 0.8);
     B.ell([x, y, 0], [r * 0.95, r, r], i % 2 ? PRIMARY : MARK, gBody);
     for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
-      B.cone([x, y - r * 0.4, s * r * 0.6], [x + 0.03, -0.32, s * r * 1.1], 0.018, 0.01, ACCENT, g);
+      B.cone([x, y - r * 0.4, s * r * 0.6], [x + 0.03 + 0.03 * sw(-u * 0.8 + (s > 0 ? 0 : 0.5)), -0.32, s * r * 1.1], 0.018, 0.01, ACCENT, g);
     }
   }
   const h: V3 = [0.44, -0.32 + 0.1 * k, 0], hr = 0.1 * k;
@@ -412,15 +459,19 @@ function planCrab(B: Body, t: Traits): void {
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     for (let i = 0; i < 4; i++) {
       const x = 0.14 - i * 0.11, z = s * 0.2 * k;
-      const knee: V3 = [x - 0.03, 0.02, s * 0.36 * k];
+      // Sidestepping: alternate legs lift and reach out sideways.
+      const o = (i + (s > 0 ? 0 : 1)) & 1 ? 0.5 : 0;
+      const fz = 0.05 * sw(o) * s, fy = 0.05 * up(o);
+      const knee: V3 = [x - 0.03, 0.02 + fy, s * 0.36 * k + fz * 0.5];
       B.cone([x, -0.1, z], knee, 0.03, 0.025, MARK, g);
-      B.cone(knee, [x - 0.08, -0.36, s * 0.42 * k], 0.025, 0.012, MARK, g);
+      B.cone(knee, [x - 0.08, -0.36 + fy * 0.6, s * 0.42 * k + fz], 0.025, 0.012, MARK, g);
     }
     // Claws: big pincers on hunters, small on the rest.
     const cl = t.carn ? 1.3 : 0.8;
     B.cone([0.2, -0.08, s * 0.16], [0.36, -0.02, s * 0.24], 0.04, 0.035, SHELL, g);
     B.ell([0.44, 0.0, s * 0.26], [0.08 * cl, 0.05 * cl, 0.045 * cl], SHELL, g);
-    B.cone([0.47, 0.03, s * 0.26], [0.58, 0.06, s * 0.26], 0.025 * cl, 0.008, SHELL, g);
+    // The pincer's upper finger opens and snaps shut.
+    B.cone([0.47, 0.03, s * 0.26], [0.58, 0.06 + 0.04 * up(0.25), s * 0.26], 0.025 * cl, 0.008, SHELL, g);
   }
   B.eyes.push({ p: [0.2, 0.08, 0.08], style: eyeStyle(t), size: 1 });
   B.cone([0.18, -0.02, 0.08], [0.2, 0.07, 0.08], 0.015, 0.012, MARK, gBody);
@@ -430,14 +481,16 @@ function planCrab(B: Body, t: Traits): void {
 function planSnail(B: Body, t: Traits): void {
   const k = t.bulk;
   const gBody = B.group(0, 0.06, true), gShell = B.group(0, 0.02), gFar = B.group(-1, 0.02), gNear = B.group(1, 0.02);
-  B.ell([0.02, -0.38, 0], [0.42, 0.08, 0.13 * k], BELLY, gBody);
-  B.cone([0.3, -0.36, 0], [0.44, -0.24, 0], 0.08, 0.07, BELLY, gBody);
+  // The foot stretches forward and gathers back.
+  const st = 0.03 * sw();
+  B.ell([0.02 + st, -0.38, 0], [0.42 + st, 0.08, 0.13 * k], BELLY, gBody);
+  B.cone([0.3 + st, -0.36, 0], [0.44 + st * 1.5, -0.24, 0], 0.08, 0.07, BELLY, gBody);
   B.ell([-0.06, -0.12, 0], [0.24 * k, 0.24 * k, 0.17 * k], SHELL, gShell);
   B.shell = [-0.06, -0.12, 0];
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
-    B.cone([0.44, -0.22, s * 0.04], [0.5, -0.04, s * 0.06], 0.02, 0.015, BELLY, g);
+    B.cone([0.44 + st * 1.5, -0.22, s * 0.04], [0.5 + st * 1.5 + 0.02 * sw(0.25 * s), -0.04, s * 0.06], 0.02, 0.015, BELLY, g);
   }
-  B.eyes.push({ p: [0.5, -0.03, 0.08], style: eyeStyle(t), size: 0.8 });
+  B.eyes.push({ p: [0.5 + st * 1.5, -0.03, 0.08], style: eyeStyle(t), size: 0.8 });
   spikes(B, t, -0.2, 0.1, x => -0.12 + 0.24 * k * Math.sqrt(Math.max(0, 1 - ((x + 0.06) / (0.24 * k)) ** 2)), gShell);
 }
 
@@ -448,11 +501,14 @@ function planFish(B: Body, t: Traits): void {
   B.ell([0, 0, 0], [0.42, 0.19 * k, 0.12 * k], PRIMARY, gBody);
   B.ell([0.26, 0.0, 0], [0.2, 0.16 * k, 0.11 * k], PRIMARY, gBody);
   if (shark) B.cone([0.38, 0.0, 0], [0.56, -0.02, 0], 0.11 * k, 0.03, PRIMARY, gBody);
-  B.cone([-0.3, 0, 0], [-0.56, 0.01, 0], 0.11 * k, 0.035, PRIMARY, gBody);
-  B.tri([-0.52, 0, 0], [-0.74, 0.22, 0], [-0.7, -0.2, 0], 0.012, ACCENT, gFin);
+  // The tail sweeps side to side (and the flank follows a little).
+  const tz = 0.13 * sw();
+  B.cone([-0.3, 0, tz * 0.2], [-0.56, 0.01, tz * 0.6], 0.11 * k, 0.035, PRIMARY, gBody);
+  B.tri([-0.52, 0, tz * 0.6], [-0.74, 0.22, tz * 1.2], [-0.7, -0.2, tz * 1.2], 0.012, ACCENT, gFin);
   B.tri([-0.12, 0.16 * k, 0], [0.12, 0.17 * k, 0], [-0.16, 0.36 * k + (shark ? 0.06 : 0), 0], 0.012, ACCENT, gFin);
-  B.tri([0.12, -0.08, 0.1], [-0.02, -0.24, 0.18], [0.18, -0.16, 0.14], 0.01, ACCENT, gNear);
-  B.tri([0.12, -0.08, -0.1], [-0.02, -0.24, -0.18], [0.18, -0.16, -0.14], 0.01, ACCENT, gFar);
+  const pf = 0.05 * sw(0.25);
+  B.tri([0.12, -0.08, 0.1], [-0.02, -0.24 + pf, 0.18], [0.18, -0.16 + pf, 0.14], 0.01, ACCENT, gNear);
+  B.tri([0.12, -0.08, -0.1], [-0.02, -0.24 - pf, -0.18], [0.18, -0.16 - pf, -0.14], 0.01, ACCENT, gFar);
   B.eyes.push({ p: [0.36, 0.05, 0.085 * k], style: eyeStyle(t), size: 1 });
   if (t.carn && t.deep) {
     // Angler's lure: a rod off the brow with a glowing bulb.
@@ -470,9 +526,12 @@ function planFish(B: Body, t: Traits): void {
 
 function planRay(B: Body, t: Traits): void {
   const gBody = B.group(0, 0.08), gTail = B.group(0, 0.02);
-  B.ell([0, 0, 0], [0.32, 0.06, 0.42], PRIMARY, gBody);
+  // The wing disc rises and falls at its tips; the tail whips.
+  const wv = 0.07 * sw();
+  B.ell([0, 0, 0], [0.32, 0.06, 0.3], PRIMARY, gBody);
+  for (const s of [-1, 1]) B.ell([-0.02, wv * 0.6, s * 0.28], [0.26, 0.045, 0.16], PRIMARY, gBody);
   B.ell([0.2, 0.02, 0], [0.12, 0.06, 0.1], PRIMARY, gBody);
-  B.chain([[-0.28, 0, 0], [-0.55, 0.03, 0], [-0.8, 0.07, 0]], 0.03, 0.006, PRIMARY, gTail);
+  B.chain([[-0.28, 0, 0], [-0.55, 0.03, 0.05 * sw(0.3)], [-0.8, 0.07, 0.1 * sw(0.5)]], 0.03, 0.006, PRIMARY, gTail);
   B.eyes.push({ p: [0.24, 0.07, 0.08], style: eyeStyle(t), size: 0.9 });
   B.eyes.push({ p: [0.24, 0.07, -0.08], style: eyeStyle(t), size: 0.9 });
 }
@@ -484,20 +543,24 @@ function planSquid(B: Body, t: Traits): void {
   B.ell([0.24, 0.0, 0], [0.1, 0.09, 0.09], PRIMARY, gBody);
   for (let i = 0; i < 6; i++) {
     const a = (i / 5 - 0.5) * 1.2;
-    B.chain([[0.3, Math.sin(a) * 0.04, Math.cos(i) * 0.04], [0.45, Math.sin(a) * 0.12, Math.cos(i) * 0.06],
-             [0.6, Math.sin(a) * 0.18 - 0.02, Math.cos(i) * 0.07]], 0.03, 0.008, PRIMARY, gArms);
+    const wv = 0.05 * sw(i / 6);
+    B.chain([[0.3, Math.sin(a) * 0.04, Math.cos(i) * 0.04], [0.45, Math.sin(a) * 0.12 + wv * 0.5, Math.cos(i) * 0.06],
+             [0.6 - 0.04 * up(), Math.sin(a) * 0.18 - 0.02 + wv, Math.cos(i) * 0.07]], 0.03, 0.008, PRIMARY, gArms);
   }
   B.eyes.push({ p: [0.27, 0.04, 0.08], style: eyeStyle(t), size: 1.2 });
 }
 
 function planJelly(B: Body, t: Traits): void {
   const gBell = B.group(0, 0.05, true), gT = B.group(0, 0.02, true);
-  B.ell([0, 0.1, 0], [0.3 * t.bulk, 0.2 * t.bulk, 0.3 * t.bulk], PRIMARY, gBell);
-  B.ell([0, 0.0, 0], [0.26 * t.bulk, 0.06, 0.26 * t.bulk], BELLY, gBell);
+  // The bell squeezes (narrow and tall) and relaxes (wide and flat).
+  const pz = 0.1 * sw();
+  B.ell([0, 0.1, 0], [0.3 * t.bulk * (1 - pz), 0.2 * t.bulk * (1 + pz), 0.3 * t.bulk * (1 - pz)], PRIMARY, gBell);
+  B.ell([0, 0.0, 0], [0.26 * t.bulk * (1 - pz), 0.06, 0.26 * t.bulk * (1 - pz)], BELLY, gBell);
   const n = 7;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2, x = Math.cos(a) * 0.2, z = Math.sin(a) * 0.2;
-    B.chain([[x, -0.02, z], [x * 1.1 + 0.03, -0.25, z * 1.1], [x * 0.9 - 0.04, -0.45, z], [x + 0.03, -0.62, z]],
+    const wv = 0.05 * sw(-0.2 - i * 0.05);
+    B.chain([[x * (1 - pz), -0.02, z * (1 - pz)], [x * 1.1 + 0.03 + wv * 0.5, -0.25, z * 1.1], [x * 0.9 - 0.04 - wv, -0.45, z], [x + 0.03 + wv, -0.62, z]],
       0.022, 0.006, i % 2 ? ACCENT : PRIMARY, gT);
   }
   B.dots.push({ p: [0.0, 0.2, 0.28], mat: GLOW });
@@ -515,17 +578,25 @@ function planBird(B: Body, t: Traits): void {
   headParts(B, t, h, hr, gHead, gNear, gFar);
   // Wings raised mid-beat, built from a fan of feathers (or a webbed hand
   // for membrane wings); the far wing peeks over the back.
+  // The beat: phase 0 is the old raised pose; the wings sweep down to below
+  // the body and back. Heights scale about the shoulder; reach widens at the
+  // bottom of the stroke.
+  const beat = 0.33 + 0.67 * flap();                       // 1 up … -0.33 down (level-ish)
+  const reach = 1 + 0.25 * (1 - beat) / 1.6;
+  const wy = (y: number) => 0.07 + (y - 0.07) * beat;
   for (const [sd, g] of [[1, gNear], [-1, gFar]] as Array<[number, number]>) {
     const root: V3 = [0.04, 0.07, sd * 0.08];
-    const tips: V3[] = [[-0.06, 0.52, sd * 0.3], [-0.2, 0.5, sd * 0.32], [-0.32, 0.38, sd * 0.28], [-0.38, 0.2, sd * 0.2]];
+    const tips: V3[] = ([[-0.06, 0.52, sd * 0.3], [-0.2, 0.5, sd * 0.32], [-0.32, 0.38, sd * 0.28], [-0.38, 0.2, sd * 0.2]] as V3[])
+      .map(([x, y, z]) => [x, wy(y), z * reach] as V3);
     if (membrane) {
-      B.chain([root, [-0.02, 0.3, sd * 0.22], tips[0]], 0.022, 0.012, PRIMARY, g);
-      for (let i = 0; i < tips.length - 1; i++) B.tri([-0.02, 0.3, sd * 0.22], tips[i], tips[i + 1], 0.01, WING, g);
-      B.tri(root, [-0.02, 0.3, sd * 0.22], tips[3], 0.01, WING, g);
+      const elbow: V3 = [-0.02, wy(0.3), sd * 0.22 * reach];
+      B.chain([root, elbow, tips[0]], 0.022, 0.012, PRIMARY, g);
+      for (let i = 0; i < tips.length - 1; i++) B.tri(elbow, tips[i], tips[i + 1], 0.01, WING, g);
+      B.tri(root, elbow, tips[3], 0.01, WING, g);
       B.tri(root, tips[3], [-0.22, 0.04, sd * 0.1], 0.01, WING, g);
     } else {
-      B.ell([-0.06, 0.18, sd * 0.14], [0.12, 0.1, 0.04], PRIMARY, g);
-      tips.forEach((tp, i) => B.tri([-0.04 - i * 0.05, 0.16, sd * 0.13], tp, [tp[0] - 0.07, tp[1] - 0.1, tp[2]], 0.012, i % 2 ? MARK : PRIMARY, g));
+      B.ell([-0.06, wy(0.18), sd * 0.14], [0.12, 0.1, 0.04], PRIMARY, g);
+      tips.forEach((tp, i) => B.tri([-0.04 - i * 0.05, wy(0.16), sd * 0.13], tp, [tp[0] - 0.07, tp[1] - 0.1 * beat, tp[2]], 0.012, i % 2 ? MARK : PRIMARY, g));
     }
   }
   B.tri([-0.2, 0.0, 0], [-0.46, 0.08, 0.05], [-0.44, -0.08, -0.05], 0.012, ACCENT, gBody);
@@ -542,8 +613,11 @@ function planFlyingInsect(B: Body, t: Traits): void {
   B.ell(h, [hr, hr, hr], PRIMARY, gHead);
   headParts(B, t, h, hr, gHead, gNear, gFar);
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
-    B.tri([0.06, 0.08, s * 0.04], [-0.14, 0.42, s * 0.2], [-0.28, 0.3, s * 0.16], 0.008, WING, g);
-    B.tri([0.02, 0.07, s * 0.04], [-0.3, 0.26, s * 0.14], [-0.34, 0.12, s * 0.1], 0.008, WING, g);
+    // Wings buzz: two beats per cycle, flicking between high and low.
+    const hi = Math.cos(PH * TAU * 2) > 0 ? 1 : 0.35;
+    const wy = (y: number) => 0.08 + (y - 0.08) * hi;
+    B.tri([0.06, 0.08, s * 0.04], [-0.14, wy(0.42), s * 0.2], [-0.28, wy(0.3), s * 0.16], 0.008, WING, g);
+    B.tri([0.02, 0.07, s * 0.04], [-0.3, wy(0.26), s * 0.14], [-0.34, wy(0.12), s * 0.1], 0.008, WING, g);
     for (let i = 0; i < 3; i++) B.cone([0.08 - i * 0.05, -0.04, s * 0.04], [0.12 - i * 0.1, -0.24, s * 0.1], 0.012, 0.007, MARK, g);
   }
 }
@@ -554,7 +628,8 @@ function planBalloon(B: Body, t: Traits): void {
   B.ell([0, -0.14, 0], [0.12, 0.06, 0.12], BELLY, g);
   for (let i = 0; i < 4; i++) {
     const x = -0.06 + i * 0.04;
-    B.chain([[x, -0.16, 0.04 * (i - 1.5)], [x - 0.03, -0.36, 0.05], [x + 0.02, -0.55, 0.05]], 0.016, 0.005, ACCENT, gT);
+    const wv = 0.04 * sw(i * 0.2);
+    B.chain([[x, -0.16, 0.04 * (i - 1.5)], [x - 0.03 + wv * 0.5, -0.36, 0.05], [x + 0.02 + wv, -0.55, 0.05]], 0.016, 0.005, ACCENT, gT);
   }
   B.eyes.push({ p: [0.18, 0.12, 0.17], style: eyeStyle(t), size: 1 });
 }
@@ -567,7 +642,9 @@ function planPolyp(B: Body, t: Traits): void {
   const n = 8;
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2, dx = Math.cos(a), dz = Math.sin(a);
-    B.chain([[dx * 0.08, 0.08, dz * 0.08], [dx * 0.2, 0.22, dz * 0.2], [dx * 0.26, 0.36, dz * 0.24]],
+    // The crown opens wide and curls in.
+    const open = 1 + 0.25 * sw(i / n * 0.3);
+    B.chain([[dx * 0.08, 0.08, dz * 0.08], [dx * 0.2 * open, 0.22, dz * 0.2 * open], [dx * 0.26 * open, 0.36 - 0.04 * (open - 1), dz * 0.24 * open]],
       0.025, 0.008, i % 2 ? ACCENT : PRIMARY, gCrown);
   }
 }
@@ -575,15 +652,18 @@ function planPolyp(B: Body, t: Traits): void {
 function planPlant(B: Body, t: Traits): void {
   const gStem = B.group(0, 0.04), gLeaf = B.group(0, 0.01, true), gNear = B.group(1, 0.01, true), gFar = B.group(-1, 0.01, true);
   B.ell([0, -0.5, 0], [0.12, 0.035, 0.12], MARK, gStem);
-  B.chain([[0, -0.5, 0], [0.03, -0.2, 0], [-0.02, 0.1, 0], [0.01, 0.3, 0]], 0.05 * t.bulk, 0.025, PRIMARY, gStem);
+  // Sways in the breeze: more at the top.
+  const sy = 0.035 * sw();
+  B.chain([[0, -0.5, 0], [0.03 + sy * 0.2, -0.2, 0], [-0.02 + sy * 0.6, 0.1, 0], [0.01 + sy, 0.3, 0]], 0.05 * t.bulk, 0.025, PRIMARY, gStem);
   const leaves: Array<[number, number, number]> = [[-0.28, 1, -0.32], [-0.02, -1, -0.12], [0.18, 1, 0.08]];
   for (const [y, s, tilt] of leaves) {
     const g = s > 0 ? gNear : gFar;
-    B.tri([0.01, y, 0], [0.32 * s + 0.05, y + 0.12 + tilt * 0.1, s * 0.12], [0.18 * s, y - 0.06, s * 0.1], 0.012, LEAF, g);
+    const lx = sy * (y + 0.5) / 0.8;
+    B.tri([0.01 + lx, y, 0], [0.32 * s + 0.05 + lx, y + 0.12 + tilt * 0.1 + 0.02 * sw(0.2), s * 0.12], [0.18 * s + lx, y - 0.06, s * 0.1], 0.012, LEAF, g);
   }
   // Crown: a flower on a producer, a spore cap on anything else.
-  if (t.producer) B.ell([0.01, 0.36, 0], [0.11, 0.07, 0.11], ACCENT, gLeaf);
-  else B.ell([0.01, 0.34, 0], [0.2, 0.08, 0.2], ACCENT, gLeaf);
+  if (t.producer) B.ell([0.01 + sy, 0.36, 0], [0.11, 0.07, 0.11], ACCENT, gLeaf);
+  else B.ell([0.01 + sy, 0.34, 0], [0.2, 0.08, 0.2], ACCENT, gLeaf);
 }
 
 function planCell(B: Body, t: Traits): void {
@@ -591,11 +671,14 @@ function planCell(B: Body, t: Traits): void {
   B.ell([0, 0, 0], [0.3, 0.24, 0.24], PRIMARY, g);
   B.ell([0.06, 0.03, 0.12], [0.09, 0.08, 0.08], MARK, g);
   if (t.mobility === 'flagella' || t.mobility === 'jet siphon') {
-    B.chain([[-0.28, 0, 0], [-0.42, 0.08, 0], [-0.56, -0.04, 0], [-0.7, 0.06, 0], [-0.82, 0.0, 0]], 0.02, 0.008, ACCENT, gF);
+    const fl: V3[] = [];
+    for (let i = 0; i < 5; i++) fl.push([-0.28 - i * 0.135, 0.07 * Math.sin(i * 1.4 - PH * TAU) * (i > 0 ? 1 : 0), 0]);
+    B.chain(fl, 0.02, 0.008, ACCENT, gF);
   } else {
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
-      B.cone([Math.cos(a) * 0.28, Math.sin(a) * 0.22, 0.05], [Math.cos(a) * 0.38, Math.sin(a) * 0.31, 0.05], 0.012, 0.006, ACCENT, gF);
+      const ln = 1 + 0.25 * sw(i / 10);
+      B.cone([Math.cos(a) * 0.28, Math.sin(a) * 0.22, 0.05], [Math.cos(a) * 0.38 * ln, Math.sin(a) * 0.31 * ln, 0.05], 0.012, 0.006, ACCENT, gF);
     }
   }
   if (t.sense === 'photoreception') B.eyes.push({ p: [0.24, 0.08, 0.14], style: 'spot', size: 0.9 });
@@ -604,7 +687,8 @@ function planCell(B: Body, t: Traits): void {
 function planColony(B: Body, t: Traits): void {
   const g = B.group(0, 0.08);
   const pts: V3[] = [[0, 0, 0], [0.2, 0.06, 0.05], [-0.18, 0.08, -0.04], [0.06, 0.22, -0.02], [-0.06, -0.14, 0.06], [0.18, -0.12, -0.05], [-0.22, -0.1, 0.02]];
-  pts.forEach((p, i) => B.ell(p, [0.13, 0.12, 0.12], i % 3 === 0 ? MARK : PRIMARY, g));
+  // The cells swell in turn.
+  pts.forEach((p, i) => { const b = 1 + 0.08 * sw(i / pts.length); B.ell(p, [0.13 * b, 0.12 * b, 0.12 * b], i % 3 === 0 ? MARK : PRIMARY, g); });
   if (t.sense === 'photoreception') B.eyes.push({ p: [0.28, 0.08, 0.1], style: 'spot', size: 0.8 });
 }
 
@@ -613,16 +697,18 @@ function planStar(B: Body, t: Traits): void {
   B.ell([0, -0.3, 0], [0.13, 0.06, 0.13], PRIMARY, g);
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 + 0.3;
-    B.cone([0, -0.3, 0], [Math.cos(a) * 0.42, -0.33, Math.sin(a) * 0.42], 0.09 * t.bulk, 0.025, i % 2 ? PRIMARY : MARK, g);
+    // Arm tips lift in turn, a slow crawl.
+    B.cone([0, -0.3, 0], [Math.cos(a) * 0.42, -0.33 + 0.05 * up(i / 5), Math.sin(a) * 0.42], 0.09 * t.bulk, 0.025, i % 2 ? PRIMARY : MARK, g);
   }
 }
 
 function planWorm(B: Body, t: Traits): void {
   const g = B.group(0, 0.06);
   const pts: V3[] = [];
-  for (let i = 0; i < 8; i++) pts.push([0.4 - i * 0.12, -0.3 + Math.sin(i * 0.9) * 0.08, 0]);
+  // A travelling wave: the bends slide back along the body.
+  for (let i = 0; i < 8; i++) pts.push([0.4 - i * 0.12, -0.3 + Math.sin(i * 0.9 - PH * TAU) * 0.08, 0]);
   B.chain(pts, 0.07 * t.bulk, 0.03, PRIMARY, g);
-  B.eyes.push({ p: [0.44, -0.27, 0.05], style: eyeStyle(t), size: 0.7 });
+  B.eyes.push({ p: [0.44, pts[0][1] + 0.03, 0.05], style: eyeStyle(t), size: 0.7 });
 }
 
 /** Pick and build the body plan for a genome. */
@@ -713,14 +799,25 @@ export type SurfaceHook = (m: number, w: V3, n: V3, group: number) => { m: numbe
  * material ramp, far-side groups one step darker, faceted groups lit by a
  * snapped normal; then interior contours and a 1-px outline.
  */
-export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREATURE_CAM, hook?: SurfaceHook): RenderResult {
+/** Camera-space bounds of a body: [minX, maxX, minY, maxY]. */
+export function bodyBounds(B: Body, cam: Camera3 = CREATURE_CAM): [number, number, number, number] {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  const camC = B.prims.map(p => cam.toCam(p.bc));
-  B.prims.forEach((p, i) => {
-    const c = camC[i], r = p.br * 0.85;
+  for (const p of B.prims) {
+    const c = cam.toCam(p.bc), r = p.br * 0.85;
     minX = Math.min(minX, c[0] - r); maxX = Math.max(maxX, c[0] + r);
     minY = Math.min(minY, c[1] - r); maxY = Math.max(maxY, c[1] + r);
-  });
+  }
+  return [minX, maxX, minY, maxY];
+}
+
+/**
+ * `frame`: render into these camera-space bounds instead of the body's own,
+ * so every frame of an animation shares one size, scale and origin.
+ */
+export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREATURE_CAM, hook?: SurfaceHook,
+  frame?: [number, number, number, number]): RenderResult {
+  const camC = B.prims.map(p => cam.toCam(p.bc));
+  const [minX, maxX, minY, maxY] = frame ?? bodyBounds(B, cam);
   const span = Math.max(maxX - minX, maxY - minY);
   const s = Math.max(2, px - 3) / span;
   const W = Math.ceil((maxX - minX) * s) + 4, H = Math.ceil((maxY - minY) * s) + 4;
@@ -844,8 +941,42 @@ export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREA
  * included). Deterministic per genome.
  */
 export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
+  MOVING = false; PH = 0;
   const t = traitsOf(g);
-  const B = planFor(g, t);
+  return forgePose(g, t, planFor(g, t), px);
+}
+
+/**
+ * The creature's animation: `n` poses round one cycle of its body plan's
+ * motion (gait, wingbeat, tail sweep, pulse…), all in one frame box so they
+ * play back without jitter. Frame k is phase k / n.
+ */
+export function forgeCreatureFrames(g: SpeciesGenome, px: number, n = 4): ForgedSprite[] {
+  const t = traitsOf(g);
+  const bodies: Body[] = [];
+  MOVING = true;
+  try {
+    for (let k = 0; k < n; k++) { PH = k / n; bodies.push(planFor(g, t)); }
+  } finally { MOVING = false; PH = 0; }
+  let box: [number, number, number, number] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const B of bodies) {
+    const b = bodyBounds(B);
+    box = [Math.min(box[0], b[0]), Math.max(box[1], b[1]), Math.min(box[2], b[2]), Math.max(box[3], b[3])];
+  }
+  return bodies.map(B => forgePose(g, t, B, px, box));
+}
+
+/** How a body plan moves: frames per second of its cycle (see forgeCreatureFrames). */
+export function motionRate(g: SpeciesGenome): number {
+  const loc = g.dna.locomotion, mob = g.physicalTraits.mobilityType;
+  if (loc === 'flying') return g.physicalTraits.bodyStructure === 'exoskeletal' || g.physicalTraits.bodyStructure === 'segmented' ? 16 : mob === 'gas bladders' ? 3 : 7;
+  if (loc === 'walking') return 7;
+  if (loc === 'swimming') return 5;
+  if (loc === 'crawling') return 4;
+  return 2;                                                  // sessile: a slow sway / pulse
+}
+
+function forgePose(g: SpeciesGenome, t: Traits, B: Body, px: number, frame?: [number, number, number, number]): ForgedSprite {
   const pal = buildPalette(g, t.seed);
   const R = renderBody(B, pal, px, CREATURE_CAM, (m0, w, nW, gi) => {
     let m = m0, dl = 0;
@@ -859,7 +990,7 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
       if (Math.sin(Math.hypot(dx, dy) * 46 - Math.atan2(dy, dx)) > 0.55) dl = -1;
     }
     return { m, dl };
-  });
+  }, frame);
   const { width: W, height: H, cover, outline, zbuf, mat, lvl, s, ox, oy, put } = R;
   const N = W * H;
 

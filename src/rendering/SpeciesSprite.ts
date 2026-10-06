@@ -34,7 +34,7 @@ import type {
   SpeciesGenome, Metabolism, SpeciesSize, Environment,
 } from '../simulation/SpeciesGenome';
 import { isCoherent } from '../simulation/EvolutionEngine';
-import { forgeCreature } from './CreatureForge';
+import { forgeCreature, forgeCreatureFrames } from './CreatureForge';
 
 // ─── Deterministic per-species randomness ─────────────────────────────────────
 
@@ -836,6 +836,38 @@ export function bakeCreaturePortrait(g: SpeciesGenome, px: number): HTMLCanvasEl
   portraitCache.set(key, cv);
   return cv;
 }
+
+/**
+ * The creature's animation loop (CreatureForge.forgeCreatureFrames), each
+ * frame a canvas of one shared size, long edge about `px`: below 16 px it is
+ * rendered straight at that size, above it at up to PORTRAIT_MAX logical px
+ * and scaled by a whole number, like a portrait.
+ */
+export function bakeCreatureFrames(g: SpeciesGenome, px: number, n = 4): HTMLCanvasElement[] {
+  const up = px < 16 ? 1 : Math.max(1, Math.ceil(px / PORTRAIT_MAX));
+  const logical = px < 16 ? px : Math.max(16, Math.round(px / up));
+  const key = creatureKey(g, logical, up) + '|frames' + n;
+  const hit = framesCache.get(key);
+  if (hit) return hit;
+  const out = forgeCreatureFrames(g, logical, n).map(f => {
+    const cv = document.createElement('canvas');
+    cv.width = f.width * up; cv.height = f.height * up;
+    const c = cv.getContext('2d');
+    if (c) {
+      const img = c.createImageData(cv.width, cv.height);
+      for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) {
+        const si = (((y / up) | 0) * f.width + ((x / up) | 0)) * 4, o = (y * cv.width + x) * 4;
+        img.data[o] = f.data[si]; img.data[o + 1] = f.data[si + 1]; img.data[o + 2] = f.data[si + 2]; img.data[o + 3] = f.data[si + 3];
+      }
+      c.putImageData(img, 0, 0);
+    }
+    return cv;
+  });
+  if (framesCache.size > 300) framesCache.clear();
+  framesCache.set(key, out);
+  return out;
+}
+const framesCache = new Map<string, HTMLCanvasElement[]>();
 
 /** Largest logical size a portrait is rendered at before integer upscaling. */
 const PORTRAIT_MAX = 56;
