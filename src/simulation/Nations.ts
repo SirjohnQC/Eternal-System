@@ -410,6 +410,16 @@ export class NationSystem {
     if (!this.founded) return;
     const dt = this.lastTick < 0 ? 0 : Math.max(0, tick - this.lastTick);
     this.lastTick = tick;
+    this.advance(grid, tick, ticksPerEra > 0 ? dt / ticksPerEra : 0);
+  }
+
+  /**
+   * One step of `eras` worth of time (a fraction of an era): territory,
+   * needs and pressures, then study. `step` derives `eras` from the clock;
+   * a leap (BigBangEngine.leapToEra) passes it directly.
+   */
+  advance(grid: PlanetGrid, tick: number, eras: number): void {
+    if (!this.founded) return;
     let grew = false;
     const settled: number[] = [];
     for (let r = 0; r < GRID_SIZE; r++) for (let c = 0; c < GRID_SIZE; c++) {
@@ -421,7 +431,7 @@ export class NationSystem {
     }
     if (grew) { this.claim(grid, settled); this.version++; }
     this.recompute(grid, tick);
-    if (ticksPerEra > 0 && dt > 0) this.research(tick, dt / ticksPerEra);
+    if (eras > 0) this.research(tick, eras);
   }
 
   /**

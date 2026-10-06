@@ -627,6 +627,12 @@ function tempToColor(t: number): string {
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
+/** "the Medieval age", "the Space Age". */
+function ageName(level: number): string {
+  const l = TECH_LEVELS[level] ?? 'Primitive';
+  return /Age$/.test(l) ? l : `${l} age`;
+}
+
 export class BigBangEngine {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -725,6 +731,10 @@ export class BigBangEngine {
   private tick0Seed = 0;
   /** The era stepNations last left the player world in; a lower civLevel since means a setback. */
   private nationEra = 0;
+  /** Technologies already announced for the home world (a rediscovery after a setback is not news). */
+  private announcedTechs = new Set<string>();
+  /** Inside leapToEra: eras still bring their news, but leaders hold their audiences. */
+  private leaping = false;
   /**
    * Biology events that are not simple phase advances: stalls, mass extinctions,
    * explosive radiations and biosphere catastrophes.
@@ -1037,6 +1047,7 @@ export class BigBangEngine {
     this.tick0Seed = SeedRNG.hashString(seed);
     runtimeState.playerNations = null;
     this.nationEra = 0;
+    this.announcedTechs.clear();
     this.tick = 0;
     this.phase = 'inflation';
     this.stars = [];
@@ -2743,6 +2754,67 @@ export class BigBangEngine {
     return advanceRate;
   }
 
+  /**
+   * Creative: leap the home world to era `target` (TECH_LEVELS index). The
+   * leap is still simulated, only faster: the people spread and the nations
+   * live, learn and suffer through the ages in quick steps of the planet
+   * alone (the rest of the universe holds still), so what they become is
+   * theirs. A lower era unwinds the ages instead. Wakes intelligence if the
+   * world has not reached it. Returns a line for the feed, or null.
+   */
+  leapToEra(target: number): string | null {
+    const ps = this.getPlayerStar();
+    const grid = runtimeState.playerPlanetGrid;
+    if (!ps || !grid || !ps.hasLife || ps.formationDestiny) return null;
+    target = Math.max(1, Math.min(TECH_LEVELS.length - 1, Math.round(target)));
+    if (ps.biologyPhase !== 'intelligent') {
+      if (gameState.playerSpecies.length === 0) gameState.playerSpecies = initPlayerSpecies(this.tick, this.rng.fork('leap'));
+      ps.biologyPhase = 'intelligent';
+      ps.bioPhaseProgress = 0;
+      this.ensureCivilization(ps);
+    }
+    if (ps.civLevel < 1) { this.leaping = true; this.advanceCiv(ps); this.leaping = false; }
+    let ns = runtimeState.playerNations;
+    const name = gameState.playerPlanetName || ps.civName;
+    if (ns?.isFounded && target < ps.civLevel) {
+      ns.setback(ps.civLevel - target, this.tick, 'a god turned back the ages');
+      ps.civLevel = target;
+      this.nationEra = target;
+      return `The ages unwind: ${name} falls back to the ${ageName(target)}.`;
+    }
+    const rate = this.civAdvanceRate(ps, false), STEP = 2000;
+    const learned: string[] = [];
+    this.leaping = true;
+    try {
+      const spread = Math.max(0.1, this.playerEffect('bioResilience'));
+      for (let i = 0; i < 600 && !(ns?.isFounded && ns.maxEra >= target); i++) {
+        stepLifeSpread(grid, 'intelligent', spread, String(ps.id));
+        if (i % 5 === 0) assignDominantSpecies(grid, gameState.playerSpecies);
+        if (!ns?.isFounded) {
+          this.stepNations(ps, grid);          // founds them once enough land is settled
+          ns = runtimeState.playerNations;
+          continue;
+        }
+        ns.advance(grid, this.tick, STEP / rate);
+        for (const d of ns.drainDiscoveries()) {
+          if (this.announcedTechs.has(d.tech.id)) continue;
+          this.announcedTechs.add(d.tech.id);
+          learned.push(d.tech.name);
+          if (d.tech.spaceship) {
+            this.onCivEvent?.(`${d.nation.name} has launched a colony ark — the first ship of ${gameState.playerSpeciesName || 'your people'} to leave its world.`);
+            this.fireCodexMilestone('colony_ark');
+          }
+        }
+      }
+      if (!ns?.isFounded) return null;
+      while (ps.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(ps);
+      this.nationEra = ps.civLevel;
+    } finally {
+      this.leaping = false;
+    }
+    return `Ages pass in a breath: ${name} learned ${learned.length ? learned.slice(-4).join(', ') + (learned.length > 4 ? ` and ${learned.length - 4} more` : '') : 'little'}, and stands in the ${ageName(ps.civLevel)}.`;
+  }
+
   /** One era up, with everything an era brings (messages, sight, leaders, first contact). */
   private advanceCiv(star: StarBody): void {
     star.civLevel++;
@@ -2773,9 +2845,9 @@ export class BigBangEngine {
       // Leader spawning
       this.spawnLeaderForStar(star);
       if (star.civLevel === 1) {
-        this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
+        if (!this.leaping) this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
       } else if (star.civLevel >= 2) {
-        this.fireLeaderMessage(star, `Our civilization has advanced to ${TECH_LEVELS[star.civLevel]}.`);
+        if (!this.leaping) this.fireLeaderMessage(star, `Our civilization has advanced to ${TECH_LEVELS[star.civLevel]}.`);
       }
       // First Contact — fires exactly once when player reaches Space Age
       if (star.civLevel === 5 && !gameState.firstContactFired) {
@@ -2834,8 +2906,10 @@ export class BigBangEngine {
     // Each nation's own curiosity sets its pace, so the culture factor is left out here.
     ns.step(grid, this.tick, this.civAdvanceRate(star, false));
     for (const d of ns.drainDiscoveries()) {
-      // The first nation to learn a thing is news; the rest follow quietly.
-      if (ns.nations.filter(n => n.techs.includes(d.tech.id)).length !== 1) continue;
+      // The first nation to learn a thing is news; the rest follow quietly,
+      // and so does a rediscovery after a setback.
+      if (this.announcedTechs.has(d.tech.id)) continue;
+      this.announcedTechs.add(d.tech.id);
       if (d.tech.spaceship) {
         this.onCivEvent?.(`${d.nation.name} has launched a colony ark — the first ship of ${gameState.playerSpeciesName || 'your people'} to leave its world.`);
         this.fireCodexMilestone('colony_ark');

@@ -93,5 +93,25 @@ const refounded = events.some(m => m.startsWith('The nations have fallen silent'
 check('each announced only once', refounded || new Set(deeds.map(m => TECHS.find(t => m.endsWith(t.deed + '.'))!.id)).size === deeds.length);
 check('nations were announced', events.some(m => m.includes('split into')));
 if (ns) for (const n of ns.nations) console.log(`        ${n.name}: era ${n.era}, ${n.techs.length} techs, studying ${n.research?.id ?? '-'} (${n.research?.why.join('; ') ?? ''})`);
+// ── Creative: leap to an era ──
+{
+  gameState.playerSpecies = []; gameState.playerBiosphere = { ...DEFAULT_BIOSPHERE };
+  const e2 = new BigBangEngine(makeCanvas());
+  e2.init({ life: 15, evolution: 13, hostility: 1, entropy: 1, divine: 10 }, 'leap_main');
+  runtimeState.playerPlanetGrid = generatePlanetGrid('rocky', 777, gameState.playerPlanetDNA);
+  for (let i = 0; i < 3000; i++) e2.update();
+  const p2 = e2.getPlayerStar()!;
+  const t0 = Date.now();
+  const line = e2.leapToEra(5);
+  const ms = Date.now() - t0;
+  const n2 = runtimeState.playerNations;
+  check('leap wakes intelligence and founds nations', p2.biologyPhase === 'intelligent' && !!n2?.isFounded, line ?? 'null');
+  check('leap reaches the era asked', p2.civLevel === 5 && (n2?.maxEra ?? 0) >= 5, `civLevel ${p2.civLevel} in ${ms}ms`);
+  check('leap is quick', ms < 5000, `${ms}ms`);
+  e2.leapToEra(2);
+  check('leap back unwinds the ages', p2.civLevel === 2 && (n2?.maxEra ?? 9) <= 2, `civLevel ${p2.civLevel}, best nation ${n2?.maxEra}`);
+  for (let i = 0; i < 2000; i++) e2.update();
+  check('the world keeps living after a leap', p2.civLevel >= 2 && !!runtimeState.playerNations?.isFounded);
+}
 console.log(failed === 0 ? '\n  all tech checks passed\n' : `\n  ${failed} tech check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

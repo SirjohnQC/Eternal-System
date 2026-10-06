@@ -2914,6 +2914,8 @@ function applyPlayModeControls(): void {
   });
   const place = document.getElementById('place-life-btn');
   if (place) place.style.display = creative ? '' : 'none';
+  const leap = document.getElementById('era-leap');
+  if (leap) leap.style.display = creative ? '' : 'none';
   if (creative) gameState.divinePoints = CREATIVE_DP;
   document.body.classList.toggle('mode-creative', creative);
 }
@@ -2945,6 +2947,31 @@ function refreshHomeWorldSurface(): void {
   const ps = engine?.getPlayerStar();
   if (!ps || !overlay || overlay.style.display === 'none' || !_dioramaRenderer) return;
   void openPlanetView(ps);
+}
+
+/** Creative: fill the era picker (once) and leap the home world when one is picked. */
+function wireEraLeap(): void {
+  const sel = document.getElementById('era-leap') as HTMLSelectElement | null;
+  if (!sel || sel.dataset['wired'] === '1') return;
+  sel.dataset['wired'] = '1';
+  TECH_LEVELS.forEach((label, i) => {
+    if (i === 0) return;
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = label;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', () => {
+    const target = Number(sel.value);
+    sel.value = '';
+    if (!engine || gameState.playMode !== 'creative' || !target) return;
+    if (!runtimeState.playerPlanetGrid) {
+      addChatMessage('Open your world first: the ages need a surface to pass over.', 'system');
+      return;
+    }
+    const line = engine.leapToEra(target);
+    addChatMessage(line ?? 'Your world is not ready for that leap yet.', 'system');
+    if (line && selectedTile) showTileInfo(selectedTile, false);
+  });
 }
 
 function placeLifeAction(): void {
@@ -4169,6 +4196,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   syncModeChoice();
   document.getElementById('place-life-btn')?.addEventListener('click', placeLifeAction);
+  wireEraLeap();
 
   const playerInput = document.getElementById('player-input') as HTMLInputElement;
 

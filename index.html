@@ -2710,6 +2710,9 @@ input[type="range"], select, label[for],
       <button class="speed-btn" data-speed="50">50×</button>
       <button class="speed-btn" data-speed="200">200×</button>
       <button class="speed-btn" data-speed="1000">1000×</button>
+      <select class="era-leap" id="era-leap" title="Creative: leap your world to an era (the ages are still simulated, only fast)" style="display:none">
+        <option value="">⏭ ERA…</option>
+      </select>
     </div>
     <div class="res-row">
       <div class="res-chip res-dna" id="dna-display" style="display:none"><span class="res-label">DNA</span> <span class="res-val" id="dna-display-val">0</span></div>
@@ -3858,6 +3861,12 @@ body.hud-on #game-hud{display:contents}
   letter-spacing:1px;transition:color .15s,border-color .15s;
 }
 .speed-btn:hover{color:var(--text)}
+.era-leap{
+  background:transparent;border:1px solid #3a2f4a;color:var(--gold2);
+  font-family:var(--font-pixel);font-size:var(--fs-label);letter-spacing:1px;
+  padding:3px 4px;margin-left:8px;cursor:pointer;
+}
+.era-leap option{background:#0b0a14;color:var(--text)}
 .speed-btn.active{
   color:var(--gold2);
   border-bottom-color:var(--gold);
