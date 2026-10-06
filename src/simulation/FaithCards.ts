@@ -390,7 +390,8 @@ export function anatomy(c: FaithCard): Array<[string, string]> {
 }
 
 export const isBane = (c: FaithCard): boolean => !!ACTION_BY_ID[c.actions[0]].bane;
-export const iconOf = (c: FaithCard): string => ACTION_BY_ID[c.actions[0]].icon;
+/** Pixel icon under /assets/pixel/divine/: each kind has its own (cards/<id>.png, tools/gen_card_icons.py). */
+export const iconOf = (c: FaithCard): string => `cards/${c.actions[0]}`;
 
 // ─── The heavens tire ─────────────────────────────────────────────────────────
 

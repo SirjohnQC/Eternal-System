@@ -220,14 +220,14 @@ export function refresh(force = false): void {
   const seekHtml = `<button class="divine-action-btn faith-violet faith-hand-el${ready && dp >= SEEK_COST && hand().length < HAND_MAX ? ' affordable' : ' faith-off'}" id="faith-seek-btn">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">SEEK A SIGN</span>
-    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/sight.png" alt="" width="32" height="32"/></span>
+    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/seek.png" alt="" width="32" height="32"/></span>
     <span class="divine-action-desc">${ready ? `Glimpse what the world could become. ${hand().length}/${HAND_MAX} in hand.` : 'Your world has no shape yet for a sign to fall upon.'}</span>
     <span class="divine-action-cost">✦ ${SEEK_COST} DP</span></button>`;
   const cards = hand().map(c => face(c)).join('');
   const crucible = hand().length >= 2 ? `<button class="divine-action-btn faith-orange faith-hand-el${burning ? ' selected' : ' affordable'}" id="faith-crucible-btn">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">THE CRUCIBLE</span>
-    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/smite.png" alt="" width="32" height="32"/></span>
+    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/crucible.png" alt="" width="32" height="32"/></span>
     <span class="divine-action-desc">${burning ? `Choose ${2 - burnPick!.length} more to burn. Click here to stop.` : 'Burn two cards to forge one you cannot foresee.'}</span>
     <span class="divine-action-cost">${burning ? '✕ CANCEL' : '✦ FREE'}</span></button>` : '';
   const holder = document.createElement('div');
