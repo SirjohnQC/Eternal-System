@@ -12,6 +12,7 @@ import { generatePlanetGrid, GRID_SIZE, BIOME_COLORS, isWater, isHabitable, type
 import { NationSystem } from '../src/simulation/Nations';
 import { valuesFromGenome, type GenomeSummary } from '../src/simulation/Civilization';
 import { flagColorAt } from '../src/rendering/NationFlagArt';
+import { TECHS, TECH_BY_ID, appeal, available } from '../src/simulation/Technology';
 
 const outDir = process.argv[2] ?? 'renders/nations';
 let failed = 0;
@@ -141,5 +142,53 @@ for (const [type, seed, social, aggr] of [['rocky', 7, 4, 5], ['ocean', 3, 6, 3]
   });
   writeFileSync(`${outDir}/flags.png`, png(W, H, img));
 }
+// ── Phase 2: technology as a response ──────────────────────────────────────
+console.log('\n  technology');
+{
+  const calm = { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0, curiosity: 0.25 };
+  const mid = { militarism: 0.5, piety: 0.5, curiosity: 0.5, collectivism: 0.5, xenophobia: 0.5 };
+  check('hunger draws a people to farming', appeal(TECH_BY_ID.agriculture, { ...calm, hunger: 0.8 }, mid) > 3 * appeal(TECH_BY_ID.writing, { ...calm, hunger: 0.8 }, mid));
+  check('a pious people leans to priesthood', appeal(TECH_BY_ID.priesthood, calm, { ...mid, piety: 0.95 }) > appeal(TECH_BY_ID.priesthood, calm, { ...mid, piety: 0.05 }));
+  check('every prerequisite exists and is earlier or same era', TECHS.every(t => t.requires.every(r => TECH_BY_ID[r] && TECH_BY_ID[r].era <= t.era)));
+  check('only ancient techs at the start', available([]).every(t => t.era === 1));
+  check('the tree reaches a spaceship', TECHS.some(t => t.spaceship));
+
+  // A long run at the engine's pace (step every 2000 ticks, 40000 ticks an era).
+  const ERA = 40000, STEP = 2000;
+  for (const [type, seed, social, aggr] of [['rocky', 7, 4, 5], ['desert', 11, 5, 4]] as const) {
+    const grid = settled(type, seed * 7777);
+    const g = genome(social, aggr);
+    const ns = new NationSystem(seed);
+    ns.found(grid, valuesFromGenome(g), g, 0);
+    const eraAt: number[] = [];
+    let peakPollution = 0, peakHunger = 0, ships = 0, prereqOk = true;
+    for (let t = STEP; t <= ERA * 12; t += STEP) {
+      ns.step(grid, t, ERA);
+      for (const d of ns.drainDiscoveries()) {
+        const before = d.nation.techs.slice(0, d.nation.techs.indexOf(d.tech.id));
+        if (!d.tech.requires.every(r => before.includes(r))) prereqOk = false;
+        if (d.tech.spaceship) ships++;
+      }
+      for (const n of ns.nations) { peakPollution = Math.max(peakPollution, n.pressures.pollution); peakHunger = Math.max(peakHunger, n.pressures.hunger); }
+      if (t % ERA === 0) eraAt.push(ns.maxEra);
+    }
+    console.log(`\n  ${type} ${seed}: max era by era-time ${eraAt.join(' ')}`);
+    check('eras climb over time', eraAt[eraAt.length - 1] > eraAt[1] && eraAt[1] >= 1, eraAt.join(' '));
+    check('about one era per era of time (not runaway)', eraAt[3] >= 2 && eraAt[3] <= 6, `after 4 eras: ${eraAt[3]}`);
+    check('prerequisites always learned first', prereqOk);
+    check('nations follow different paths', new Set(ns.nations.map(n => n.techs.slice(0, 4).join())).size > 1);
+    check('industry brings pollution, and it bites', peakPollution > 0.25, `peak ${(peakPollution * 100) | 0}%`);
+    const learned = ns.nations.flatMap(n => n.history.filter(h => h.because.some(b => b.startsWith('building on')) || TECHS.some(t => h.what.endsWith(t.deed + '.'))));
+    const driven = learned.filter(h => h.because.some(b => /%\)/.test(b))).length;
+    check('some choices answer a pressure', driven >= learned.length * 0.15, `${driven} of ${learned.length} discoveries answered a pressure`);
+    console.log(`        peak hunger ${(peakHunger * 100) | 0}%, colony arks launched: ${ships}`);
+    for (const n of ns.nations) {
+      console.log(`        ${n.name} (era ${n.era}): first ${n.techs.slice(0, 8).map(id => TECH_BY_ID[id].name).join(', ')}`);
+      console.log(`          now: ${Object.entries(n.pressures).map(([k, v]) => `${k} ${(v * 100) | 0}%`).join(' ')}; inequality ${(n.state.inequality * 100) | 0}%`);
+      for (const h of n.history.filter(h => h.what.includes(' ') ).slice(0, 7)) console.log(`          · ${h.what}  ← ${h.because.join('; ')}`);
+    }
+  }
+}
+
 console.log(failed === 0 ? '\n  all nation checks passed\n' : `\n  ${failed} nation check(s) FAILED\n`);
 process.exit(failed === 0 ? 0 : 1);

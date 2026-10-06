@@ -166,7 +166,7 @@ story. The player is disturbing the conditions under which the story emerges.**
 
 | Vision | Today | Gap |
 |---|---|---|
-| §1/§8 tech emerges from pressure | `BigBangEngine` steps `star.civLevel` on a timer (`CIV_TICK_RATE`, culture curiosity nudges the rate) through 9 `TECH_LEVELS` | Tech is a clock, not a response. No pressures, no causes. |
+| §1/§8 tech emerges from pressure | Home world: `Technology.ts` (36 techs, Ancient → colony ark → Post-Biological); each nation studies what its pressures and culture favour, learns it with benefits and costs (pollution, inequality), and the world's `civLevel` is its best nation's era. Setbacks (impacts, extinctions) cost knowledge. Other stars still use the `CIV_TICK_RATE` clock | NPC civilisations are still on the clock; techs do not yet change how towns look per nation. |
 | §4 civs are agents | `Civilization` = culture values (militarism, piety, curiosity, collectivism, xenophobia), government, ideology, architecture — generated from the genome, bounded by `cultureMultiplier` | Good seed. No dynamic state (food, resources, cohesion, population) and no decisions. |
 | §5 multiple civilizations | One civilization per **star**; mergers between stars exist | No nations on a planet; no relations, trade, war between them. |
 | flags / countries | `Nations.ts`: 2–6 nations per home world once civLevel ≥ 1, culture drifted from the species, territory by terrain-cost flood, procedural flags; borders + capital flags on the diorama; tile panel shows symptoms (not pressure labels) | No relations yet (phase 3); pressures do not yet drive tech (phase 2). |

@@ -42,6 +42,7 @@ import { runtimeState } from './simulation/GameState';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
 import { symptomsOf } from './simulation/Nations';
+import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
@@ -1397,8 +1398,10 @@ function showTileNation(target: TileRef): void {
   if (!n) { setText('pi-tile-nation-detail', ''); return; }
   const signs = symptomsOf(n);
   const last = n.history[n.history.length - 1];
+  const studying = n.research ? TECH_BY_ID[n.research.id]?.name : null;
   setText('pi-tile-nation-detail', [
-    `${n.government} · ${n.ideology}`,
+    `${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
+    studying ? `Working on ${studying}` : '',
     signs.length ? signs.join('. ') + '.' : 'Life is calm.',
     last && n.history.length > 1 ? last.what : '',
   ].filter(Boolean).join(' — '));

@@ -167,7 +167,9 @@ function rebuild(): void {
     const ns = new NationSystem(seed);
     const g = summariseGenome(lead);
     ns.found(grid, valuesFromGenome(g), g, 0);
-    for (let t = 1; t <= 200; t++) ns.step(grid, t);
+    // Stepped at the engine's cadence (every 2000 ticks, 40000 an era) for
+    // about as many eras as ?civLevel, so they have learned and polluted.
+    for (let t = 1; t <= Math.max(10, 20 * star.civLevel); t++) ns.step(grid, t * 2000, 40000);
     if (ns.isFounded) nations = ns;
   }
   renderer.refreshData(grid, bio, species, planet, star, 0);

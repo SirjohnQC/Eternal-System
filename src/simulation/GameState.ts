@@ -112,6 +112,7 @@ export const CODEX_MILESTONES: Record<string, { title: string; category: CodexEn
   civ_2:         { title: 'First City',              category: 'civilisation' },
   civ_5:         { title: 'First Orbit',             category: 'civilisation' },
   civ_6:         { title: 'First Interstellar Mission', category: 'civilisation' },
+  colony_ark:    { title: 'The First Colony Ark',    category: 'civilisation' },
 };
 
 // ─── Game State ───────────────────────────────────────────────────────────────

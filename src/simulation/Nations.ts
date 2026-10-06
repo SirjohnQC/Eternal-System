@@ -17,6 +17,7 @@ import {
   governmentFor, ideologyFor, type CultureValues, type GenomeSummary, type Government, type Ideology,
 } from './Civilization';
 import { SeedRNG } from '../utils/SeedRNG';
+import { available, appeal, effectOf, eraOf, TECH_BY_ID, TECHS_PER_ERA, type Need, type Tech } from './Technology';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,12 @@ export interface NationState {
   cohesion: number;
   /** Accumulated know-how. Grows with people and curiosity. */
   knowledge: number;
+  /** 0–1: smoke and waste from industry; spoils harvests. */
+  pollution: number;
+  /** 0–1: how unevenly the gains are shared; wears cohesion down. */
+  inequality: number;
+  /** This season's harvest against an ordinary one (droughts, good years). */
+  harvest: number;
 }
 
 /**
@@ -50,6 +57,7 @@ export interface Pressures {
   crowding: number;    // people per cell over what the land carries
   scarcity: number;    // materials per person short
   unrest: number;      // cohesion lost
+  pollution: number;   // the land and air fouled
 }
 
 export interface HistoryEntry {
@@ -77,7 +85,22 @@ export interface Nation {
   state: NationState;
   pressures: Pressures;
   history: HistoryEntry[];
+  /** Technologies known (Technology.TECHS ids), in the order learned. */
+  techs: string[];
+  /** What it is studying, how far along (0..1), and why it chose it. */
+  research: { id: string; progress: number; why: string[] } | null;
+  /** TECH_LEVELS index it stands in (Technology.eraOf). */
+  era: number;
 }
+
+/** Words for a culture leaning, high and low. */
+const TEMPER: Record<keyof CultureValues, [string, string]> = {
+  militarism: ['a martial', 'a peaceable'], piety: ['a pious', 'a worldly'], curiosity: ['a curious', 'an incurious'],
+  collectivism: ['a communal', 'an independent'], xenophobia: ['an insular', 'an open'],
+};
+
+/** A technology a nation has just learned (drained by the engine for messages). */
+export interface Discovery { nation: Nation; tech: Tech; tick: number }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -86,7 +109,7 @@ const MIN_NATIONS = 2, MAX_NATIONS = 6;
 /** Food one fertile cell yields, and one unit of population eats. */
 const FOOD_PER_FERTILE = 1.0, FOOD_PER_PERSON = 0.012;
 /** People a cell carries comfortably (crowding above this). */
-const CARRY_PER_CELL = 70;
+const CARRY_PER_CELL = 30;
 const HISTORY_MAX = 60;
 
 const FLAG_COLORS = [
@@ -180,7 +203,7 @@ function crossCost(grid: PlanetGrid, r: number, c: number, seed: number): number
 
 // ─── The system ───────────────────────────────────────────────────────────────
 
-const EASED: Record<keyof Pressures, string> = { hunger: 'Hunger', crowding: 'Crowding', scarcity: 'The shortage', unrest: 'Unrest' };
+const EASED: Record<keyof Pressures, string> = { hunger: 'Hunger', crowding: 'Crowding', scarcity: 'The shortage', unrest: 'Unrest', pollution: 'The fouling' };
 
 /**
  * What a visitor would notice (vision §3): the pressures as observable
@@ -194,6 +217,7 @@ export function symptomsOf(n: Nation): string[] {
   say(p.crowding, 'Streets are crowded', 'Families crowd into every room');
   say(p.scarcity, 'Builders lack timber and stone', 'Half-built walls stand abandoned');
   say(p.unrest, 'Factions quarrel in the capital', 'Crowds gather against the rulers');
+  say(p.pollution, 'The air tastes of smoke', 'Rivers run grey and the fish float dead');
   return out;
 }
 
@@ -203,6 +227,9 @@ export class NationSystem {
   readonly owner = new Int8Array(N).fill(-1);
   /** Bumped on any change a renderer would draw (territory, flags). */
   version = 0;
+  /** Learned since the last drainDiscoveries(). */
+  private discoveries: Discovery[] = [];
+  private lastTick = -1;
   private rng: SeedRNG;
   private founded = false;
 
@@ -211,6 +238,16 @@ export class NationSystem {
   }
 
   get isFounded(): boolean { return this.founded; }
+
+  /** The most advanced nation's era (TECH_LEVELS index); 0 before founding. */
+  get maxEra(): number { return this.nations.reduce((m, n) => Math.max(m, n.era), 0); }
+
+  /** Technologies learned since the last call, oldest first. */
+  drainDiscoveries(): Discovery[] {
+    const d = this.discoveries;
+    this.discoveries = [];
+    return d;
+  }
 
   nationAt(row: number, col: number): Nation | null {
     const i = this.owner[row * GRID_SIZE + col];
@@ -277,8 +314,9 @@ export class NationSystem {
       this.nations.push({
         id: idx, name, form, government, ideology: ideologyFor(values), values, flag, color: flag.colors[0],
         capital: { row: r, col: c }, founded: tick,
-        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0 },
-        pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0 },
+        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1 },
+        pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 },
+        techs: [], research: null, era: 0,
         history: [{ tick, what: `${name} was founded around ${place}.`,
           because: [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`] }],
       });
@@ -368,8 +406,10 @@ export class NationSystem {
    * accrues, cohesion drifts — and crossing a pressure threshold is written
    * to the nation's history with its cause.
    */
-  step(grid: PlanetGrid, tick: number): void {
+  step(grid: PlanetGrid, tick: number, ticksPerEra = 0): void {
     if (!this.founded) return;
+    const dt = this.lastTick < 0 ? 0 : Math.max(0, tick - this.lastTick);
+    this.lastTick = tick;
     let grew = false;
     const settled: number[] = [];
     for (let r = 0; r < GRID_SIZE; r++) for (let c = 0; c < GRID_SIZE; c++) {
@@ -381,6 +421,87 @@ export class NationSystem {
     }
     if (grew) { this.claim(grid, settled); this.version++; }
     this.recompute(grid, tick);
+    if (ticksPerEra > 0 && dt > 0) this.research(tick, dt / ticksPerEra);
+  }
+
+  /**
+   * Study (vision §8): each nation works on one technology at a time, chosen
+   * by what it faces (pressures) and what it is (culture), and learns it
+   * after about 1 / TECHS_PER_ERA of an era of effort — faster for a curious,
+   * learned, populous people, slower in unrest. `eras` is the time stepped,
+   * in eras of the engine's pace (so divine boosts still speed it up).
+   */
+  private research(tick: number, eras: number): void {
+    const total = this.nations.reduce((a, n) => a + n.state.population, 0) || 1;
+    for (const n of this.nations) {
+      if (!n.research) this.choose(n);
+      const r = n.research;
+      if (!r) continue;
+      const share = n.state.population / total;
+      const pace = Math.max(0.35, Math.min(1.9,
+        (0.7 + 0.6 * n.values.curiosity) * Math.sqrt(effectOf(n.techs).knowledge)
+        * (1 - 0.6 * n.pressures.unrest) * (0.8 + 0.6 * share * this.nations.length / 2)));
+      // Knowledge of an age already reached comes cheaply (others have shown
+      // the way); only the frontier costs full effort.
+      const t = TECH_BY_ID[r.id];
+      r.progress += eras * TECHS_PER_ERA * pace / (t.era > n.era ? 1 : 0.3);
+      if (r.progress < 1) continue;
+      n.techs.push(t.id);
+      n.research = null;
+      n.state.inequality = Math.max(0, Math.min(1, n.state.inequality + (t.effect.inequality ?? 0)));
+      const was = n.era;
+      n.era = eraOf(n.techs);
+      this.log(n, tick, `${n.name} ${t.deed}.`, [
+        ...r.why,
+        ...t.requires.map(q => `building on ${TECH_BY_ID[q].name}`),
+      ]);
+      if (n.era > was) this.log(n, tick, `${n.name} entered a new age.`, [`it learned ${t.name}`]);
+      this.discoveries.push({ nation: n, tech: t, tick });
+      this.version++;
+    }
+  }
+
+  /**
+   * A catastrophe outside the nations (impact, war, a nearby supernova)
+   * threw the world back `eras` ages: each nation forgets what it learned
+   * past that, and remembers why.
+   */
+  setback(eras: number, tick: number, cause: string): void {
+    for (const n of this.nations) {
+      const keep = Math.max(0, n.era - eras);
+      const lost = n.techs.filter(id => TECH_BY_ID[id].era > keep);
+      if (!lost.length) continue;
+      n.techs = n.techs.filter(id => TECH_BY_ID[id].era <= keep);
+      n.era = eraOf(n.techs);
+      n.research = null;
+      this.log(n, tick, `${n.name} lost the knowledge of ${lost.slice(-3).map(id => TECH_BY_ID[id].name).join(', ')}${lost.length > 3 ? ' and more' : ''}.`, [cause]);
+    }
+    this.version++;
+  }
+
+  /** Pick what to study: weighted by appeal, seeded. Records the reasons. */
+  private choose(n: Nation): void {
+    const opts = available(n.techs);
+    if (!opts.length) return;
+    const p = n.pressures;
+    const need: Record<Need, number> = { ...p, curiosity: n.values.curiosity * 0.5 };
+    const w = opts.map(t => appeal(t, need, n.values));
+    let x = this.rng.next() * w.reduce((a, b) => a + b, 0), i = 0;
+    while (i < opts.length - 1 && (x -= w[i]) > 0) i++;
+    const t = opts[i];
+    const WHY: Record<Need, string> = {
+      hunger: 'hunger', crowding: 'crowded towns', scarcity: 'a want of materials',
+      unrest: 'unrest', pollution: 'fouled land and air', curiosity: 'curiosity',
+    };
+    const why = (Object.entries(t.answers) as Array<[Need, number]>)
+      .filter(([k, a]) => a * need[k] > 0.12)
+      .sort((a, b) => b[1] * need[b[0]] - a[1] * need[a[0]])
+      .map(([k]) => k === 'curiosity' ? 'curiosity' : `${WHY[k]} (${(need[k] * 100) | 0}%)`);
+    const lean = (Object.entries(t.leaning) as Array<[keyof CultureValues, number]>)
+      .filter(([k, a]) => a * (n.values[k] - 0.5) > 0.06)
+      .map(([k, a]) => `${a > 0 ? TEMPER[k][0] : TEMPER[k][1]} temper`);
+    n.research = { id: t.id, progress: 0, why: [...why, ...lean].slice(0, 3) };
+    if (!n.research.why.length) n.research.why.push('tinkering');
   }
 
   private recompute(grid: PlanetGrid, tick: number): void {
@@ -392,28 +513,42 @@ export class NationSystem {
       const cell = grid[(i / GRID_SIZE) | 0][i % GRID_SIZE];
       land[o]++;
       food[o] += (FERTILE[cell.biome] ?? 0) * cell.fertility * FOOD_PER_FERTILE * (cell.river > 0.5 ? 1.3 : 1);
-      mats[o] += MATERIAL[cell.biome] ?? 0;
+      mats[o] += MATERIAL[cell.biome] ?? 0.1;   // fieldstone and clay anywhere
       live[o] += isHabitable(cell.biome) ? cell.lifeDensity : 0;
     }
     this.nations.forEach((n, k) => {
       const s = n.state, p = n.pressures, before = { ...p };
-      s.land = land[k]; s.foodYield = food[k]; s.materials = mats[k];
-      // People grow toward what the food carries (logistic), and starve above it.
+      const fx = effectOf(n.techs);
+      // Good years and droughts: the harvest wanders around an ordinary one.
+      s.harvest = Math.max(0.7, Math.min(1.15, s.harvest + (this.rng.next() - 0.5) * 0.1 + (1 - s.harvest) * 0.15));
+      // Industry fouls the land (pollution rates from what is known; it clears
+      // slowly by itself), and foul land yields less.
+      s.pollution = Math.max(0, Math.min(1, s.pollution * 0.96 + fx.pollution * 3));
+      s.inequality = Math.max(0, s.inequality * 0.995);
+      s.land = land[k]; s.materials = mats[k] * fx.materials;
+      s.foodYield = food[k] * fx.food * s.harvest * (1 - 0.5 * s.pollution);
+      // People grow toward what the food carries (logistic) and starve above
+      // it; crowding (beyond what the towns house) slows them with disease.
       const carry = s.foodYield / FOOD_PER_PERSON;
       if (s.population === 0) s.population = Math.min(carry * 0.5, live[k] * 20 + 50);
-      s.population = Math.max(10, s.population + s.population * 0.02 * (1 - s.population / Math.max(1, carry)));
+      s.population = Math.max(10, s.population + s.population * (0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding));
       s.foodNeed = s.population * FOOD_PER_PERSON;
-      s.knowledge += s.population * 0.0004 * (0.5 + n.values.curiosity);
+      s.knowledge += s.population * 0.0004 * (0.5 + n.values.curiosity) * fx.knowledge;
       // Cohesion: sprawl and hunger wear it down; a shared faith and a
       // collective temper hold it.
       // Sprawl: a nation over ~a seventh of the planet strains to hold together.
       const sprawl = s.land / (N / 7);
-      const target = Math.max(0, Math.min(1, 0.55 + 0.3 * n.values.collectivism + 0.15 * n.values.piety - 0.25 * sprawl - 0.4 * p.hunger));
+      const target = Math.max(0, Math.min(1, 0.55 + 0.3 * n.values.collectivism + 0.15 * n.values.piety - 0.25 * sprawl
+        - 0.4 * p.hunger - 0.15 * p.crowding - 0.35 * s.inequality - 0.15 * s.pollution + fx.cohesion));
       s.cohesion += (target - s.cohesion) * 0.05;
-      p.hunger = Math.max(0, Math.min(1, s.foodNeed / Math.max(1e-6, s.foodYield) - 1));
-      p.crowding = Math.max(0, Math.min(1, s.population / Math.max(1, s.land * CARRY_PER_CELL) - 1));
-      p.scarcity = Math.max(0, Math.min(1, 1 - s.materials / Math.max(1, s.population * 0.01)));
+      // Pressures rise as a need nears its limit, not only past it: a people
+      // living on 95% of its harvest already feels the granaries thin.
+      const ramp = (use: number, from: number) => Math.max(0, Math.min(1, (use - from) / (1.25 - from)));
+      p.hunger = ramp(s.foodNeed / Math.max(1e-6, s.foodYield), 0.88);
+      p.crowding = ramp(s.population / Math.max(1, s.land * CARRY_PER_CELL * fx.housing), 0.8);
+      p.scarcity = ramp(s.population * 0.01 / Math.max(1, s.materials), 0.7);
       p.unrest = Math.max(0, Math.min(1, (0.6 - s.cohesion) / 0.6));
+      p.pollution = s.pollution;
       // History: a pressure crossing into "acute" is an event, with its cause.
       const note = (key: keyof Pressures, what: string, because: string[]) => {
         if (before[key] < 0.5 && p[key] >= 0.5) this.log(n, tick, what, because);
@@ -422,9 +557,14 @@ export class NationSystem {
       note('hunger', `Hunger spread through ${n.name}.`, [`${s.population | 0} people`, `food for ${(s.foodYield / FOOD_PER_PERSON) | 0}`]);
       note('crowding', `${n.name} grew crowded.`, [`${s.population | 0} people on ${s.land} cells`]);
       note('scarcity', `${n.name} ran short of materials.`, [`${s.materials.toFixed(0)} worth of wood and stone for ${s.population | 0} people`]);
+      note('pollution', `Smoke and waste fouled ${n.name}.`, [
+        ...n.techs.filter(id => (TECH_BY_ID[id].effect.pollution ?? 0) > 0).slice(-3).map(id => `its ${TECH_BY_ID[id].name.toLowerCase()}`),
+      ]);
       note('unrest', `Unrest stirred in ${n.name}.`, [
         s.land > N / 7 ? 'its lands sprawled too wide to hold' : 'its people drifted apart',
         ...(p.hunger > 0.3 ? ['hunger'] : []),
+        ...(s.inequality > 0.3 ? ['the gains went to the few'] : []),
+        ...(p.crowding > 0.3 ? ['crowded towns'] : []),
       ]);
     });
   }

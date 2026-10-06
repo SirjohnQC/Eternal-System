@@ -723,6 +723,8 @@ export class BigBangEngine {
   onCivEvent: ((msg: string) => void) | null = null;
   /** Hash of the universe seed (init): seeds per-world systems such as the nations. */
   private tick0Seed = 0;
+  /** The era stepNations last left the player world in; a lower civLevel since means a setback. */
+  private nationEra = 0;
   /**
    * Biology events that are not simple phase advances: stalls, mass extinctions,
    * explosive radiations and biosphere catastrophes.
@@ -1034,6 +1036,7 @@ export class BigBangEngine {
     this.rng = new SeedRNG(seed);
     this.tick0Seed = SeedRNG.hashString(seed);
     runtimeState.playerNations = null;
+    this.nationEra = 0;
     this.tick = 0;
     this.phase = 'inflation';
     this.stars = [];
@@ -2115,7 +2118,17 @@ export class BigBangEngine {
         // Record WHERE each species lives. Without this, `dominantSpeciesId`
         // stays null forever and nothing can render or inspect the biosphere.
         assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
-        if (star.civLevel >= 1) this.stepNations(star, runtimeState.playerPlanetGrid);
+        if (star.biologyPhase !== 'intelligent' && runtimeState.playerNations?.isFounded) {
+          // The people who made the nations are gone (a collapse knocked life
+          // back down the ladder): the nations go with them. A people that
+          // rises again founds its own.
+          const names = runtimeState.playerNations.nations.map(n => n.name);
+          runtimeState.playerNations = null;
+          this.nationEra = 0;
+          this.onCivEvent?.(`The nations have fallen silent: ${names.join(', ')}.`);
+        } else if (star.civLevel >= 1 || runtimeState.playerNations?.isFounded) {
+          this.stepNations(star, runtimeState.playerPlanetGrid);
+        }
       }
 
       // ── Moons: settled once a civilisation can actually reach them ──────
@@ -2162,86 +2175,14 @@ export class BigBangEngine {
       }
 
       // ── Civilisation tech advancement (post-intelligence) ────────────────────
-      let advanceRate = CIV_TICK_RATE * (21 - this.stats.evolution) / 10;
-      // DNA intelligence branch speeds up research for player's species
-      if (star.isPlayerStar) {
-        advanceRate *= Math.max(0.4, 1 - this.playerEffect('techSpeed') * 0.55);
-      }
-      if (star.isPlayerStar && this.prophetBoostActive) advanceRate *= 0.5;
-
-      // A curious people advances faster. Bounded, so no culture stalls a
-      // civilisation outright or races it to the end of the tech tree.
-      const civCulture = this.cultureFor(star);
-      if (civCulture) advanceRate /= cultureMultiplier(civCulture.values.curiosity, 1);
-
-      if (star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
+      // The player's world, once split into nations, climbs the eras through
+      // what its nations learn (stepNations, technology as a response); every
+      // other civilisation still advances on the clock.
+      const playerNations = star.isPlayerStar && runtimeState.playerNations?.isFounded;
+      const advanceRate = this.civAdvanceRate(star);
+      if (!playerNations && star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
           star.civLevel < TECH_LEVELS.length - 1) {
-        star.civLevel++;
-        if (star.isPlayerStar && this.prophetBoostActive) this.prophetBoostActive = false;
-        star.explorationRadius = 30 + star.civLevel * 20;
-
-        if (star.isPlayerStar) {
-          // Grow the tracking sight bubble rather than leaving static breadcrumbs
-          // at old galactic positions (those would drift into fog as the star orbits).
-          const sightR = Math.max(300, star.explorationRadius);
-          if (this.playerFogIndex >= 0 && this.playerFogIndex < this.exploredAreas.length) {
-            this.exploredAreas[this.playerFogIndex].r = Math.max(
-              this.exploredAreas[this.playerFogIndex].r,
-              sightR,
-            );
-          } else {
-            this.exploredAreas.push({ x: star.x, y: star.y, r: sightR });
-            this.playerFogIndex = this.exploredAreas.length - 1;
-          }
-          this.onCivEvent?.(`${civLevelToPhase(star.civLevel).replace('_',' ')}: ${TECH_LEVELS[star.civLevel]}`);
-          this.advancePlayerPlanetDiscovery(star);
-          if (star.civLevel === 1) this.onPlayerReligionMoment?.();
-          // TECH points
-          gameState.techPoints += 3;
-          this.onTechPointEarned?.(gameState.techPoints);
-          // Codex milestones
-          this.fireCodexMilestone(`civ_${star.civLevel}`);
-          // Leader spawning
-          this.spawnLeaderForStar(star);
-          if (star.civLevel === 1) {
-            this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
-          } else if (star.civLevel >= 2) {
-            this.fireLeaderMessage(star, `Our civilization has advanced to ${TECH_LEVELS[star.civLevel]}.`);
-          }
-          // First Contact — fires exactly once when player reaches Space Age
-          if (star.civLevel === 5 && !gameState.firstContactFired) {
-            const knownNPCs = this.stars.filter(s =>
-              !s.isPlayerStar && !s.isDead && s.hasLife &&
-              s.biologyPhase === 'intelligent' &&
-              this.isStarKnownToPlayer(s)
-            );
-            if (knownNPCs.length > 0) {
-              gameState.firstContactFired = true;
-              const ps = star;
-              knownNPCs.sort((a, b) => {
-                const da = (a.x - ps.x) ** 2 + (a.y - ps.y) ** 2;
-                const db = (b.x - ps.x) ** 2 + (b.y - ps.y) ** 2;
-                return da - db;
-              });
-              this.onFirstContact?.(knownNPCs[0]);
-            }
-          }
-        } else {
-          if (this.rng.chance(0.3) && this.isStarKnownToPlayer(star))
-            this.onCivEvent?.(`${star.civName}: ${TECH_LEVELS[star.civLevel]}`);
-          const relC = this.cultureFor(star);
-          const relChance = Math.min(0.95, 0.65
-            * (relC ? cultureMultiplier(relC.values.piety, 0.8) : 1));
-          if (star.civLevel === 1 && !star.religionName && this.rng.chance(relChance)) {
-            star.religionName = this.generateReligionName();
-            star.religionDevotion = (0.1 + this.rng.nextFloat(0, 0.2))
-              * (relC ? cultureMultiplier(relC.values.piety, 0.6) : 1);
-            if (this.isStarKnownToPlayer(star))
-              this.onReligionEvent?.(`The ${star.religionName} has emerged in the ${star.civName} system.`);
-          }
-          // Leader spawning for NPC stars
-          this.spawnLeaderForStar(star);
-        }
+        this.advanceCiv(star);
       }
 
       // Wars — only spacefaring+ civs. Culture decides how readily THIS people
@@ -2783,6 +2724,95 @@ export class BigBangEngine {
    * (Ancient era on), then stepped with the surface. Their culture drifts from
    * the civilisation's; without one yet, from the intelligent species' genome.
    */
+  /**
+   * Ticks per era for this civilisation: the universe's evolution stat, the
+   * player's DNA and prophet boost, and a curious culture all speed it.
+   */
+  private civAdvanceRate(star: StarBody, withCulture = true): number {
+    let advanceRate = CIV_TICK_RATE * (21 - this.stats.evolution) / 10;
+    // DNA intelligence branch speeds up research for player's species
+    if (star.isPlayerStar) {
+      advanceRate *= Math.max(0.4, 1 - this.playerEffect('techSpeed') * 0.55);
+    }
+    if (star.isPlayerStar && this.prophetBoostActive) advanceRate *= 0.5;
+
+    // A curious people advances faster. Bounded, so no culture stalls a
+    // civilisation outright or races it to the end of the tech tree.
+    const civCulture = withCulture ? this.cultureFor(star) : null;
+    if (civCulture) advanceRate /= cultureMultiplier(civCulture.values.curiosity, 1);
+    return advanceRate;
+  }
+
+  /** One era up, with everything an era brings (messages, sight, leaders, first contact). */
+  private advanceCiv(star: StarBody): void {
+    star.civLevel++;
+    if (star.isPlayerStar && this.prophetBoostActive) this.prophetBoostActive = false;
+    star.explorationRadius = 30 + star.civLevel * 20;
+
+    if (star.isPlayerStar) {
+      // Grow the tracking sight bubble rather than leaving static breadcrumbs
+      // at old galactic positions (those would drift into fog as the star orbits).
+      const sightR = Math.max(300, star.explorationRadius);
+      if (this.playerFogIndex >= 0 && this.playerFogIndex < this.exploredAreas.length) {
+        this.exploredAreas[this.playerFogIndex].r = Math.max(
+          this.exploredAreas[this.playerFogIndex].r,
+          sightR,
+        );
+      } else {
+        this.exploredAreas.push({ x: star.x, y: star.y, r: sightR });
+        this.playerFogIndex = this.exploredAreas.length - 1;
+      }
+      this.onCivEvent?.(`${civLevelToPhase(star.civLevel).replace('_',' ')}: ${TECH_LEVELS[star.civLevel]}`);
+      this.advancePlayerPlanetDiscovery(star);
+      if (star.civLevel === 1) this.onPlayerReligionMoment?.();
+      // TECH points
+      gameState.techPoints += 3;
+      this.onTechPointEarned?.(gameState.techPoints);
+      // Codex milestones
+      this.fireCodexMilestone(`civ_${star.civLevel}`);
+      // Leader spawning
+      this.spawnLeaderForStar(star);
+      if (star.civLevel === 1) {
+        this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
+      } else if (star.civLevel >= 2) {
+        this.fireLeaderMessage(star, `Our civilization has advanced to ${TECH_LEVELS[star.civLevel]}.`);
+      }
+      // First Contact — fires exactly once when player reaches Space Age
+      if (star.civLevel === 5 && !gameState.firstContactFired) {
+        const knownNPCs = this.stars.filter(s =>
+          !s.isPlayerStar && !s.isDead && s.hasLife &&
+          s.biologyPhase === 'intelligent' &&
+          this.isStarKnownToPlayer(s)
+        );
+        if (knownNPCs.length > 0) {
+          gameState.firstContactFired = true;
+          const ps = star;
+          knownNPCs.sort((a, b) => {
+            const da = (a.x - ps.x) ** 2 + (a.y - ps.y) ** 2;
+            const db = (b.x - ps.x) ** 2 + (b.y - ps.y) ** 2;
+            return da - db;
+          });
+          this.onFirstContact?.(knownNPCs[0]);
+        }
+      }
+    } else {
+      if (this.rng.chance(0.3) && this.isStarKnownToPlayer(star))
+        this.onCivEvent?.(`${star.civName}: ${TECH_LEVELS[star.civLevel]}`);
+      const relC = this.cultureFor(star);
+      const relChance = Math.min(0.95, 0.65
+        * (relC ? cultureMultiplier(relC.values.piety, 0.8) : 1));
+      if (star.civLevel === 1 && !star.religionName && this.rng.chance(relChance)) {
+        star.religionName = this.generateReligionName();
+        star.religionDevotion = (0.1 + this.rng.nextFloat(0, 0.2))
+          * (relC ? cultureMultiplier(relC.values.piety, 0.6) : 1);
+        if (this.isStarKnownToPlayer(star))
+          this.onReligionEvent?.(`The ${star.religionName} has emerged in the ${star.civName} system.`);
+      }
+      // Leader spawning for NPC stars
+      this.spawnLeaderForStar(star);
+    }
+  }
+
   private stepNations(star: StarBody, grid: PlanetGrid): void {
     let ns = runtimeState.playerNations;
     if (!ns) ns = runtimeState.playerNations = new NationSystem((star.id * 2654435761 + this.tick0Seed) >>> 0);
@@ -2798,7 +2828,24 @@ export class BigBangEngine {
       }
       return;
     }
-    ns.step(grid, this.tick);
+    // The world was thrown back by something outside the nations (impact,
+    // war, a nearby supernova): they lose what they knew past it.
+    if (star.civLevel < this.nationEra) ns.setback(this.nationEra - star.civLevel, this.tick, 'a catastrophe threw the world back');
+    // Each nation's own curiosity sets its pace, so the culture factor is left out here.
+    ns.step(grid, this.tick, this.civAdvanceRate(star, false));
+    for (const d of ns.drainDiscoveries()) {
+      // The first nation to learn a thing is news; the rest follow quietly.
+      if (ns.nations.filter(n => n.techs.includes(d.tech.id)).length !== 1) continue;
+      if (d.tech.spaceship) {
+        this.onCivEvent?.(`${d.nation.name} has launched a colony ark — the first ship of ${gameState.playerSpeciesName || 'your people'} to leave its world.`);
+        this.fireCodexMilestone('colony_ark');
+      } else {
+        this.onCivEvent?.(`${d.nation.name} ${d.tech.deed}.`);
+      }
+    }
+    // The world stands in the era its most advanced nation has reached.
+    while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);
+    this.nationEra = star.civLevel;
   }
 
   cultureFor(star: StarBody): Civilization | null {
