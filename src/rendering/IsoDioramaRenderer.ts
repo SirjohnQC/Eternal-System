@@ -37,9 +37,9 @@ import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATURE_SIZE_PX } from './SpeciesSprite';
-import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan } from './SettlementPlan';
+import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan, type Site } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
-import { archGenome, type ArchGenome } from './Architecture';
+import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { motionRate, STRIDE } from './CreatureForge';
 import type { NationSystem } from '../simulation/Nations';
@@ -587,6 +587,10 @@ export class IsoDioramaRenderer {
   private townSig = '';
   private townVersion = 0;
   private townStyleOf: TownStyle | null = null;
+  /** One style per town of townPlan (its era, its nation's architecture). */
+  private townStyles: TownStyle[] = [];
+  /** Which nation and era each town site had when planned (a change re-plans). */
+  private townNationSig = '';
   /** How the planet's civilisation builds (null before one exists). */
   townArch: ArchGenome | null = null;
   /**
@@ -2519,14 +2523,14 @@ export class IsoDioramaRenderer {
     this.townArch = arch ?? null;
     const sig = [spots.length, eraOf(civLevel), Math.round(cx), Math.round(cy), Math.round(rx), Math.round(ry), env,
       intelligent?.physicalTraits.bodyStructure ?? '', this.planetSeed, arch?.summary ?? ''].join('|');
-    if (sig === this.townSig) return;
-    // Keep the outgoing town standing; anything the new plan does not reuse
-    // is torn down in the same outward wave its replacements go up in.
-    const oldPlan = this.townPlan, oldLift = this.townLift, oldStyle = this.townStyleOf, oldKeys = [...this.bornByKey.keys()];
-    this.townSig = sig;
-    this.townVersion++;
-    this.buildingSprites.clear();
-    if (spots.length === 0) { this.townPlan = emptyPlan(); this.townLift = []; this.buildingBorn = []; this.townPlanet = this.planet; this.pushTownProps(); return; }
+    // Unchanged civilisation and no nations to look at: nothing to do. With
+    // nations, the towns' owners and eras are compared once the sites are known.
+    if (sig === this.townSig && !this.nationSource?.()?.isFounded && this.townNationSig === '') return;
+    if (spots.length === 0) {
+      if (sig === this.townSig) return;
+      this.townSig = sig; this.townNationSig = ''; this.townVersion++; this.buildingSprites.clear();
+      this.townPlan = emptyPlan(); this.townLift = []; this.buildingBorn = []; this.townStyles = []; this.townPlanet = this.planet; this.pushTownProps(); return;
+    }
 
     // Inland depth: lattice steps to the nearest water or the rim.
     const coast = (px: number, py: number): number => {
@@ -2540,25 +2544,58 @@ export class IsoDioramaRenderer {
       }
       return 24;
     };
-    const byCell = new Map<string, { x: number; y: number; score: number }>();
+    const byCell = new Map<string, { x: number; y: number; score: number; row: number; col: number }>();
     for (const sp of spots) {
       const inland = Math.min(1, coast(sp.x, sp.y) / 6);
       // A small hash breaks ties so the order never depends on scan order.
       const score = sp.fertility * (0.2 + 0.8 * inland) + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
       const k2 = `${sp.row},${sp.col}`;
       const prev = byCell.get(k2);
-      if (!prev || score > prev.score) byCell.set(k2, { x: sp.x, y: sp.y, score });
+      if (!prev || score > prev.score) byCell.set(k2, { x: sp.x, y: sp.y, score, row: sp.row, col: sp.col });
     }
     const ranked = [...byCell.values()].sort((a, b) => b.score - a.score);
     const era = eraOf(civLevel);
     const maxTowns = Math.min(13, 3 + era * 2);
     const minD = Math.max(rx * 0.15, 26);
-    const sites: Array<{ x: number; y: number }> = [];
+    // Towns per country: each nation's best ground first (so every nation in
+    // view has a town and a capital), then the best of what is left. A town
+    // is built in its own nation's era and ways (Architecture.nationArch).
+    const ns = this.nationSource?.() ?? null;
+    const nations = ns?.isFounded ? ns : null;
+    const ownerOf = (c: { row: number; col: number }) => nations ? nations.owner[c.row * GRID_SIZE + c.col] : -1;
+    const sites: Site[] = [];
+    const tooClose = (c: { x: number; y: number }) => sites.some(s => Math.hypot(s.x - c.x, (s.y - c.y) / SQUASH) < minD);
+    const archOf = new Map<number, ArchGenome>();
+    const siteFor = (c: { x: number; y: number; row: number; col: number }, capital: boolean): Site => {
+      const k = ownerOf(c), n = k >= 0 ? nations!.nations[k] : null;
+      if (!n) return { x: c.x, y: c.y, capital: sites.length === 0 };
+      if (!archOf.has(k)) archOf.set(k, nationArch(arch, { values: n.values, government: n.government, color: n.color, id: n.id }));
+      return { x: c.x, y: c.y, nation: k, era: eraOf(n.era), arch: archOf.get(k), aggression: n.values.militarism * 10, capital };
+    };
+    if (nations) {
+      const seen = new Set<number>();
+      for (const c of ranked) {
+        const k = ownerOf(c);
+        if (k < 0 || seen.has(k) || sites.length >= maxTowns || tooClose(c)) continue;
+        seen.add(k);
+        sites.push(siteFor(c, true));
+      }
+    }
     for (const c of ranked) {
       if (sites.length >= maxTowns) break;
-      if (sites.some(s => Math.hypot(s.x - c.x, (s.y - c.y) / SQUASH) < minD)) continue;
-      sites.push({ x: c.x, y: c.y });
+      if (tooClose(c)) continue;
+      sites.push(siteFor(c, false));
     }
+    // Towns change when a nation enters a new age, takes a new form, or a site changes hands.
+    const nationSig = sites.map(s => s.nation == null ? '-' : `${s.nation}:${s.era}:${nations!.nations[s.nation].government}`).join(',');
+    if (sig === this.townSig && nationSig === this.townNationSig) return;
+    // Keep the outgoing town standing; anything the new plan does not reuse
+    // is torn down in the same outward wave its replacements go up in.
+    const oldPlan = this.townPlan, oldLift = this.townLift, oldStyles = this.townStyles, oldKeys = [...this.bornByKey.keys()];
+    this.townSig = sig;
+    this.townNationSig = nationSig;
+    this.townVersion++;
+    this.buildingSprites.clear();
     const isLand = (x: number, y: number) => {
       const dx = (x - cx) / rx, dy = (y - cy) / ry, r = Math.hypot(dx, dy);
       if (r > 0.95) return false;
@@ -2590,7 +2627,7 @@ export class IsoDioramaRenderer {
     const born = new Map<string, number>();
     this.buildingBorn = this.townPlan.buildings.map(b => {
       const t = this.townPlan.towns[b.town];
-      const k = `${Math.round(t.x)},${Math.round(t.y)}|${Math.round(b.x * 2)},${Math.round(b.y * 2)}|${b.kind}`;
+      const k = `${Math.round(t.x)},${Math.round(t.y)}|${Math.round(b.x * 2)},${Math.round(b.y * 2)}|${b.kind}|${t.era}|${t.nation}`;
       const prev = this.bornByKey.get(k);
       const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
       const at = prev ?? (fresh ? -Infinity : this.elapsed + d * BUILD_SPREAD + ((b.seed >>> 3) % 1000) / 1000 * 4);
@@ -2599,15 +2636,19 @@ export class IsoDioramaRenderer {
     });
     this.bornByKey = born;
     this.retired = fresh ? [] : this.retired.filter(r => r.until > this.elapsed);
-    if (!fresh && oldStyle) {
+    if (!fresh && oldStyles.length) {
       oldPlan.buildings.forEach((b, i) => {
         if (born.has(oldKeys[i] ?? '')) return;
-        const t = oldPlan.towns[b.town];
+        const t = oldPlan.towns[b.town], st = oldStyles[b.town];
+        if (!st) return;
         const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
-        this.retired.push({ b, lift: oldLift[i] ?? 0, st: oldStyle, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
+        this.retired.push({ b, lift: oldLift[i] ?? 0, st, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
       });
     }
-    this.townStyleOf = townStyle(this.townPlan.era, intelligent?.physicalTraits.bodyStructure ?? 'vertebrate', arch);
+    // One style per town: its own era, its nation's architecture.
+    const material = intelligent?.physicalTraits.bodyStructure ?? 'vertebrate';
+    this.townStyles = this.townPlan.towns.map(t => townStyle(t.era, material, t.arch ?? arch));
+    this.townStyleOf = this.townStyles[0] ?? townStyle(this.townPlan.era, material, arch);
     this.pushTownProps();
   }
 
@@ -2871,9 +2912,10 @@ export class IsoDioramaRenderer {
     const k = `${i}|${S}|c${step}`;
     const hit = this.buildingSprites.get(k);
     if (hit) return hit;
-    const st = this.townStyleOf;
-    if (!st) return null;
-    const f = paintConstruction(this.townPlan.buildings[i], S, st, (step + 0.5) / 12);
+    const b = this.townPlan.buildings[i];
+    const st = this.townStyles[b?.town ?? 0] ?? this.townStyleOf;
+    if (!st || !b) return null;
+    const f = paintConstruction(b, S, st, (step + 0.5) / 12);
     const cv = document.createElement('canvas');
     cv.width = f.width; cv.height = f.height;
     const cg = cv.getContext('2d');
@@ -2893,9 +2935,10 @@ export class IsoDioramaRenderer {
     const k = `${i}|${S}`;
     const hit = this.buildingSprites.get(k);
     if (hit) return hit;
-    const st = this.townStyleOf;
-    if (!st) return null;
-    const f = paintBuilding(this.townPlan.buildings[i], S, st);
+    const b = this.townPlan.buildings[i];
+    const st = this.townStyles[b?.town ?? 0] ?? this.townStyleOf;
+    if (!st || !b) return null;
+    const f = paintBuilding(b, S, st);
     const cv = document.createElement('canvas');
     cv.width = f.width; cv.height = f.height;
     const cg = cv.getContext('2d');

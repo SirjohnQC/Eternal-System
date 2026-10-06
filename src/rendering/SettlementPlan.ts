@@ -57,6 +57,24 @@ export interface Town {
   r: number;
   size: number;
   capital: boolean;
+  /** The era this town is built in (its nation's, or the civilisation's). */
+  era: Era;
+  /** Owning nation (Nations.ts index), -1 for none. */
+  nation: number;
+  /** How this town builds (its nation's architecture), if it differs from the plan's. */
+  arch?: ArchGenome;
+}
+
+/** A town site, best first; a nation's town carries that nation's era, architecture and temper. */
+export interface Site {
+  x: number; y: number;
+  era?: Era;
+  nation?: number;
+  arch?: ArchGenome;
+  /** 0..10 (keeps for warlike peoples). */
+  aggression?: number;
+  /** The first town of its nation (gets the landmark). */
+  capital?: boolean;
 }
 
 export interface SettlementPlan {
@@ -72,7 +90,7 @@ export interface SettlementPlan {
 
 export interface PlanInput {
   /** Chosen town centres (face coordinates), best first. */
-  sites: Array<{ x: number; y: number }>;
+  sites: Site[];
   civLevel: number;
   seed: number;
   /** Body radius (px): sizes scale with it (calibrated at 262). */
@@ -108,7 +126,9 @@ export function emptyPlan(): SettlementPlan {
 }
 
 export function planSettlements(inp: PlanInput): SettlementPlan {
-  const era = eraOf(inp.civLevel);
+  // The plan's era is the most advanced town's (roads between towns follow it).
+  const era = Math.max(eraOf(inp.civLevel), ...inp.sites.map(s => s.era ?? 0)) as Era;
+  const eraOfSite = (s: Site): Era => s.era ?? eraOf(inp.civLevel);
   // Sizes are absolute world px, matched to the trees (decals stand ~6 px
   // tall whatever the body size), growing only on very large renders.
   const sc = 1.8 * Math.max(1, inp.rx / REF_RX);
@@ -125,17 +145,21 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
 
   // ── Towns ──
   inp.sites.forEach((s, i) => {
-    const capital = i === 0;
+    const capital = s.capital ?? i === 0;
     const size = capital ? 1 : 0.35 + townRng(s)() * 0.5;
-    const r = sc * (2.6 + size * 4.2) * (0.75 + era * 0.07);
-    plan.towns.push({ x: s.x, y: s.y, r, size, capital });
+    const te = eraOfSite(s);
+    const r = sc * (2.6 + size * 4.2) * (0.75 + te * 0.07);
+    plan.towns.push({ x: s.x, y: s.y, r, size, capital, era: te, nation: s.nation ?? -1, arch: s.arch });
   });
 
   // ── Streets and buildings ──
-  const streetHalf = lineHalf * (era >= 4 ? 1.3 : 1);
   plan.towns.forEach((t, ti) => {
     const R = townRng(t);
     R();
+    // Each town in its own era and its nation's ways.
+    const era = t.era, site = inp.sites[ti];
+    const tin: PlanInput = { ...inp, arch: t.arch ?? inp.arch, aggression: site.aggression ?? inp.aggression };
+    const streetHalf = lineHalf * (era >= 4 ? 1.3 : 1);
     const main: RoadSeg = { ax: t.x - t.r * 1.05, ay: t.y, bx: t.x + t.r * 1.05, by: t.y, half: streetHalf, street: true };
     if (era >= 1 || t.capital) plan.roads.push(main);
     const cross = (t.size > 0.5 || era >= 2) && era >= 1;
@@ -145,7 +169,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     // on its far side, just past the crossing, in the capital and big towns.
     let lm: Building | null = null;
     if ((t.capital || t.size > 0.6) && inp.isLand(t.x, t.y)) {
-      lm = makeBuilding(era, inp, R, sc, 0, 0, ti, true);
+      lm = makeBuilding(era, tin, R, sc, 0, 0, ti, true);
       lm.x = t.x + (cross ? streetHalf + lm.w / 2 + 0.6 : 0);
       lm.y = t.y - streetHalf - 0.4;
       if (inp.isLand(lm.x, lm.y)) plan.buildings.push(lm); else lm = null;
@@ -153,8 +177,8 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     // Lots by the civilisation's layout: a jittered grid along the
     // streets, concentric rings, a dense cluster, a line along the main
     // street, or houses scattered wide.
-    const layout = inp.arch?.layout ?? 'grid';
-    const lot = sc * (era >= 4 ? 2.0 : 1.75) * (inp.arch?.scale ?? 1) * (layout === 'cluster' ? 0.85 : layout === 'scatter' ? 1.5 : 1);
+    const layout = tin.arch?.layout ?? 'grid';
+    const lot = sc * (era >= 4 ? 2.0 : 1.75) * (tin.arch?.scale ?? 1) * (layout === 'cluster' ? 0.85 : layout === 'scatter' ? 1.5 : 1);
     const cand: Array<[number, number]> = [];
     if (layout === 'ring') {
       for (let ring = 1; ring * lot * 1.1 < t.r; ring++) {
@@ -194,7 +218,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       if (lm && Math.abs(x - lm.x) < (lm.w + lot) / 2 && y < lm.y + 0.2 && y > lm.y - lm.d * SQUASH - lot * SQUASH) continue;
       if (!streets && placed.some(([px, py]) => Math.abs(px - x) < lot * 0.7 && Math.abs(py - y) < lot * SQUASH * 0.7)) continue;
       placed.push([x, y]);
-      plan.buildings.push(makeBuilding(era, inp, R, sc, x, y, ti, false));
+      plan.buildings.push(makeBuilding(era, tin, R, sc, x, y, ti, false));
     }
   });
   // Back to front.
@@ -207,6 +231,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     f.x0 < o.x1 + 0.6 * sc && f.x1 > o.x0 - 0.6 * sc && f.y0 < o.y1 + 0.4 * sc && f.y1 > o.y0 - 0.4 * sc);
   for (const t of plan.towns) {
     const R = rng(townRng(t)() * 0x7fffffff ^ 0x3f1e);
+    const era = t.era;
     const tries = era === 0 ? 6 : Math.round((14 + t.size * 26) * (era >= 3 ? 1.3 : 1));
     const want = era === 0 ? 2 : Math.round((5 + t.size * 12) * (era >= 3 ? 1.25 : 1));
     let made = 0;

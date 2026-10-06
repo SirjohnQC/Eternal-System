@@ -2,6 +2,7 @@ import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from '
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
+import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
@@ -1418,8 +1419,10 @@ function showTileNation(target: TileRef): void {
     else if (r.trade) dealings.push(`Caravans come and go from ${o.name}`);
     else if (r.border > 0 && r.attitude < -0.4) dealings.push(`Watchtowers face ${o.name}`);
   }
+  const builds = nationArch(_dioramaRenderer?.townArch ?? null, { values: n.values, government: n.government, color: n.color, id: n.id }).summary;
   setText('pi-tile-nation-detail', [
     `${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
+    `Builds ${builds}`,
     studying ? `Working on ${studying}` : '',
     dealings.length ? dealings.join('. ') + '.' : '',
     signs.length ? signs.join('. ') + '.' : 'Life is calm.',

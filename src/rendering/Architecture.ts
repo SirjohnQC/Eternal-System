@@ -115,3 +115,66 @@ export function archGenome(a: ArchInput): ArchGenome {
     + (quirks.includes('lanterns') ? ', lit by lanterns' : '') + (quirks.includes('colossal') ? ', around colossal monuments' : '');
   return { shape, layout: lay, scale, tall, stilts, wall, accent, material, quirks, summary };
 }
+
+// ─── Nations ──────────────────────────────────────────────────────────────────
+
+/** What a nation's culture brings to its building (Nations.ts). */
+export interface NationCulture {
+  values: { militarism: number; piety: number; curiosity: number; collectivism: number; xenophobia: number };
+  government: string;
+  /** The flag's first colour, '#rrggbb'. */
+  color: string;
+  id: number;
+}
+
+function hexToHsl(hex: string): [number, number, number] {
+  const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? ((g - b) / d + (g < b ? 6 : 0)) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+
+const DEFAULT_ARCH: ArchGenome = {
+  shape: 'box', layout: 'grid', scale: 1, tall: 1, stilts: false, wall: null,
+  accent: [8, 0.55, 0.42], material: 'quarried stone', quirks: [], summary: 'builds houses',
+};
+
+/**
+ * How ONE nation builds: its species' way of building (the shape family, the
+ * material, stilts — the body does not change at a border), bent by what the
+ * nation is. Its flag colour roofs its towns; an insular people walls itself
+ * into ring towns, a communal one packs close, an independent one scatters;
+ * the curious build tall, the pious raise colossal temples, the martial keep
+ * their walls low and thick. Each nation's stone has its own shade.
+ * Pure and deterministic.
+ */
+export function nationArch(base: ArchGenome | null | undefined, n: NationCulture): ArchGenome {
+  const b = base ?? DEFAULT_ARCH, v = n.values;
+  const R = rng(0x9e3779b1 ^ Math.imul(n.id + 1, 2654435761));
+  const [fh, fs, fl] = hexToHsl(n.color);
+  // Roofs in the national colour (greys and near-whites keep a little colour of their own).
+  const accent: [number, number, number] = fs < 0.15
+    ? [(b.accent[0] + R() * 40 - 20 + 360) % 360, Math.max(0.12, b.accent[1] * 0.5), Math.max(0.28, Math.min(0.6, fl))]
+    : [fh, Math.min(0.62, Math.max(0.35, fs * 0.8)), Math.max(0.3, Math.min(0.55, fl))];
+  const wall: [number, number, number] | null = b.wall
+    ? [(b.wall[0] + (R() - 0.5) * 30 + 360) % 360, b.wall[1], Math.max(0.2, Math.min(0.9, b.wall[2] + (R() - 0.5) * 0.12))]
+    : [(30 + (R() - 0.5) * 40 + (v.piety > 0.6 ? 10 : 0) + 360) % 360, 0.18 + R() * 0.16, 0.56 + (v.piety - 0.5) * 0.25 + (R() - 0.5) * 0.1];
+  const layout: TownLayout = v.xenophobia > 0.65 ? 'ring' : v.collectivism > 0.68 ? 'cluster' : v.collectivism < 0.3 ? 'scatter' : b.layout;
+  let tall = b.tall, scale = b.scale;
+  const quirks: Quirk[] = b.quirks.filter(q => q !== 'ring' && q !== 'painted');
+  if (v.curiosity > 0.65) tall *= 1.25;
+  if (v.militarism > 0.65) { tall *= 0.88; scale *= 1.08; }
+  if (v.piety > 0.65 && !quirks.includes('colossal')) quirks.push('colossal');
+  if (v.piety > 0.55 && v.collectivism > 0.55 && !quirks.includes('lanterns')) quirks.push('lanterns');
+  const words: Record<ShapeFamily, string> = {
+    box: 'houses', dome: 'domes', hive: 'hives', pod: 'pods', spire: 'spires', burrow: 'burrows', grown: 'grown towers', carved: 'carved halls',
+  };
+  const colourWord = (h: number) => h < 15 || h >= 345 ? 'red' : h < 45 ? 'orange' : h < 70 ? 'golden' : h < 165 ? 'green' : h < 200 ? 'teal' : h < 255 ? 'blue' : h < 300 ? 'violet' : 'rose';
+  const summary = `${colourWord(accent[0])}-roofed ${words[b.shape]}`
+    + (b.stilts ? ' on stilts' : '') + (layout === 'ring' ? ', in walled ring towns' : layout === 'cluster' ? ', packed close' : layout === 'scatter' ? ', far apart' : '')
+    + (v.curiosity > 0.65 ? ', reaching high' : '') + (v.militarism > 0.65 ? ', low and thick-walled' : '')
+    + (quirks.includes('colossal') ? ', around great temples' : '') + (quirks.includes('lanterns') ? ', lit by lanterns' : '');
+  return { ...b, layout, tall, scale, wall, accent, quirks, summary };
+}
