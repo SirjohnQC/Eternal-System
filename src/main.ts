@@ -1399,9 +1399,20 @@ function showTileNation(target: TileRef): void {
   const signs = symptomsOf(n);
   const last = n.history[n.history.length - 1];
   const studying = n.research ? TECH_BY_ID[n.research.id]?.name : null;
+  // Its dealings with the others, as a visitor would see them.
+  const dealings: string[] = [];
+  for (const o of ns!.nations) {
+    if (o === n || o.fallen) continue;
+    const r = ns!.relation(n.id, o.id);
+    if (!r) continue;
+    if (r.war) dealings.push(`Soldiers march against ${o.name}`);
+    else if (r.trade) dealings.push(`Caravans come and go from ${o.name}`);
+    else if (r.border > 0 && r.attitude < -0.4) dealings.push(`Watchtowers face ${o.name}`);
+  }
   setText('pi-tile-nation-detail', [
     `${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
     studying ? `Working on ${studying}` : '',
+    dealings.length ? dealings.join('. ') + '.' : '',
     signs.length ? signs.join('. ') + '.' : 'Life is calm.',
     last && n.history.length > 1 ? last.what : '',
   ].filter(Boolean).join(' — '));

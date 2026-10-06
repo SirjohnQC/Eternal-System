@@ -153,6 +153,7 @@ console.log('\n  technology');
   check('only ancient techs at the start', available([]).every(t => t.era === 1));
   check('the tree reaches a spaceship', TECHS.some(t => t.spaceship));
 
+  const relStats = { wars: 0, trades: 0, falls: 0 };
   // A long run at the engine's pace (step every 2000 ticks, 40000 ticks an era).
   const ERA = 40000, STEP = 2000;
   for (const [type, seed, social, aggr] of [['rocky', 7, 4, 5], ['desert', 11, 5, 4]] as const) {
@@ -162,8 +163,17 @@ console.log('\n  technology');
     ns.found(grid, valuesFromGenome(g), g, 0);
     const eraAt: number[] = [];
     let peakPollution = 0, peakHunger = 0, ships = 0, prereqOk = true;
+    const news: string[] = [];
+    let longestWar = 0;
+    const warSince = new Map<string, number>();
     for (let t = STEP; t <= ERA * 12; t += STEP) {
       ns.step(grid, t, ERA);
+      news.push(...ns.drainNews());
+      for (const r of ns.relations) {
+        const key = `${r.a}-${r.b}`;
+        if (r.war) { if (!warSince.has(key)) warSince.set(key, t); longestWar = Math.max(longestWar, t - warSince.get(key)!); }
+        else warSince.delete(key);
+      }
       for (const d of ns.drainDiscoveries()) {
         const before = d.nation.techs.slice(0, d.nation.techs.indexOf(d.tech.id));
         if (!d.tech.requires.every(r => before.includes(r))) prereqOk = false;
@@ -181,6 +191,14 @@ console.log('\n  technology');
     const learned = ns.nations.flatMap(n => n.history.filter(h => h.because.some(b => b.startsWith('building on')) || TECHS.some(t => h.what.endsWith(t.deed + '.'))));
     const driven = learned.filter(h => h.because.some(b => /%\)/.test(b))).length;
     check('some choices answer a pressure', driven >= learned.length * 0.15, `${driven} of ${learned.length} discoveries answered a pressure`);
+    const wars = news.filter(m => m.includes('gone to war')).length, peaces = news.filter(m => m.includes('made peace')).length;
+    const trades = news.filter(m => m.startsWith('Caravans')).length, falls = news.filter(m => m.includes('has fallen')).length;
+    relStats.wars += wars; relStats.trades += trades; relStats.falls += falls;
+    console.log(`        attitudes now: ${ns.relations.map(r => r.attitude.toFixed(2)).join(' ')}`);
+    console.log(`        relations: ${trades} trade routes opened, ${wars} wars, ${peaces} peaces, ${falls} nations fallen; longest war ${(longestWar / ERA).toFixed(2)} eras`);
+    for (const m of news.slice(0, 12)) console.log(`          ~ ${m}`);
+    check('wars end (none outlasts 3 eras)', longestWar <= ERA * 3, `${(longestWar / ERA).toFixed(2)} eras`);
+    check('every war has its causes recorded', ns.nations.every(n => n.history.filter(h => h.what.includes('went to war')).every(h => h.because.length >= 1)));
     console.log(`        peak hunger ${(peakHunger * 100) | 0}%, colony arks launched: ${ships}`);
     for (const n of ns.nations) {
       console.log(`        ${n.name} (era ${n.era}): first ${n.techs.slice(0, 8).map(id => TECH_BY_ID[id].name).join(', ')}`);
@@ -188,6 +206,26 @@ console.log('\n  technology');
       for (const h of n.history.filter(h => h.what.includes(' ') ).slice(0, 7)) console.log(`          · ${h.what}  ← ${h.because.join('; ')}`);
     }
   }
+  // Conquest: a small nation forced into war with a much larger neighbour.
+  {
+    const grid = settled('rocky', 7 * 7777), g = genome(4, 5), ns = new NationSystem(7);
+    ns.found(grid, valuesFromGenome(g), g, 0);
+    for (let t = 2000; t <= 20000; t += 2000) ns.step(grid, t, 40000);
+    const pairs = ns.relations.filter(r => r.border > 0).sort((x, y) => y.border - x.border);
+    const r = pairs[0];
+    const [big, small] = ns.nations[r.a].state.land > ns.nations[r.b].state.land ? [ns.nations[r.a], ns.nations[r.b]] : [ns.nations[r.b], ns.nations[r.a]];
+    const before = small.state.land;
+    // The big one is far ahead: every technology up to the Space Age, and martial.
+    big.techs = TECHS.filter(t => t.era <= 5).map(t => t.id); big.era = 5; big.values.militarism = 1;
+    r.war = { aggressor: big.id, since: 0, cause: ['test'], landAtStart: [ns.nations[r.a].state.land, ns.nations[r.b].state.land], taken: [0, 0], weariness: 0 };
+    let ended = false;
+    for (let t = 22000; t <= 120000 && !ended; t += 2000) { ns.step(grid, t, 40000); ended = !r.war; }
+    const lostLand = before - (small.fallen ? 0 : small.state.land);
+    check('a lopsided war moves the frontier', lostLand > before * 0.3, `${small.name} ${before} → ${small.fallen ? 'fallen' : small.state.land} cells`);
+    check('and ends (in peace or conquest), with causes', ended && small.history.some(h => /peace|fell/.test(h.what) && h.because.length > 0),
+      small.history.slice(-1)[0]?.what ?? '');
+  }
+  check('relations happen: trade and war both emerge', relStats.trades > 0 && relStats.wars > 0, JSON.stringify(relStats));
 }
 
 console.log(failed === 0 ? '\n  all nation checks passed\n' : `\n  ${failed} nation check(s) FAILED\n`);

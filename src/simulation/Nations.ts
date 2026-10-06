@@ -46,6 +46,9 @@ export interface NationState {
   inequality: number;
   /** This season's harvest against an ordinary one (droughts, good years). */
   harvest: number;
+  /** Food and materials arriving (+) or leaving (-) by trade, applied next step. */
+  tradeFood: number;
+  tradeMaterials: number;
 }
 
 /**
@@ -91,6 +94,44 @@ export interface Nation {
   research: { id: string; progress: number; why: string[] } | null;
   /** TECH_LEVELS index it stands in (Technology.eraOf). */
   era: number;
+  /** Conquered: holds no land, takes no part any more. */
+  fallen: boolean;
+}
+
+/** A war between two nations (Relation.war). */
+export interface War {
+  /** Index of the nation that started it. */
+  aggressor: number;
+  /** Era-time it began (NationSystem.age). */
+  since: number;
+  /** Why it began, for the history. */
+  cause: string[];
+  /** Land each side held when it began, and cells taken so far: [by a, by b]. */
+  landAtStart: [number, number];
+  taken: [number, number];
+  /** 0..1: how sick of it both peoples are; at 1 they make peace. */
+  weariness: number;
+}
+
+/**
+ * How two nations stand with each other (vision §5). Emerges from what they
+ * are (culture, ideology), what they face (pressures, land they both want)
+ * and what has passed between them (trade, grievances, war).
+ */
+export interface Relation {
+  a: number; b: number;
+  /** -1 hostile .. 1 friendly. */
+  attitude: number;
+  /** Shared frontier, in grid cell edges. 0: not neighbours. */
+  border: number;
+  trade: boolean;
+  war: War | null;
+  /** No new war before this era-time (after a peace). */
+  truceUntil: number;
+  /** 0..1: wrongs remembered (land lost, war dead); fades slowly. */
+  grievance: number;
+  /** -0.3..0.3: the accidents of their first meetings, never quite forgotten. */
+  feud: number;
 }
 
 /** Words for a culture leaning, high and low. */
@@ -229,6 +270,13 @@ export class NationSystem {
   version = 0;
   /** Learned since the last drainDiscoveries(). */
   private discoveries: Discovery[] = [];
+  /** Every pair of nations, once (a < b). */
+  readonly relations: Relation[] = [];
+  private relAt: Array<Relation | undefined> = [];
+  /** Wars, peaces, trade and falls since the last drainNews(), as plain lines. */
+  private news: string[] = [];
+  /** Era-time stepped so far (sum of `eras` given to advance). */
+  private age = 0;
   private lastTick = -1;
   private rng: SeedRNG;
   private founded = false;
@@ -241,6 +289,19 @@ export class NationSystem {
 
   /** The most advanced nation's era (TECH_LEVELS index); 0 before founding. */
   get maxEra(): number { return this.nations.reduce((m, n) => Math.max(m, n.era), 0); }
+
+  /** How nations `a` and `b` stand (undefined for a == b). */
+  relation(a: number, b: number): Relation | undefined { return this.relAt[a * MAX_NATIONS + b]; }
+
+  /** Whether `a` and `b` are at war. */
+  atWar(a: number, b: number): boolean { return !!this.relation(a, b)?.war; }
+
+  /** War, peace, trade and conquest lines since the last call, oldest first. */
+  drainNews(): string[] {
+    const d = this.news;
+    this.news = [];
+    return d;
+  }
 
   /** Technologies learned since the last call, oldest first. */
   drainDiscoveries(): Discovery[] {
@@ -314,14 +375,19 @@ export class NationSystem {
       this.nations.push({
         id: idx, name, form, government, ideology: ideologyFor(values), values, flag, color: flag.colors[0],
         capital: { row: r, col: c }, founded: tick,
-        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1 },
+        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1, tradeFood: 0, tradeMaterials: 0 },
         pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 },
-        techs: [], research: null, era: 0,
+        techs: [], research: null, era: 0, fallen: false,
         history: [{ tick, what: `${name} was founded around ${place}.`,
           because: [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`] }],
       });
       this.owner[cap] = idx;
     });
+    for (let a = 0; a < this.nations.length; a++) for (let b = a + 1; b < this.nations.length; b++) {
+      const r: Relation = { a, b, attitude: 0, border: 0, trade: false, war: null, truceUntil: 0, grievance: 0, feud: (this.rng.next() - 0.5) * 0.6 };
+      this.relations.push(r);
+      this.relAt[a * MAX_NATIONS + b] = this.relAt[b * MAX_NATIONS + a] = r;
+    }
     this.claim(grid, settled);
     this.founded = true;
     this.recompute(grid, tick);
@@ -392,6 +458,7 @@ export class NationSystem {
       const r = (i / GRID_SIZE) | 0, c = i % GRID_SIZE;
       let best = 0, bd = Infinity;
       this.nations.forEach((n, k) => {
+        if (n.fallen) return;
         let dc = Math.abs(c - n.capital.col); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc;
         const d = Math.hypot(r - n.capital.row, dc);
         if (d < bd) { bd = d; best = k; }
@@ -431,7 +498,11 @@ export class NationSystem {
     }
     if (grew) { this.claim(grid, settled); this.version++; }
     this.recompute(grid, tick);
-    if (eras > 0) this.research(tick, eras);
+    if (eras > 0) {
+      this.age += eras;
+      this.relate(grid, tick, eras);
+      this.research(tick, eras);
+    }
   }
 
   /**
@@ -444,9 +515,13 @@ export class NationSystem {
   private research(tick: number, eras: number): void {
     const total = this.nations.reduce((a, n) => a + n.state.population, 0) || 1;
     for (const n of this.nations) {
+      if (n.fallen) continue;
       if (!n.research) this.choose(n);
       const r = n.research;
       if (!r) continue;
+      // Neighbours who know it already show the way: a trading partner
+      // teaches, an enemy is copied, anyone in contact is watched.
+      const teacher = this.teacherOf(n.id, r.id);
       const share = n.state.population / total;
       const pace = Math.max(0.35, Math.min(1.9,
         (0.7 + 0.6 * n.values.curiosity) * Math.sqrt(effectOf(n.techs).knowledge)
@@ -454,7 +529,8 @@ export class NationSystem {
       // Knowledge of an age already reached comes cheaply (others have shown
       // the way); only the frontier costs full effort.
       const t = TECH_BY_ID[r.id];
-      r.progress += eras * TECHS_PER_ERA * pace / (t.era > n.era ? 1 : 0.3);
+      const taught = teacher ? (teacher.how === 'trade' ? 1.5 : teacher.how === 'war' ? 1.3 : 1.2) : 1;
+      r.progress += eras * TECHS_PER_ERA * pace * taught / (t.era > n.era ? 1 : 0.3);
       if (r.progress < 1) continue;
       n.techs.push(t.id);
       n.research = null;
@@ -463,6 +539,8 @@ export class NationSystem {
       n.era = eraOf(n.techs);
       this.log(n, tick, `${n.name} ${t.deed}.`, [
         ...r.why,
+        ...(teacher ? [teacher.how === 'trade' ? `learned from ${teacher.nation.name}'s traders`
+          : teacher.how === 'war' ? `copied from ${teacher.nation.name}, its enemy` : `watching ${teacher.nation.name}`] : []),
         ...t.requires.map(q => `building on ${TECH_BY_ID[q].name}`),
       ]);
       if (n.era > was) this.log(n, tick, `${n.name} entered a new age.`, [`it learned ${t.name}`]);
@@ -489,13 +567,192 @@ export class NationSystem {
     this.version++;
   }
 
+  /** Whether two nations know of each other: a shared frontier, or both have ships (Industrial+). */
+  private inContact(r: Relation): boolean {
+    return r.border > 0 || (this.nations[r.a].era >= 3 && this.nations[r.b].era >= 3);
+  }
+
+  /** A nation in contact with `k` that already knows `tech`, and how they meet. */
+  private teacherOf(k: number, tech: string): { nation: Nation; how: 'trade' | 'war' | 'contact' } | null {
+    let best: { nation: Nation; how: 'trade' | 'war' | 'contact' } | null = null;
+    for (const r of this.relations) {
+      if (r.a !== k && r.b !== k) continue;
+      const o = this.nations[r.a === k ? r.b : r.a];
+      if (o.fallen || !o.techs.includes(tech) || !this.inContact(r)) continue;
+      const how = r.trade ? 'trade' : r.war ? 'war' : 'contact';
+      if (!best || how === 'trade') best = { nation: o, how };
+    }
+    return best;
+  }
+
+  /**
+   * Relations (vision §5): attitudes drift toward what culture, ideology,
+   * trade, grievance and competition for land make them; complementary needs
+   * open trade; a martial, hard-pressed people that resents its neighbour may
+   * go to war, and wars move frontiers until weariness or collapse ends them.
+   * Nothing here is scheduled: each follows from the two states.
+   */
+  private relate(grid: PlanetGrid, tick: number, eras: number): void {
+    const rng = this.rng, k = Math.min(1, eras * 2);
+    for (const n of this.nations) { n.state.tradeFood = 0; n.state.tradeMaterials = 0; }
+    for (const r of this.relations) {
+      const A = this.nations[r.a], B = this.nations[r.b];
+      if (A.fallen || B.fallen) { r.trade = false; r.war = null; continue; }
+      r.grievance = Math.max(0, r.grievance * (1 - 0.35 * eras));
+      // A war goes on (and wears on) even when its front has run out of land to take.
+      if (r.war) { this.fight(grid, tick, eras, r); continue; }
+      if (!this.inContact(r)) { r.attitude *= 1 - k * 0.5; r.trade = false; continue; }
+      const va = A.values, vb = B.values;
+      const similarity = 1 - (Math.abs(va.militarism - vb.militarism) + Math.abs(va.piety - vb.piety)
+        + Math.abs(va.curiosity - vb.curiosity) + Math.abs(va.collectivism - vb.collectivism)) / 4;
+      const insular = (va.xenophobia + vb.xenophobia) / 2;
+      // Two peoples squeezed for land, food or stone along one frontier eye each other's fields.
+      const squeeze = (n: Nation) => Math.max(n.pressures.crowding, n.pressures.hunger, n.pressures.scarcity);
+      const competition = r.border > 0 ? 0.9 * Math.max(squeeze(A), squeeze(B)) : 0;
+      const target = r.feud + (similarity - 0.75) * 1.6 - insular * 0.5 + (r.trade ? 0.15 : 0)
+        + (A.ideology === B.ideology ? 0.15 : -0.1) + (A.government === B.government ? 0.05 : -0.1)
+        - competition - r.grievance * 0.8 - (r.war ? 0.6 : 0);
+      r.attitude = Math.max(-1, Math.min(1, r.attitude + (target - r.attitude) * k));
+
+      // Trade: what one has to spare, the other lacks.
+      const spareFood = (n: Nation) => n.state.foodYield - n.state.foodNeed * 1.1;
+      const spareMats = (n: Nation) => n.state.materials - n.state.population * 0.013;
+      const fits = (spareFood(A) > 0 && spareFood(B) < 0) || (spareFood(B) > 0 && spareFood(A) < 0)
+        || (spareMats(A) > 0 && spareMats(B) < 0) || (spareMats(B) > 0 && spareMats(A) < 0);
+      if (!r.trade && r.attitude > 0.1 && fits) {
+        r.trade = true;
+        const [needy, rich] = squeeze(A) > squeeze(B) ? [A, B] : [B, A];
+        const what = spareMats(rich) > 0 && spareMats(needy) < 0 ? 'stone and timber' : 'grain';
+        const why = [`${needy.name} lacked ${what}`, `${rich.name} had ${what} to spare`];
+        this.log(A, tick, `${A.name} and ${B.name} opened trade.`, why);
+        this.log(B, tick, `${B.name} and ${A.name} opened trade.`, why);
+        this.news.push(`Caravans now run between ${A.name} and ${B.name}.`);
+      } else if (r.trade && r.attitude < -0.1) {
+        r.trade = false;
+        const why = [`ill will (${(r.attitude * 100) | 0})`];
+        this.log(A, tick, `Trade with ${B.name} dried up.`, why);
+        this.log(B, tick, `Trade with ${A.name} dried up.`, why);
+      }
+      if (r.trade) {
+        const move = (from: Nation, to: Nation, spare: (n: Nation) => number, key: 'tradeFood' | 'tradeMaterials') => {
+          const amt = Math.min(Math.max(0, spare(from)), Math.max(0, -spare(to))) * 0.5;
+          from.state[key] -= amt; to.state[key] += amt;
+        };
+        move(A, B, spareFood, 'tradeFood'); move(B, A, spareFood, 'tradeFood');
+        move(A, B, spareMats, 'tradeMaterials'); move(B, A, spareMats, 'tradeMaterials');
+      }
+
+      // War: a martial people, pressed hard, resenting a neighbour it borders.
+      if (r.border > 0 && this.age >= r.truceUntil && r.attitude < -0.3) {
+        for (const [X, Y] of [[A, B], [B, A]] as const) {
+          const need = Math.max(squeeze(X), X.pressures.unrest * 0.6);
+          const drive = X.values.militarism * need * -r.attitude;
+          if (rng.next() >= drive * eras * 3.5) continue;
+          const cause = [
+            ...(squeeze(X) >= 0.3 ? [X.pressures.hunger >= X.pressures.crowding && X.pressures.hunger >= X.pressures.scarcity
+              ? `hunger (${(X.pressures.hunger * 100) | 0}%)` : X.pressures.crowding >= X.pressures.scarcity
+              ? `crowded towns (${(X.pressures.crowding * 100) | 0}%)` : `a want of materials (${(X.pressures.scarcity * 100) | 0}%)`] : []),
+            ...(X.pressures.unrest >= 0.4 ? ['unrest at home'] : []),
+            `bad blood with ${Y.name}`,
+            ...(X.values.militarism > 0.6 ? ['a martial temper'] : []),
+            ...(r.grievance > 0.2 ? ['old wrongs'] : []),
+          ];
+          r.war = { aggressor: X.id, since: this.age, cause, landAtStart: [A.state.land, B.state.land], taken: [0, 0], weariness: 0 };
+          r.trade = false;
+          this.log(X, tick, `${X.name} went to war against ${Y.name}.`, cause);
+          this.log(Y, tick, `${X.name} attacked ${Y.name}.`, cause);
+          this.news.push(`${X.name} has gone to war against ${Y.name}.`);
+          this.version++;
+          break;
+        }
+      }
+    }
+  }
+
+  /** Strength in the field: numbers, the age, martial know-how, and how well the people hold together. */
+  private strength(n: Nation): number {
+    const martial = n.techs.filter(id => (TECH_BY_ID[id].leaning.militarism ?? 0) > 0.2).length;
+    return Math.sqrt(n.state.population) * (1 + 0.25 * n.era + 0.3 * martial) * (0.4 + n.state.cohesion)
+      * (0.8 + 0.4 * n.values.militarism);
+  }
+
+  /** One step of a war: the stronger side takes frontier cells; both bleed and tire. */
+  private fight(grid: PlanetGrid, tick: number, eras: number, r: Relation): void {
+    const war = r.war!, A = this.nations[r.a], B = this.nations[r.b];
+    const sa = this.strength(A), sb = this.strength(B), ratio = sa / (sa + sb);
+    const [wi, li] = ratio >= 0.5 ? [r.a, r.b] : [r.b, r.a];
+    const adv = Math.abs(ratio - 0.5) * 2;
+    // The front advances: up to ~3% of the loser's land a step at full
+    // advantage, cell by cell from the line inward (the loser's cells
+    // touching the winner's, again and again).
+    let loserLand = 0;
+    for (let i = 0; i < N; i++) if (this.owner[i] === li) loserLand++;
+    let want = Math.round(loserLand * (0.002 + 0.03 * adv) * eras * 20), take = 0;
+    for (let pass = 0; pass < 12 && want > 0; pass++) {
+      const front: number[] = [];
+      for (let i = 0; i < N; i++) {
+        if (this.owner[i] !== li) continue;
+        const c = i % GRID_SIZE, row = i - c;
+        if (this.owner[row + (c + 1) % GRID_SIZE] === wi || this.owner[row + (c + GRID_SIZE - 1) % GRID_SIZE] === wi
+          || (i + GRID_SIZE < N && this.owner[i + GRID_SIZE] === wi) || (i >= GRID_SIZE && this.owner[i - GRID_SIZE] === wi)) front.push(i);
+      }
+      if (!front.length) break;
+      const n = Math.min(front.length, want);
+      for (let t = 0; t < n; t++) {
+        const j = t + Math.floor(this.rng.next() * (front.length - t));
+        [front[t], front[j]] = [front[j], front[t]];
+        this.owner[front[t]] = wi;
+      }
+      take += n; want -= n;
+    }
+    if (take > 0) { war.taken[wi === r.a ? 0 : 1] += take; this.version++; }
+    // Both sides bleed. A stalemate wears both down fastest; a lopsided war
+    // runs on until the weaker side gives in (or is swallowed).
+    for (const n of [A, B]) n.state.population *= 1 - 0.4 * eras;
+    const loserStart = war.landAtStart[li === r.a ? 0 : 1] || 1;
+    const lost = war.taken[wi === r.a ? 0 : 1] / loserStart;
+    war.weariness = Math.min(1, war.weariness + eras * (0.8 + 1.6 * (1 - adv)));
+    r.grievance = Math.min(1, r.grievance + eras * 0.6);
+    const W = this.nations[wi], L = this.nations[li];
+    let landLeft = 0, winLand = 0;
+    for (let i = 0; i < N; i++) { if (this.owner[i] === li) landLeft++; else if (this.owner[i] === wi) winLand++; }
+    // Beaten and dwarfed, the loser is annexed whole rather than left a rump.
+    if (landLeft > 0 && lost >= 0.45 && landLeft < winLand * 0.15) {
+      for (let i = 0; i < N; i++) if (this.owner[i] === li) this.owner[i] = wi;
+      landLeft = 0;
+    }
+    if (landLeft === 0) {
+      L.fallen = true;
+      L.research = null;
+      for (const o of this.relations) if (o.a === li || o.b === li) { o.war = null; o.trade = false; }
+      const why = [...war.cause.slice(0, 1), `${W.name} was the stronger`, `${L.name} had nowhere left to stand`];
+      this.log(L, tick, `${L.name} fell to ${W.name}.`, why);
+      this.log(W, tick, `${W.name} conquered ${L.name}.`, why);
+      this.news.push(`${L.name} has fallen to ${W.name}.`);
+      this.version++;
+      return;
+    }
+    if (war.weariness >= 1 || lost >= 0.45) {
+      const why = [lost >= 0.45 ? `${L.name} had lost ${Math.round(lost * 100)}% of its land` : 'both peoples were weary of war',
+        war.taken[0] + war.taken[1] === 0 ? 'neither side gained ground'
+          : `${war.taken[0] >= war.taken[1] ? A.name : B.name} had taken ${Math.max(...war.taken)} cells of land`];
+      r.war = null;
+      r.truceUntil = this.age + 0.6;
+      r.attitude = Math.max(r.attitude, -0.2);
+      this.log(A, tick, `${A.name} and ${B.name} made peace.`, why);
+      this.log(B, tick, `${B.name} and ${A.name} made peace.`, why);
+      this.news.push(`${A.name} and ${B.name} have made peace.`);
+      this.version++;
+    }
+  }
+
   /** Pick what to study: weighted by appeal, seeded. Records the reasons. */
   private choose(n: Nation): void {
     const opts = available(n.techs);
     if (!opts.length) return;
     const p = n.pressures;
     const need: Record<Need, number> = { ...p, curiosity: n.values.curiosity * 0.5 };
-    const w = opts.map(t => appeal(t, need, n.values));
+    const w = opts.map(t => appeal(t, need, n.values) + (this.teacherOf(n.id, t.id) ? 0.25 : 0));
     let x = this.rng.next() * w.reduce((a, b) => a + b, 0), i = 0;
     while (i < opts.length - 1 && (x -= w[i]) > 0) i++;
     const t = opts[i];
@@ -526,7 +783,18 @@ export class NationSystem {
       mats[o] += MATERIAL[cell.biome] ?? 0.1;   // fieldstone and clay anywhere
       live[o] += isHabitable(cell.biome) ? cell.lifeDensity : 0;
     }
+    // Shared frontiers (4-neighbour cell edges between two nations, x wraps).
+    for (const r of this.relations) r.border = 0;
+    for (let i = 0; i < N; i++) {
+      const o = this.owner[i];
+      if (o < 0) continue;
+      const c = i % GRID_SIZE;
+      const right = this.owner[i - c + (c + 1) % GRID_SIZE], down = i + GRID_SIZE < N ? this.owner[i + GRID_SIZE] : -1;
+      if (right >= 0 && right !== o) this.relation(o, right)!.border++;
+      if (down >= 0 && down !== o) this.relation(o, down)!.border++;
+    }
     this.nations.forEach((n, k) => {
+      if (n.fallen) return;
       const s = n.state, p = n.pressures, before = { ...p };
       const fx = effectOf(n.techs);
       // Good years and droughts: the harvest wanders around an ordinary one.
@@ -535,13 +803,14 @@ export class NationSystem {
       // slowly by itself), and foul land yields less.
       s.pollution = Math.max(0, Math.min(1, s.pollution * 0.96 + fx.pollution * 3));
       s.inequality = Math.max(0, s.inequality * 0.995);
-      s.land = land[k]; s.materials = mats[k] * fx.materials;
-      s.foodYield = food[k] * fx.food * s.harvest * (1 - 0.5 * s.pollution);
+      s.land = land[k]; s.materials = Math.max(0, mats[k] * fx.materials + s.tradeMaterials);
+      s.foodYield = Math.max(1e-6, food[k] * fx.food * s.harvest * (1 - 0.5 * s.pollution) + s.tradeFood);
       // People grow toward what the food carries (logistic) and starve above
       // it; crowding (beyond what the towns house) slows them with disease.
       const carry = s.foodYield / FOOD_PER_PERSON;
       if (s.population === 0) s.population = Math.min(carry * 0.5, live[k] * 20 + 50);
-      s.population = Math.max(10, s.population + s.population * (0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding));
+      // Famine kills, but not everyone at once: at most 30% a step.
+      s.population = Math.max(10, s.population * (1 + Math.max(-0.3, 0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding)));
       s.foodNeed = s.population * FOOD_PER_PERSON;
       s.knowledge += s.population * 0.0004 * (0.5 + n.values.curiosity) * fx.knowledge;
       // Cohesion: sprawl and hunger wear it down; a shared faith and a

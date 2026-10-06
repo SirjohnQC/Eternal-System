@@ -2761,10 +2761,14 @@ export class IsoDioramaRenderer {
     // inside and a dark rim on the outer px, so it reads on snow, sand and
     // forest alike. Wider zoomed in.
     const reach = eng.activeCamera.zoom >= 2 ? 3 : 2;
+    // Distance (px) to the nearest pixel of another nation within reach, 0 if
+    // none; `across` is that nation.
+    let across = -1;
     const foreign = (p: number, x: number, y: number, o: number): number => {
       for (let s = 1; s <= reach; s++) {
-        if ((x + s < W && meets(o, om[p + s])) || (x >= s && meets(o, om[p - s]))
-          || (y + s < H && meets(o, om[p + s * W])) || (y >= s && meets(o, om[p - s * W]))) return s;
+        const q = x + s < W && meets(o, om[p + s]) ? om[p + s] : x >= s && meets(o, om[p - s]) ? om[p - s]
+          : y + s < H && meets(o, om[p + s * W]) ? om[p + s * W] : y >= s && meets(o, om[p - s * W]) ? om[p - s * W] : -1;
+        if (q >= 0) { across = q; return s; }
       }
       return 0;
     };
@@ -2781,7 +2785,10 @@ export class IsoDioramaRenderer {
         if (o < 0) continue;
         const c = rgb[o], k = p * 4;
         const f = foreign(p, x, y, o);
-        if (f > 0 && f < reach) {
+        if (f > 0 && f < reach && ns.atWar(o, across) && ((x + y) & 2)) {
+          // A war front: the frontier dashed with fire red.
+          L[k] = 226; L[k + 1] = 52; L[k + 2] = 34; L[k + 3] = 255;
+        } else if (f > 0 && f < reach) {
           L[k] = c[0]; L[k + 1] = c[1]; L[k + 2] = c[2]; L[k + 3] = 255;
         } else if (f === reach) {
           L[k] = c[0] >> 2; L[k + 1] = c[1] >> 2; L[k + 2] = c[2] >> 2; L[k + 3] = 220;

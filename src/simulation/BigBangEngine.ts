@@ -2784,6 +2784,7 @@ export class BigBangEngine {
     }
     const rate = this.civAdvanceRate(ps, false), STEP = 2000;
     const learned: string[] = [];
+    let wars = 0, falls = 0;
     this.leaping = true;
     try {
       const spread = Math.max(0.1, this.playerEffect('bioResilience'));
@@ -2807,12 +2808,16 @@ export class BigBangEngine {
         }
       }
       if (!ns?.isFounded) return null;
+      // A leap's wars and treaties are summed up, not told one by one.
+      const news = ns.drainNews();
+      wars = news.filter(m => m.includes('gone to war')).length;
+      falls = news.filter(m => m.includes('has fallen')).length;
       while (ps.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(ps);
       this.nationEra = ps.civLevel;
     } finally {
       this.leaping = false;
     }
-    return `Ages pass in a breath: ${name} learned ${learned.length ? learned.slice(-4).join(', ') + (learned.length > 4 ? ` and ${learned.length - 4} more` : '') : 'little'}, and stands in the ${ageName(ps.civLevel)}.`;
+    return `Ages pass in a breath: ${name} learned ${learned.length ? learned.slice(-4).join(', ') + (learned.length > 4 ? ` and ${learned.length - 4} more` : '') : 'little'}, and stands in the ${ageName(ps.civLevel)}.${wars ? ` ${wars} war${wars > 1 ? 's were' : ' was'} fought${falls ? `, and ${falls} nation${falls > 1 ? 's' : ''} fell` : ''}.` : ''}`;
   }
 
   /** One era up, with everything an era brings (messages, sight, leaders, first contact). */
@@ -2917,6 +2922,7 @@ export class BigBangEngine {
         this.onCivEvent?.(`${d.nation.name} ${d.tech.deed}.`);
       }
     }
+    for (const line of ns.drainNews()) this.onCivEvent?.(line);
     // The world stands in the era its most advanced nation has reached.
     while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);
     this.nationEra = star.civLevel;
