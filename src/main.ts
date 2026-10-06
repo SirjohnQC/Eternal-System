@@ -1,6 +1,7 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
 import type { DivineHost } from './simulation/FaithCards';
+import { openChronicle } from './ui/ChronicleUI';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
@@ -1396,6 +1397,12 @@ function showTileNation(target: TileRef): void {
       f.style.marginRight = '6px';
       val.prepend(f);
     }
+  }
+  const chron = document.getElementById('pi-tile-chronicle') as HTMLButtonElement | null;
+  if (chron) {
+    chron.style.display = n ? '' : 'none';
+    const last = n?.history[n.history.length - 1];
+    chron.onclick = n ? () => openChronicle({ nation: n.id, entry: last?.id }) : null;
   }
   if (!n) { setText('pi-tile-nation-detail', ''); return; }
   const signs = symptomsOf(n);
@@ -4011,6 +4018,11 @@ function initHudShell(): void {
     }
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('rail-system')?.classList.add('active');
+  });
+  document.getElementById('rail-chronicle')?.addEventListener('click', () => {
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-chronicle')?.classList.add('active');
+    openChronicle();
   });
   document.getElementById('rail-codex')?.addEventListener('click', () => {
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));

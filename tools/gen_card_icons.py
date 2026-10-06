@@ -49,6 +49,13 @@ PAL.update({
     "Y": (178, 166, 70, 255),
     # dry earth
     "B": (176, 116, 64, 255),
+    # instrument-rail colours (sampled from public/assets/pixel/icons/*.png)
+    "D": (42, 28, 72, 255),
+    "V": (123, 94, 167, 255),
+    "L": (170, 136, 221, 255),
+    "N": (120, 82, 64, 255),
+    "G": (255, 153, 68, 255),
+    "H": (255, 221, 153, 255),
 })
 
 T = "."
@@ -877,6 +884,40 @@ def i_crucible():
     return g
 
 
+# --------------------------------------------------------------------------- RAIL (24x24)
+
+RAIL_OUT = ROOT / "public" / "assets" / "pixel" / "icons"
+
+
+def i_chronicle():
+    """Open chronicle in the rail's line-art style: dark violet pages, light
+    violet edges, a gold ribbon down the gutter tying a cause (left page) to
+    its effect (right page). Drawn in the top-left 24x24; cropped on write."""
+    g = G()
+    g.poly([(2, 6), (11, 8), (11, 20), (2, 18)], "D")              # left page
+    g.poly([(12, 8), (21, 6), (21, 18), (12, 20)], "D")            # right page
+    g.path([(2, 6), (11, 8)], "L"); g.path([(12, 8), (21, 6)], "L")          # top edges, lit
+    g.path([(2, 6), (2, 18)], "V"); g.path([(21, 6), (21, 18)], "V")
+    g.path([(1, 8), (1, 19), (11, 21)], "V"); g.path([(22, 8), (22, 19), (12, 21)], "V")  # cover
+    for k in range(4):                                             # ruled entries
+        y0 = 9 + 2.4 * k
+        g.line(4, y0, 9, y0 + 1.1, "V")
+        g.line(14, y0 + 1.1, 19, y0, "V")
+    # the thread: cause dot -> gutter -> effect dot
+    g.path([(5, 14), (8, 15), (10, 15)], "g"); g.path([(13, 12), (16, 11), (18, 10)], "g")
+    g.p(5, 14, "H"); g.p(18, 10, "H")
+    g.rect(11, 3, 12, 20, "G")                                     # ribbon
+    g.p(11, 3, "H"); g.p(11, 4, "H")
+    g.rect(11, 21, 12, 22, "N")
+    g.p(10, 23, "N"); g.p(13, 23, "N")
+    g.clear(lambda x, y: x >= 24 or y >= 24)
+    return g
+
+
+def img24(g):
+    return [row[:24] for row in g.img()[:24]]
+
+
 SCOPES = [
     ("NATIONS", [
         ("harvest", "gold"), ("fertility", "gold"), ("inspire", "gold"), ("veins", "gold"),
@@ -954,6 +995,8 @@ def main():
     for cid, img in icons.items():
         write_png(OUT / f"{cid}.png", img)
     print(f"wrote {len(icons)} icons to {OUT}")
+    write_png(RAIL_OUT / "chronicle.png", img24(i_chronicle()))
+    print(f"wrote {RAIL_OUT / 'chronicle.png'}")
     if "--sheet" in sys.argv:
         contact_sheet(icons, SHEET)
         print(f"wrote {SHEET}")

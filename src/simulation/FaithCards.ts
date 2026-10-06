@@ -711,11 +711,14 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
   const lines: string[] = [];
   let where: CastResult['where'] = named[0]?.capital ?? null;
   const touched = new Set<number>();
+  // The player's own act goes into the chronicle first; everything it lays links back to it.
+  const castId = ns?.isFounded ? ns.remark(tick, `You cast ${card.name}.`, [describe(card)]) : 0;
+  const cause = castId || undefined;
   const sideOn = (k: number) => {
     for (const s of card.sides) {
       const sm = MAG_STRENGTH[s.mag - 1] * 0.8;
-      if (s.when === 'with') ns!.bless(k, { card: label, op: s.op, m: sm, cond: 'always', from: now, until: now + len, aftermath: false, primary: false });
-      else ns!.bless(k, { card: label, op: s.op, m: sm, cond: 'always', from: now + len, until: now + len * 1.75, aftermath: true, primary: false });
+      if (s.when === 'with') ns!.bless(k, { card: label, op: s.op, m: sm, cond: 'always', from: now, until: now + len, aftermath: false, primary: false, cause });
+      else ns!.bless(k, { card: label, op: s.op, m: sm, cond: 'always', from: now + len, until: now + len * 1.75, aftermath: true, primary: false, cause });
     }
   };
 
@@ -727,11 +730,11 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
       if (!rng.chance(odds)) {
         ignored.push(n);
         ns.record(n.id, tick, `A sign appeared over ${n.name}, and few looked up.`,
-          [`the ${label}`, wear >= 1.5 ? 'the people had grown used to miracles' : n.values.piety < 0.4 ? 'a worldly people' : 'chance']);
+          [`the ${label}`, wear >= 1.5 ? 'the people had grown used to miracles' : n.values.piety < 0.4 ? 'a worldly people' : 'chance'], [castId]);
         continue;
       }
       heeded.push(n);
-      omens.forEach((a, i) => ns.bless(n.id, { card: label, op: a.omen!, m: m * (i ? 0.7 : 1), cond: card.condition, from: now, until: now + len, aftermath: false, primary: true }));
+      omens.forEach((a, i) => ns.bless(n.id, { card: label, op: a.omen!, m: m * (i ? 0.7 : 1), cond: card.condition, from: now, until: now + len, aftermath: false, primary: true, cause }));
       touched.add(n.id);
     }
   }
@@ -749,17 +752,17 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
         const n = ns.nations[k];
         if (!n || n.fallen) continue;
         touched.add(k);
-        ns.record(k, tick, workLine(a.work, n.name), [`the ${label}`]);
+        ns.record(k, tick, workLine(a.work, n.name), [`the ${label}`], [castId]);
         const toll = WORK_TOLL[a.work];
         // A strike on a capital kills beyond the land it covers (that is where the people are).
         const share = Math.min(1, cells / Math.max(1, n.state.land));
         if (toll) ns.harm(k, toll * m * (a.strike ? 0.1 + share : share));
-        if (a.echo) ns.bless(k, { card: label, op: a.echo.op, m: a.echo.m * m, cond: 'always', from: now, until: now + len, aftermath: false, primary: false });
+        if (a.echo) ns.bless(k, { card: label, op: a.echo.op, m: a.echo.m * m, cond: 'always', from: now, until: now + len, aftermath: false, primary: false, cause });
       }
       if (a.work === 'awaken' || a.work === 'hardy') for (const n of ns.nations) if (!n.fallen && !touched.has(n.id)) {
         touched.add(n.id);
-        ns.record(n.id, tick, workLine(a.work, n.name), [`the ${label}`]);
-        if (a.echo) ns.bless(n.id, { card: label, op: a.echo.op, m: a.echo.m * m, cond: 'always', from: now, until: now + len, aftermath: false, primary: false });
+        ns.record(n.id, tick, workLine(a.work, n.name), [`the ${label}`], [castId]);
+        if (a.echo) ns.bless(n.id, { card: label, op: a.echo.op, m: a.echo.m * m, cond: 'always', from: now, until: now + len, aftermath: false, primary: false, cause });
       }
       if (!where) { const k = [...rep.nations.keys()][0]; if (k != null) where = ns.nations[k].capital; }
     }

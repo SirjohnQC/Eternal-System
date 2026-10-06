@@ -64,11 +64,22 @@ export interface Pressures {
 }
 
 export interface HistoryEntry {
+  /** Unique in the NationSystem's chronicle. */
+  id: number;
   tick: number;
+  /** Era-time (NationSystem.now) it happened at, and the world's age then (TECH_LEVELS index). */
+  age: number;
+  era: number;
+  /** The nation it happened to (-1: the world, or the player's own hand). */
+  nation: number;
   /** What happened, in plain words. */
   what: string;
-  /** Why: the states / earlier entries that caused it. */
+  /** Why, in words: the states and earlier events that caused it. */
   because: string[];
+  /** Why, as links: ids of earlier entries that caused it (vision §15: a causal history, not a list). */
+  causes: number[];
+  /** 'divine': the player's own act. */
+  kind?: 'divine';
 }
 
 export interface Nation {
@@ -91,13 +102,15 @@ export interface Nation {
   /** Technologies known (Technology.TECHS ids), in the order learned. */
   techs: string[];
   /** What it is studying, how far along (0..1), and why it chose it. */
-  research: { id: string; progress: number; why: string[] } | null;
+  research: { id: string; progress: number; why: string[]; keys?: string[] } | null;
   /** TECH_LEVELS index it stands in (Technology.eraOf). */
   era: number;
   /** Conquered: holds no land, takes no part any more. */
   fallen: boolean;
   /** Faith Cards that took hold here (working, waiting, or recently passed). */
   omens: Omen[];
+  /** Chronicle ids of what later events link back to: 'p:<pressure>', 'tech:<id>', 'founded', 'era'. */
+  marks: Record<string, number>;
 }
 
 /**
@@ -130,6 +143,9 @@ export interface Omen {
   started: boolean;
   /** Working this step (started, not over, condition met). */
   active: boolean;
+  /** Chronicle id of the cast that laid it, and of its taking hold here. */
+  cause?: number;
+  startId?: number;
 }
 
 /** The combined pull of a nation's working omens on its state. */
@@ -239,6 +255,8 @@ export interface War {
   taken: [number, number];
   /** 0..1: how sick of it both peoples are; at 1 they make peace. */
   weariness: number;
+  /** Chronicle id of its outbreak. */
+  id: number;
 }
 
 /**
@@ -260,6 +278,8 @@ export interface Relation {
   grievance: number;
   /** -0.3..0.3: the accidents of their first meetings, never quite forgotten. */
   feud: number;
+  /** Chronicle id of the last thing that passed between them (trade, war, peace). */
+  lastEvent?: number;
 }
 
 /** Words for a culture leaning, high and low. */
@@ -280,6 +300,8 @@ const FOOD_PER_FERTILE = 1.0, FOOD_PER_PERSON = 0.012;
 /** People a cell carries comfortably (crowding above this). */
 const CARRY_PER_CELL = 30;
 const HISTORY_MAX = 60;
+/** Entries the chronicle keeps (all nations and the player's acts). */
+const CHRONICLE_MAX = 2000;
 
 const FLAG_COLORS = [
   '#b8322a', '#2f6fb3', '#2e8b4e', '#7d3fa0', '#d06a1e', '#1f8f86',
@@ -407,6 +429,10 @@ export class NationSystem {
   /** Era-time stepped so far (sum of `eras` given to advance). */
   private age = 0;
   private lastTick = -1;
+  /** Every history entry of every nation, plus the player's acts, oldest first (capped). */
+  readonly chronicle: HistoryEntry[] = [];
+  private byId = new Map<number, HistoryEntry>();
+  private nextId = 1;
   private rng: SeedRNG;
   private founded = false;
 
@@ -432,11 +458,22 @@ export class NationSystem {
     n.omens.push({ ...omen, started: false, active: false });
   }
 
-  /** Write a line to a nation's history (a card cast over it, say). */
-  record(k: number, tick: number, what: string, because: string[]): void {
+  /** Write a line to a nation's history (a card cast over it, say). Returns its chronicle id (0 if none). */
+  record(k: number, tick: number, what: string, because: string[], causes: number[] = []): number {
     const n = this.nations[k];
-    if (n) this.log(n, tick, what, because);
+    return n ? this.log(n, tick, what, because, causes) : 0;
   }
+
+  /** Write the player's own act (a card cast) to the chronicle. Returns its id. */
+  remark(tick: number, what: string, because: string[], causes: number[] = []): number {
+    return this.add({ tick, nation: -1, what, because, causes, kind: 'divine' }).id;
+  }
+
+  /** A chronicle entry by id (undefined once it has aged out). */
+  entry(id: number): HistoryEntry | undefined { return this.byId.get(id); }
+
+  /** Entries that name `id` among their causes: what followed from it. */
+  consequences(id: number): HistoryEntry[] { return this.chronicle.filter(e => e.causes.includes(id)); }
 
   /** The combined pull of `n`'s working omens. */
   modsOf(n: Nation): OmenMods {
@@ -482,8 +519,12 @@ export class NationSystem {
           if (o.op === 'calm') n.values.militarism = clamp(n.values.militarism - 0.05 * o.m);
           if (o.op === 'revolt') this.overthrow(n, o.m);
           const stole = o.op === 'theft' ? this.steal(n) : null;
-          if (o.op === 'theft' && !stole) { this.log(n, tick, `Spies of ${n.name} found nothing worth stealing.`, [`the ${o.card}`]); continue; }
-          this.log(n, tick, omenStart(o.op, n.name), [o.aftermath ? `the ${o.card} had passed` : `the ${o.card}`, ...(stole ? [`it learned ${stole}`] : [])]);
+          // What it follows from: the cast, or (an aftermath) the card's own taking hold here.
+          const first = o.aftermath ? n.omens.find(x => x.card === o.card && x.primary && x.startId)?.startId : undefined;
+          const from = [first ?? o.cause].filter((x): x is number => !!x);
+          if (o.op === 'theft' && !stole) { o.startId = this.log(n, tick, `Spies of ${n.name} found nothing worth stealing.`, [`the ${o.card}`], from); continue; }
+          o.startId = this.log(n, tick, omenStart(o.op, n.name), [o.aftermath ? `the ${o.card} had passed` : `the ${o.card}`, ...(stole ? [`it learned ${stole}`] : [])], from);
+          if (stole) n.marks[`tech:${n.techs[n.techs.length - 1]}`] = o.startId;
         }
         o.active = o.started && now < o.until && this.holds(n, o.cond);
       }
@@ -522,6 +563,13 @@ export class NationSystem {
   harm(k: number, share: number): void {
     const n = this.nations[k];
     if (n && !n.fallen) n.state.population = Math.max(10, n.state.population * (1 - Math.max(0, Math.min(0.9, share))));
+  }
+
+  /** Chronicle ids of the cards that took hold on `n` lately (optionally only some kinds). */
+  private omenLinks(n: Nation, ops?: OmenOp[]): number[] {
+    const out: number[] = [];
+    for (const o of n.omens) if (o.started && o.startId && (!ops || ops.includes(o.op)) && !out.includes(o.startId)) out.push(o.startId);
+    return out.slice(-3);
   }
 
   /** Cards that worked on `n` lately, as causes for what happens to it now. */
@@ -618,10 +666,11 @@ export class NationSystem {
         capital: { row: r, col: c }, founded: tick,
         state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1, tradeFood: 0, tradeMaterials: 0 },
         pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 },
-        techs: [], research: null, era: 0, fallen: false, omens: [],
-        history: [{ tick, what: `${name} was founded around ${place}.`,
-          because: [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`] }],
+        techs: [], research: null, era: 0, fallen: false, omens: [], marks: {}, history: [],
       });
+      const born = this.nations[this.nations.length - 1];
+      born.marks.founded = this.log(born, tick, `${name} was founded around ${place}.`,
+        [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`]);
       this.owner[cap] = idx;
     });
     for (let a = 0; a < this.nations.length; a++) for (let b = a + 1; b < this.nations.length; b++) {
@@ -780,13 +829,22 @@ export class NationSystem {
       n.state.inequality = Math.max(0, Math.min(1, n.state.inequality + (t.effect.inequality ?? 0)));
       const was = n.era;
       n.era = eraOf(n.techs);
-      this.log(n, tick, `${n.name} ${t.deed}.`, [
+      // Links: the pressures that made it look for this, what it built on, who showed the way.
+      const links = [
+        ...(r.keys ?? []).map(k => n.marks[`p:${k}`]),
+        ...t.requires.map(q => n.marks[`tech:${q}`]),
+        teacher?.nation.marks[`tech:${t.id}`],
+        teacher?.how === 'trade' ? this.relation(n.id, teacher.nation.id)?.lastEvent : undefined,
+        ...this.omenLinks(n, ['inspire', 'golden', 'schism', 'theft']),
+      ];
+      const learned = this.log(n, tick, `${n.name} ${t.deed}.`, [
         ...r.why,
         ...(teacher ? [teacher.how === 'trade' ? `learned from ${teacher.nation.name}'s traders`
           : teacher.how === 'war' ? `copied from ${teacher.nation.name}, its enemy` : `watching ${teacher.nation.name}`] : []),
         ...t.requires.map(q => `building on ${TECH_BY_ID[q].name}`),
-      ]);
-      if (n.era > was) this.log(n, tick, `${n.name} entered a new age.`, [`it learned ${t.name}`]);
+      ], links);
+      n.marks[`tech:${t.id}`] = learned;
+      if (n.era > was) n.marks.era = this.log(n, tick, `${n.name} entered a new age.`, [`it learned ${t.name}`], [learned]);
       this.discoveries.push({ nation: n, tech: t, tick });
       this.version++;
     }
@@ -872,14 +930,18 @@ export class NationSystem {
         const [needy, rich] = squeeze(A) > squeeze(B) ? [A, B] : [B, A];
         const what = spareMats(rich) > 0 && spareMats(needy) < 0 ? 'stone and timber' : 'grain';
         const why = [`${needy.name} lacked ${what}`, `${rich.name} had ${what} to spare`];
-        this.log(A, tick, `${A.name} and ${B.name} opened trade.`, why);
-        this.log(B, tick, `${B.name} and ${A.name} opened trade.`, why);
+        const want = [needy.marks[what === 'grain' ? 'p:hunger' : 'p:scarcity'], ...this.omenLinks(A, ['concord', 'seafaring']), ...this.omenLinks(B, ['concord', 'seafaring'])];
+        const opened = this.log(A, tick, `${A.name} and ${B.name} opened trade.`, why, want);
+        this.log(B, tick, `${B.name} and ${A.name} opened trade.`, why, [opened]);
+        r.lastEvent = opened;
         this.news.push(`Caravans now run between ${A.name} and ${B.name}.`);
       } else if (r.trade && r.attitude < -0.1) {
         r.trade = false;
         const why = [`ill will (${(r.attitude * 100) | 0})`];
-        this.log(A, tick, `Trade with ${B.name} dried up.`, why);
-        this.log(B, tick, `Trade with ${A.name} dried up.`, why);
+        const sour = [r.lastEvent, ...this.omenLinks(A, ['discord', 'insularity', 'foe']), ...this.omenLinks(B, ['discord', 'insularity', 'foe'])];
+        const dried = this.log(A, tick, `Trade with ${B.name} dried up.`, why, sour);
+        this.log(B, tick, `Trade with ${A.name} dried up.`, why, [dried]);
+        r.lastEvent = dried;
       }
       if (r.trade) {
         const move = (from: Nation, to: Nation, spare: (n: Nation) => number, key: 'tradeFood' | 'tradeMaterials') => {
@@ -905,10 +967,19 @@ export class NationSystem {
             ...(X.values.militarism > 0.6 ? ['a martial temper'] : []),
             ...(r.grievance > 0.2 ? ['old wrongs'] : []),
           ];
-          r.war = { aggressor: X.id, since: this.age, cause, landAtStart: [A.state.land, B.state.land], taken: [0, 0], weariness: 0 };
+          const press = X.pressures.hunger >= X.pressures.crowding && X.pressures.hunger >= X.pressures.scarcity ? 'p:hunger'
+            : X.pressures.crowding >= X.pressures.scarcity ? 'p:crowding' : 'p:scarcity';
+          const links = [
+            squeeze(X) >= 0.3 ? X.marks[press] : undefined,
+            X.pressures.unrest >= 0.4 ? X.marks['p:unrest'] : undefined,
+            r.lastEvent,
+            ...this.omenLinks(X, ['discord', 'fervor', 'insularity', 'exodus']), ...this.omenLinks(Y, ['foe', 'exodus']),
+          ];
+          const id = this.log(X, tick, `${X.name} went to war against ${Y.name}.`, cause, links);
+          r.war = { aggressor: X.id, since: this.age, cause, landAtStart: [A.state.land, B.state.land], taken: [0, 0], weariness: 0, id };
           r.trade = false;
-          this.log(X, tick, `${X.name} went to war against ${Y.name}.`, cause);
-          this.log(Y, tick, `${X.name} attacked ${Y.name}.`, cause);
+          r.lastEvent = id;
+          this.log(Y, tick, `${X.name} attacked ${Y.name}.`, cause, [id]);
           this.news.push(`${X.name} has gone to war against ${Y.name}.`);
           this.version++;
           break;
@@ -981,8 +1052,8 @@ export class NationSystem {
       L.research = null;
       for (const o of this.relations) if (o.a === li || o.b === li) { o.war = null; o.trade = false; }
       const why = [...war.cause.slice(0, 1), `${W.name} was the stronger`, `${L.name} had nowhere left to stand`];
-      this.log(L, tick, `${L.name} fell to ${W.name}.`, why);
-      this.log(W, tick, `${W.name} conquered ${L.name}.`, why);
+      const fell = this.log(L, tick, `${L.name} fell to ${W.name}.`, why, [war.id]);
+      this.log(W, tick, `${W.name} conquered ${L.name}.`, why, [fell]);
       this.news.push(`${L.name} has fallen to ${W.name}.`);
       this.version++;
       return;
@@ -994,8 +1065,9 @@ export class NationSystem {
       r.war = null;
       r.truceUntil = this.age + 0.6;
       r.attitude = Math.max(r.attitude, -0.2);
-      this.log(A, tick, `${A.name} and ${B.name} made peace.`, why);
-      this.log(B, tick, `${B.name} and ${A.name} made peace.`, why);
+      const peace = this.log(A, tick, `${A.name} and ${B.name} made peace.`, why, [war.id, ...this.omenLinks(A, ['calm', 'concord']), ...this.omenLinks(B, ['calm', 'concord'])]);
+      this.log(B, tick, `${B.name} and ${A.name} made peace.`, why, [peace]);
+      r.lastEvent = peace;
       this.news.push(`${A.name} and ${B.name} have made peace.`);
       this.version++;
     }
@@ -1022,7 +1094,8 @@ export class NationSystem {
     const lean = (Object.entries(t.leaning) as Array<[keyof CultureValues, number]>)
       .filter(([k, a]) => a * (n.values[k] - 0.5) > 0.06)
       .map(([k, a]) => `${a > 0 ? TEMPER[k][0] : TEMPER[k][1]} temper`);
-    n.research = { id: t.id, progress: 0, why: [...why, ...lean].slice(0, 3) };
+    const keys = (Object.entries(t.answers) as Array<[Need, number]>).filter(([k, a]) => k !== 'curiosity' && a * need[k] > 0.12).map(([k]) => k);
+    n.research = { id: t.id, progress: 0, why: [...why, ...lean].slice(0, 3), keys };
     if (!n.research.why.length) n.research.why.push('tinkering');
   }
 
@@ -1088,9 +1161,22 @@ export class NationSystem {
       p.unrest = Math.max(0, Math.min(1, (0.6 - s.cohesion) / 0.6));
       p.pollution = s.pollution;
       // History: a pressure crossing into "acute" is an event, with its cause.
+      // Links: the cards that worked here lately, and other pressures that fed this one.
+      const fed: Record<keyof Pressures, Array<number | undefined>> = {
+        hunger: [p.crowding > 0.3 ? n.marks['p:crowding'] : undefined, p.pollution > 0.3 ? n.marks['p:pollution'] : undefined],
+        crowding: [],
+        scarcity: [p.crowding > 0.3 ? n.marks['p:crowding'] : undefined],
+        pollution: n.techs.filter(id => (TECH_BY_ID[id].effect.pollution ?? 0) > 0).slice(-2).map(id => n.marks[`tech:${id}`]),
+        unrest: [p.hunger > 0.3 ? n.marks['p:hunger'] : undefined, p.crowding > 0.3 ? n.marks['p:crowding'] : undefined,
+          ...(s.inequality > 0.3 ? n.techs.filter(id => (TECH_BY_ID[id].effect.inequality ?? 0) >= 0.1).slice(-2).map(id => n.marks[`tech:${id}`]) : [])],
+      };
       const note = (key: keyof Pressures, what: string, because: string[]) => {
-        if (before[key] < 0.5 && p[key] >= 0.5) this.log(n, tick, what, [...because, ...this.omenCauses(n)]);
-        if (before[key] >= 0.5 && p[key] < 0.25) this.log(n, tick, `${EASED[key]} eased in ${n.name}.`, [`${key} fell to ${(p[key] * 100) | 0}%`]);
+        if (before[key] < 0.5 && p[key] >= 0.5) n.marks[`p:${key}`] = this.log(n, tick, what, [...because, ...this.omenCauses(n)], [...fed[key], ...this.omenLinks(n)]);
+        if (before[key] >= 0.5 && p[key] < 0.25) {
+          // What eased it: what it learned lately, trade, a card.
+          const helped = [...n.techs.slice(-2).map(id => n.marks[`tech:${id}`]), ...this.omenLinks(n)];
+          this.log(n, tick, `${EASED[key]} eased in ${n.name}.`, [`${key} fell to ${(p[key] * 100) | 0}%`], [n.marks[`p:${key}`], ...helped]);
+        }
       };
       note('hunger', `Hunger spread through ${n.name}.`, [`${s.population | 0} people`, `food for ${(s.foodYield / FOOD_PER_PERSON) | 0}`]);
       note('crowding', `${n.name} grew crowded.`, [`${s.population | 0} people on ${s.land} cells`]);
@@ -1115,8 +1201,20 @@ export class NationSystem {
     });
   }
 
-  private log(n: Nation, tick: number, what: string, because: string[]): void {
-    n.history.push({ tick, what, because });
+  /** Write to `n`'s history and the chronicle; returns the entry's id. */
+  private log(n: Nation, tick: number, what: string, because: string[], causes: Array<number | undefined> = []): number {
+    const e = this.add({ tick, nation: n.id, what, because, causes });
+    n.history.push(e);
     if (n.history.length > HISTORY_MAX) n.history.splice(1, n.history.length - HISTORY_MAX);   // keep the founding
+    return e.id;
+  }
+
+  private add(e: { tick: number; nation: number; what: string; because: string[]; causes: Array<number | undefined>; kind?: 'divine' }): HistoryEntry & { id: number } {
+    const causes = [...new Set(e.causes.filter((x): x is number => !!x && this.byId.has(x)))];
+    const entry: HistoryEntry = { ...e, causes, id: this.nextId++, age: this.age, era: this.maxEra };
+    this.chronicle.push(entry);
+    this.byId.set(entry.id, entry);
+    if (this.chronicle.length > CHRONICLE_MAX) for (const old of this.chronicle.splice(0, this.chronicle.length - CHRONICLE_MAX)) this.byId.delete(old.id);
+    return entry;
   }
 }
