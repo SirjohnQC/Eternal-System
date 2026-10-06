@@ -122,6 +122,10 @@ export interface GameStateData {
   stats: UniverseStats | null;
   tick: number;
   divinePoints: number;
+  /** Procedural Faith Cards held (FaithCards.ts); old saves lack it. */
+  faithHand?: import('./FaithCards').FaithCard[];
+  /** Seeds each seek, burn and cast. */
+  faithSeq?: number;
   techPoints: number;
   dnaPoints: number;
   playerDNA: DNABranch;
@@ -217,6 +221,8 @@ export const gameState: GameStateData = {
   stats: null,
   tick: 0,
   divinePoints: 0,
+  faithHand: [],
+  faithSeq: 0,
   techPoints: 0,
   dnaPoints: 0,
   playerDNA: { ...DEFAULT_DNA_BRANCH },

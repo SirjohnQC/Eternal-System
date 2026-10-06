@@ -96,6 +96,112 @@ export interface Nation {
   era: number;
   /** Conquered: holds no land, takes no part any more. */
   fallen: boolean;
+  /** Faith Cards that took hold here (working, waiting, or recently passed). */
+  omens: Omen[];
+}
+
+/**
+ * What a Faith Card does to a nation once it takes hold (vision §10). An omen
+ * is an operator on the nation's state — never an event: it changes a yield,
+ * a rate, an attitude or a temper, and whatever follows emerges from there.
+ */
+export type OmenOp =
+  | 'harvest' | 'blight' | 'fertility' | 'pestilence' | 'inspire' | 'stagnation' | 'veins'
+  | 'cleanse' | 'smoke' | 'concord' | 'discord' | 'zeal' | 'calm' | 'fervor' | 'exodus'
+  | 'greed' | 'insularity' | 'dependency' | 'unrest';
+
+/** When an omen works: always, or only while the nation is in some state. */
+export type OmenCondition = 'always' | 'hunger' | 'scarcity' | 'crowding' | 'unrest' | 'war' | 'peace' | 'pious' | 'curious';
+
+/** An omen on a nation: which card, what it does, how hard, when, and while what. */
+export interface Omen {
+  card: string;
+  op: OmenOp;
+  /** Strength (~0.3 .. 2). */
+  m: number;
+  cond: OmenCondition;
+  /** Era-time window (NationSystem.now). */
+  from: number; until: number;
+  /** A side effect that follows the card ("afterward"), rather than its purpose. */
+  aftermath: boolean;
+  /** Primary purpose of the card (false: a side effect). */
+  primary: boolean;
+  started: boolean;
+  /** Working this step (started, not over, condition met). */
+  active: boolean;
+}
+
+/** The combined pull of a nation's working omens on its state. */
+export interface OmenMods {
+  food: number; materials: number; research: number; strength: number;
+  growth: number; death: number; emigrate: number; pollution: number;
+  attitude: number; cohesion: number; weariness: number;
+}
+
+const NO_MODS: OmenMods = { food: 1, materials: 1, research: 1, strength: 1, growth: 0, death: 0, emigrate: 0, pollution: 0, attitude: 0, cohesion: 0, weariness: 0 };
+
+/** How each omen pulls on the state, per unit of strength. */
+function addOp(o: OmenMods, op: OmenOp, m: number): void {
+  switch (op) {
+    case 'harvest': o.food *= 1 + 0.4 * m; break;
+    case 'blight': o.food *= Math.max(0.2, 1 - 0.3 * m); break;
+    case 'dependency': o.food *= Math.max(0.3, 1 - 0.18 * m); break;
+    case 'fertility': o.growth += 0.05 * m; break;
+    case 'pestilence': o.death += 0.06 * m; break;
+    case 'inspire': o.research *= 1 + 1.0 * m; break;
+    case 'stagnation': o.research *= Math.max(0.2, 1 - 0.4 * m); break;
+    case 'veins': o.materials *= 1 + 0.5 * m; break;
+    case 'greed': o.materials *= 1 + 0.15 * m; o.cohesion -= 0.03 * m; break;
+    case 'cleanse': o.pollution -= 0.02 * m; break;
+    case 'smoke': o.pollution += 0.008 * m; break;
+    case 'concord': o.attitude += 0.5 * m; o.cohesion += 0.05 * m; break;
+    case 'discord': o.attitude -= 0.6 * m; break;
+    case 'insularity': o.attitude -= 0.2 * m; break;
+    case 'zeal': o.cohesion += 0.12 * m; break;
+    case 'calm': o.cohesion += 0.15 * m; o.weariness += 1.5 * m; o.strength *= Math.max(0.4, 1 - 0.25 * m); break;
+    case 'fervor': o.strength *= 1 + 0.5 * m; o.cohesion += 0.03 * m; break;
+    case 'exodus': o.emigrate += 0.05 * m; break;
+    case 'unrest': o.cohesion -= 0.12 * m; break;
+  }
+}
+
+/** What a visitor notices while an omen works (vision §3: consequences, never labels). */
+const OMEN_SIGN: Record<OmenOp, string> = {
+  harvest: 'The fields bear more than anyone sowed', blight: 'A grey rot creeps through the fields',
+  dependency: 'Fields lie half-tended; no one remembers the old ways', fertility: 'Cradles fill in every house',
+  pestilence: 'Fever carts move through the streets', inspire: 'Workshops burn their lamps all night',
+  stagnation: 'The schools are half empty', veins: 'Miners strike bright new seams',
+  greed: 'New fortunes flaunt themselves beside new beggars', cleanse: 'Long rains wash the soot from the walls',
+  smoke: 'A haze hangs over the towns', concord: 'Envoys are welcomed at every border',
+  discord: 'Rumours poison talk of the neighbours', insularity: 'Strangers are turned away at the gates',
+  zeal: 'Temples overflow at every hour', calm: 'A strange stillness lies over the land',
+  fervor: 'War-drums sound in the squares', exodus: 'Long columns of people take the roads out',
+  unrest: 'Factions shout each other down in the squares',
+};
+
+/** The history line when an omen takes hold in `n`. */
+function omenStart(op: OmenOp, n: string): string {
+  switch (op) {
+    case 'harvest': return `${n}'s fields bore a harvest no one could explain.`;
+    case 'blight': return `A blight fell on the fields of ${n}.`;
+    case 'dependency': return `The farmers of ${n} had forgotten how to farm without miracles.`;
+    case 'fertility': return `Children were born in great numbers in ${n}.`;
+    case 'pestilence': return `A fever spread through ${n}.`;
+    case 'inspire': return `A rush of invention swept ${n}.`;
+    case 'stagnation': return `Learning withered in ${n}.`;
+    case 'veins': return `Rich veins of ore were found beneath ${n}.`;
+    case 'greed': return `The new wealth of ${n} went to the few.`;
+    case 'cleanse': return `Cleansing rains fell over ${n}.`;
+    case 'smoke': return `Forges and kilns multiplied in ${n}, and their smoke with them.`;
+    case 'concord': return `Goodwill toward its neighbours grew in ${n}.`;
+    case 'discord': return `Rumour turned ${n} against its neighbours.`;
+    case 'insularity': return `${n} closed its gates to strangers.`;
+    case 'zeal': return `A fervent faith swept ${n}.`;
+    case 'calm': return `A deep calm settled over ${n}.`;
+    case 'fervor': return `${n} took up arms with a new fervour.`;
+    case 'exodus': return `Many people left ${n} for the lands beyond its borders.`;
+    case 'unrest': return `Quarrels broke out across ${n}.`;
+  }
 }
 
 /** A war between two nations (Relation.war). */
@@ -259,6 +365,7 @@ export function symptomsOf(n: Nation): string[] {
   say(p.scarcity, 'Builders lack timber and stone', 'Half-built walls stand abandoned');
   say(p.unrest, 'Factions quarrel in the capital', 'Crowds gather against the rulers');
   say(p.pollution, 'The air tastes of smoke', 'Rivers run grey and the fish float dead');
+  for (const o of n.omens) if (o.active && !out.includes(OMEN_SIGN[o.op])) out.push(OMEN_SIGN[o.op]);
   return out;
 }
 
@@ -289,6 +396,82 @@ export class NationSystem {
 
   /** The most advanced nation's era (TECH_LEVELS index); 0 before founding. */
   get maxEra(): number { return this.nations.reduce((m, n) => Math.max(m, n.era), 0); }
+
+  /** Era-time stepped so far: the clock omens are timed against. */
+  get now(): number { return this.age; }
+
+  /**
+   * Lay an omen on nation `k` (a Faith Card took hold). It starts when the
+   * clock reaches `from` and works until `until`, whenever its condition holds.
+   */
+  bless(k: number, omen: Omit<Omen, 'started' | 'active'>): void {
+    const n = this.nations[k];
+    if (!n || n.fallen) return;
+    n.omens.push({ ...omen, started: false, active: false });
+  }
+
+  /** Write a line to a nation's history (a card cast over it, say). */
+  record(k: number, tick: number, what: string, because: string[]): void {
+    const n = this.nations[k];
+    if (n) this.log(n, tick, what, because);
+  }
+
+  /** The combined pull of `n`'s working omens. */
+  modsOf(n: Nation): OmenMods {
+    const o = { ...NO_MODS };
+    for (const w of n.omens) if (w.active) addOp(o, w.op, w.m);
+    return o;
+  }
+
+  /** Whether an omen's condition holds for `n` now. */
+  private holds(n: Nation, cond: OmenCondition): boolean {
+    const p = n.pressures;
+    switch (cond) {
+      case 'always': return true;
+      case 'hunger': return p.hunger >= 0.2;
+      case 'scarcity': return p.scarcity >= 0.2;
+      case 'crowding': return p.crowding >= 0.2;
+      case 'unrest': return p.unrest >= 0.2;
+      case 'war': return this.relations.some(r => r.war && (r.a === n.id || r.b === n.id));
+      case 'peace': return !this.relations.some(r => r.war && (r.a === n.id || r.b === n.id));
+      case 'pious': return n.values.piety >= 0.55;
+      case 'curious': return n.values.curiosity >= 0.55;
+    }
+  }
+
+  /**
+   * Omens begin, work (while their condition holds) and pass. A beginning is
+   * written to the history with the card as its cause; one-off shifts of
+   * temper happen then. Passed omens are kept an era so later events can
+   * still name them as a cause, then forgotten.
+   */
+  private tendOmens(tick: number): void {
+    const now = this.age;
+    for (const n of this.nations) {
+      if (n.fallen) { n.omens.length = 0; continue; }
+      for (const o of n.omens) {
+        if (!o.started && now >= o.from) {
+          o.started = true;
+          const clamp = (x: number) => Math.max(0, Math.min(1, x));
+          if (o.op === 'zeal') n.values.piety = clamp(n.values.piety + 0.08 * o.m);
+          if (o.op === 'fervor') n.values.militarism = clamp(n.values.militarism + 0.08 * o.m);
+          if (o.op === 'insularity') n.values.xenophobia = clamp(n.values.xenophobia + 0.1 * o.m);
+          if (o.op === 'greed') n.state.inequality = clamp(n.state.inequality + 0.1 * o.m);
+          if (o.op === 'calm') n.values.militarism = clamp(n.values.militarism - 0.05 * o.m);
+          this.log(n, tick, omenStart(o.op, n.name), o.aftermath ? [`the ${o.card} had passed`] : [`the ${o.card}`]);
+        }
+        o.active = o.started && now < o.until && this.holds(n, o.cond);
+      }
+      n.omens = n.omens.filter(o => now < o.until + 1);
+    }
+  }
+
+  /** Cards that worked on `n` lately, as causes for what happens to it now. */
+  private omenCauses(n: Nation): string[] {
+    const out: string[] = [];
+    for (const o of n.omens) if (o.started && !out.includes(`after the ${o.card}`)) out.push(`after the ${o.card}`);
+    return out.slice(-2);
+  }
 
   /** How nations `a` and `b` stand (undefined for a == b). */
   relation(a: number, b: number): Relation | undefined { return this.relAt[a * MAX_NATIONS + b]; }
@@ -377,7 +560,7 @@ export class NationSystem {
         capital: { row: r, col: c }, founded: tick,
         state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1, tradeFood: 0, tradeMaterials: 0 },
         pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 },
-        techs: [], research: null, era: 0, fallen: false,
+        techs: [], research: null, era: 0, fallen: false, omens: [],
         history: [{ tick, what: `${name} was founded around ${place}.`,
           because: [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`] }],
       });
@@ -497,6 +680,7 @@ export class NationSystem {
       if (!s && this.owner[i] >= 0) { this.owner[i] = -1; grew = true; }
     }
     if (grew) { this.claim(grid, settled); this.version++; }
+    this.tendOmens(tick);
     this.recompute(grid, tick);
     if (eras > 0) {
       this.age += eras;
@@ -525,7 +709,8 @@ export class NationSystem {
       const share = n.state.population / total;
       const pace = Math.max(0.35, Math.min(1.9,
         (0.7 + 0.6 * n.values.curiosity) * Math.sqrt(effectOf(n.techs).knowledge)
-        * (1 - 0.6 * n.pressures.unrest) * (0.8 + 0.6 * share * this.nations.length / 2)));
+        * (1 - 0.6 * n.pressures.unrest) * (0.8 + 0.6 * share * this.nations.length / 2)))
+        * this.modsOf(n).research;
       // Knowledge of an age already reached comes cheaply (others have shown
       // the way); only the frontier costs full effort.
       const t = TECH_BY_ID[r.id];
@@ -611,7 +796,10 @@ export class NationSystem {
       const competition = r.border > 0 ? 0.9 * Math.max(squeeze(A), squeeze(B)) : 0;
       const target = r.feud + (similarity - 0.75) * 1.6 - insular * 0.5 + (r.trade ? 0.15 : 0)
         + (A.ideology === B.ideology ? 0.15 : -0.1) + (A.government === B.government ? 0.05 : -0.1)
-        - competition - r.grievance * 0.8 - (r.war ? 0.6 : 0);
+        - competition - r.grievance * 0.8 - (r.war ? 0.6 : 0)
+        + this.modsOf(A).attitude + this.modsOf(B).attitude;
+      // Sown rumours leave wrongs remembered even after they fade.
+      r.grievance = Math.min(1, r.grievance + eras * 0.4 * Math.max(0, -(this.modsOf(A).attitude + this.modsOf(B).attitude)));
       r.attitude = Math.max(-1, Math.min(1, r.attitude + (target - r.attitude) * k));
 
       // Trade: what one has to spare, the other lacks.
@@ -673,7 +861,7 @@ export class NationSystem {
   private strength(n: Nation): number {
     const martial = n.techs.filter(id => (TECH_BY_ID[id].leaning.militarism ?? 0) > 0.2).length;
     return Math.sqrt(n.state.population) * (1 + 0.25 * n.era + 0.3 * martial) * (0.4 + n.state.cohesion)
-      * (0.8 + 0.4 * n.values.militarism);
+      * (0.8 + 0.4 * n.values.militarism) * this.modsOf(n).strength;
   }
 
   /** One step of a war: the stronger side takes frontier cells; both bleed and tire. */
@@ -711,7 +899,7 @@ export class NationSystem {
     for (const n of [A, B]) n.state.population *= 1 - 0.4 * eras;
     const loserStart = war.landAtStart[li === r.a ? 0 : 1] || 1;
     const lost = war.taken[wi === r.a ? 0 : 1] / loserStart;
-    war.weariness = Math.min(1, war.weariness + eras * (0.8 + 1.6 * (1 - adv)));
+    war.weariness = Math.min(1, war.weariness + eras * (0.8 + 1.6 * (1 - adv) + this.modsOf(A).weariness + this.modsOf(B).weariness));
     r.grievance = Math.min(1, r.grievance + eras * 0.6);
     const W = this.nations[wi], L = this.nations[li];
     let landLeft = 0, winLand = 0;
@@ -793,24 +981,28 @@ export class NationSystem {
       if (right >= 0 && right !== o) this.relation(o, right)!.border++;
       if (down >= 0 && down !== o) this.relation(o, down)!.border++;
     }
+    const leaving = new Float64Array(this.nations.length);
     this.nations.forEach((n, k) => {
       if (n.fallen) return;
       const s = n.state, p = n.pressures, before = { ...p };
-      const fx = effectOf(n.techs);
+      const fx = effectOf(n.techs), om = this.modsOf(n);
       // Good years and droughts: the harvest wanders around an ordinary one.
       s.harvest = Math.max(0.7, Math.min(1.15, s.harvest + (this.rng.next() - 0.5) * 0.1 + (1 - s.harvest) * 0.15));
       // Industry fouls the land (pollution rates from what is known; it clears
       // slowly by itself), and foul land yields less.
-      s.pollution = Math.max(0, Math.min(1, s.pollution * 0.96 + fx.pollution * 3));
+      s.pollution = Math.max(0, Math.min(1, s.pollution * 0.96 + fx.pollution * 3 + om.pollution));
       s.inequality = Math.max(0, s.inequality * 0.995);
-      s.land = land[k]; s.materials = Math.max(0, mats[k] * fx.materials + s.tradeMaterials);
-      s.foodYield = Math.max(1e-6, food[k] * fx.food * s.harvest * (1 - 0.5 * s.pollution) + s.tradeFood);
+      s.land = land[k]; s.materials = Math.max(0, mats[k] * fx.materials * om.materials + s.tradeMaterials);
+      s.foodYield = Math.max(1e-6, food[k] * fx.food * om.food * s.harvest * (1 - 0.5 * s.pollution) + s.tradeFood);
       // People grow toward what the food carries (logistic) and starve above
       // it; crowding (beyond what the towns house) slows them with disease.
       const carry = s.foodYield / FOOD_PER_PERSON;
       if (s.population === 0) s.population = Math.min(carry * 0.5, live[k] * 20 + 50);
       // Famine kills, but not everyone at once: at most 30% a step.
-      s.population = Math.max(10, s.population * (1 + Math.max(-0.3, 0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding)));
+      // Omens: a fertile year adds to it, fever takes from it, an exodus sends people away.
+      s.population = Math.max(10, s.population * (1 + Math.max(-0.3, 0.16 * (1 - s.population / Math.max(1, carry)) - 0.03 * p.crowding)
+        + om.growth - om.death));
+      if (om.emigrate > 0) { leaving[k] = s.population * Math.min(0.3, om.emigrate); s.population -= leaving[k]; }
       s.foodNeed = s.population * FOOD_PER_PERSON;
       s.knowledge += s.population * 0.0004 * (0.5 + n.values.curiosity) * fx.knowledge;
       // Cohesion: sprawl and hunger wear it down; a shared faith and a
@@ -818,7 +1010,7 @@ export class NationSystem {
       // Sprawl: a nation over ~a seventh of the planet strains to hold together.
       const sprawl = s.land / (N / 7);
       const target = Math.max(0, Math.min(1, 0.55 + 0.3 * n.values.collectivism + 0.15 * n.values.piety - 0.25 * sprawl
-        - 0.4 * p.hunger - 0.15 * p.crowding - 0.35 * s.inequality - 0.15 * s.pollution + fx.cohesion));
+        - 0.4 * p.hunger - 0.15 * p.crowding - 0.35 * s.inequality - 0.15 * s.pollution + fx.cohesion + om.cohesion));
       s.cohesion += (target - s.cohesion) * 0.05;
       // Pressures rise as a need nears its limit, not only past it: a people
       // living on 95% of its harvest already feels the granaries thin.
@@ -830,7 +1022,7 @@ export class NationSystem {
       p.pollution = s.pollution;
       // History: a pressure crossing into "acute" is an event, with its cause.
       const note = (key: keyof Pressures, what: string, because: string[]) => {
-        if (before[key] < 0.5 && p[key] >= 0.5) this.log(n, tick, what, because);
+        if (before[key] < 0.5 && p[key] >= 0.5) this.log(n, tick, what, [...because, ...this.omenCauses(n)]);
         if (before[key] >= 0.5 && p[key] < 0.25) this.log(n, tick, `${EASED[key]} eased in ${n.name}.`, [`${key} fell to ${(p[key] * 100) | 0}%`]);
       };
       note('hunger', `Hunger spread through ${n.name}.`, [`${s.population | 0} people`, `food for ${(s.foodYield / FOOD_PER_PERSON) | 0}`]);
@@ -845,6 +1037,14 @@ export class NationSystem {
         ...(s.inequality > 0.3 ? ['the gains went to the few'] : []),
         ...(p.crowding > 0.3 ? ['crowded towns'] : []),
       ]);
+    });
+    // Emigrants cross into the neighbours, by length of frontier; with no
+    // neighbour they take to the sea and are lost to the nations.
+    leaving.forEach((people, k) => {
+      if (people <= 0) return;
+      const by = this.relations.filter(r => (r.a === k || r.b === k) && r.border > 0 && !this.nations[r.a === k ? r.b : r.a].fallen);
+      const total = by.reduce((a, r) => a + r.border, 0);
+      for (const r of by) this.nations[r.a === k ? r.b : r.a].state.population += people * r.border / total;
     });
   }
 

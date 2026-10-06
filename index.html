@@ -4091,7 +4091,7 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .divine-panel{
   display:flex;flex-direction:row;gap:8px;overflow-x:auto;max-width:100%;
   padding:2px 2px 4px;pointer-events:auto;scrollbar-width:none;
-  align-items:stretch;justify-content:center;
+  align-items:stretch;justify-content:safe center;
 }
 .divine-panel::-webkit-scrollbar{display:none}
 .divine-action-btn{
@@ -4169,6 +4169,59 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .faith-reveal{--faith-accent:#e0b85c;--faith-glow:rgba(232,192,112,0.45)}
 .faith-orange{--faith-accent:#ff9944;--faith-glow:rgba(255,153,68,0.4)}
 .faith-red{--faith-accent:#ff6b4a;--faith-glow:rgba(255,85,51,0.45)}
+/* ── Procedural Faith Cards (src/ui/FaithHand.ts) ── */
+.faith-proc .divine-action-desc{
+  font-size:9.5px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;
+}
+.faith-proc .faith-icon-wrap{margin:4px 0 2px}
+.faith-proc-side{
+  font-family:var(--font-pixel);font-size:8.5px;letter-spacing:1px;color:#e0866b;text-transform:uppercase;opacity:.85;
+}
+.faith-proc-forged{position:absolute;top:3px;right:6px;font-size:8px;color:var(--faith-accent);letter-spacing:1px}
+.divine-action-btn.faith-off{opacity:0.42}
+.divine-action-btn.faith-off:hover{opacity:0.7}
+.faith-burning .faith-proc{animation:faithEmber 1.6s ease-in-out infinite;opacity:1}
+.faith-burning .faith-proc.faith-pick{
+  border-color:#ff9944;box-shadow:0 0 0 1px #ff9944,0 0 18px rgba(255,140,60,0.7);transform:translateY(-6px);
+}
+@keyframes faithEmber{0%,100%{box-shadow:inset 0 0 18px rgba(0,0,0,.55),0 0 4px rgba(255,140,60,.2)}50%{box-shadow:inset 0 0 18px rgba(0,0,0,.55),0 0 12px rgba(255,140,60,.55)}}
+#faith-tip{
+  display:none;position:fixed;z-index:320;width:280px;pointer-events:none;
+  background:rgba(6,4,16,0.97);border:1px solid rgba(200,169,110,0.55);padding:10px 12px;
+  box-shadow:0 0 24px rgba(0,0,0,.7),0 0 12px rgba(200,169,110,.15);font-family:var(--font-ui);color:var(--text);
+}
+#faith-tip .ft-name{font-family:var(--font-pixel);font-size:12px;letter-spacing:1px;color:var(--gold2);margin-bottom:5px}
+#faith-tip .ft-desc{font-size:11.5px;line-height:1.4;color:#cbbde0;margin-bottom:7px}
+#faith-tip table{border-collapse:collapse;width:100%;font-size:10.5px}
+#faith-tip th{font-family:var(--font-pixel);font-weight:normal;color:var(--dim);text-align:left;padding:1px 8px 1px 0;white-space:nowrap;vertical-align:top;letter-spacing:.5px}
+#faith-tip td{color:#bfb0d4;padding:1px 0}
+#faith-tip .ft-origin{margin-top:7px;font-size:10.5px;font-style:italic;color:#8f80a3}
+#faith-tip .ft-cost{margin-top:4px;font-family:var(--font-pixel);font-size:10px;color:var(--gold);letter-spacing:1px}
+#faith-modal{
+  position:fixed;inset:0;z-index:310;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse at center,rgba(14,7,30,0.9),rgba(0,0,0,0.95));
+}
+#faith-modal .fm-box{display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 30px}
+#faith-modal .fm-title{font-family:var(--font-display);font-size:18px;letter-spacing:4px;color:var(--gold);text-shadow:0 0 14px rgba(200,169,110,.5)}
+#faith-modal .fm-sub{font-family:var(--font-ui);font-size:12.5px;color:#a898bd;max-width:520px;text-align:center}
+#faith-modal .fm-cards{display:flex;gap:18px;align-items:center;margin:8px 0;flex-wrap:wrap;justify-content:center}
+#faith-modal .fm-burned{font-family:var(--font-pixel);font-size:11px;color:#e0866b;letter-spacing:1px;max-width:180px;text-align:center}
+#faith-modal .fm-burned::after{content:'  ➜';color:var(--gold)}
+.divine-action-btn.faith-proc-big{
+  width:184px;min-width:184px;max-width:184px;min-height:236px;padding:12px 10px 10px;
+  animation:faithRise .45s ease-out both;
+}
+.faith-proc-big:nth-child(2){animation-delay:.08s}.faith-proc-big:nth-child(3){animation-delay:.16s}
+.faith-proc-big .divine-action-name{font-size:12px;max-width:170px}
+.faith-proc-big .divine-action-desc{font-size:11px;-webkit-line-clamp:7;max-width:170px}
+.faith-proc-big .faith-icon-wrap{width:56px;height:56px;margin:8px 0 6px}
+.faith-proc-big .faith-icon{width:48px;height:48px}
+@keyframes faithRise{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+#faith-modal .fm-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);font-family:var(--font-pixel);
+  font-size:10px;letter-spacing:2px;padding:8px 18px;cursor:pointer;
+}
+#faith-modal .fm-btn:hover{border-color:var(--gold);color:var(--gold)}
 .faith-dots{display:flex;gap:5px;margin-top:5px;pointer-events:none}
 .faith-dot{
   width:5px;height:5px;background:rgba(123,94,167,0.3);

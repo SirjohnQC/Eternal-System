@@ -1,4 +1,5 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
+import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
@@ -3209,6 +3210,7 @@ function updateDivineActions(): void {
     }
   }
   updateSmiteButton();
+  refreshFaithHand();
 
   // Send Meteor — always in Faith deck (mockup); afford only with a valid target
   const meteorBtn = document.getElementById('send-meteor-btn') as HTMLButtonElement | null;
@@ -5655,8 +5657,25 @@ function setupFaithDeckFold(): void {
     set(false);
   }, true);
   label.addEventListener('click', () => set(!deck.classList.contains('folded')));
+  // A long hand runs past the screen: the wheel scrolls the row sideways.
+  panel.addEventListener('wheel', (e) => {
+    if (deck.classList.contains('folded') || panel.scrollWidth <= panel.clientWidth) return;
+    panel.scrollLeft += e.deltaY + e.deltaX;
+    e.preventDefault();
+  }, { passive: false });
   document.addEventListener('mousedown', (e) => {
-    if (!deck.classList.contains('folded') && !deck.contains(e.target as Node)) set(true);
+    // The Faith Card modals (seek, crucible) belong to the deck.
+    if (!deck.classList.contains('folded') && !deck.contains(e.target as Node)
+      && !(e.target as Element | null)?.closest?.('#faith-modal')) set(true);
   });
 }
 setupFaithDeckFold();
+initFaithHand({
+  chat: (text, kind) => addChatMessage(text, kind),
+  dpChanged: () => {
+    updateDivineActions();
+    setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
+  },
+  tick: () => engine?.tick ?? 0,
+  effect: (kind, cell) => _dioramaRenderer?.playDivineEffect(kind, cell),
+});
