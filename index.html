@@ -4217,6 +4217,88 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .faith-proc-big .faith-icon-wrap{width:56px;height:56px;margin:8px 0 6px}
 .faith-proc-big .faith-icon{width:48px;height:48px}
 @keyframes faithRise{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+/* ── Faith card frame v2: every card in the deck and its modals is solid ── */
+.faith-deck .divine-action-btn,#faith-modal .divine-action-btn{
+  --fa: var(--faith-accent);
+  width:124px;min-width:124px;max-width:124px;min-height:174px;
+  padding:0 0 7px;gap:0;opacity:1;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--fa) 12%,#0c0819) 0%,#0a0716 40%,#060410 100%);
+  border:2px solid color-mix(in srgb,var(--fa) 72%,#000);
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 0 3px color-mix(in srgb,var(--fa) 18%,#0a0716),0 4px 0 #000,0 7px 14px rgba(0,0,0,.65);
+  transition:transform .14s,box-shadow .14s,filter .14s,border-color .14s;
+}
+.faith-deck .divine-action-btn::before,.faith-deck .divine-action-btn::after,
+#faith-modal .divine-action-btn::before,#faith-modal .divine-action-btn::after,
+.faith-deck .divine-action-btn .faith-notch-tr,.faith-deck .divine-action-btn .faith-notch-bl,
+#faith-modal .divine-action-btn .faith-notch-tr,#faith-modal .divine-action-btn .faith-notch-bl{
+  width:9px;height:9px;border-color:color-mix(in srgb,var(--fa) 85%,#fff);z-index:2;
+}
+.faith-deck .divine-action-btn::before,#faith-modal .divine-action-btn::before{top:-2px;left:-2px}
+.faith-deck .divine-action-btn::after,#faith-modal .divine-action-btn::after{bottom:-2px;right:-2px}
+.faith-deck .divine-action-btn .faith-notch-tr,#faith-modal .divine-action-btn .faith-notch-tr{top:-2px;right:-2px}
+.faith-deck .divine-action-btn .faith-notch-bl,#faith-modal .divine-action-btn .faith-notch-bl{bottom:-2px;left:-2px}
+/* Name band */
+.faith-deck .divine-action-name,#faith-modal .divine-action-name{
+  align-self:stretch;max-width:none;min-height:31px;padding:6px 7px 5px;
+  display:flex;align-items:center;justify-content:center;text-align:center;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--fa) 26%,#07050f),color-mix(in srgb,var(--fa) 10%,#07050f));
+  border-bottom:1px solid color-mix(in srgb,var(--fa) 55%,#000);
+  color:color-mix(in srgb,var(--fa) 55%,#fff6dd);text-shadow:0 1px 0 #000;letter-spacing:.8px;
+}
+/* Art window */
+.faith-deck .faith-icon-wrap,#faith-modal .faith-icon-wrap{
+  align-self:stretch;width:auto;height:54px;margin:7px 8px 6px;
+  background:radial-gradient(circle at 50% 56%,color-mix(in srgb,var(--fa) 42%,transparent) 0,transparent 60%),
+    repeating-linear-gradient(45deg,rgba(255,255,255,.035) 0 1px,transparent 1px 4px),#05030b;
+  border:1px solid color-mix(in srgb,var(--fa) 40%,#000);
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 14px rgba(0,0,0,.9);
+  filter:none;
+}
+.faith-deck .faith-icon,#faith-modal .faith-icon{width:36px;height:36px;filter:drop-shadow(0 0 5px var(--faith-glow))}
+.faith-deck .divine-action-desc,#faith-modal .divine-action-desc{padding:0 8px;color:#b9abcc;max-width:none}
+/* Cost plate */
+.faith-deck .divine-action-cost,#faith-modal .divine-action-cost{
+  margin-top:auto;align-self:center;padding:2px 9px 3px;
+  background:#05030b;border:1px solid color-mix(in srgb,var(--fa) 45%,#000);box-shadow:0 2px 0 #000;
+  color:var(--gold2);
+}
+/* Magnitude pips + duration, and the price ribbon (procedural cards) */
+.fc-meta{display:flex;align-items:center;justify-content:center;gap:5px;margin:0 0 5px;
+  font-family:var(--font-pixel);font-size:8.5px;letter-spacing:1px;color:#8d7fa2;text-transform:uppercase}
+.fc-pips{display:flex;gap:2px}
+.fc-pips i{width:6px;height:6px;transform:rotate(45deg);background:#1a1328;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fa) 40%,#000)}
+.fc-pips i.on{background:color-mix(in srgb,var(--fa) 85%,#fff);box-shadow:0 0 4px var(--faith-glow)}
+.faith-deck .faith-proc-side,#faith-modal .faith-proc-side{
+  margin:5px 10px 0;padding:1px 6px;align-self:stretch;
+  background:linear-gradient(90deg,transparent,rgba(160,40,30,.35),transparent);
+  color:#f19a80;font-size:8.5px;opacity:1;
+}
+/* States: hover lifts; selected rings; unaffordable desaturates — never see-through */
+.faith-deck .divine-action-btn:hover:not(:disabled),#faith-modal .divine-action-btn:hover:not(:disabled){
+  background:linear-gradient(180deg,color-mix(in srgb,var(--fa) 18%,#0e0a1d) 0%,#0b0818 40%,#070512 100%);
+  border-color:var(--fa);filter:none;transform:translateY(-5px);
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 0 3px color-mix(in srgb,var(--fa) 28%,#0a0716),0 9px 0 #000,0 12px 22px rgba(0,0,0,.7),0 0 18px var(--faith-glow);
+}
+.faith-deck .divine-action-btn:disabled,.faith-deck .divine-action-btn.faith-off{opacity:1;filter:grayscale(.8) brightness(.62)}
+.faith-deck .divine-action-btn:disabled:hover,.faith-deck .divine-action-btn.faith-off:hover{filter:grayscale(.6) brightness(.8)}
+.faith-deck .divine-action-btn:disabled .divine-action-cost,.faith-deck .faith-off .divine-action-cost{color:#9a7070}
+.faith-deck .divine-action-btn.selected,.faith-deck .faith-burning .faith-proc.faith-pick{
+  border-color:#ffa04d;transform:translateY(-9px);opacity:1;filter:none;
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 0 3px rgba(255,150,70,.3),0 11px 0 #000,0 0 0 2px #ffa04d,0 0 22px rgba(255,140,60,.75);
+}
+.faith-deck .faith-burning .faith-proc{filter:none}
+.faith-deck.folded .divine-action-btn:not(:first-child){margin-left:-116px}
+/* Headroom so a lifted or selected card is not clipped by the scrolling row. */
+.faith-deck .divine-panel{padding-top:14px;margin-top:-12px;padding-bottom:8px;margin-bottom:-4px}
+.faith-deck.folded .divine-action-btn{filter:none}
+/* Seek / crucible results, larger */
+#faith-modal .divine-action-btn.faith-proc-big{width:200px;min-width:200px;max-width:200px;min-height:284px;padding-bottom:10px}
+#faith-modal .faith-proc-big .divine-action-name{font-size:12px;min-height:40px}
+#faith-modal .faith-proc-big .faith-icon-wrap{height:96px;margin:9px 11px 8px}
+#faith-modal .faith-proc-big .faith-icon{width:56px;height:56px}
+#faith-modal .faith-proc-big .divine-action-desc{font-size:11px;padding:0 11px}
+#faith-modal .faith-proc-big .fc-meta{font-size:9.5px}
+#faith-modal .faith-proc-big .fc-pips i{width:7px;height:7px}
 #faith-modal .fm-btn{
   background:transparent;border:1px solid var(--border);color:var(--dim);font-family:var(--font-pixel);
   font-size:10px;letter-spacing:2px;padding:8px 18px;cursor:pointer;

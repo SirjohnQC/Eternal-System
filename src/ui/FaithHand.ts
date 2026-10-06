@@ -15,13 +15,13 @@
 import { gameState, runtimeState } from '../simulation/GameState';
 import {
   discover, forge, cast, signalsOf, describe, anatomy, isBane, iconOf,
-  type FaithCard, type ForgeKind, type ActionId,
+  DURATIONS, type FaithCard, type ForgeKind, type ActionId,
 } from '../simulation/FaithCards';
 import { SeedRNG } from '../utils/SeedRNG';
 import type { DivineEffectKind } from '../rendering/IsoDioramaRenderer';
 
 export const SEEK_COST = 6;
-export const HAND_MAX = 7;
+export const HAND_MAX = 6;
 
 export interface FaithHandDeps {
   chat(text: string, kind: 'god' | 'system'): void;
@@ -63,6 +63,7 @@ function face(c: FaithCard, big = false): string {
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">${esc(c.name)}</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/${iconOf(c)}.png" alt="" width="32" height="32"/></span>
+    <span class="fc-meta"><span class="fc-pips">${[1, 2, 3].map(i => `<i${i <= c.magnitude ? ' class="on"' : ''}></i>`).join('')}</span>${DURATIONS[c.duration - 1].replace(/^an? /, '')}</span>
     <span class="divine-action-desc">${esc(describe(c))}</span>
     ${c.sides.length ? `<span class="faith-proc-side">${c.sides.length === 1 ? '1 price' : `${c.sides.length} prices`}</span>` : ''}
     ${c.forged ? `<span class="faith-proc-forged">${'✦'.repeat(Math.min(3, c.forged))}</span>` : ''}
