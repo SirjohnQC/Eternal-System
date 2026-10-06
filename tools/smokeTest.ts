@@ -103,13 +103,22 @@ console.log('\n═══ 1. Planet grid ═══');
 
   // The longitude seam: column 0 and column GRID_SIZE-1 are neighbours on the
   // real planet, so their fields must be close. Plain fbm left a hard edge here.
-  let maxJump = 0, maxInterior = 0;
-  for (let r = 0; r < GRID_SIZE; r++) {
-    maxJump = Math.max(maxJump, Math.abs(grid[r][0].elevation - grid[r][GRID_SIZE - 1].elevation));
-    maxInterior = Math.max(maxInterior, Math.abs(grid[r][100].elevation - grid[r][101].elevation));
+  // Compare the wrap's AVERAGE jump down all rows with the roughest interior
+  // column pairs: a coast that happens to cross the wrap is a big jump on a few
+  // rows (as it is anywhere inland), a seam is a jump on every row. (Comparing
+  // the wrap's single worst row against one interior column failed whenever
+  // that column lay in flat open sea.)
+  const colMean: number[] = [];
+  for (let c = 0; c < GRID_SIZE; c++) {
+    let sum = 0;
+    for (let r = 0; r < GRID_SIZE; r++) sum += Math.abs(grid[r][c].elevation - grid[r][(c + 1) % GRID_SIZE].elevation);
+    colMean.push(sum / GRID_SIZE);
   }
-  check('no longitude seam', maxJump <= maxInterior * 2.5,
-    `wrap jump ${maxJump.toFixed(4)} vs typical neighbour ${maxInterior.toFixed(4)}`);
+  const wrapMean = colMean[GRID_SIZE - 1];
+  const interior = colMean.slice(0, GRID_SIZE - 1).sort((a, b) => a - b);
+  const p95 = interior[Math.floor(interior.length * 0.95)];
+  check('no longitude seam', wrapMean <= p95 * 1.5,
+    `wrap ${wrapMean.toFixed(4)} vs 95th-percentile neighbour ${p95.toFixed(4)}`);
 
   const lf = landFraction(grid);
   check('ocean world has plausible land fraction', lf > 0.05 && lf < 0.75, `${(lf * 100).toFixed(1)}% land`);
@@ -156,6 +165,9 @@ let savedTick = 0;
   engine.onReligionEvent   = () => { seen.religion++; };
 
   engine.init({ life: 15, evolution: 13, hostility: 12, entropy: 11, divine: 10 }, 'smoke_main');
+  // Stars that exist at the start; anything with a higher id was born during the run.
+  // (Read, not assumed: the starting count comes from the life stat.)
+  const maxInitialId = Math.max(...(engine as any).stars.map((s: any) => s.id));
 
   const ps0 = engine.getPlayerStar()!;
   const homeIdx = ps0.planets.findIndex(p => p.discovery === 'landing');
@@ -229,11 +241,10 @@ let savedTick = 0;
 
   // Stars are lost to mergers and supernovae; star formation is what stops a
   // long game decaying to a single star.
-  const maxInitialId = 129;   // starCount = 40 + life*6 = 130 for life:15
   const newborns = stars.filter((s: any) => s.id > maxInitialId).length;
   check('new stars formed during the run', newborns > 0, `${newborns} newborn stars`);
   check('universe did not collapse to a handful of stars', stars.length >= 12,
-    `${stars.length} stars remain of ${maxInitialId + 1}`);
+    `${stars.length} stars remain (${maxInitialId + 1} at the start)`);
 
   savedSnapshot = engine.serialize();
   savedTick = (engine as any).tick;

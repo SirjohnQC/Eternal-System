@@ -728,9 +728,17 @@ export function generatePlanetGrid(
       const poleFade = Math.pow(1 - latTemp, 3) * 0.3;
       elev = Math.max(0, Math.min(1, elev - oceanBias * 0.3 + poleFade));
       if (shape === 'canyon' && elev > SEA_LEVEL + 0.12) {
+        // A cracked highland. Where the world has water to give (ocean
+        // coverage past ~30%: a wet rocky world, not a desert or an ice
+        // world), the cracks run deeper and their floors flood into long
+        // canyon seas; a barren world keeps them dry. Uniform ocean bias
+        // cannot do this — the plateau sits far above the sea.
         const slot = canyonTrough(nx, ny, elevSeed);
-        const cut = Math.max(SEA_LEVEL + 0.06, elev - slot * 0.2);
-        elev = cut;
+        const wet = Math.max(0, params.oceanCoverage - 0.3);
+        elev = Math.max(SEA_LEVEL + 0.06, elev - slot * 0.2);
+        // Only the deepest part of a crack (its core) drops below the sea.
+        const core = clamp01((slot - 0.4) / 0.6);
+        if (wet > 0 && core > 0) elev = Math.min(elev, SEA_LEVEL + 0.06 - core * wet * 0.7);
       }
 
       // Moisture: FBM at slightly different frequency

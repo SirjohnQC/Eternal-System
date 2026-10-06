@@ -469,6 +469,11 @@ export class NationSystem {
     return this.add({ tick, nation: -1, what, because, causes, kind: 'divine' }).id;
   }
 
+  /** Write something that happened to the whole world, not by anyone's hand (a plague from the stars). */
+  worldEvent(tick: number, what: string, because: string[]): number {
+    return this.add({ tick, nation: -1, what, because, causes: [] }).id;
+  }
+
   /** A chronicle entry by id (undefined once it has aged out). */
   entry(id: number): HistoryEntry | undefined { return this.byId.get(id); }
 

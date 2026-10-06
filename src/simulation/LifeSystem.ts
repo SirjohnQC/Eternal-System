@@ -147,11 +147,16 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
  * star's liquid-water zone, and whether that star will live long enough for
  * anything to happen (hot blue stars burn out too fast; cold dwarfs flare).
  */
+/** The goldilocks orbit for a star of this temperature (12 … 46). One formula for scoring and for placing the home world. */
+export function idealOrbitRadius(starTemperature: number): number {
+  return 12 + clamp01((starTemperature - 3000) / 27000) * 34;
+}
+
 export function planetHabitability(p: HabitabilityInput): number {
   const base = TYPE_BASE[p.planetType] ?? 0.3;
 
   // Goldilocks orbit scales with how much the star radiates.
-  const idealR = 12 + clamp01((p.starTemperature - 3000) / 27000) * 34;  // 12 … 46
+  const idealR = idealOrbitRadius(p.starTemperature);
   const deviation = Math.abs(p.orbitalRadius - idealR) / idealR;
   const zone = clamp01(1 - deviation * 1.35);
 

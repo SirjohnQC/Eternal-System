@@ -32,7 +32,7 @@ import {
   type BranchDef,
 } from './DnaBranches';
 import {
-  ARCHETYPES, systemHabitability, pickArchetype, rollBioTempo,
+  ARCHETYPES, systemHabitability, idealOrbitRadius, pickArchetype, rollBioTempo,
   resolveTransition, rollCatastrophe, phaseLabel, survivesFloorCollapse,
   STALL_TIME_PENALTY, PLAYER_STALL_TIME_CAP,
   type LifeArchetype, type PlanetKind,
@@ -1299,7 +1299,9 @@ export class BigBangEngine {
       // whole game is about — but it still gets its own chemistry and tempo, so
       // no two playthroughs climb the ladder at the same speed.
       // Habitable-band semi-major; near-circular so home is easy to read.
-      playerPlanet.orbitalRadius = 18 + (ps0.temperature - 3000) / 27000 * 28;
+      // At the star's goldilocks radius, by the same formula habitability is
+      // scored with (they had drifted: the home world sat ~35% out of its zone).
+      playerPlanet.orbitalRadius = idealOrbitRadius(ps0.temperature);
       playerPlanet.eccentricity = this.rng.nextFloat(0, 0.08);
       playerPlanet.periapsisAngle = this.rng.nextFloat(0, Math.PI * 2);
       playerPlanet.type = preferred;
@@ -5511,7 +5513,19 @@ export class BigBangEngine {
       case 'plague': {
         const lifePlanet2 = target.planets.find(p => p.hasLife);
         if (lifePlanet2) lifePlanet2.biosphere = Math.max(0, lifePlanet2.biosphere - 0.3);
-        if (target.civLevel > 0) target.civLevel = Math.max(0, target.civLevel - 1);
+        // A plague kills people; it does not make a civilisation forget its
+        // age. (It used to drop civLevel, which kept every civilisation from
+        // ever reaching Industrial — no fleets, no wars — and made the
+        // player's nations forget technologies.) Elsewhere it costs time;
+        // on the home world it is a real fever in the nations.
+        const ns = target.isPlayerStar ? runtimeState.playerNations : null;
+        if (ns?.isFounded) {
+          const from = ns.worldEvent(this.tick, 'A plague came down from the stars.', ['a cosmic plague']);
+          const now = ns.now;
+          for (const n of ns.nations) if (!n.fallen) ns.bless(n.id, { card: 'Plague From The Stars', op: 'pestilence', m: 1.2, cond: 'always', from: now, until: now + 0.3, aftermath: false, primary: true, cause: from });
+        } else {
+          target.age = Math.max(0, target.age - Math.floor(this.civAdvanceRate(target) * 0.5));
+        }
         this.onCosmicEvent?.('plague', target.civName);
         if (known) this.onCosmicStrike?.(ev, target);
         break;
