@@ -3,6 +3,10 @@
 Procedural god-sim in TypeScript + Vite + PixiJS. Design docs live at the repo root
 (`DESIGN.md`, `ARCHITECTURE.md`, `DIORAMA.md`, `ROADMAP.md`, `BUG.md`, ...); `docs/` has specs.
 
+**Design north star: `docs/CORE_LOOP_VISION.md`** (emergence over scripts: world state →
+pressures → responses → consequences; the player disturbs conditions, never controls).
+Judge new systems against it.
+
 ## Setup
 
 ```sh
