@@ -1490,7 +1490,7 @@ export class WeatherPainter {
         const rf = this.rainF;
         const rain = rf[c00] * (1 - wtx) * (1 - wty) + rf[c01] * wtx * (1 - wty) + rf[c10] * (1 - wtx) * wty + rf[c11] * wtx * wty;
         if (rain > 0.01) {
-          const ra = ((rain > 0.12 ? 0.3 : rain * 2.5) * intensity * A_ONE) | 0;
+          const ra = ((rain > 0.12 ? 0.22 : rain * 1.8) * intensity * A_ONE) | 0;
           const gy = one ? lut.ground[n] + vdy : Math.floor(lut.ground[n] * vr + vdy);
           const roll = (this.clock * 34 * vr) | 0;
           for (let Y = Y1 < yLo ? yLo : Y1, Ye = gy < h ? gy : h; Y < Ye; Y++) {
@@ -1503,7 +1503,9 @@ export class WeatherPainter {
       // Tower height blended over the four cells' kinds (bilinear), never the
       // dithered kind: a storm/cumulus dither made a comb of tall/short columns.
       const kc = this.kind;
-      const tw = tower[kind] === 0 ? 0
+      // Not gated on the dithered kind either: where heaps meet flat cells
+      // (caps, stratus), a flat-kind pixel inside a heap left a gap — stripes.
+      const tw = kind === WK.CIRRUS ? 0
         : tower[kc[c00]] * (1 - wtx) * (1 - wty) + tower[kc[c01]] * wtx * (1 - wty)
         + tower[kc[c10]] * (1 - wtx) * wty + tower[kc[c11]] * wtx * wty;
       if (tw <= 0.5) {
@@ -1537,15 +1539,31 @@ export class WeatherPainter {
       // Tones from the kind's palette (body = sunlit, under = shade), lit by
       // the disc light; the dome facet facing the sun lifts toward white.
       const ob = kind * 6;
-      let bR = PAL[ob], bG = PAL[ob + 1], bB = PAL[ob + 2];
-      let uR = PAL[ob + 3], uG = PAL[ob + 4], uB = PAL[ob + 5];
+      // Palette blended over the four cells' kinds (bilinear), like the height:
+      // the dithered kind alternated storm/cumulus colours column by column.
+      const o00 = kc[c00] * 6, o01 = kc[c01] * 6, o10 = kc[c10] * 6, o11 = kc[c11] * 6;
+      // Clear cells (all-zero palette) take no weight: they would darken the edge.
+      let w00 = o00 ? (1 - wtx) * (1 - wty) : 0, w01 = o01 ? wtx * (1 - wty) : 0;
+      let w10 = o10 ? (1 - wtx) * wty : 0, w11 = o11 ? wtx * wty : 0;
+      const wsum = w00 + w01 + w10 + w11;
+      if (wsum > 1e-6) { w00 /= wsum; w01 /= wsum; w10 /= wsum; w11 /= wsum; }
+      else { w00 = 0; w01 = 0; w10 = 0; w11 = 0; }
+      let bR = PAL[o00] * w00 + PAL[o01] * w01 + PAL[o10] * w10 + PAL[o11] * w11;
+      let bG = PAL[o00 + 1] * w00 + PAL[o01 + 1] * w01 + PAL[o10 + 1] * w10 + PAL[o11 + 1] * w11;
+      let bB = PAL[o00 + 2] * w00 + PAL[o01 + 2] * w01 + PAL[o10 + 2] * w10 + PAL[o11 + 2] * w11;
+      let uR = PAL[o00 + 3] * w00 + PAL[o01 + 3] * w01 + PAL[o10 + 3] * w10 + PAL[o11 + 3] * w11;
+      let uG = PAL[o00 + 4] * w00 + PAL[o01 + 4] * w01 + PAL[o10 + 4] * w10 + PAL[o11 + 4] * w11;
+      let uB = PAL[o00 + 5] * w00 + PAL[o01 + 5] * w01 + PAL[o10 + 5] * w10 + PAL[o11 + 5] * w11;
+      if (wsum <= 1e-6) { bR = PAL[ob]; bG = PAL[ob + 1]; bB = PAL[ob + 2]; uR = PAL[ob + 3]; uG = PAL[ob + 4]; uB = PAL[ob + 5]; }
       if (acid > 0) {
         // Acid skies tint the heaps too (body and base), as they do the flat cover.
         bR += (ACID[0] - bR) * acid; bG += (ACID[1] - bG) * acid; bB += (ACID[2] - bB) * acid;
         uR += (ACID[3] - uR) * acid; uG += (ACID[4] - uG) * acid; uB += (ACID[5] - uB) * acid;
       }
       // Low sun (near the terminator) warms the sunlit faces: gold at dawn and dusk.
-      const wd = rawLit - 0.42, wrm = facing && rawLit > 0.18 ? (wd < 0 ? -wd : wd) < 0.2 ? 1 - (wd < 0 ? -wd : wd) / 0.2 : 0 : 0;
+      // From the disc light alone: the per-pixel `facing` test flickers between
+      // neighbouring columns and striped the sides warm/plain.
+      const wd = rawLit - 0.42, awd = wd < 0 ? -wd : wd, wrm = rawLit > 0.18 && awd < 0.2 ? 1 - awd / 0.2 : 0;
       bR = (bR + 46 * wrm) * lit; bG = (bG + 10 * wrm) * lit; bB = (bB - 30 * wrm) * lit;
       uR *= lit; uG *= lit; uB *= lit;
       // Dome facets: toward the sun (the puff falls off sunward) lit, away
@@ -1558,10 +1576,16 @@ export class WeatherPainter {
       let tB = bB + (255 - bB) * lift + (uB - bB) * sh;
       // Silver lining: an edge facing the sun (clear air sunward) catches a
       // bright rim along its top and upper side.
-      const rim = facing && sunward < 0.3;
+      const rim = facing && sunward < 0.22 && dens > 0.5;
       if (rim) { tR += (255 - tR) * 0.45; tG += (255 - tG) * 0.45; tB += (255 - tB) * 0.4; }
       const top = Y0 - Ts;
       const ya = top < yLo ? yLo : top, yb = Y1 > h ? h : Y1;
+      // A heap's body is solid at every zoom: the close-up's sheer table is for
+      // the flat cover, and on columns it showed as vertical streaks. Only the
+      // fringe (the first density step) stays see-through.
+      // Keyed on the smooth `core`, not the dithered step lv: lv alternates
+      // 1/2 between neighbouring columns and striped the sides solid/sheer.
+      const ac = core > 0.2 ? (intensity * A_ONE) | 0 : ai;
       for (let Y = ya; Y < yb; Y++) {
         let cr: number, cg: number, cb: number;
         const fromTop = Y - top;
@@ -1571,10 +1595,10 @@ export class WeatherPainter {
           // base (not this column's own span), so the steps run as level
           // bands across the whole heap instead of stripes down each column.
           const above = (Y1 - Y) / (tw * vr + 1);
-          const s2 = above > 0.6 ? (rim ? 0 : 0.15) : above > 0.3 ? 0.42 : above > 0.1 ? 0.7 : 1;
+          const s2 = above > 0.6 ? 0.15 : above > 0.3 ? 0.42 : above > 0.1 ? 0.7 : 1;
           cr = bR + (uR - bR) * s2; cg = bG + (uG - bG) * s2; cb = bB + (uB - bB) * s2;
         }
-        for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, cr | 0, cg | 0, cb | 0, ai);
+        for (let X = X0; X < X1; X++) over(d, (Y * w + X) * 4, cr | 0, cg | 0, cb | 0, ac);
       }
       }
     }
