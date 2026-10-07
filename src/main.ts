@@ -25,6 +25,7 @@ import { GeminiService } from './ai/GeminiService';
 import type { EvolutionEvent } from './simulation/EvolutionEngine';
 import type { Civilization } from './simulation/Civilization';
 import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
+import { BigBangCinematic } from './simulation/BigBangCinematic';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
   generatePlanetGrid, classifyBiome, isWater, isHabitable,
@@ -516,10 +517,9 @@ async function launchBigBangAsync(): Promise<void> {
   hideBigBangLoading();
 
   applyFrameRateCap(pendingFrameRateCap);
-  engine.start();
 
-  // Initial god greeting
-  setTimeout(() => {
+  // Initial god greeting — after the opening cinematic, when there is one.
+  const greet = () => setTimeout(() => {
     addChatMessage(fallbackNarrator!.generateGodGreeting(godName), 'god');
     if (!geminiKey) {
       // Point at the Settings menu, not at the env var. `.env` is gitignored and
@@ -529,6 +529,80 @@ async function launchBigBangAsync(): Promise<void> {
       addChatMessage('[ Offline mode — procedural AI active. Add a Gemini API key in Settings (⚙) for full AI integration. ]', 'system');
     }
   }, 1800);
+
+  // ?cine=0 (dev) skips the opening cinematic.
+  if (new URLSearchParams(location.search).get('cine') !== '0') startCinematic(engine, greet);
+  else greet();
+  engine.start();
+}
+
+// ─── Opening cinematic (BigBangCinematic) ─────────────────────────────────────
+let _cineUiRaf = 0;
+
+/** Play the Big Bang cinematic on `eng`: HUD hidden, letterboxed, captioned, skippable. */
+function startCinematic(eng: BigBangEngine, onDone: () => void): void {
+  const overlay = document.getElementById('cine-overlay');
+  const caption = document.getElementById('cine-caption');
+  const cine = new BigBangCinematic();
+  eng.cinematic = cine;
+  document.body.classList.add('cinematic');
+  overlay?.classList.remove('leaving');
+  overlay?.classList.add('on');
+
+  const fill = (text: string): string => {
+    const ps = eng.getPlayerStar();
+    const gal = ps ? eng.currentGalaxies.find(g => g.id === ps.galaxyId) : undefined;
+    return text
+      .replace('{galaxy}', gal?.name ?? 'a quiet galaxy')
+      .replace('{planet}', gameState.playerPlanetName || 'Your world')
+      .replace('{god}', gameState.godName || 'the god');
+  };
+  let shown = -1;
+  let swapTimer = 0;
+  const tickUi = () => {
+    if (cine.finished) return;
+    const i = cine.beatIndex;
+    if (i !== shown && caption) {
+      shown = i;
+      const text = fill(cine.beat.caption);
+      // Fade out, swap, fade in; an empty caption just clears the line.
+      caption.classList.remove('show');
+      window.clearTimeout(swapTimer);
+      if (text) swapTimer = window.setTimeout(() => { caption.textContent = text; caption.classList.add('show'); }, caption.textContent ? 650 : 0);
+    }
+    _cineUiRaf = requestAnimationFrame(tickUi);
+  };
+  _cineUiRaf = requestAnimationFrame(tickUi);
+
+  const skip = () => eng.skipCinematic();
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' || e.key === ' ' || e.key === 'Enter') { e.preventDefault(); skip(); }
+  };
+  document.addEventListener('keydown', onKey);
+  const skipBtn = document.getElementById('cine-skip');
+  skipBtn?.addEventListener('click', skip);
+  // The overlay swallows clicks and wheel so the tour's camera is not fought.
+  const swallow = (e: Event) => { e.stopPropagation(); if (e.type === 'wheel') e.preventDefault(); };
+  overlay?.addEventListener('wheel', swallow, { passive: false });
+
+  eng.onCinematicEnd = () => {
+    cancelAnimationFrame(_cineUiRaf);
+    window.clearTimeout(swapTimer);
+    document.removeEventListener('keydown', onKey);
+    skipBtn?.removeEventListener('click', skip);
+    overlay?.removeEventListener('wheel', swallow);
+    caption?.classList.remove('show');
+    overlay?.classList.add('leaving');
+    // Fade the HUD back in over the world.
+    document.body.classList.add('hud-reveal');
+    requestAnimationFrame(() => document.body.classList.remove('cinematic'));
+    window.setTimeout(() => {
+      overlay?.classList.remove('on', 'leaving');
+      if (caption) caption.textContent = '';
+      document.body.classList.remove('hud-reveal');
+    }, 1600);
+    onDone();
+  };
 }
 
 /** Attach a PixiBigBangRenderer to the given engine + canvas pair. */
@@ -1012,6 +1086,8 @@ function wireEngineEvents(eng: BigBangEngine): void {
 
 function enterUniverse(): void {
   if (!engine) return;
+  // Leaving mid-cinematic (dev shortcuts): finish it first so the HUD comes back.
+  if (engine.cinematicActive) engine.skipCinematic();
   engine.stop();
   showScreen('game');
 

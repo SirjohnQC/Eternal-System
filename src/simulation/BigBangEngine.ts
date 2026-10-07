@@ -4,6 +4,7 @@ import {
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
 } from './StarPolities';
 import { SeedRNG } from '../utils/SeedRNG';
+import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_SEQUENCE, BIO_PHASE_LABELS, CODEX_MILESTONES,
@@ -775,6 +776,13 @@ export class BigBangEngine {
   onTickUpdate: ((tick: number) => void) | null = null;
   onStarSelected: ((star: StarBody) => void) | null = null;
   onBigBangComplete: (() => void) | null = null;
+  /**
+   * The opening cinematic (BigBangCinematic), when one is playing. Set by the
+   * game before start(); tools leave it null and get the plain Big Bang.
+   */
+  cinematic: BigBangCinematic | null = null;
+  /** Fires once when the cinematic ends (ran out or skipped). */
+  onCinematicEnd: (() => void) | null = null;
   onPlanetCatastrophe: ((mergedWith: string) => void) | null = null;
 
   /**
@@ -1481,8 +1489,15 @@ export class BigBangEngine {
       this.tickAccumulator -= n;
       return n;
     };
+    // The opening cinematic keeps its own clock (wall time, unaffected by the
+    // speed buttons, which are hidden while it plays) and the Big Bang ticks
+    // are slaved to it, so the beats line up at any frame rate.
+    const cine = this.cinematic && !this.cinematic.finished ? this.cinematic : null;
+    if (cine) cine.advance(dt / 1000);
     let ticksThisFrame: number;
-    if (speed <= 0) {
+    if (cine && this.phase !== 'settled') {
+      ticksThisFrame = Math.max(0, cine.targetTicks - this.tick);
+    } else if (speed <= 0) {
       ticksThisFrame = 0;
     } else if (this.phase !== 'settled') {
       this.tickAccumulator += dt / 1000 * 60;
@@ -1501,56 +1516,7 @@ export class BigBangEngine {
       this.syncOrbitPositions(0);
     }
 
-    for (let s = 0; s < ticksThisFrame; s++) {
-      this.tick++;
-      this.onTickUpdate?.(this.tick);
-
-      if (this.phase === 'inflation') {
-        this.updateInflation();
-        if (this.tick >= INFLATION_TICKS) {
-          this.phase = 'gravity';
-          // Inflation aimed stars at their galaxies; now put them on circular
-          // orbits so they swirl instead of falling into each other.
-          this.assignGalacticOrbits();
-        }
-      } else {
-        this.updateGravity();
-        this.updatePlanetFormation();
-        if (this.tick % 600 === 0) this.updateGalaxies();
-        this.updateTerraforming();
-        if (this.phase === 'gravity' && this.tick >= INFLATION_TICKS + 300) {
-          this.phase = 'settled';
-          this.settledSinceTick = this.tick;
-          this.settledSinceAnimTick = this.animTick;
-          this.onBigBangComplete?.();
-          // Dramatic zoom in on player's star system + reveal it in fog
-          const ps = this.getPlayerStar();
-          if (ps) {
-            this.camera.tx = ps.x;
-            this.camera.ty = ps.y;
-            // Close enough that the home world reads as a world (the follow
-            // then centres it); the system stays in view around it.
-            this.camera.ts = 8.5;
-            this.cameraFollowHome = true;
-            // Punch a large hole in the fog at the player's actual settled position
-            this.exploredAreas.push({ x: ps.x, y: ps.y, r: 300 });
-            this.playerFogIndex = this.exploredAreas.length - 1;
-          }
-        }
-      }
-
-      this.updateNebulae();
-      this.updateStarFormation();
-      this.updateAsteroids();
-      this.updateCivilizations();
-      if (this.tick - this.lastPolityTick >= POLITY_STEP) this.stepPolities();
-      this.updateCosmicSignals();
-      this.updateFleets();
-      this.updateWars();
-      this.updateOrbitalFleets();
-      this.updateCosmicEvents();
-      this.updateReligions();
-    }
+    for (let s = 0; s < ticksThisFrame; s++) this.stepTick();
 
     // Sub-tick orbit placement — smooth between sim ticks at high game-speed.
     // Galaxy centres stay fixed (census must not drag the kinematic origin).
@@ -1564,6 +1530,180 @@ export class BigBangEngine {
     this.camera.x += (this.camera.tx - this.camera.x) * 0.06;
     this.camera.y += (this.camera.ty - this.camera.y) * 0.06;
     this.camera.scale += (this.camera.ts - this.camera.scale) * 0.06;
+
+    if (cine) {
+      this.directCinematicCamera(cine);
+      if (cine.finished) this.endCinematic();
+    }
+  }
+
+  // ── Opening cinematic ───────────────────────────────────────────────────────
+
+  get cinematicActive(): boolean { return !!this.cinematic && !this.cinematic.finished; }
+  /** Galaxy art strength from the cinematic (1 when none is playing). */
+  get galaxyReveal(): number { return this.cinematicActive ? this.cinematic!.galaxyReveal : 1; }
+  get homeStarLight(): number { return this.cinematicActive ? this.cinematic!.homeStarLight : 1; }
+  get planetsReveal(): number { return this.cinematicActive ? this.cinematic!.planetsReveal : 1; }
+
+  /** Jump the cinematic to `t` seconds, running the simulation up to match (skip, tools). */
+  seekCinematic(t: number): void {
+    const cine = this.cinematic;
+    if (!cine || cine.finished) return;
+    cine.t = Math.max(cine.t, Math.min(CINE_TOTAL, t));
+    if (cine.t >= CINE_TOTAL) cine.finished = true;
+    const target = cine.targetTicks;
+    let guard = 0;
+    while ((this.tick < target || (cine.finished && this.phase !== 'settled')) && guard++ < 5000) this.stepTick();
+    this.directCinematicCamera(cine);
+    if (cine.finished) this.endCinematic();
+  }
+
+  skipCinematic(): void { this.seekCinematic(CINE_TOTAL); }
+
+  private endCinematic(): void {
+    const cb = this.onCinematicEnd;
+    this.onCinematicEnd = null;
+    // Hand the camera to the normal home-world follow, exactly where the tour left it.
+    this.camera.tx = this.camera.x; this.camera.ty = this.camera.y; this.camera.ts = this.camera.scale;
+    this.cameraFollowHome = true;
+    // The arrival beacon greets the landing, not the (hidden) settle moment.
+    this.settledSinceAnimTick = this.animTick;
+    this.fogCacheValid = false;
+    cb?.();
+  }
+
+  /** Where the player's home world is right now (its sun's position if it has none). */
+  private homeWorldPos(ps: StarBody): { x: number; y: number } {
+    const home = this.homeWorld(ps);
+    const o = home ? planetOffsetFromStar(home, this.animTick) : { x: 0, y: 0 };
+    return { x: ps.x + o.x, y: ps.y + o.y };
+  }
+
+  /**
+   * The cinematic's camera: a pose per beat, computed outright each frame (no
+   * lerp), so every beat frames exactly what it means to show.
+   */
+  private directCinematicCamera(cine: BigBangCinematic): void {
+    const C = WORLD_SIZE / 2;
+    let x = C, y = C, sc = 1.2;
+    const ps = this.getPlayerStar();
+    const gal = ps ? this.galaxies.find(g => g.id === ps.galaxyId) : undefined;
+    const logLerp = (a: number, b: number, k: number) => Math.exp(Math.log(a) + (Math.log(b) - Math.log(a)) * k);
+    // Frame the whole universe: the galaxies' bounding box, fitted inside the
+    // letterboxed view.
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const g of this.galaxies) {
+      if (!g.starIds.length) continue;
+      const r = g.radius * 1.2;
+      x0 = Math.min(x0, g.cx - r); x1 = Math.max(x1, g.cx + r);
+      y0 = Math.min(y0, g.cy - r); y1 = Math.max(y1, g.cy + r);
+    }
+    if (!isFinite(x0)) { x0 = y0 = C - 800; x1 = y1 = C + 800; }
+    const W = this.canvas.width || 1200, H = this.canvas.height || 800;
+    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+    const UNI = Math.max(0.08, Math.min(0.32, Math.min(W * 0.86 / (x1 - x0), H * 0.7 / (y1 - y0))));
+    if (cine.since('firstStars') < -0.5) {
+      // Before the stars: centred close in (the overlay covers the view).
+      sc = 1.2;
+    } else if (cine.since('web') < 0) {
+      // The universe expands: pull back with the stars themselves (their 80th
+      // percentile distance from the centre), then ease onto the full frame.
+      const d: number[] = [];
+      for (const st of this.stars) d.push(Math.hypot(st.x - C, st.y - C));
+      d.sort((a, b) => a - b);
+      const p80 = d.length ? d[Math.floor(d.length * 0.8)] : 100;
+      const follow = Math.min(1.2, H * 0.36 / Math.max(80, p80));
+      const k = ramp(cine.since('firstStars'), 3.0, 5.5);
+      sc = logLerp(follow, UNI * 0.9, k);
+      x = C + (mx - C) * 0.5 * k; y = C + (my - C) * 0.5 * k;
+    } else if (cine.since('dive') < 0) {
+      // The web and its galaxies: settle on the whole universe, then a slow push.
+      const k = ramp(cine.since('web'), 0, 3);
+      sc = logLerp(UNI * 0.9, UNI, k) * (1 + 0.06 * ramp(cine.since('galaxies'), 0, 5));
+      x = C + (mx - C) * (0.5 + 0.5 * k); y = C + (my - C) * (0.5 + 0.5 * k);
+    } else if (ps) {
+      const gx = gal ? gal.cx : ps.x, gy = gal ? gal.cy : ps.y;
+      const sx = mx, sy = my, s0 = UNI * 1.06;
+      const d = cine.since('dive'), ig = cine.since('ignition'), w = cine.since('world');
+      if (ig < 0) {
+        // Dive: universe → home galaxy, then galaxy → home star. The camera is
+        // on the star before the zoom passes the galaxy tier.
+        const a = ramp(d, 0, 2.4), b = ramp(d, 2.2, 5.0);
+        if (b <= 0) {
+          sc = logLerp(s0, 0.7, a);
+          x = sx + (gx - sx) * a; y = sy + (gy - sy) * a;
+        } else {
+          sc = logLerp(0.7, 3.0, b);
+          const pk = ramp(d, 2.2, 3.6);
+          x = gx + (ps.x - gx) * pk; y = gy + (ps.y - gy) * pk;
+        }
+      } else if (w < 0) {
+        // Ignition: hold on the sun, pushing in slowly.
+        sc = logLerp(3.0, 3.6, ramp(ig, 0, 4));
+        x = ps.x; y = ps.y;
+      } else {
+        // The world: from the sun to the home planet, settling where play begins.
+        const k = ramp(w, 0.4, 4.2);
+        const hw = this.homeWorldPos(ps);
+        sc = logLerp(3.6, 8.5, k);
+        x = ps.x + (hw.x - ps.x) * k; y = ps.y + (hw.y - ps.y) * k;
+      }
+    }
+    this.camera.x = this.camera.tx = x;
+    this.camera.y = this.camera.ty = y;
+    this.camera.scale = this.camera.ts = sc;
+  }
+
+  /** One simulation tick: Big Bang phases, then the living universe. */
+  private stepTick(): void {
+    this.tick++;
+    this.onTickUpdate?.(this.tick);
+
+    if (this.phase === 'inflation') {
+      this.updateInflation();
+      if (this.tick >= INFLATION_TICKS) {
+        this.phase = 'gravity';
+        // Inflation aimed stars at their galaxies; now put them on circular
+        // orbits so they swirl instead of falling into each other.
+        this.assignGalacticOrbits();
+      }
+    } else {
+      this.updateGravity();
+      this.updatePlanetFormation();
+      if (this.tick % 600 === 0) this.updateGalaxies();
+      this.updateTerraforming();
+      if (this.phase === 'gravity' && this.tick >= INFLATION_TICKS + 300) {
+        this.phase = 'settled';
+        this.settledSinceTick = this.tick;
+        this.settledSinceAnimTick = this.animTick;
+        this.onBigBangComplete?.();
+        // Dramatic zoom in on player's star system + reveal it in fog
+        const ps = this.getPlayerStar();
+        if (ps) {
+          this.camera.tx = ps.x;
+          this.camera.ty = ps.y;
+          // Close enough that the home world reads as a world (the follow
+          // then centres it); the system stays in view around it.
+          this.camera.ts = 8.5;
+          this.cameraFollowHome = true;
+          // Punch a large hole in the fog at the player's actual settled position
+          this.exploredAreas.push({ x: ps.x, y: ps.y, r: 300 });
+          this.playerFogIndex = this.exploredAreas.length - 1;
+        }
+      }
+    }
+
+    this.updateNebulae();
+    this.updateStarFormation();
+    this.updateAsteroids();
+    this.updateCivilizations();
+    if (this.tick - this.lastPolityTick >= POLITY_STEP) this.stepPolities();
+    this.updateCosmicSignals();
+    this.updateFleets();
+    this.updateWars();
+    this.updateOrbitalFleets();
+    this.updateCosmicEvents();
+    this.updateReligions();
   }
 
   /**
@@ -3445,17 +3585,19 @@ export class BigBangEngine {
     }
 
     // Fog of war (screen-space) — always on this canvas regardless of pixiMode
-    if (this.phase === 'settled') {
+    // (Off while the opening cinematic tours the universe.)
+    const touring = this.cinematicActive;
+    if (this.phase === 'settled' && !touring) {
       this.drawFog(ctx, W, H);
     }
 
     // Home world arrival beacon (screen-space, fades after ~7s)
-    if (this.phase === 'settled') {
+    if (this.phase === 'settled' && !touring) {
       this.drawHomeWorldBeacon(ctx, W, H);
     }
 
     // Big Bang phase: draw inflation ring
-    if (this.phase === 'inflation') {
+    if (this.phase === 'inflation' && !touring) {
       this.drawInflationRing(ctx, W, H);
     }
 
@@ -3554,7 +3696,7 @@ export class BigBangEngine {
   get galaxyTierStrength(): number {
     let strength = Math.max(0, Math.min(1, (1.8 - this.camera.scale) / 1.5));
     if (this.phase === 'inflation') strength = Math.max(strength, Math.min(1, this.tick / 90));
-    return strength;
+    return strength * this.galaxyReveal;
   }
 
   /**

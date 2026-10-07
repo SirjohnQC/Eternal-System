@@ -19,7 +19,7 @@ npm install
 npx vite --port 5173      # vite.config.ts defaults to port 3000 if --port is omitted
 ```
 
-- Game: `http://localhost:5173/`
+- Game: `http://localhost:5173/` (dev shortcut: `?dev=1&planet=Name`; add `&cine=0` to skip the opening cinematic)
 - Planet diorama preview (dev page, `src/dev/dioramaPreview.ts`):
   `http://localhost:5173/diorama-preview.html?type=…&formation=…`
   - `type` — `ocean | rocky | ice | lava | gas` (default `ocean`)
@@ -49,7 +49,7 @@ npx esbuild tools/smokeTest.ts --bundle --platform=node --format=esm \
 ```
 
 - `smokeTest.ts` — whole-simulation "is everything still working" check; run after any sim change.
-- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars.
+- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars. `cinematicCheck.ts` — the Big Bang cinematic (timeline, same universe with or without it, skip/end handoff, camera on home before the black-gap zone).
 - `*Check.ts` — targeted checks (weather, zoom, formation, settlement, moon, sky, ...);
   exit non-zero on failure. `weatherCheck` and `zoomCheck` want `node --expose-gc`.
 - `*Render.ts` — write PNGs for visual review (usually take `<out.png>` as the first arg).

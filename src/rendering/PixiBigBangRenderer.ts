@@ -25,6 +25,7 @@ import type {
   Camera, Galaxy, Planet,
 } from '../simulation/BigBangEngine';
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
+import { BigBangCinematicOverlay } from './BigBangCinematicOverlay';
 import { bakeGalaxyHaze, bakeGalaxyStars, GALAXY_EXTENT, STARS_RES, type GalaxyShape, type Raster } from './GalaxyArt';
 import type { TradeRoute } from '../simulation/StarPolities';
 
@@ -191,6 +192,11 @@ export class PixiBigBangRenderer {
   private spaceLayersReady = false;
 
   private labelContainer!: Container;
+  /** The opening cinematic's overlay (singularity, plasma, web, ignition). */
+  private cineOverlay: BigBangCinematicOverlay | null = null;
+  /** Player star brightness / planet presence this frame (cinematic; 1 otherwise). */
+  private homeLight = 1;
+  private homePlanets = 1;
 
   private bgStarCache: Array<{ x: number; y: number; r: number }> = [];
   /** Skip rebuilding 200 bg rects unless size / tint band changes. */
@@ -274,6 +280,8 @@ export class PixiBigBangRenderer {
     this.hazeOverlay.addChild(this.hazeDustGfx);
     this.app.stage.addChild(this.hazeOverlay);
     this.app.stage.addChild(this.labelContainer);   // screen-space labels
+    this.cineOverlay = new BigBangCinematicOverlay();
+    this.app.stage.addChild(this.cineOverlay.container);
 
     await this.loadSpaceParallaxLayers(width, height);
   }
@@ -374,7 +382,9 @@ export class PixiBigBangRenderer {
     // galaxies' light, so worlds the player has not found are not drawn at
     // all (they were only ever hidden by the fog's darkness).
     const settled = engine.phase === 'settled';
-    const known = settled && camera.scale < 1.8 ? new Set(engine.stars.filter(s => engine.isStarKnownToPlayer(s)).map(s => s.id)) : null;
+    this.homeLight = engine.homeStarLight;
+    this.homePlanets = engine.planetsReveal;
+    const known = settled && camera.scale < 1.8 && !engine.cinematicActive ? new Set(engine.stars.filter(s => engine.isStarKnownToPlayer(s)).map(s => s.id)) : null;
     const shown = known ? engine.stars.filter(s => known.has(s.id)) : engine.stars;
     const seenFleet = (a: number, b: number) => !known || known.has(a) || known.has(b);
     this.drawStars(shown, engine.currentPlayerStarId, animTick, camera, tight);
@@ -393,6 +403,8 @@ export class PixiBigBangRenderer {
     } else {
       this.hazeOverlay.visible = false;
     }
+
+    this.cineOverlay?.update(engine, W, H);
 
     // Render Pixi stage
     this.app.renderer.render(this.app.stage);
@@ -1094,7 +1106,7 @@ export class PixiBigBangRenderer {
     this.labelsUsed.clear();
     const sc = camera.scale;
     const toScreen = (x: number, y: number) => [W / 2 + (x - camera.x) * sc, H / 2 + (y - camera.y) * sc] as const;
-    const settled = engine.phase === 'settled';
+    const settled = engine.phase === 'settled' && !engine.cinematicActive;
     // Galaxy names, while the galaxy tier is the subject.
     const strength = engine.galaxyTierStrength;
     if (strength > 0.45) {
@@ -1397,6 +1409,15 @@ export class PixiBigBangRenderer {
       sprite.x = star.x;
       sprite.y = star.y;
       sprite.visible = true;
+      // The opening cinematic keeps the player's sun a dim protostar until it ignites.
+      const L = star.isPlayerStar ? this.homeLight : 1;
+      sprite.tint = L < 1 ? Math.round(0x80 + 0x7f * L) << 16 | Math.round(0x30 + 0xcf * L) << 8 | Math.round(0x20 + 0xdf * L) : 0xffffff;
+      sprite.alpha = L < 1 ? 0.55 + 0.45 * L : 1;
+      if (L < 1) {
+        glow.alpha *= L;
+        const hz = this.starHazeSprites.get(star.id); if (hz && hz.visible) hz.alpha *= L;
+        const co = this.starCoronaSprites.get(star.id); if (co && co.visible) co.alpha *= L * L;
+      }
 
       if (star.isPlayerStar && camera.scale < 1.6 && camera.scale >= 1.2) {
         // Corner brackets outside the corona, not a box drawn across the sun.
@@ -1661,7 +1682,10 @@ export class PixiBigBangRenderer {
         const px = star.x + off.x;
         const py = star.y + off.y;
 
-        if (camera.scale > 1.15 && (star.isPlayerStar || camera.scale > 2.2)) {
+        // The opening cinematic: the player's worlds condense out of the disc.
+        const reveal = star.isPlayerStar ? this.homePlanets : 1;
+        if (reveal <= 0.01) continue;
+        if (camera.scale > 1.15 && (star.isPlayerStar || camera.scale > 2.2) && reveal > 0.6) {
           pixelPlanetOrbit(
             this.planetLayer, star.x, star.y, planet,
             star.isDead ? 0x666660 : star.isPlayerStar ? 0xc8a96e : 0xffffff,
@@ -1731,7 +1755,8 @@ export class PixiBigBangRenderer {
           sprite.texture = tex;
         }
 
-        const body = Math.max(planet.radius * 3.2, 2.0 / camera.scale);
+        const body = Math.max(planet.radius * 3.2, 2.0 / camera.scale) * (0.35 + 0.65 * reveal);
+        sprite.alpha = reveal;
         if (withRings) {
           sprite.width = body * 1.85;
           sprite.height = body * 1.15;
@@ -1743,7 +1768,7 @@ export class PixiBigBangRenderer {
         sprite.y = py;
         sprite.visible = true;
 
-        if (isHome && camera.scale >= 1.6) {
+        if (isHome && camera.scale >= 1.6 && reveal >= 1) {
           // The player's world: gold corner brackets, pulsing.
           const alpha = 0.6 + 0.3 * Math.sin(animTick * 0.05);
           const pad = body * 0.85 + 2 / camera.scale, t = Math.max(0.3, 1 / camera.scale), arm = pad * 0.45;
@@ -1814,6 +1839,7 @@ export class PixiBigBangRenderer {
             mSprite.height = mBox;
             mSprite.x = mx;
             mSprite.y = my;
+            mSprite.alpha = reveal;
             mSprite.visible = true;
           }
         }
