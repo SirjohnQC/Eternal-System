@@ -2857,7 +2857,7 @@ function wireCosmicCallbacks(): void {
         ? 'A void storm has swept through your system — civilization progress has been set back.'
         : `A void storm struck the ${star.civName} system — their advancement has been disrupted.`,
       plague:          isPlayerStar
-        ? 'A cosmic plague has ravaged your civilization. Tech level has regressed.'
+        ? 'A plague has come down from the stars. Fever spreads through your nations.'
         : `The ${star.civName} civilization has been struck by cosmic plague.`,
     };
     const text = strikeDesc[ev.type] ?? `A cosmic event struck ${star.civName}.`;
