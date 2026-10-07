@@ -26,6 +26,8 @@ import type { EvolutionEvent } from './simulation/EvolutionEngine';
 import type { Civilization } from './simulation/Civilization';
 import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { BigBangCinematic } from './simulation/BigBangCinematic';
+import { newForge } from './simulation/Forge';
+import { runForge, forgeActive } from './ui/ForgeUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
   generatePlanetGrid, classifyBiome, isWater, isHabitable,
@@ -275,10 +277,12 @@ function triggerGodRoll(): void {
       labelEl.textContent = godDivineRoll >= 17 ? 'OMNIPRESENT' :
                             godDivineRoll >= 13 ? 'INTERVENING' :
                             godDivineRoll >=  8 ? 'WATCHFUL' : 'DISTANT';
-      // Reveal planet questions, then check genesis readiness
+      // The world's DNA is forged in play now (the Forge), not asked here:
+      // the old climate / oceans / chaos probe stays hidden and neutral.
       setTimeout(() => {
-        const pqSection = document.getElementById('planet-questions-section');
-        if (pqSection) pqSection.style.display = 'flex';
+        answeredQuestions.climate ??= DEFAULT_PLANET_DNA.climate;
+        answeredQuestions.oceans ??= DEFAULT_PLANET_DNA.oceans;
+        answeredQuestions.chaos ??= DEFAULT_PLANET_DNA.chaos;
         checkGenesisReady();
       }, 700);
     }
@@ -427,6 +431,8 @@ async function launchBigBangAsync(): Promise<void> {
   // second game in one session must not inherit the previous universe's
   // civilisations. (BigBangEngine.init() clears this too; belt and suspenders.)
   gameState.civilizations = {};
+  gameState.forge = null;
+  gameState.forgeMods = null;
   gameState.dnaFocusBranch = null;
   _pmSelected = null;
   _pmLayer = 'biome';
@@ -530,10 +536,52 @@ async function launchBigBangAsync(): Promise<void> {
     }
   }, 1800);
 
+  // After the opening: the Forge (the home world forged from Fate Cards).
+  const afterOpening = () => { greet(); startForgeIfDue(); };
   // ?cine=0 (dev) skips the opening cinematic.
-  if (new URLSearchParams(location.search).get('cine') !== '0') startCinematic(engine, greet);
-  else greet();
+  if (new URLSearchParams(location.search).get('cine') !== '0') startCinematic(engine, afterOpening);
+  else afterOpening();
   engine.start();
+}
+
+// ─── The Forge (Forge.ts / ForgeUI.ts) ────────────────────────────────────────
+
+/**
+ * Start (or resume) the Forge when the home world is still molten and no
+ * forge has finished. Lab runs (`skipFormation`) and `?forge=0` keep the old
+ * timed formation.
+ */
+function startForgeIfDue(): void {
+  if (!engine || gameState.skipFormation) return;
+  if (new URLSearchParams(location.search).get('forge') === '0') return;
+  if (gameState.forge?.phase === 'done' || !engine.isHomeForming()) return;
+  const ps = engine.beginForge();
+  if (!ps || !gameState.stats) return;
+  if (!gameState.forge) {
+    // The whisperer: a god who is not yours. Seeded, so a universe keeps it.
+    const whisperer = new FallbackNarrator(`${gameState.masterSeed}_whisper`).generateGodName();
+    gameState.forge = newForge(gameState.masterSeed, gameState.stats, ps.temperature, whisperer);
+  }
+  const stageLabels: Record<string, string> = {
+    magma: 'Magma Ocean', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
+    atmosphere: 'Atmosphere Forming', ice_age: 'Ice Age', primordial: 'Primordial Ocean',
+  };
+  runForge({
+    shape: (destiny, stage, dna) => engine?.shapeForgedWorld(destiny, stage, dna),
+    refreshWorld: () => refreshHomeWorldSurface(),
+    openWorld: () => { void openPlanetView(); },
+    stageChanged: (stage) => {
+      const el = document.getElementById('civ-bar');
+      if (el) el.textContent = stageLabels[stage] ?? stage;
+      addFeedEntry(`Forging: ${stageLabels[stage] ?? stage}`, 'milestone');
+      const ps2 = engine?.getPlayerStar();
+      if (ps2) updateBottomBar(ps2);
+    },
+    spark: (tempo) => engine?.sparkForgedLife(tempo),
+    chat: (text, who) => addChatMessage(text, who),
+    godName: () => gameState.godName || 'the god',
+    planetName: () => gameState.playerPlanetName || 'Your world',
+  });
 }
 
 // ─── Opening cinematic (BigBangCinematic) ─────────────────────────────────────
@@ -957,7 +1005,9 @@ function wireEngineEvents(eng: BigBangEngine): void {
     const name = gameState.playerPlanetName || 'Your world';
     addFeedEntry(`${name} has finished forming — a ${DESTINY_LABELS[destiny]}`, 'milestone');
     addChatMessage(
-      `The long fire is over. ${name} has become what it was always meant to be: a ${DESTINY_LABELS[destiny]}. Life may now climb.`,
+      gameState.forge
+        ? `The forging is over. ${name} is a ${DESTINY_LABELS[destiny]} now, and something on it is alive.`
+        : `The long fire is over. ${name} has become what it was always meant to be: a ${DESTINY_LABELS[destiny]}. Life may now climb.`,
       'god',
     );
     addCodexEntry(`${name}: formation complete`, 'biology');
@@ -1198,7 +1248,8 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
     // forms, then its destiny. The setup DNA's ocean answer only shapes the
     // ground in lab runs; a normal run's water comes from its destiny.
     const dna = gameState.playerPlanetDNA;
-    const labDna = gameState.destinyOverride !== null || gameState.skipFormation;
+    // A forged world's water comes from its forging, so its DNA counts in full.
+    const labDna = gameState.destinyOverride !== null || gameState.skipFormation || !!gameState.forge;
     runtimeState.playerPlanetGrid = generatePlanetGrid(
       planet?.type ?? 'rocky',
       gridSeed,
@@ -1708,9 +1759,11 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   const dnaSection = document.getElementById('pi-dna-section');
   if (dna && dnaSection) {
     dnaSection.style.display = '';
-    setText('pi-dna-climate', dna.climate);
-    setText('pi-dna-oceans', dna.oceans.replace('_', ' '));
-    setText('pi-dna-chaos', dna.chaos);
+    // While the Forge runs, the world's DNA is not known yet.
+    const unformed = gameState.forge?.phase === 'draft';
+    setText('pi-dna-climate', unformed ? 'unformed' : dna.climate);
+    setText('pi-dna-oceans', unformed ? 'unformed' : dna.oceans.replace('_', ' '));
+    setText('pi-dna-chaos', unformed ? 'unformed' : dna.chaos);
   } else if (dnaSection) {
     dnaSection.style.display = 'none';
   }
@@ -3684,10 +3737,14 @@ function openNamingModal(mode: 'species' | 'religion'): void {
   if (!overlay) return;
 
   if (mode === 'species') {
-    if (icon)  icon.textContent  = '🧠';
-    if (title) title.textContent = 'INTELLIGENCE EMERGES';
-    if (desc)  desc.textContent  = `After eons of evolution, the first truly intelligent beings have awakened on ${gameState.playerPlanetName}. What do you call your people?`;
-    if (input) input.placeholder = 'e.g. Humans';
+    // Named when life first wakes (usually as microbes), so say what it is.
+    const thinking = engine?.getPlayerStar()?.biologyPhase === 'intelligent';
+    if (icon)  icon.textContent  = thinking ? '🧠' : '🧬';
+    if (title) title.textContent = thinking ? 'INTELLIGENCE EMERGES' : 'LIFE AWAKENS';
+    if (desc)  desc.textContent  = thinking
+      ? `After eons of evolution, the first truly intelligent beings have awakened on ${gameState.playerPlanetName}. What do you call your people?`
+      : `Something lives on ${gameState.playerPlanetName}: one lineage, small and stubborn. Everything that ever walks this world will descend from it. What do you call it?`;
+    if (input) input.placeholder = thinking ? 'e.g. Humans' : 'e.g. The First Ones';
   } else {
     if (icon)  icon.textContent  = '✦';
     if (title) title.textContent = 'FAITH IS BORN';
@@ -3990,6 +4047,8 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
   if (ps) updateBottomBar(ps);
 
   addChatMessage(`[ Universe restored — Tick ${save.gameState.tick.toLocaleString()} | ${new Date(save.savedAt).toLocaleString()} ]`, 'system');
+  // A save made mid-forge resumes the Forge where it was.
+  if (forgeActive()) startForgeIfDue();
   return true;
 }
 
@@ -4258,6 +4317,7 @@ window.addEventListener('DOMContentLoaded', () => {
     dbg['__runtimeState'] = runtimeState;
     dbg['__diorama'] = () => _dioramaRenderer;
     dbg['__pixi'] = () => _pixiRenderer;
+    dbg['__openPlanetView'] = openPlanetView;
     // &fps=1 draws a live frame-rate chip (also on for bare ?dev=1).
     if ((q.get('fps') === '1' || q.get('dev') === '1') && engine) {
       let chip = document.getElementById('fps-chip');

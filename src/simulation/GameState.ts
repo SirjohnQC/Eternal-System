@@ -4,6 +4,7 @@ import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
 import type { PlanetGrid } from './PlanetGrid';
 import type { Civilization } from './Civilization';
+import type { ForgeState, ForgeMods } from './Forge';
 
 export interface PlanetDNA {
   climate: 'desert' | 'temperate' | 'frozen';
@@ -168,6 +169,13 @@ export interface GameStateData {
   destinyOverride: 'ocean' | 'rocky' | 'ice' | 'desert' | null;
   /** Lab / test only: start with the home world already formed (old behaviour). */
   skipFormation: boolean;
+  /**
+   * The Forge (Forge.ts): the home world forged from Fate Cards. Null when the
+   * world forms the old way (headless tools, lab runs) or before a game starts.
+   */
+  forge: ForgeState | null;
+  /** What the forged DNA does to the simulation, once forged (null = neutral). */
+  forgeMods: ForgeMods | null;
   playerPlanetDNA: PlanetDNA | null;
   codexEntries: CodexEntry[];
   playerSpeciesTraits: Record<string, string>;   // category → chosen value from traits modal
@@ -244,6 +252,8 @@ export const gameState: GameStateData = {
   playMode: 'normal',
   destinyOverride: null,
   skipFormation: false,
+  forge: null,
+  forgeMods: null,
   playerPlanetDNA: null,
   codexEntries: [],
   playerSpeciesTraits: {},

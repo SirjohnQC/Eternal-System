@@ -5,6 +5,7 @@ import {
 } from './StarPolities';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
+import { forgeProgress } from './Forge';
 import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_SEQUENCE, BIO_PHASE_LABELS, CODEX_MILESTONES,
@@ -353,6 +354,11 @@ export interface StarBody {
   formationProgress?: number;
   /** Rate bonus from life present / seeding events, 0..MAX_BOOST. */
   formationBoost?: number;
+  /**
+   * The Forge drives this world's formation (Forge.ts): the timed ladder and
+   * every way life could arrive on its own are held until the golden spark.
+   */
+  formationHeld?: boolean;
   terraformStage: PlanetFormationStage | null;  // active terraform stage, null = idle
   terraformTick: number;                         // tick when current stage started
   terraformTargetType: Planet['type'] | null;    // final planet type after terraforming
@@ -2263,7 +2269,9 @@ export class BigBangEngine {
           // survive where it lands, so the roll is weighted by habitability.
           // Nothing survives landing on a world that is still molten, so a
           // system part-way through formation cannot be seeded at all.
-          if (star.formationDestiny && star.formationStage
+          if (star.formationHeld) {
+            // The Forge holds this world: life waits for the spark.
+          } else if (star.formationDestiny && star.formationStage
               && lifeEligible(star.formationDestiny, star.formationStage)) {
             // A forming home world whose crust has set: the strike can carry
             // life. It lies dormant and hastens the ladder.
@@ -2620,7 +2628,9 @@ export class BigBangEngine {
    */
   private playerBioAssistance(): number {
     const fromDNA = Math.min(0.5, this.playerEffect('bioResilience') * DNA_ASSIST_WEIGHT);
-    return Math.min(0.9, this.bioAssistance + fromDNA);
+    // A forged world can be a kinder or a harsher cradle (Forge.ts ForgeMods).
+    const forged = gameState.forgeMods?.assist ?? 0;
+    return Math.max(-0.15, Math.min(0.9, this.bioAssistance + fromDNA + forged));
   }
 
   /**
@@ -2705,7 +2715,8 @@ export class BigBangEngine {
    */
   private rollBiosphereCatastrophe(star: StarBody): void {
     const pressure = (this.stats.entropy + this.stats.hostility) / 2;
-    const p = (pressure / 20) * CATASTROPHE_BASE;
+    const forged = star.isPlayerStar ? gameState.forgeMods?.catastrophe ?? 1 : 1;
+    const p = (pressure / 20) * CATASTROPHE_BASE * forged;
     if (!this.rng.chance(p)) return;
 
     const rng = this.rng.fork(`cata_${star.id}_${this.tick}`);
@@ -2790,7 +2801,8 @@ export class BigBangEngine {
       : 1.0;
 
     // Per-world tempo is what makes two identical planets wake up centuries apart.
-    const tempo  = star.bioTempo ?? 1;
+    // The forged world's mutation pressure rides on top (Forge.ts ForgeMods).
+    const tempo  = (star.bioTempo ?? 1) * (star.isPlayerStar ? gameState.forgeMods?.tempo ?? 1 : 1);
     const stalls = star.bioStalls ?? 0;
     // The player's world caps its stall count: uncapped, the wait between
     // attempts diverges and a world that failed a few times effectively never
@@ -5211,6 +5223,7 @@ export class BigBangEngine {
 
   /** One formation check (every FORMATION_CHECK_RATE ticks) on a destiny ladder. */
   private stepHomeFormation(star: StarBody): void {
+    if (star.formationHeld) return;   // the Forge drives it (shapeForgedWorld / sparkForgedLife)
     const destiny = star.formationDestiny!;
     const stage = star.formationStage!;
     const budget = star.formationBudget ?? 0;
@@ -5246,7 +5259,13 @@ export class BigBangEngine {
       return;
     }
 
-    // ── Formation complete: the world settles into its destiny ────────────
+    this.completeHomeFormation(star);
+  }
+
+  /** Formation complete: the world settles into its destiny, and life begins. */
+  private completeHomeFormation(star: StarBody): void {
+    const destiny = star.formationDestiny!;
+    const planet = this.homePlanetOf(star);
     star.formationStage = null;
     star.formationTick = 0;
     star.formationDestiny = undefined;
@@ -5274,6 +5293,46 @@ export class BigBangEngine {
       // forming: either way this is when the player meets it.
       this.onPlayerLifeEmerged?.();
     }
+  }
+
+  // ── The Forge (Forge.ts) ────────────────────────────────────────────────
+
+  /** Hand the home world's formation to the Forge: the timed ladder stops. */
+  beginForge(): StarBody | undefined {
+    const ps = this.getPlayerStar();
+    if (!ps?.formationDestiny) return undefined;
+    ps.formationHeld = true;
+    return ps;
+  }
+
+  /**
+   * The forged world as it stands: its destiny (what the forces make of it),
+   * the stage its hardening has reached, and its surface DNA. Repaints it.
+   */
+  shapeForgedWorld(destiny: DestinyType, stage: PlanetFormationStage, dna: PlanetDNA): void {
+    const ps = this.getPlayerStar();
+    if (!ps?.formationHeld) return;
+    const planet = this.homePlanetOf(ps);
+    ps.formationDestiny = destiny;
+    ps.formationStage = stage;
+    if (planet) {
+      planet.destinyType = destiny;
+      planet.dna = { ...dna };
+      this.applyFormationFace(ps, planet);
+    }
+    gameState.playerPlanetDNA = { ...dna };
+  }
+
+  /**
+   * The golden spark: the forged world finishes and life wakes, with the tempo
+   * the moment rolled. Fires the usual completion and life events.
+   */
+  sparkForgedLife(tempo: number): void {
+    const ps = this.getPlayerStar();
+    if (!ps?.formationHeld || !ps.formationDestiny) return;
+    ps.formationHeld = false;
+    this.completeHomeFormation(ps);
+    ps.bioTempo = tempo;
   }
 
   /**
@@ -5327,6 +5386,7 @@ export class BigBangEngine {
   homeFormationFraction(): number {
     const ps = this.getPlayerStar();
     if (!ps?.formationDestiny || !ps.formationStage) return 1;
+    if (ps.formationHeld && gameState.forge) return forgeProgress(gameState.forge);
     return formationFraction(ps.formationDestiny, ps.formationBudget ?? 0, ps.formationStage, ps.formationProgress ?? 0);
   }
 
