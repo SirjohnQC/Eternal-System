@@ -125,6 +125,17 @@ export interface Moon {
   colonised: boolean;
   /** Tick the colony was founded, for the event log and Codex. */
   colonisedTick: number | null;
+  /**
+   * A lumpy captured rock rather than a round moon. Absent on old saves:
+   * derived from size (see MoonSize.moonIsIrregular).
+   */
+  irregular?: boolean;
+  /**
+   * Orbit tilt as seen from the planet's surface, radians (~-0.35..0.35), so
+   * several moons cross the home-world sky on separate paths. Absent on old
+   * saves: hashed from the name (MoonSize.moonInclination).
+   */
+  inclination?: number;
 }
 
 export type MoonKind = 'rock' | 'ice' | 'iron' | 'volcanic' | 'carbon' | 'ocean';
@@ -176,6 +187,7 @@ export interface Planet {
 // Moved to ./Orbit (pure) so renderers can place planets without the engine.
 export { planetOffsetFromStar } from './Orbit';
 import { planetOffsetFromStar } from './Orbit';
+import { rollMoons, moonViewOrbit } from './MoonSize';
 
 /**
  * A galaxy: a named clump of stars (M22b).
@@ -4825,9 +4837,8 @@ export class BigBangEngine {
         const d = Math.hypot(px - wx, py - wy);
         if (d < body / 2 + reach && d < bestD) { bestD = d; best = { star, planetIndex: i, moonIndex: null }; }
         planet.moons.forEach((moon, m) => {
-          const large = moon.radius >= planet.radius * 0.4;
           const ma = moon.orbitalAngle + this.animTick * moon.orbitalSpeed;
-          const r = Math.max(moon.orbitalRadius, body * (large ? 1.15 : 0.85));
+          const r = moonViewOrbit(moon, m, body);
           const dm = Math.hypot(px + Math.cos(ma) * r - wx, py + Math.sin(ma) * r - wy);
           // Moons are small: they win only when the click is right on them.
           if (dm < Math.max(moon.radius * 2, 4 / sc) && dm < bestD) { bestD = dm; best = { star, planetIndex: i, moonIndex: m }; }
@@ -5790,75 +5801,25 @@ export class BigBangEngine {
    * Roll a planet's satellites.
    *
    * Count and composition follow the parent: gas giants keep whole retinues of
-   * ice moons, small rocky worlds usually keep none. Habitability is set here
-   * rather than derived later, so a moon is a fixed fact about a system that a
-   * civilisation may or may not ever be able to use.
+   * moons of very different sizes, an ordinary world usually keeps none or one
+   * and sometimes two or three. Sizes are rolled by class, from tiny captured
+   * rocks (lumpy, far out) to giant moons, so no two systems look alike.
+   * Habitability is set here rather than derived later, so a moon is a fixed
+   * fact about a system that a civilisation may or may not ever be able to use.
+   *
+   * The engine rng is advanced by EXACTLY the draws the pre-2026-10-06 roll
+   * took (a count in 0..max, then 7 per moon), and those draws seed the new
+   * roll's own stream. Every system, star and war downstream of moon
+   * generation therefore comes out identical to before; only the moons differ.
    */
   private generateMoons(planet: Planet, label: string): Moon[] {
     const rng = this.rng;
-    // Bigger worlds hold more. A gas giant plausibly has a dozen; the sim only
-    // needs enough to look and feel right.
-    const maxCount = planet.type === 'gas' ? 4
-                   : planet.radius > 0.9 ? 2
-                   : 1;
-    const count = rng.nextInt(0, maxCount);
-    if (count === 0) return [];
-
-    // Which compositions are plausible around this kind of planet.
-    const POOLS: Record<Planet['type'], MoonKind[]> = {
-      gas:     ['ice', 'ice', 'rock', 'ocean', 'carbon'],
-      ice:     ['ice', 'ice', 'rock'],
-      ocean:   ['rock', 'ice', 'carbon'],
-      rocky:   ['rock', 'rock', 'iron', 'carbon'],
-      lava:    ['volcanic', 'iron', 'rock'],
-      toxic:   ['rock', 'carbon', 'ice'],
-      crystal: ['ice', 'rock', 'carbon'],
-      desert:  ['rock', 'iron', 'carbon'],
-      storm:   ['ice', 'rock', 'ocean'],
-      carbon:  ['carbon', 'rock', 'iron'],
-    };
-    const TINT: Record<MoonKind, string> = {
-      rock:     '#b9b2a6',
-      ice:      '#d6ecf8',
-      iron:     '#8c7f78',
-      volcanic: '#c96a44',
-      carbon:   '#4c4a52',
-      ocean:    '#5f9fd0',
-    };
-    // A subsurface ocean is the prize; bare iron is nearly worthless.
-    const HAB: Record<MoonKind, [number, number]> = {
-      ocean:    [0.55, 0.85],
-      ice:      [0.30, 0.60],
-      carbon:   [0.22, 0.45],
-      rock:     [0.15, 0.40],
-      volcanic: [0.05, 0.22],
-      iron:     [0.04, 0.18],
-    };
-
-    const pool = POOLS[planet.type];
-    const moons: Moon[] = [];
-    for (let i = 0; i < count; i++) {
-      const kind = pool[rng.nextInt(0, pool.length - 1)];
-      const [hlo, hhi] = HAB[kind];
-      // Occasional large moon — readable in system view / future colony target.
-      const large = rng.chance(planet.type === 'gas' ? 0.35 : 0.18);
-      const radius = large
-        ? planet.radius * rng.nextFloat(0.42, 0.62)
-        : planet.radius * rng.nextFloat(0.16, 0.36);
-      moons.push({
-        name: `${label}-${'abcdefgh'[i]}`,
-        radius: Math.min(radius, planet.radius * 0.7),
-        orbitalRadius: planet.radius * (2.2 + i * 1.5) + rng.nextFloat(0, 1.2) + (large ? 1.5 : 0),
-        orbitalAngle: rng.nextFloat(0, Math.PI * 2),
-        orbitalSpeed: rng.nextFloat(0.0033, 0.010) / (i + 1),
-        color: TINT[kind],
-        kind,
-        habitability: rng.nextFloat(hlo, hhi) + (large ? 0.08 : 0),
-        colonised: false,
-        colonisedTick: null,
-      });
-    }
-    return moons;
+    const legacyMax = planet.type === 'gas' ? 4 : planet.radius > 0.9 ? 2 : 1;
+    const first = rng.next();
+    const legacyCount = Math.floor(first * (legacyMax + 1));
+    let seed = (first * 4294967296) >>> 0;
+    for (let i = 0; i < legacyCount * 7; i++) seed = (Math.imul(seed ^ ((rng.next() * 4294967296) >>> 0), 2654435761) >>> 0);
+    return rollMoons(planet, label, seed);
   }
 
   /**

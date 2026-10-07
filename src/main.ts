@@ -6,6 +6,7 @@ import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
+import { moonSizeClass, moonSizeLabel, moonIsIrregular } from './simulation/MoonSize';
 import {
   UniverseStats, PlanetDNA, DEFAULT_PLANET_DNA, GameStateData, gameState, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_LABELS, BIO_PHASE_SEQUENCE, CIV_PHASE_LABELS, civLevelToPhase,
@@ -2871,6 +2872,9 @@ function wireCosmicCallbacks(): void {
     if (ev.type === 'asteroid_impact' && isPlayerStar) {
       _pendingAsteroidWarning = false;
       updateSmiteButton();
+      // The strike lands on the home world: show it falling (size 1.0, a land
+      // cell in view picked by the renderer).
+      _dioramaRenderer?.playMeteorStrike(null, 1.0);
     }
   };
 }
@@ -5572,7 +5576,7 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     title = moon.name || 'Moon';
     subtitle = `Moon of ${planetName}`;
     rows.push(['Type', cap(String(moon.kind))]);
-    rows.push(['Size', moon.radius >= planet.radius * 0.4 ? 'Large' : 'Small']);
+    rows.push(['Size', moonSizeLabel(moonSizeClass(moon, planet))]);
     rows.push(['Habitability', `${Math.round(moon.habitability * 100)}%`]);
     rows.push(['Status', moon.colonised ? 'Colonised' : 'Untouched']);
   } else {
@@ -5623,7 +5627,7 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
       if (moon) {
         const c = moon.color.replace('#', ''), n = parseInt(c.length === 3 ? c.split('').map(ch => ch + ch).join('') : c, 16);
         const f = paintMoon({ kind: moon.kind as MoonKindArt, rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255], size: 28,
-          seed: (planet.genomeSeed ?? 1) * 31 + (moonIndex ?? 0) * 977, lx: 0.8, ly: -0.4, colonised: moon.colonised });
+          seed: (planet.genomeSeed ?? 1) * 31 + (moonIndex ?? 0) * 977, lx: 0.8, ly: -0.4, colonised: moon.colonised, irregular: moonIsIrregular(moon, planet) });
         src = document.createElement('canvas'); src.width = f.width; src.height = f.height;
         const g = src.getContext('2d'); if (g) { const img = g.createImageData(f.width, f.height); img.data.set(f.data); g.putImageData(img, 0, 0); }
       } else if (!planet.isDead) {

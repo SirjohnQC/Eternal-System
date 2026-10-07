@@ -41,6 +41,9 @@ import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf,
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
+import { MeteorStrike, type StrikeView } from './MeteorStrike';
+import { SkyDebris } from './sky/SkyDebris';
+import { moonSizeT, moonIsIrregular, moonInclination } from '../simulation/MoonSize';
 import { motionRate, STRIDE } from './CreatureForge';
 import type { NationSystem } from '../simulation/Nations';
 import { paintFlag, mapColor } from './NationFlagArt';
@@ -352,7 +355,8 @@ export type DivineEffectKind =
   | 'sink'        // Sink Land — inward collapse
   | 'fertility'   // local fertility — green bloom
   | 'water'       // local water — blue ripple
-  | 'sight';      // Divine Sight — a wide ring of light
+  | 'sight'       // Divine Sight — a wide ring of light
+  | 'meteor';     // A body from the sky — delegates to playMeteorStrike
 
 interface EffectStyle {
   /** Core colour of the effect. */
@@ -380,6 +384,8 @@ const EFFECT_STYLES: Record<DivineEffectKind, EffectStyle> = {
   fertility:  { color: rgb(150, 235, 120), life: 1.5, rings: 1, motes:  22, beam: false, wash: 0.03 },
   water:      { color: rgb(120, 200, 255), life: 1.5, rings: 2, motes:  12, beam: false, wash: 0.03 },
   sight:      { color: rgb(190, 220, 255), life: 1.8, rings: 3, motes:   0, beam: false, wash: 0.05 },
+  // Never queued as a plain effect: playDivineEffect hands it to the strike.
+  meteor:     { color: rgb(255, 180, 90),  life: 1.0, rings: 0, motes:   0, beam: false, wash: 0 },
 };
 
 /** A mote: start position (base-world px) and velocity (base-world px/s). */
@@ -550,6 +556,16 @@ export class IsoDioramaRenderer {
   private embers:   Ember[]   = [];
   /** Divine acts currently playing out on the surface. */
   private effects:  DivineEffect[] = [];
+  /** Meteor strikes (falling body, impact, plume) and the craters they leave. */
+  private meteor = new MeteorStrike();
+  private meteorCount = 0;
+  /** Reused per frame: the active camera geometry for the strike painter. */
+  private strikeView: StrikeView = {
+    wsx: (x) => this.wsx(x), wsy: (y) => this.wsy(y), k: 1, cx: 0, cy: 0, rx: 1, ry: 1,
+    bodyCx: 0, bodyCy: 0, bodyR: 1, VW: 480, VH: 320, lightX: 1,
+  };
+  /** Rocks and dust drifting through the sky behind the planet. */
+  private skyDebris = new SkyDebris();
 
   /**
    * Creatures and settlements standing on the surface, rebuilt with the terrain.
@@ -1038,6 +1054,8 @@ export class IsoDioramaRenderer {
     // planet's lushness against the PREVIOUS planet's, possibly suppressing
     // a re-bake this world has never actually painted.
     this.lastDecalState = null;
+    // Craters and strikes belong to the world they hit.
+    this.meteor.clear();
     this.computeFocus();
     // A (re)entered or new planet starts at the identity view: bake() drops
     // the camera layers and the sim, so the controller must not still think
@@ -3638,6 +3656,7 @@ export class IsoDioramaRenderer {
   // ─── Frame ─────────────────────────────────────────────────────────────────
 
   private frame(dt: number, now = performance.now()): void {
+    if (this.meteor.active) this.meteor.step(dt, this.strikeView.lightX);
     if (this.habitable) {
       this.sky = this.skyNow();
       this.updateSeason();
@@ -3656,6 +3675,7 @@ export class IsoDioramaRenderer {
         air: this.air,
         drawFarSpace: (g) => {
           this.drawSky(g);
+          this.drawSkyDebris(g);
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), false);
         },
         // With live flora the buildings are drawn in the flora layer's depth
@@ -3667,10 +3687,12 @@ export class IsoDioramaRenderer {
           this.drawVentFx(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
           this.drawBirds(g, this.elapsed);
+          if (this.meteor.active) this.meteor.drawSurface(g, this.updateStrikeView());
         },
         drawUiOverlays: (g) => {
           this.drawTileMarkers(g, this.elapsed);
           this.drawDivineEffects(g, dt);
+          if (this.meteor.active) this.meteor.drawSky(g, this.updateStrikeView());
         },
         drawNearMoons: (g) => {
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), true);
@@ -3699,6 +3721,7 @@ export class IsoDioramaRenderer {
 
     // 2 — sky: orbit arc, phased siblings and the sun, from the real orbits
     this.drawSky(g);
+    this.drawSkyDebris(g);
 
     // 4 — atmospheric halo behind the body. A gas giant is a full sphere
     // centred in the frame, not a disc, so its halo is centred too.
@@ -3750,8 +3773,13 @@ export class IsoDioramaRenderer {
     // 10c — tile hover / selection markers
     this.drawTileMarkers(g, t);
 
-    // 10d — divine powers landing on the surface
+    // 10d — divine powers landing on the surface; meteor strikes
     this.drawDivineEffects(g, dt);
+    if (this.meteor.active) {
+      const sv = this.updateStrikeView();
+      this.meteor.drawSurface(g, sv);
+      this.meteor.drawSky(g, sv);
+    }
 
     // 12 — the glass dome itself (gas giants have neither dome nor cut face)
     if (pal.hasDome) this.drawDome(g, t);
@@ -3967,46 +3995,84 @@ export class IsoDioramaRenderer {
    * @param front true to draw the half of each orbit in front of the planet
    */
   private drawMoons(g: CanvasRenderingContext2D, _angle: number, front: boolean): void {
-    const { cx, cy, rx, ry } = this;
+    const { cx, rx } = this;
     const planet = this.planet, moons = planet?.moons ?? [];
     if (!planet || moons.length === 0) return;
-    const rank = moons.map((m, i) => i).sort((a, b) => moons[a].orbitalRadius - moons[b].orbitalRadius);
+    const n = Math.min(moons.length, 8);
+    // Rank outward by orbit radius, then back-to-front within this half by
+    // screen depth. Scratch arrays and insertion sorts: no per-frame allocation.
+    const rank = this.moonRank, depth = this.moonDepth, key = this.moonKey;
+    for (let i = 0; i < n; i++) { rank[i] = i; key[i] = moons[i].orbitalRadius; }
+    this.sortByKey(rank, n, key);
     const tick = this.animTick;
     const k = this.camZoom;
     // Sun direction on screen (azimuth 0 lights the +x limb), from above.
     const az = this.sky?.sun.az ?? 0;
     const lb = Math.round(Math.cos(az) * 8) / 8;
-    for (let o = 0; o < rank.length; o++) {
-      const i = rank[o], m = moons[i];
+    // Orbit centre: above the face, so moons pass over the dome and behind
+    // the crust. Each moon's ellipse spreads outward with its rank (spread
+    // compressed to fit however many there are), and is tilted by its own
+    // inclination, so several moons cross on separate paths and speeds.
+    const geom = this.habitable ? this.cutaway.drawGeom : null;
+    const R = geom ? geom.R : rx;
+    const oy = geom ? geom.cyTop - geom.ry * 0.95 : this.cy - rx * 0.22;
+    const span = n > 1 ? Math.min(0.62, 0.16 * (n - 1)) : 0;
+    let count = 0;
+    for (let o = 0; o < n; o++) {
+      const m = moons[rank[o]];
+      const sa = Math.sin(m.orbitalAngle + tick * m.orbitalSpeed);
+      if ((sa > 0) !== front) continue;
+      depth[count] = o; this.moonDepthKey[o] = sa; count++;
+    }
+    if (count === 0) return;
+    this.sortByKey(depth, count, this.moonDepthKey);
+    const prev = g.imageSmoothingEnabled;
+    g.imageSmoothingEnabled = false;
+    for (let j = 0; j < count; j++) {
+      const o = depth[j], i = rank[o], m = moons[i];
       const a = m.orbitalAngle + tick * m.orbitalSpeed;
-      const isFront = Math.sin(a) > 0;
-      if (isFront !== front) continue;
-      const dist = 1.5 + o * 0.32;
-      const x = cx + Math.cos(a) * rx * dist;
-      const y = this.habitable
-        ? this.cutaway.drawGeom.cyTop - this.cutaway.drawGeom.ry * 1.35
-          + Math.sin(a) * this.cutaway.drawGeom.R * 0.38
-        : cy + Math.sin(a) * ry * 2.0 - rx * 0.22;
-      const rel = planet.radius > 0 ? m.radius / planet.radius : 0.25;
-      const d = Math.round(Math.max(6 * k, Math.min(rx * 0.32, rx * 0.5 * rel)));
-      const key = `${i}|${d}|${lb}|${m.colonised ? 1 : 0}`;
+      const f = n > 1 ? o / (n - 1) : 0;
+      const A = rx * (1.34 + span * f * 1.15);
+      const B = R * (0.20 + 0.10 * f);
+      const inc = moonInclination(m, i);
+      const ex = Math.cos(a) * A, ey = Math.sin(a) * B;
+      const ci = Math.cos(inc), si = Math.sin(inc);
+      const x = cx + ex * ci - ey * si;
+      const y = oy + ex * si * 0.55 + ey * ci;
+      // Size from the moon's real size relative to its planet (MoonSize):
+      // a captured rock is a 6-9 px lump, a giant moon ~a third of the face.
+      const st = moonSizeT(m, planet);
+      const d = Math.max(5, Math.round((6 + (rx * 0.30 - 6) * Math.pow(st, 0.9)) * Math.min(k, 2)));
+      const irr = moonIsIrregular(m, planet);
+      const key = `${i}|${d}|${lb}|${m.colonised ? 1 : 0}|${irr ? 1 : 0}`;
       let cv = this.moonSprites.get(key);
       if (!cv) {
-        const f = paintMoon({
+        const fr = paintMoon({
           kind: m.kind as MoonKindArt, rgb: ((c) => [c.r, c.g, c.b] as [number, number, number])(hexToRGB(m.color)), size: d,
-          seed: (planet.genomeSeed ?? 1) * 31 + i * 977, lx: lb, ly: -0.45, colonised: m.colonised,
+          seed: (planet.genomeSeed ?? 1) * 31 + i * 977, lx: lb, ly: -0.45, colonised: m.colonised, irregular: irr,
         });
         cv = document.createElement('canvas');
-        cv.width = f.width; cv.height = f.height;
+        cv.width = fr.width; cv.height = fr.height;
         const cg = cv.getContext('2d');
-        if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+        if (cg) { const img = cg.createImageData(fr.width, fr.height); img.data.set(fr.data); cg.putImageData(img, 0, 0); }
         if (this.moonSprites.size > 200) this.moonSprites.clear();
         this.moonSprites.set(key, cv);
       }
-      const prev = g.imageSmoothingEnabled;
-      g.imageSmoothingEnabled = false;
       g.drawImage(cv, Math.round(x - d / 2), Math.round(y - d / 2));
-      g.imageSmoothingEnabled = prev;
+    }
+    g.imageSmoothingEnabled = prev;
+  }
+  private moonRank: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  private moonDepth: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  private moonKey: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  private moonDepthKey: number[] = [0, 0, 0, 0, 0, 0, 0, 0];
+  /** Insertion sort of the first `n` indices by `key[index]` (tiny n; no allocation). */
+  private sortByKey(arr: number[], n: number, key: number[]): void {
+    for (let i = 1; i < n; i++) {
+      const v = arr[i];
+      let j = i - 1;
+      while (j >= 0 && key[arr[j]] > key[v]) { arr[j + 1] = arr[j]; j--; }
+      arr[j + 1] = v;
     }
   }
   private moonSprites = new Map<string, HTMLCanvasElement>();
@@ -4089,6 +4155,7 @@ export class IsoDioramaRenderer {
   }
 
   playDivineEffect(kind: DivineEffectKind, cell?: { row: number; col: number } | null): void {
+    if (kind === 'meteor') { this.playMeteorStrike(cell ?? null, 0.7); return; }
     const style = EFFECT_STYLES[kind];
     // Cast in BASE-WORLD units (spec 3), whatever the camera: centre, reach,
     // mote positions and velocities. Drawing maps them through the camera.
@@ -4128,6 +4195,77 @@ export class IsoDioramaRenderer {
     this.effects.push({ kind, wx: x, wy: y, reach, age: 0, motes });
     // Bound the queue: spamming a power should not stack unbounded work.
     if (this.effects.length > 6) this.effects.shift();
+  }
+
+  /**
+   * A meteor strike: a burning body streaking in from the sky, an entry flash,
+   * an impact flash lighting the surface, a shockwave over the terrain, ejecta
+   * arcs, a dust plume, and a scorched crater that stays ~60 s, fading.
+   *
+   * @param cell where it lands; null picks a land cell in view (seeded by the
+   *   world and the strike count, so it is not always the same spot)
+   * @param size 0.4 (comet fragment) .. 1.2 (extinction-class); default 0.8
+   */
+  playMeteorStrike(cell?: { row: number; col: number } | null, size = 0.8): void {
+    const pg = this.placeGeom;
+    const n = this.meteorCount++;
+    const at = cell ?? this.pickStrikeCell(n);
+    let x = pg.cx, y = pg.cy;
+    if (at) {
+      const d = this.gridToDisc(at.row, at.col);
+      if (d) {
+        x = pg.cx + d.dx * pg.rx;
+        y = pg.cy + d.dy * pg.ry;
+        const gc = this.grid?.[at.row]?.[at.col];
+        if (gc) y -= this.liftAtCell(gc, Math.hypot(d.dx, d.dy));
+      }
+    }
+    const seed = (this.planetSeed ^ Math.imul(n + 1, 2654435761)) >>> 0;
+    this.meteor.start(x, y, pg.rx * (0.2 + 0.12 * size), size, seed, this.VW, this.VH);
+  }
+
+  /**
+   * A land cell well inside the visible face (disc radius < 0.7), chosen with
+   * a seeded pick among ~200 sampled candidates. Null when no land is in view
+   * (an ocean world): the strike then lands in the sea at the centre.
+   */
+  private pickStrikeCell(n: number): { row: number; col: number } | null {
+    const grid = this.grid;
+    if (!grid) return null;
+    const rnd = new Stream((this.planetSeed ^ Math.imul(n + 7, 0x9e3779b1)) >>> 0);
+    let best: { row: number; col: number } | null = null, bestScore = -1;
+    for (let i = 0; i < 400; i++) {
+      const row = rnd.int(0, GRID_SIZE - 1), col = rnd.int(0, GRID_SIZE - 1);
+      const d = this.gridToDisc(row, col);
+      if (!d) continue;
+      const r = Math.hypot(d.dx, d.dy);
+      if (r > 0.7) continue;
+      const c = grid[row]?.[col];
+      if (!c || isWater(c.biome)) continue;
+      // Prefer the middle of the face, with a random spread.
+      const score = (1 - r) + rnd.next() * 0.8;
+      if (score > bestScore) { bestScore = score; best = { row, col }; }
+    }
+    return best;
+  }
+
+  /** Fill the reused strike view from the active geometry (no allocation). */
+  private updateStrikeView(): StrikeView {
+    const v = this.strikeView;
+    v.k = this.camZoom;
+    v.cx = this.cx; v.cy = this.cy; v.rx = this.rx; v.ry = this.ry;
+    v.bodyCx = this.cx;
+    v.bodyCy = this.habitable ? this.bodyCy : this.cy;
+    v.bodyR = this.habitable ? this.cutaway.drawGeom.R : this.rx;
+    v.VW = this.VW; v.VH = this.VH;
+    v.lightX = Math.cos(this.sky?.sun.az ?? 0);
+    return v;
+  }
+
+  /** A few rocks and dust motes drifting through the sky behind the planet. */
+  private drawSkyDebris(g: CanvasRenderingContext2D): void {
+    this.skyDebris.draw(g, this.VW, this.VH, this.elapsed, this.planetSeed,
+      Math.cos(this.sky?.sun.az ?? 0), this.camZoom);
   }
 
   /** Divine acts: expanding rings, rising motes, beams and light washes. */
