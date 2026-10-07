@@ -28,6 +28,7 @@ import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { BigBangCinematic } from './simulation/BigBangCinematic';
 import { newForge } from './simulation/Forge';
 import { runForge, forgeActive } from './ui/ForgeUI';
+import { initUniverseMap, showDormantGalaxyCard, currentOverlay } from './ui/UniverseMapUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
   generatePlanetGrid, classifyBiome, isWater, isHabitable,
@@ -433,6 +434,7 @@ async function launchBigBangAsync(): Promise<void> {
   gameState.civilizations = {};
   gameState.forge = null;
   gameState.forgeMods = null;
+  gameState.sectorsCharted = [];
   gameState.dnaFocusBranch = null;
   _pmSelected = null;
   _pmLayer = 'biome';
@@ -711,6 +713,7 @@ async function attachPixiRenderer(eng: BigBangEngine, engineCanvas: HTMLCanvasEl
 
   eng.pixiMode = true;
   eng.onPixiFrame = (e) => pixi.renderFrame(e);
+  pixi.setMapOverlay(currentOverlay());
   _pixiRenderer = pixi;
 
   // Keep Pixi canvas sized on window resize
@@ -1098,6 +1101,11 @@ function wireEngineEvents(eng: BigBangEngine): void {
       addCodexEntry(`${leader.name} Rises`, 'civilisation');
     }
     setTimeout(() => void showLeaderDialogue(leader, eventContext), 800);
+  };
+  eng.onDormantGalaxySelected = (gal, x, y) => showDormantGalaxyCard(gal, x, y, gameState.playerPlanetName || 'your world');
+  eng.onSectorCharted = (name) => {
+    addFeedEntry(`Sector charted: ${name}`, 'discovery');
+    addChatMessage(`Your astronomers have charted ${name}. Its galaxies are no longer only light.`, 'god');
   };
   eng.onStarSelected = (star) => {
     openSystemPanel(star);
@@ -5687,6 +5695,11 @@ function renderCivDetail(civ: Civilization): void {
 let _lastZoomTier: ZoomTier | null = null;
 
 function initZoomTiers(): void {
+  initUniverseMap({
+    engine: () => engine,
+    setOverlay: (m) => _pixiRenderer?.setMapOverlay(m),
+    blocked: () => document.body.classList.contains('cinematic') || gameState.forge?.phase === 'draft' || planetViewOpen(),
+  });
   for (const btn of document.querySelectorAll<HTMLButtonElement>('.zt-btn')) {
     btn.addEventListener('click', () => {
       const tier = btn.dataset['tier'] as ZoomTier | undefined;

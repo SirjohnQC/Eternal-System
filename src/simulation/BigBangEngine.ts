@@ -7,6 +7,10 @@ import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
 import {
+  generateCosmos, sectorAt, sectorState, chartedByTech, dormantGalaxies as allDormant,
+  type Cosmos, type DormantGalaxy, type SectorState,
+} from './Universe';
+import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_SEQUENCE, BIO_PHASE_LABELS, CODEX_MILESTONES,
   DNABranch, DEFAULT_DNA_BRANCH,
@@ -258,7 +262,7 @@ export interface Galaxy {
  * continuum. Tiers give zooming somewhere to arrive at, and give the UI
  * something to name and to jump between.
  */
-export type ZoomTier = 'universe' | 'galaxy' | 'system' | 'planet';
+export type ZoomTier = 'cosmos' | 'universe' | 'galaxy' | 'system' | 'planet';
 
 /**
  * Closest the system view's camera goes (wheel zoom). Was 5: a planet then
@@ -266,12 +270,16 @@ export type ZoomTier = 'universe' | 'galaxy' | 'system' | 'planet';
  * inspect; its texture is baked larger when it is big on screen.
  */
 export const CAMERA_MAX_SCALE = 12;
+/** Furthest the wheel can pull back: the whole universe map. */
+export const CAMERA_MIN_SCALE = 0.02;
 
 /** Camera scale at which each tier begins, and the scale a jump lands on. */
 export const ZOOM_TIERS: Array<{ tier: ZoomTier; min: number; nominal: number; label: string }> = [
   // Nominal scales drop with the larger WORLD_SIZE so "Universe" still frames
   // the whole disc and "Galaxy" frames one island in the void.
-  { tier: 'universe', min: 0.00, nominal: 0.12, label: 'Universe' },
+  // The whole universe (every sector), then one sector — the engine's world.
+  { tier: 'cosmos',   min: 0.00, nominal: 0.035, label: 'Universe' },
+  { tier: 'universe', min: 0.06, nominal: 0.12, label: 'Sector'   },
   { tier: 'galaxy',   min: 0.22, nominal: 0.70, label: 'Galaxy'   },
   { tier: 'system',   min: 1.80, nominal: 3.20, label: 'System'   },
   { tier: 'planet',   min: 4.40, nominal: 5.00, label: 'Planet'   },
@@ -789,6 +797,12 @@ export class BigBangEngine {
   cinematic: BigBangCinematic | null = null;
   /** Fires once when the cinematic ends (ran out or skipped). */
   onCinematicEnd: (() => void) | null = null;
+  /** The universe beyond the home sector (Universe.ts), rolled from the seed at init. */
+  cosmos: Cosmos | null = null;
+  /** A dormant galaxy clicked on the map (screen position for the card). */
+  onDormantGalaxySelected: ((gal: DormantGalaxy, screenX: number, screenY: number) => void) | null = null;
+  /** A sector newly charted by the player's people. */
+  onSectorCharted: ((name: string) => void) | null = null;
   /**
    * Screen pixels the HUD covers on each edge (rail, chat panel, top and
    * bottom bars; `deck` = how far up the faith deck reaches). Set by the UI.
@@ -1158,6 +1172,10 @@ export class BigBangEngine {
     // still sets the pool; morph weights how that pool splits across galaxies.
     const starCount = Math.floor(18 + stats.life * 2.1);   // 20–60 stars
     const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
+    // The universe around this sector: which sector is home and how many
+    // galaxies each holds (2–5), rolled from the seed on its own RNG.
+    this.cosmos = generateCosmos(seed, stats);
+    this._dormant = null;
 
     // Size the blast so the universe lands INSIDE its boundary. Use most of the
     // disc so galaxies can sit far apart with void between them.
@@ -1172,7 +1190,10 @@ export class BigBangEngine {
     // tight and gravity cascades; too large and envelopes merge into one blob.
     // After M25 the sim is healthy; this pass makes the *look* match real space:
     // vast empty stretches between galaxies, and sparse systems inside each.
-    const galaxyCount = this.rng.nextInt(3, 4);
+    // (The old 3–4 roll still draws from the RNG so the rolls after it keep
+    // their order; the home sector's own count from the cosmos wins.)
+    const oldCount = this.rng.nextInt(3, 4);
+    const galaxyCount = this.cosmos?.sectors[this.cosmos.home].galaxyCount ?? oldCount;
     // Centres ride a wide ring so neighbours sit across real void.
     const ringR = maxDrift * this.rng.nextFloat(0.72, 0.88);
     // Room for denser census under MIN_STAR_SEPARATION (relax may still grow).
@@ -1595,27 +1616,92 @@ export class BigBangEngine {
    * The whole universe in one view: the live galaxies' bounding box, fitted
    * inside the screen (with room for the HUD / letterbox top and bottom).
    */
-  universeFrame(): { x: number; y: number; scale: number } {
+  universeFrame(sector = this.cosmos?.home ?? -1): { x: number; y: number; scale: number } {
+    return this.frameGalaxies(sector, 0.06, 0.21);
+  }
+
+  /** The whole universe map: every sector's galaxies in one view. */
+  cosmosFrame(): { x: number; y: number; scale: number } {
+    return this.frameGalaxies(-2, 0.015, 0.058);
+  }
+
+  /**
+   * Fit a set of galaxies in the play area: one sector (index), the home
+   * sector's live galaxies (-1 / home), or every galaxy in the universe (-2).
+   */
+  private frameGalaxies(sector: number, minScale: number, maxScale: number): { x: number; y: number; scale: number } {
     const C = WORLD_SIZE / 2;
+    const home = this.cosmos?.home ?? -1;
+    // The universe map frames the whole sector grid (frames, names and all).
+    if (sector === -2 && this.cosmos) {
+      const xs = this.cosmos.sectors.map(sc => sc.ox), ys = this.cosmos.sectors.map(sc => sc.oy);
+      return this.fitBox(Math.min(...xs), Math.min(...ys), Math.max(...xs) + WORLD_SIZE, Math.max(...ys) + WORLD_SIZE, sector, minScale, maxScale);
+    }
+    const list: Galaxy[] = sector === -2
+      ? [...this.galaxies.filter(g => g.starIds.length), ...this.dormantGalaxies]
+      : sector < 0 || sector === home ? this.galaxies.filter(g => g.starIds.length)
+      : this.cosmos!.sectors[sector].galaxies;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const g of this.galaxies) {
-      if (!g.starIds.length) continue;
+    for (const g of list) {
       const r = g.radius * 1.2;
       x0 = Math.min(x0, g.cx - r); x1 = Math.max(x1, g.cx + r);
       y0 = Math.min(y0, g.cy - r); y1 = Math.max(y1, g.cy + r);
     }
     if (!isFinite(x0)) return { x: C, y: C, scale: 0.12 };
+    return this.fitBox(x0, y0, x1, y1, sector, minScale, maxScale);
+  }
+
+  /** Fit a world box inside the play area (or the full screen during the cinematic). */
+  private fitBox(x0: number, y0: number, x1: number, y1: number, sector: number, minScale: number, maxScale: number): { x: number; y: number; scale: number } {
     const W = this.canvas.width || 1200, H = this.canvas.height || 800;
     // Outside the cinematic the HUD is up: fit into what it leaves uncovered
     // (above the faith deck, between the rail and the chat panel).
     const v = this.cinematicActive ? { l: 0, r: 0, t: 0, b: 0, deck: 0 } : this.viewInsets;
-    const bottom = Math.max(v.b, v.deck);
+    // (The faith deck folds away on the universe map, so it only counts closer in.)
+    const bottom = sector === -2 ? v.b : Math.max(v.b, v.deck);
     // Galaxy names sit above each disc: keep ~48 px of headroom for them.
     const head = this.cinematicActive ? 0 : 48;
     const aw = Math.max(200, W - v.l - v.r), ah = Math.max(160, H - v.t - bottom - head);
     const fitW = this.cinematicActive ? 0.8 : 0.94, fitH = this.cinematicActive ? 0.7 : 0.96;
-    const scale = Math.max(0.06, Math.min(0.21, Math.min(aw * fitW / (x1 - x0), ah * fitH / (y1 - y0))));
+    const scale = Math.max(minScale, Math.min(maxScale, Math.min(aw * fitW / (x1 - x0), ah * fitH / (y1 - y0))));
     return { x: (x0 + x1) / 2 + (v.r - v.l) / 2 / scale, y: (y0 + y1) / 2 + (bottom - v.t - head) / 2 / scale, scale };
+  }
+
+  /** Galaxies of every sector that is not home (art and names, not simulated). */
+  get dormantGalaxies(): DormantGalaxy[] {
+    if (!this.cosmos) return [];
+    this._dormant ??= allDormant(this.cosmos);
+    return this._dormant;
+  }
+  private _dormant: DormantGalaxy[] | null = null;
+
+  /** What the player knows of a sector. */
+  sectorStateOf(index: number): SectorState {
+    return this.cosmos ? sectorState(this.cosmos, index, gameState.sectorsCharted) : 'home';
+  }
+
+  /** Fly the camera to a sector, framed whole. */
+  flyToSector(index: number): void {
+    if (!this.cosmos) return;
+    const f = this.universeFrame(index);
+    this.camera.tx = f.x; this.camera.ty = f.y; this.camera.ts = f.scale;
+    this.cameraFollowHome = false;
+  }
+
+  /** The sector under the centre of the view (-1 outside the grid). */
+  get viewSector(): number {
+    return this.cosmos ? sectorAt(this.cosmos, this.camera.x, this.camera.y) : -1;
+  }
+
+  /** Space-age astronomy charts the sectors around home; interstellar flight charts them all. */
+  private updateSectorCharting(): void {
+    const ps = this.getPlayerStar();
+    if (!this.cosmos || !ps) return;
+    for (const idx of chartedByTech(this.cosmos, ps.civLevel ?? 0)) {
+      if (gameState.sectorsCharted.includes(idx)) continue;
+      gameState.sectorsCharted.push(idx);
+      this.onSectorCharted?.(this.cosmos.sectors[idx].name);
+    }
   }
 
   /** Where the player's home world is right now (its sun's position if it has none). */
@@ -1732,6 +1818,7 @@ export class BigBangEngine {
     this.updateStarFormation();
     this.updateAsteroids();
     this.updateCivilizations();
+    if (this.tick % 600 === 0) this.updateSectorCharting();
     if (this.tick - this.lastPolityTick >= POLITY_STEP) this.stepPolities();
     this.updateCosmicSignals();
     this.updateFleets();
@@ -1762,7 +1849,7 @@ export class BigBangEngine {
 
     if (!this.cameraFollowHome || this.isDragging) return;
     // Universe view is a map overview — don't yank the camera there.
-    if (this.zoomTier === 'universe') return;
+    if (this.zoomTier === 'universe' || this.zoomTier === 'cosmos') return;
 
     let tx = ps.x, ty = ps.y;
     if (this.zoomTier === 'galaxy') {
@@ -4880,7 +4967,10 @@ export class BigBangEngine {
       // skips them), so the fog only dims the galaxies' light, as the night
       // sky shows a galaxy's glow without its worlds.
       const out = Math.max(0, Math.min(1, (1.8 - this.camera.scale) / 0.6));
-      fogCtx.fillStyle = `rgba(0, 0, 8, ${FOG_ALPHA - (FOG_ALPHA - FOG_ALPHA_FAR) * out})`;
+      // On the universe map the sectors' own states (charted, glimpsed,
+      // unknown) say what is known; the fog of one sector fades away.
+      const mapFade = Math.max(0, Math.min(1, (this.camera.scale - 0.045) / 0.035));
+      fogCtx.fillStyle = `rgba(0, 0, 8, ${(FOG_ALPHA - (FOG_ALPHA - FOG_ALPHA_FAR) * out) * mapFade})`;
       fogCtx.fillRect(0, 0, W, H);
 
       fogCtx.globalCompositeOperation = 'destination-out';
@@ -4912,7 +5002,7 @@ export class BigBangEngine {
       e.preventDefault();
       const factor = e.deltaY > 0 ? 0.85 : 1.18;
       const prev = this.camera.ts;
-      const next = Math.max(0.15, Math.min(CAMERA_MAX_SCALE, prev * factor));
+      const next = Math.max(CAMERA_MIN_SCALE, Math.min(CAMERA_MAX_SCALE, prev * factor));
       if (next === prev) return;
       // Zoom toward the cursor: the world point under it stays under it, so
       // the player can zoom straight into a planet rather than the star.
@@ -4956,6 +5046,26 @@ export class BigBangEngine {
         const wx = (e.clientX - (this.canvas.width / 2 - this.camera.x * this.camera.scale)) / this.camera.scale;
         const wy = (e.clientY - (this.canvas.height / 2 - this.camera.y * this.camera.scale)) / this.camera.scale;
 
+        // The universe map: a click flies into the sector under it.
+        if (this.cosmos && this.zoomTier === 'cosmos') {
+          const si = sectorAt(this.cosmos, wx, wy);
+          if (si >= 0) this.flyToSector(si);
+          return;
+        }
+        // In a sector that is not home, nothing is simulated: a click shows
+        // the dormant galaxy under it, if any.
+        if (this.cosmos) {
+          const si = sectorAt(this.cosmos, wx, wy);
+          if (si >= 0 && si !== this.cosmos.home) {
+            let best: DormantGalaxy | null = null, bestD = Infinity;
+            for (const g of this.cosmos.sectors[si].galaxies) {
+              const d = Math.hypot(g.cx - wx, g.cy - wy);
+              if (d < g.radius * 1.15 && d < bestD) { bestD = d; best = g; }
+            }
+            if (best) this.onDormantGalaxySelected?.(best, e.clientX, e.clientY);
+            return;
+          }
+        }
         // A planet or moon under the cursor (system zoom): its details card.
         if (this.camera.scale >= 1.2 && this.onBodySelected) {
           const hit = this.pickBody(wx, wy);
@@ -6186,7 +6296,14 @@ export class BigBangEngine {
     this.camera.ts = def.nominal;
     // Universe and galaxy tiers frame the whole structure; the closer tiers
     // frame the player, since that is what they are for.
-    if (tier === 'universe') {
+    if (tier === 'cosmos') {
+      const f = this.cosmosFrame();
+      this.camera.tx = f.x;
+      this.camera.ty = f.y;
+      this.camera.ts = f.scale;
+      this.cameraFollowHome = false;
+    } else if (tier === 'universe') {
+      // Your sector (the map flies to the others: click one).
       const f = this.universeFrame();
       this.camera.tx = f.x;
       this.camera.ty = f.y;

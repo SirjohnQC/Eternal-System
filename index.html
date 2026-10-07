@@ -1933,6 +1933,35 @@ html,body{
   position:fixed;bottom:60px;left:50%;transform:translateX(-50%);
   text-align:center;z-index:30;pointer-events:none;
 }
+/* ── Universe map instruments (src/ui/UniverseMapUI.ts) ── */
+#umap-panel{position:fixed;left:calc(var(--rail) + 14px);top:calc(var(--top) + 12px);z-index:40;width:230px;display:none;
+  padding:12px 14px 10px;background:linear-gradient(rgba(10,7,20,.88),rgba(6,4,12,.82));border:1px solid rgba(169,162,255,.35);
+  box-shadow:0 0 24px rgba(120,110,220,.12),inset 0 0 18px rgba(0,0,0,.5);font-family:var(--font-pixel);color:#cfc6e8}
+#umap-panel.on{display:block}
+body.cinematic #umap-panel,body.forging #umap-panel{display:none !important}
+body.umap-cosmos .faith-deck{display:none !important}
+.umap-title{font-size:12px;letter-spacing:5px;color:#a9a2ff;margin-bottom:4px}
+.umap-sector{font-family:'Cinzel',serif;font-size:13px;color:#f1deb4;margin-bottom:8px}
+.umap-sector b{color:#ffcc44;font-weight:600}
+.umap-row{display:flex;justify-content:space-between;font-size:10.5px;letter-spacing:1px;padding:2px 0;color:#8f84a8;border-bottom:1px dotted rgba(169,162,255,.12)}
+.umap-row b{color:#e8dcff;font-weight:500}
+.umap-overlays{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.umap-ov{flex:1 0 auto;background:rgba(8,6,16,.7);border:1px solid rgba(169,162,255,.3);color:#9a90c0;cursor:pointer;
+  font-family:var(--font-pixel);font-size:10px;letter-spacing:1.5px;padding:4px 6px}
+.umap-ov:hover{border-color:#a9a2ff;color:#e0d8ff}
+.umap-ov.on{border-color:#ffcc44;color:#ffd890;box-shadow:0 0 10px rgba(255,200,70,.25)}
+.umap-ov[data-mode="life"].on{border-color:#5dcc8a;color:#9ff0c0}
+.umap-ov[data-mode="conflict"].on{border-color:#ff5a4a;color:#ffa090}
+.umap-ov[data-mode="trade"].on{border-color:#e8c066;color:#ffe2a0}
+.umap-ov[data-mode="faith"].on{border-color:#c890ff;color:#e6c8ff}
+.umap-hint{margin-top:8px;font-size:9.5px;letter-spacing:1.5px;color:#6f6688;text-align:center}
+#galaxy-card{position:fixed;z-index:120;width:260px;padding:12px 14px;background:linear-gradient(#130f22,#08060f);
+  border:1px solid rgba(169,162,255,.45);box-shadow:0 0 30px rgba(120,110,220,.18)}
+.gc-name{font-family:var(--font-pixel);font-size:13px;letter-spacing:2px;color:#d8d0ff}
+.gc-sub{font-family:'Cinzel',serif;font-size:12px;color:#a79cc0;margin:2px 0 8px}
+.gc-line{font-family:'Cinzel',serif;font-style:italic;font-size:12.5px;line-height:1.45;color:#e6dcc4}
+.gc-close{margin-top:10px;background:transparent;border:1px solid rgba(169,162,255,.4);color:#a9a2ff;cursor:pointer;
+  font-family:var(--font-pixel);font-size:10px;letter-spacing:2px;padding:4px 12px}
 /* ── The Forge (src/ui/ForgeUI.ts) ── */
 body.forging .faith-deck,body.forging #close-planet-btn{display:none !important}
 #forge-ui{position:fixed;left:var(--rail);right:380px;top:var(--top);bottom:var(--status);z-index:260;pointer-events:none;
@@ -3056,8 +3085,12 @@ input[type="range"], select, label[for],
     <div class="bb-views">
       <div id="zoom-tiers" role="group" aria-label="View scale">
         <div class="zt-wrap">
-          <button class="zt-btn" data-tier="universe" title="Universe" aria-label="Universe"></button>
+          <button class="zt-btn" data-tier="cosmos" title="Universe map" aria-label="Universe map"></button>
           <span class="zt-label">UNI</span>
+        </div>
+        <div class="zt-wrap">
+          <button class="zt-btn" data-tier="universe" title="Your sector" aria-label="Your sector"></button>
+          <span class="zt-label">SEC</span>
         </div>
         <div class="zt-wrap">
           <button class="zt-btn" data-tier="galaxy" title="Galaxy" aria-label="Galaxy"></button>
@@ -4531,6 +4564,7 @@ body:not(.events-collapsed) .bottom-bar{padding-right:calc(var(--events) + 10px)
   content:'';position:absolute;inset:6px;border-radius:50%;
   border:1px solid #6a5d7a;background:transparent;
 }
+.zt-btn[data-tier="cosmos"]::after{inset:6px;border-style:dotted;box-shadow:inset 0 0 0 3px #3a3048}
 .zt-btn[data-tier="universe"]::after{inset:8px;box-shadow:0 0 0 3px #4a3d5a}
 .zt-btn[data-tier="galaxy"]::after{inset:7px;box-shadow:-3px 0 0 #5a4d6a,3px 0 0 #5a4d6a}
 .zt-btn[data-tier="system"]::after{inset:5px;border-width:2px}

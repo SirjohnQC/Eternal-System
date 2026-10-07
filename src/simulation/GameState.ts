@@ -176,6 +176,8 @@ export interface GameStateData {
   forge: ForgeState | null;
   /** What the forged DNA does to the simulation, once forged (null = neutral). */
   forgeMods: ForgeMods | null;
+  /** Sectors of the universe (Universe.ts) the player's people have charted. */
+  sectorsCharted: number[];
   playerPlanetDNA: PlanetDNA | null;
   codexEntries: CodexEntry[];
   playerSpeciesTraits: Record<string, string>;   // category → chosen value from traits modal
@@ -254,6 +256,7 @@ export const gameState: GameStateData = {
   skipFormation: false,
   forge: null,
   forgeMods: null,
+  sectorsCharted: [],
   playerPlanetDNA: null,
   codexEntries: [],
   playerSpeciesTraits: {},

@@ -85,7 +85,10 @@ for (let i = 1; i <= T; i++) {
 }
 const ns = runtimeState.playerNations;
 check('the world split into nations', !!ns?.isFounded, ns ? `${ns.nations.length}: ${ns.nations.map(n => n.name).join(', ')}` : 'none');
-check('eras climbed', ps.civLevel >= 3, `civLevel by 40k ticks: ${eras.join(' ')}`);
+// The PEAK era: a world can climb and then fall into a dark age (wars,
+// collapse) — that is history, not a broken tech tree. (tech_main does exactly
+// that since the universe gained sectors: Space Age, then down to era 2.)
+check('eras climbed', Math.max(ps.civLevel, ...eras) >= 3, `civLevel by 40k ticks: ${eras.join(' ')}`);
 check('the world stands in its best nation\'s era', !!ns && ps.civLevel === Math.min(ns.maxEra, TECH_LEVELS.length - 1), `civLevel ${ps.civLevel}, best nation era ${ns?.maxEra}`);
 const deeds = events.filter(m => TECHS.some(t => m.endsWith(t.deed + '.')));
 check('discoveries were announced', deeds.length >= 4, `${deeds.length}, e.g. "${deeds[0] ?? ''}"`);

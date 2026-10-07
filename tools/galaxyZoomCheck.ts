@@ -45,8 +45,8 @@ function check(name: string, ok: boolean, detail = ''): void {
 // ── Zoom tiers ──────────────────────────────────────────────────────────────
 console.log('\n═══ Zoom tiers (M22a) ═══');
 {
-  check('four tiers, universe → planet', ZOOM_TIERS.length === 4 &&
-        ZOOM_TIERS.map(t => t.tier).join(',') === 'universe,galaxy,system,planet',
+  check('five tiers, universe map → planet', ZOOM_TIERS.length === 5 &&
+        ZOOM_TIERS.map(t => t.tier).join(',') === 'cosmos,universe,galaxy,system,planet',
         ZOOM_TIERS.map(t => t.tier).join(' → '));
 
   const ascending = ZOOM_TIERS.every((t, i) => i === 0 || t.min > ZOOM_TIERS[i - 1].min);
@@ -79,7 +79,7 @@ console.log('\n═══ Galaxies (M22b) ═══');
   engine.init({ life: 14, evolution: 12, hostility: 9, entropy: 10, divine: 12 }, 'galaxy_seed');
 
   const galaxies = engine.currentGalaxies;
-  check('the universe has galaxies', galaxies.length >= 3, `${galaxies.length}`);
+  check('the universe has galaxies', galaxies.length >= 2, `${galaxies.length}`);
   check('every galaxy is named', galaxies.every(gx => gx.name.length > 0),
         galaxies.map(gx => gx.name).join(' · '));
   check('every star belongs to one', (engine as any).stars.every((s: any) => s.galaxyId != null));

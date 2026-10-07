@@ -23,23 +23,29 @@ export function webHash(n: number): number {
 }
 
 /** Build (or reuse, when the live galaxies are unchanged) the web around centre C. */
-export function buildCosmicWeb(galaxies: Galaxy[], C: number, prev: CosmicWeb | null = null): CosmicWeb {
-  const live = galaxies.filter(gl => gl.starIds.length > 0);
+export function buildCosmicWeb(galaxies: Galaxy[], C: number, prev: CosmicWeb | null = null, extra = 26): CosmicWeb {
+  // Simulated galaxies with systems, and dormant ones (other sectors) by size.
+  const live = galaxies.filter(gl => gl.starIds.length > 0 || ((gl as { systems?: number }).systems ?? 0) > 0);
   const key = live.map(gl => gl.id).join(',');
   if (prev && prev.key === key) {
     // Galaxies drift a little as their systems orbit: keep the knots on them.
     for (const nd of prev.nodes) if (nd.real) { nd.x = nd.real.cx; nd.y = nd.real.cy; }
     return prev;
   }
+  // Knots scatter around the galaxies' own middle (home can be a corner of
+  // the universe); C is the fallback when there are none.
+  let mx = C, my = C;
+  if (live.length) { mx = live.reduce((a, g) => a + g.cx, 0) / live.length; my = live.reduce((a, g) => a + g.cy, 0) / live.length; }
   let spread = 600;
-  for (const gl of live) spread = Math.max(spread, Math.hypot(gl.cx - C, gl.cy - C));
+  for (const gl of live) spread = Math.max(spread, Math.hypot(gl.cx - mx, gl.cy - my));
   const nodes: WebNode[] = live.map(gl => ({ x: gl.cx, y: gl.cy, real: gl }));
-  const seed = live.reduce((s, gl) => s * 31 + gl.id, 7);
-  const EXTRA = 26;
-  for (let i = 0; i < EXTRA; i++) {
+  // 32-bit: with dozens of galaxies a plain s*31 runs past float precision
+  // and every knot hashed to the same spot.
+  const seed = live.reduce((s, gl) => (Math.imul(s, 31) + gl.id) | 0, 7);
+  for (let i = 0; i < extra; i++) {
     const a = webHash(seed + i * 11) * Math.PI * 2;
     const r = Math.sqrt(webHash(seed + i * 11 + 5)) * spread * 1.45;
-    nodes.push({ x: C + Math.cos(a) * r, y: C + Math.sin(a) * r, real: null });
+    nodes.push({ x: mx + Math.cos(a) * r, y: my + Math.sin(a) * r, real: null });
   }
   const edges: WebEdge[] = [];
   const seen = new Set<string>();

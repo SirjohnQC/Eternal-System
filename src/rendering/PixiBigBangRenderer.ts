@@ -27,12 +27,22 @@ import type {
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
 import { BigBangCinematicOverlay } from './BigBangCinematicOverlay';
 import { buildCosmicWeb, threadPoints, flowsToB, webHash, type CosmicWeb } from './CosmicWeb';
+import { starfieldTile, nebulaBlob } from './CosmosArt';
+import { SECTOR_SIZE, sectorAt, type DormantGalaxy } from '../simulation/Universe';
+
+/** What the universe map colours by (the observatory's overlay buttons). */
+export type MapOverlay = 'none' | 'life' | 'civ' | 'conflict' | 'trade' | 'faith';
+const isDormant = (g: Galaxy): g is DormantGalaxy => (g as DormantGalaxy).sector !== undefined;
+/** Each galaxy's inclination on the universe map (seeded by id): tilt and axis. */
+function inclinationOf(id: number): { incl: number; axis: number } {
+  return { incl: 0.25 + webHash(id * 977 + 13) * 0.95, axis: webHash(id * 571 + 7) * Math.PI };
+}
 import { ramp } from '../simulation/BigBangCinematic';
 import { WORLD_SIZE } from '../constants';
 import { bakeGalaxyHaze, bakeGalaxyStars, GALAXY_EXTENT, STARS_RES, type GalaxyShape, type Raster } from './GalaxyArt';
 import type { TradeRoute } from '../simulation/StarPolities';
 
-import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA, TECH_LEVELS } from '../simulation/GameState';
+import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA, TECH_LEVELS, BIO_PHASE_SEQUENCE } from '../simulation/GameState';
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
 import { bakePlanetTexture } from '../simulation/PlanetRenderer';
 import { paintMoon, type MoonKindArt } from './MoonArt';
@@ -149,7 +159,15 @@ export class PixiBigBangRenderer {
   /** The cosmic web the galaxies sit on, at universe zoom (world-space). */
   private webLayer!: Graphics;
   private cosmicWeb: CosmicWeb | null = null;
-  private galaxySkins = new Map<number, { key: string; haze: Sprite; stars: Sprite }>();
+  private galaxySkins = new Map<number, { key: string; box: Container; haze: Sprite; stars: Sprite }>();
+  /** Universe map depth: parallax starfields (screen) and nebula clouds (world). */
+  private parallaxFar: TilingSprite | null = null;
+  private parallaxNear: TilingSprite | null = null;
+  private cloudLayer!: Container;
+  private cloudSprites: Sprite[] = [];
+  private cloudKey = '';
+  private mapOverlay: MapOverlay = 'none';
+  setMapOverlay(mode: MapOverlay): void { this.mapOverlay = mode; }
   private tradeLayer!: Graphics;
   private starLayer!: Graphics;
   private religionLayer!: Graphics;
@@ -258,8 +276,19 @@ export class PixiBigBangRenderer {
 
     this.app.stage.addChild(this.bgLayer);          // screen-space bg stars
     // The galaxies themselves (GalaxyArt), beneath everything else in the world.
+    this.cloudLayer = new Container();
+    this.worldContainer.addChild(this.cloudLayer);
     this.webLayer = new Graphics();
     this.worldContainer.addChild(this.webLayer);
+    // Parallax starfields under everything (screen-space, drift slower than the map).
+    const far = Texture.from(starfieldTile(512, 0x5eed1, 520, false));
+    const near = Texture.from(starfieldTile(512, 0x5eed2, 150, true));
+    for (const t of [far, near]) { t.source.scaleMode = 'nearest'; t.source.addressMode = 'repeat'; }
+    this.parallaxFar = new TilingSprite({ texture: far, width: width, height: height });
+    this.parallaxNear = new TilingSprite({ texture: near, width: width, height: height });
+    this.parallaxFar.alpha = this.parallaxNear.alpha = 0;
+    this.app.stage.addChildAt(this.parallaxNear, 0);
+    this.app.stage.addChildAt(this.parallaxFar, 0);
     this.galaxyLayer = new Container();
     this.worldContainer.addChild(this.galaxyLayer);
     this.worldContainer.addChild(this.nebulaLayer);
@@ -353,6 +382,7 @@ export class PixiBigBangRenderer {
     this.bgBuiltW = 0;
     this.bgBuiltH = 0;
     if (this.spaceStars) { this.spaceStars.width = width; this.spaceStars.height = height; }
+    for (const t of [this.parallaxFar, this.parallaxNear]) if (t) { t.width = width; t.height = height; }
     if (this.spaceTwinkle) { this.spaceTwinkle.width = width; this.spaceTwinkle.height = height; }
     if (this.spaceClouds) { this.spaceClouds.width = width; this.spaceClouds.height = height; }
   }
@@ -378,6 +408,7 @@ export class PixiBigBangRenderer {
 
     // Draw each layer
     this.drawBgStars(W, H, engine, camera);
+    this.drawCosmosDepth(engine, camera, W, H);
     this.drawCosmicWeb(engine, camera, animTick);
     this.drawGalaxySkins(engine, camera);
     this.drawNebulae(engine.nebulae, animTick);
@@ -1007,16 +1038,20 @@ export class PixiBigBangRenderer {
     return tex;
   }
 
-  /** Bake (or re-bake) one galaxy's art. */
-  private bakeGalaxySkin(gal: Galaxy): { key: string; haze: Sprite; stars: Sprite } {
+  /** Bake (or re-bake) one galaxy's art (lighter for dormant galaxies, seen from afar). */
+  private bakeGalaxySkin(gal: Galaxy): { key: string; box: Container; haze: Sprite; stars: Sprite } {
     const old = this.galaxySkins.get(gal.id);
-    if (old) { old.haze.destroy({ texture: true, textureSource: true }); old.stars.destroy({ texture: true, textureSource: true }); }
+    if (old) { old.box.destroy({ children: true, texture: true, textureSource: true }); }
     const shape = PixiBigBangRenderer.galaxyShape(gal);
-    const haze = new Sprite(this.rasterTexture(bakeGalaxyHaze(shape), true));
-    const stars = new Sprite(this.rasterTexture(bakeGalaxyStars(shape), false));
-    for (const sp of [haze, stars]) { sp.anchor.set(0.5); sp.visible = false; this.galaxyLayer.addChild(sp); }
+    const far = isDormant(gal);
+    const haze = new Sprite(this.rasterTexture(bakeGalaxyHaze(shape, far ? 128 : undefined), true));
+    const stars = new Sprite(this.rasterTexture(bakeGalaxyStars(shape, far ? 512 : undefined), false));
+    const box = new Container();
+    box.visible = false;
+    for (const sp of [haze, stars]) { sp.anchor.set(0.5); box.addChild(sp); }
     stars.blendMode = 'add';
-    const skin = { key: PixiBigBangRenderer.galaxyKey(gal), haze, stars };
+    this.galaxyLayer.addChild(box);
+    const skin = { key: PixiBigBangRenderer.galaxyKey(gal), box, haze, stars };
     this.galaxySkins.set(gal.id, skin);
     return skin;
   }
@@ -1042,11 +1077,15 @@ export class PixiBigBangRenderer {
   private drawGalaxySkins(engine: BigBangEngine, camera: Camera): void {
     const strength = engine.galaxyTierStrength, sc = camera.scale;
     const seen = new Set<number>();
+    // On the universe map each galaxy shows its own inclination (seeded), as
+    // in a real sky; closer in they turn face-on, like their systems' orbits.
+    const tiltK = Math.max(0, Math.min(1, (0.075 - sc) / 0.035));
     if (strength > 0.01) {
       const { halfW, halfH } = viewHalfExtents(camera, 40 / Math.max(0.01, sc));
       let baked = 0;
-      for (const gal of engine.currentGalaxies) {
-        if (gal.starIds.length === 0) continue;
+      for (const gal of [...engine.currentGalaxies, ...engine.dormantGalaxies]) {
+        const far = isDormant(gal);
+        if (!far && gal.starIds.length === 0) continue;
         const size = gal.radius * 2 * GALAXY_EXTENT;
         if (!inView(gal.x, gal.y, camera, halfW + size / 2, halfH + size / 2)) continue;
         let skin = this.galaxySkins.get(gal.id);
@@ -1056,20 +1095,27 @@ export class PixiBigBangRenderer {
           else { skin = this.bakeGalaxySkin(gal); baked++; }
         }
         seen.add(gal.id);
+        // How well the player knows it: home and charted sharp, a glimpsed
+        // neighbour a shape, an unknown sector only a smudge of light.
+        const st = far ? engine.sectorStateOf(gal.sector) : 'home';
+        const [hv, sv] = st === 'home' || st === 'charted' ? [1, 1] : st === 'glimpsed' ? [0.85, 0.5] : [0.55, 0.12];
+        const { incl, axis } = inclinationOf(gal.id);
         const rot = engine.galaxyPatternAngle(gal);
-        for (const sp of [skin.haze, skin.stars]) {
-          sp.x = gal.x; sp.y = gal.y; sp.width = size; sp.height = size; sp.rotation = rot; sp.visible = true;
-        }
-        skin.haze.alpha = Math.min(1, strength * 1.35);
+        const box = skin.box;
+        box.x = gal.x; box.y = gal.y; box.rotation = axis; box.visible = true;
+        box.scale.set(1, 1 - (1 - Math.cos(incl)) * tiltK);
+        for (const sp of [skin.haze, skin.stars]) { sp.x = 0; sp.y = 0; sp.width = size; sp.height = size; sp.rotation = rot - axis; }
+        skin.haze.alpha = Math.min(1, strength * 1.35) * hv;
         // Stars: full from galaxy zoom; softer at universe zoom, where each is sub-pixel.
         const near = Math.max(0, Math.min(1, (sc - 0.16) / 0.2));
-        skin.stars.alpha = Math.min(1, strength * 1.1) * (0.45 + 0.55 * near);
+        skin.stars.alpha = Math.min(1, strength * 1.1) * (0.45 + 0.55 * near) * sv;
         // Crisp pixels when magnified, smooth when minified (no shimmer while zooming).
-        const want = size * sc >= STARS_RES ? 'nearest' : 'linear';
+        const res = far ? 512 : STARS_RES;
+        const want = size * sc >= res ? 'nearest' : 'linear';
         if (skin.stars.texture.source.scaleMode !== want) skin.stars.texture.source.scaleMode = want;
       }
     }
-    for (const [id, skin] of this.galaxySkins) if (!seen.has(id)) { skin.haze.visible = false; skin.stars.visible = false; }
+    for (const [id, skin] of this.galaxySkins) if (!seen.has(id)) skin.box.visible = false;
   }
 
   // ─── Galaxy-zoom markers and names (screen space) ─────────────────────────
@@ -1114,27 +1160,53 @@ export class PixiBigBangRenderer {
    * Gone by galaxy zoom. During the opening cinematic it fades in as the
    * cinematic's own (brighter) web fades out, so the two hand over.
    */
+  /** 0..1: how known a world point is (its sector's state), for the map's layers. */
+  private knownAt(engine: BigBangEngine, x: number, y: number): number {
+    const c = engine.cosmos;
+    if (!c) return 1;
+    const si = sectorAt(c, x, y);
+    if (si < 0) return 0.35;
+    const st = engine.sectorStateOf(si);
+    return st === 'home' || st === 'charted' ? 1 : st === 'glimpsed' ? 0.7 : 0.4;
+  }
+
+  /**
+   * The cosmic web at universe zoom and on the universe map: faint gas threads
+   * between the galaxies (every sector's) and dwarf knots, matter drifting
+   * along them toward the galaxies they feed. Gone by galaxy zoom. During the
+   * opening cinematic it fades in as the cinematic's own web fades out.
+   */
   private drawCosmicWeb(engine: BigBangEngine, camera: Camera, animTick: number): void {
     const g = this.webLayer;
     g.clear();
     const sc = camera.scale;
     let a = Math.max(0, Math.min(1, (0.5 - sc) / 0.28));
+    // On the universe map the web is the backdrop, not the subject.
+    a *= 1 - 0.45 * Math.max(0, Math.min(1, (0.07 - sc) / 0.025));
     const cine = engine.cinematic;
     if (cine && !cine.finished) a *= ramp(cine.since('galaxies'), 0.5, 4.0);
     if (a <= 0.003 || engine.currentGalaxies.length === 0) return;
-    this.cosmicWeb = buildCosmicWeb(engine.currentGalaxies, WORLD_SIZE / 2, this.cosmicWeb);
+    const dormant = engine.dormantGalaxies;
+    this.cosmicWeb = buildCosmicWeb([...engine.currentGalaxies, ...dormant], WORLD_SIZE / 2, this.cosmicWeb, dormant.length ? 80 : 26);
     const web = this.cosmicWeb;
     const px = 1 / sc;
     const flow = animTick / 60;
-    const SEG = 22;
+    const SEG = sc < 0.06 ? 12 : 22;
+    const { halfW, halfH } = viewHalfExtents(camera, 0);
+    const vis = web.nodes.map(nd => this.knownAt(engine, nd.x, nd.y));
     for (const edge of web.edges) {
       const [i, j] = edge;
-      const strong = !!(web.nodes[i].real || web.nodes[j].real);
+      const A = web.nodes[i], B = web.nodes[j];
+      // Off-screen threads are skipped (the universe map has hundreds).
+      if (Math.max(A.x, B.x) < camera.x - halfW * 1.2 || Math.min(A.x, B.x) > camera.x + halfW * 1.2 ||
+          Math.max(A.y, B.y) < camera.y - halfH * 1.2 || Math.min(A.y, B.y) > camera.y + halfH * 1.2) continue;
+      const ea = a * Math.min(vis[i], vis[j]);
+      const strong = !!(A.real || B.real);
       const pts = threadPoints(web, edge, flow, SEG);
       for (const [w, al] of [[10, 0.04], [3.5, 0.07], [1.2, strong ? 0.34 : 0.2]] as const) {
         g.moveTo(pts[0][0], pts[0][1]);
         for (let k = 1; k < pts.length; k++) g.lineTo(pts[k][0], pts[k][1]);
-        g.stroke({ color: 0x8f9cff, width: w * px, alpha: al * a });
+        g.stroke({ color: 0x8f9cff, width: w * px, alpha: al * ea });
       }
       const toB = flowsToB(web, edge);
       for (let k = 0; k < 3; k++) {
@@ -1143,13 +1215,209 @@ export class PixiBigBangRenderer {
         const idx = Math.min(SEG - 1, Math.floor(u * SEG)), f = u * SEG - idx;
         const x = pts[idx][0] + (pts[idx + 1][0] - pts[idx][0]) * f;
         const y = pts[idx][1] + (pts[idx + 1][1] - pts[idx][1]) * f;
-        g.rect(x - px, y - px, 2 * px, 2 * px).fill({ color: 0xdfe4ff, alpha: 0.6 * a });
+        g.rect(x - px, y - px, 2 * px, 2 * px).fill({ color: 0xdfe4ff, alpha: 0.6 * ea });
       }
     }
-    for (const nd of web.nodes) {
-      if (nd.real) continue;
-      g.circle(nd.x, nd.y, 9 * px).fill({ color: 0x8f9cff, alpha: 0.07 * a });
-      g.rect(nd.x - px, nd.y - px, 2 * px, 2 * px).fill({ color: 0xe8ecff, alpha: 0.7 * a });
+    web.nodes.forEach((nd, i) => {
+      if (nd.real) return;
+      g.circle(nd.x, nd.y, 9 * px).fill({ color: 0x8f9cff, alpha: 0.07 * a * vis[i] });
+      g.rect(nd.x - px, nd.y - px, 2 * px, 2 * px).fill({ color: 0xe8ecff, alpha: 0.7 * a * vis[i] });
+    });
+  }
+
+  /**
+   * The universe map's depth: two parallax starfields that drift slower than
+   * the map as it pans (far slower than near), and great soft nebula clouds
+   * hanging between the sectors. They fade in as the view pulls out past the
+   * galaxies.
+   */
+  private drawCosmosDepth(engine: BigBangEngine, camera: Camera, W: number, H: number): void {
+    const sc = camera.scale;
+    const k = Math.max(0, Math.min(1, (0.4 - sc) / 0.3));
+    const cine = engine.cinematic && !engine.cinematic.finished ? 0.3 : 1;
+    if (this.parallaxFar && this.parallaxNear) {
+      this.parallaxFar.alpha = 0.55 * k * cine;
+      this.parallaxNear.alpha = 0.7 * k * cine;
+      this.parallaxFar.tilePosition.set(-camera.x * sc * 0.18 + W / 2, -camera.y * sc * 0.18 + H / 2);
+      this.parallaxNear.tilePosition.set(-camera.x * sc * 0.42 + W / 2, -camera.y * sc * 0.42 + H / 2);
+    }
+    const c = engine.cosmos;
+    if (!c) { this.cloudLayer.visible = false; return; }
+    const key = c.sectors.map(s => s.name).join('|');
+    if (key !== this.cloudKey) {
+      this.cloudKey = key;
+      for (const sp of this.cloudSprites) sp.destroy();
+      this.cloudSprites = [];
+      const tints = [0x6a4cb0, 0x2f6f8a, 0x8a3a6a, 0x9a6a2a, 0x3a4a9a, 0x5a8a6a];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const s of c.sectors) { minX = Math.min(minX, s.ox); minY = Math.min(minY, s.oy); maxX = Math.max(maxX, s.ox + SECTOR_SIZE); maxY = Math.max(maxY, s.oy + SECTOR_SIZE); }
+      const texs = [0, 1, 2].map(i => { const t = Texture.from(nebulaBlob(192, 0xc10d + i * 31 + c.home)); t.source.scaleMode = 'linear'; return t; });
+      for (let i = 0; i < 16; i++) {
+        const h = (n: number) => webHash(c.home * 1000 + i * 37 + n);
+        const sp = new Sprite(texs[i % texs.length]);
+        sp.anchor.set(0.5);
+        sp.x = minX + h(1) * (maxX - minX);
+        sp.y = minY + h(2) * (maxY - minY);
+        sp.width = SECTOR_SIZE * (0.6 + h(3) * 1.1);
+        sp.height = sp.width * (0.5 + h(4) * 0.6);
+        sp.rotation = h(5) * Math.PI;
+        sp.tint = tints[Math.floor(h(6) * tints.length)];
+        sp.blendMode = 'add';
+        this.cloudLayer.addChild(sp);
+        this.cloudSprites.push(sp);
+      }
+    }
+    const ck = Math.max(0, Math.min(1, (0.3 - sc) / 0.22)) * cine;
+    this.cloudLayer.visible = ck > 0.01;
+    this.cloudLayer.alpha = 0.32 * ck;
+  }
+
+  // ─── The universe map: sectors and overlays ──────────────────────────────
+
+  /**
+   * On the universe map: each sector's frame, its name, and what the player
+   * knows of it. Home is marked YOUR SECTOR; a gold pip is the home world.
+   */
+  private drawSectorGrid(engine: BigBangEngine, shown: StarBody[], toScreen: (x: number, y: number) => readonly [number, number], sc: number, animTick: number): void {
+    const c = engine.cosmos;
+    const k = Math.max(0, Math.min(1, (0.07 - sc) / 0.025));
+    if (!c || k <= 0.01) return;
+    const g = this.markerGfx!;
+    for (const sec of c.sectors) {
+      const st = engine.sectorStateOf(sec.index);
+      const inset = SECTOR_SIZE * 0.02;
+      const [x0, y0] = toScreen(sec.ox + inset, sec.oy + inset);
+      const [x1, y1] = toScreen(sec.ox + SECTOR_SIZE - inset, sec.oy + SECTOR_SIZE - inset);
+      const home = st === 'home';
+      const col = home ? 0xffcc44 : st === 'charted' ? 0xa9a2ff : 0x5a5070;
+      const al = (home ? 0.75 : st === 'unknown' ? 0.25 : 0.4) * k;
+      // Dotted frame: pixel dashes along each edge.
+      const dash = 6, gap = 6;
+      for (let x = x0; x < x1; x += dash + gap) {
+        g.rect(Math.round(x), Math.round(y0), Math.min(dash, x1 - x), 1).fill({ color: col, alpha: al });
+        g.rect(Math.round(x), Math.round(y1), Math.min(dash, x1 - x), 1).fill({ color: col, alpha: al });
+      }
+      for (let y = y0; y < y1; y += dash + gap) {
+        g.rect(Math.round(x0), Math.round(y), 1, Math.min(dash, y1 - y)).fill({ color: col, alpha: al });
+        g.rect(Math.round(x1), Math.round(y), 1, Math.min(dash, y1 - y)).fill({ color: col, alpha: al });
+      }
+      if (home) {
+        const pulse = 0.65 + 0.35 * Math.sin(animTick * 0.05), arm = 12;
+        for (const [cx, cy, sx, sy] of [[x0, y0, 1, 1], [x1, y0, -1, 1], [x0, y1, 1, -1], [x1, y1, -1, -1]] as const) {
+          g.rect(sx > 0 ? cx : cx - arm, sy > 0 ? cy : cy - 2, arm, 2).fill({ color: 0xffcc44, alpha: pulse * k });
+          g.rect(sx > 0 ? cx : cx - 2, sy > 0 ? cy : cy - arm, 2, arm).fill({ color: 0xffcc44, alpha: pulse * k });
+        }
+      }
+      const mid = (x0 + x1) / 2;
+      const nameCol = home ? 0xffd27a : st === 'charted' ? 0xd8d0ff : st === 'glimpsed' ? 0xa79cc0 : 0x6f6688;
+      this.label(`sec${sec.index}`, st === 'unknown' ? 'UNCHARTED SECTOR' : sec.name.toUpperCase(), mid, y0 + 8, nameCol, 12, k);
+      const n = home ? engine.currentGalaxies.filter(q => q.starIds.length).length : sec.galaxyCount;
+      const sub = home ? `YOUR SECTOR · ${n} galaxies`
+        : st === 'charted' ? `charted · ${n} galaxies`
+        : st === 'glimpsed' ? `glimpsed · ${n} galaxies` : 'beyond sight';
+      this.label(`secs${sec.index}`, sub, mid, y0 + 24, home ? 0xffcc44 : 0x8a80a0, 10, k * 0.9);
+      if (home && this.mapOverlay !== 'none') {
+        const ov = this.overlayCount(engine, shown, null);
+        if (ov) this.label(`seco${sec.index}`, ov, mid, y0 + 38, this.overlayColor(), 10, k);
+      }
+    }
+    // Each galaxy as a point of light: at this scale its art is a few pixels,
+    // so a soft glow and a bright core say "a galaxy is here".
+    for (const gal of [...engine.currentGalaxies.filter(q => q.starIds.length), ...engine.dormantGalaxies]) {
+      const st = (gal as DormantGalaxy).sector !== undefined ? engine.sectorStateOf((gal as DormantGalaxy).sector) : 'home';
+      const v = st === 'home' || st === 'charted' ? 1 : st === 'glimpsed' ? 0.75 : 0.4;
+      const [x, y] = toScreen(gal.cx, gal.cy);
+      const r = Math.max(6, gal.radius * sc);
+      const col = cssToHex(gal.color);
+      g.circle(x, y, r * 1.25).fill({ color: col, alpha: 0.05 * v * k });
+      g.circle(x, y, r * 0.75).fill({ color: col, alpha: 0.08 * v * k });
+      g.circle(x, y, r * 0.38).fill({ color: col, alpha: 0.14 * v * k });
+      g.rect(Math.round(x) - 1, Math.round(y) - 1, 2, 2).fill({ color: 0xfff6e8, alpha: 0.9 * v * k });
+    }
+    const ps = engine.getPlayerStar();
+    if (ps) {
+      const [x, y] = toScreen(ps.x, ps.y);
+      g.rect(Math.round(x) - 1, Math.round(y) - 1, 3, 3).fill({ color: 0xffd27a, alpha: k });
+    }
+  }
+
+  private overlayColor(): number {
+    return ({ none: 0xffffff, life: 0x5dcc8a, civ: 0xffcc66, conflict: 0xff5a4a, trade: 0xe8c066, faith: 0xc890ff } as const)[this.mapOverlay];
+  }
+
+  /** Stars the overlay is about (known to the player), in a galaxy or everywhere (null). */
+  private overlayStars(engine: BigBangEngine, shown: StarBody[], galaxyId: number | null): StarBody[] {
+    const faith = gameState.playerReligionName;
+    const warring = new Set<number>();
+    if (this.mapOverlay === 'conflict') for (const w of engine.activeWars) { warring.add(w.attackerStarId); warring.add(w.defenderStarId); }
+    const traders = new Set<number>();
+    if (this.mapOverlay === 'trade') for (const r of engine.visibleTradeRoutes()) { traders.add(r.a); traders.add(r.b); }
+    return shown.filter(st => !st.isDead && (galaxyId === null || st.galaxyId === galaxyId) && (
+      this.mapOverlay === 'life' ? st.hasLife
+      : this.mapOverlay === 'civ' ? st.biologyPhase === 'intelligent' && st.civLevel >= 1
+      : this.mapOverlay === 'conflict' ? warring.has(st.id)
+      : this.mapOverlay === 'trade' ? traders.has(st.id)
+      : this.mapOverlay === 'faith' ? !!faith && st.religionName === faith
+      : false));
+  }
+
+  /** "life: 3 known worlds" — the overlay's count for a galaxy (or everywhere). */
+  private overlayCount(engine: BigBangEngine, shown: StarBody[], galaxyId: number | null): string {
+    if (this.mapOverlay === 'none') return '';
+    const n = this.overlayStars(engine, shown, galaxyId).length;
+    const what = ({ life: ['living world', 'living worlds'], civ: ['civilisation', 'civilisations'], conflict: ['world at war', 'worlds at war'],
+      trade: ['trading world', 'trading worlds'], faith: ['world of your faith', 'worlds of your faith'], none: ['', ''] } as const)[this.mapOverlay];
+    if (this.mapOverlay === 'faith' && !gameState.playerReligionName) return 'no faith yet';
+    return n ? `${n} ${n === 1 ? what[0] : what[1]}` : `no ${what[1]} known`;
+  }
+
+  /**
+   * The observatory's overlay on the map: the known worlds that match it,
+   * pips at their stars (sector zoom) or a halo on their galaxy (universe map);
+   * wars and trade drawn as the lines between.
+   */
+  private drawOverlay(engine: BigBangEngine, shown: StarBody[], toScreen: (x: number, y: number) => readonly [number, number], sc: number, animTick: number, W: number, H: number): void {
+    const g = this.markerGfx!;
+    const col = this.overlayColor();
+    const stars = this.overlayStars(engine, shown, null);
+    const pulse = 0.6 + 0.4 * Math.sin(animTick * 0.08);
+    if (this.mapOverlay === 'conflict') {
+      for (const w of engine.activeWars) {
+        const a = engine.stars.find(q => q.id === w.attackerStarId), b = engine.stars.find(q => q.id === w.defenderStarId);
+        if (!a || !b || (!shown.includes(a) && !shown.includes(b))) continue;
+        const [ax, ay] = toScreen(a.x, a.y), [bx, by] = toScreen(b.x, b.y);
+        g.moveTo(ax, ay).lineTo(bx, by).stroke({ color: col, width: 1.5, alpha: 0.75 * pulse });
+      }
+    }
+    if (this.mapOverlay === 'trade') {
+      const goods: Record<string, number> = { grain: 0xe8c066, ore: 0xd08850, knowledge: 0x6cc8ff };
+      for (const r of engine.visibleTradeRoutes()) {
+        const a = engine.stars.find(q => q.id === r.a), b = engine.stars.find(q => q.id === r.b);
+        if (!a || !b) continue;
+        const [ax, ay] = toScreen(a.x, a.y), [bx, by] = toScreen(b.x, b.y);
+        g.moveTo(ax, ay).lineTo(bx, by).stroke({ color: goods[r.goods] ?? col, width: 1.5, alpha: 0.85 });
+      }
+    }
+    if (sc >= 0.05) {
+      for (const st of stars) {
+        const [x, y] = toScreen(st.x, st.y);
+        if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+        const size = this.mapOverlay === 'life' ? 2 + Math.max(0, BIO_PHASE_SEQUENCE.indexOf(st.biologyPhase)) : 4;
+        const flag = this.mapOverlay === 'civ' ? gameState.factionFlags[st.id] : undefined;
+        const c = flag ? cssToHex(flag.primaryColor) : col;
+        g.circle(x, y, size + 3).stroke({ color: c, width: 1.5, alpha: 0.85 * (this.mapOverlay === 'conflict' ? pulse : 1) });
+        g.rect(Math.round(x) - 1, Math.round(y) - 1, 2, 2).fill({ color: c, alpha: 1 });
+      }
+    } else {
+      // Universe map: a halo on each galaxy, brighter with more matching worlds.
+      for (const gal of engine.currentGalaxies) {
+        const n = stars.filter(st => st.galaxyId === gal.id).length;
+        if (!n) continue;
+        const [x, y] = toScreen(gal.cx, gal.cy);
+        const r = gal.radius * 1.15 * sc + 4;
+        g.circle(x, y, r).stroke({ color: col, width: 2, alpha: Math.min(0.9, 0.3 + n * 0.12) * pulse });
+        this.label(`ovh${gal.id}`, String(n), x + r * 0.75, y - r * 0.75 - 8, col, 11, 1);
+      }
     }
   }
 
@@ -1161,9 +1429,11 @@ export class PixiBigBangRenderer {
     const sc = camera.scale;
     const toScreen = (x: number, y: number) => [W / 2 + (x - camera.x) * sc, H / 2 + (y - camera.y) * sc] as const;
     const settled = engine.phase === 'settled' && !engine.cinematicActive;
-    // Galaxy names, while the galaxy tier is the subject.
+    // Galaxy names, while the galaxy tier is the subject (on the universe
+    // map the sectors carry the names instead).
     const strength = engine.galaxyTierStrength;
-    if (strength > 0.45) {
+    const nameFade = Math.max(0, Math.min(1, (sc - 0.05) / 0.02));
+    if (strength > 0.45 && nameFade > 0.01) {
       const knownIn = new Map<number, number>();
       const civsIn = new Map<number, number>();
       if (settled) for (const st of shown) {
@@ -1178,17 +1448,33 @@ export class PixiBigBangRenderer {
         // The home galaxy wears the YOUR GALAXY brackets out here: name above them.
         if (settled && gal.id === homeId) y = Math.min(y, toScreen(gal.cx, gal.cy)[1] - (gal.radius * 1.12 * sc + 13) - 6);
         if (x < -200 || x > W + 200 || y < -60 || y > H + 60) continue;
-        const col = cssToHex(gal.color), a = Math.min(1, (strength - 0.45) / 0.3);
+        const col = cssToHex(gal.color), a = Math.min(1, (strength - 0.45) / 0.3) * nameFade;
         let alive = 0;
         for (const id of gal.starIds) { const st = engine.stars.find(q => q.id === id); if (st && !st.isDead) alive++; }
         this.label(`gal${gal.id}`, gal.name.toUpperCase(), x, y - 26, col, 13, a);
         const civs = civsIn.get(gal.id) ?? 0;
         const count = settled ? `${alive} systems · ${knownIn.get(gal.id) ?? 0} known${civs ? ` · ${civs} civ${civs > 1 ? 's' : ''}` : ''}` : `${alive} systems`;
         this.label(`galn${gal.id}`, count, x, y - 10, 0x9a8db0, 10, a * 0.9);
+        const ov = settled ? this.overlayCount(engine, shown, gal.id) : '';
+        if (ov) this.label(`galo${gal.id}`, ov, x, y + 4, this.overlayColor(), 10, a);
+      }
+      // Dormant galaxies in the other sectors: named as far as they are known
+      // (not during the opening cinematic, which is about this sector's birth).
+      if (settled) for (const gal of engine.dormantGalaxies) {
+        const [x, y] = toScreen(gal.x, gal.y - gal.radius * 1.02);
+        if (x < -200 || x > W + 200 || y < -60 || y > H + 60) continue;
+        const st = engine.sectorStateOf(gal.sector);
+        const a = Math.min(1, (strength - 0.45) / 0.3) * nameFade * (st === 'unknown' ? 0.6 : 1);
+        const known = st === 'charted' || st === 'glimpsed';
+        this.label(`gal${gal.id}`, known ? gal.name.toUpperCase() : '???', x, y - 26, known ? cssToHex(gal.color) : 0x8a80a0, 13, a);
+        this.label(`galn${gal.id}`, st === 'charted' ? `~${gal.systems} systems · dormant` : st === 'glimpsed' ? 'glimpsed · not yet charted' : 'uncharted', x, y - 10, 0x7f7498, 10, a * 0.9);
       }
     }
+    if (settled) this.drawSectorGrid(engine, shown, toScreen, sc, animTick);
+    if (settled && this.mapOverlay !== 'none' && sc < 1.6) this.drawOverlay(engine, shown, toScreen, sc, animTick, W, H);
     // Out at universe zoom the home WORLD is a speck: mark the home GALAXY.
-    const ps = settled && sc < 0.3 ? engine.getPlayerStar() : undefined;
+    // (On the universe map YOUR SECTOR takes over.)
+    const ps = settled && sc < 0.3 && sc >= 0.05 ? engine.getPlayerStar() : undefined;
     const homeGal = ps ? engine.currentGalaxies.find(q => q.id === ps.galaxyId) : undefined;
     if (ps && homeGal) {
       const a = Math.min(1, (0.3 - sc) / 0.08);
