@@ -2209,6 +2209,12 @@ function buildStarPlanetList(star: StarBody): void {
   });
 }
 
+/** The planet (surface) view is shown with inline display:flex, not a class. */
+function planetViewOpen(): boolean {
+  const el = document.getElementById('planet-overlay');
+  return !!el && el.style.display !== 'none' && el.style.display !== '';
+}
+
 function closePlanetView(): void {
   document.getElementById('planet-overlay')!.style.display = 'none';
   planetRenderer?.stop();
@@ -5686,6 +5692,9 @@ function initZoomTiers(): void {
       const tier = btn.dataset['tier'] as ZoomTier | undefined;
       if (!tier || !engine) return;
       AudioManager.playSfx('ui_click');
+      // The Forge's draft needs the world in view: the scale is held until
+      // the forging is complete.
+      if (gameState.forge?.phase === 'draft') return;
       // The planet tier is not a camera position — it is the surface view. Zoom
       // to the system first so closing it lands somewhere sensible.
       if (tier === 'planet') {
@@ -5693,6 +5702,9 @@ function initZoomTiers(): void {
         openPlanetView();
         return;
       }
+      // The surface view sits over the map: leave it, or the new scale is
+      // set behind it and the button seems to do nothing.
+      if (planetViewOpen()) closePlanetView();
       engine.setZoomTier(tier);
     });
   }
@@ -5708,8 +5720,8 @@ function initZoomTiers(): void {
  */
 function syncZoomTierUI(): void {
   const tier = engine?.zoomTier ?? null;
-  const overlayOpen = document.getElementById('planet-overlay')?.classList.contains('active');
-  const shown: ZoomTier | null = overlayOpen ? 'planet' : tier;
+  const shown: ZoomTier | null = planetViewOpen() ? 'planet' : tier;
+  document.getElementById('zoom-tiers')?.classList.toggle('zt-held', gameState.forge?.phase === 'draft');
 
   if (shown !== _lastZoomTier) {
     _lastZoomTier = shown;
