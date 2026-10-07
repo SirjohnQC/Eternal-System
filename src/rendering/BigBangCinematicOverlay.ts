@@ -10,9 +10,11 @@
  */
 
 import { Container, Graphics, Sprite, Text, TextStyle, Texture, TilingSprite } from 'pixi.js';
-import type { BigBangEngine, StarBody, Galaxy } from '../simulation/BigBangEngine';
+import type { BigBangEngine, StarBody } from '../simulation/BigBangEngine';
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
 import { ramp, type BigBangCinematic } from '../simulation/BigBangCinematic';
+import { WORLD_SIZE } from '../constants';
+import { buildCosmicWeb, threadPoints, flowsToB, type CosmicWeb } from './CosmicWeb';
 
 // ─── Baked textures ──────────────────────────────────────────────────────────
 
@@ -116,7 +118,6 @@ function cssHex(c: string): number {
 const PLASMA = [0xfff8e8, 0xffe09a, 0xffa040, 0xe0561c, 0x8a2414, 0x3a0c10];
 const CMB = [0x5a2a30, 0x2c2440, 0x10101c];
 
-interface WebNode { x: number; y: number; real: Galaxy | null; }
 
 // ─── Overlay ─────────────────────────────────────────────────────────────────
 
@@ -133,8 +134,7 @@ export class BigBangCinematicOverlay {
   private flash = new Graphics();
   private vignette: Sprite;
   private homeLabel: Text;
-  private web: { nodes: WebNode[]; edges: Array<[number, number, number]> } | null = null;
-  private webKey = '';
+  private web: CosmicWeb | null = null;
 
   constructor() {
     this.glowTex = Texture.from(glowCanvas(128));
@@ -317,63 +317,20 @@ export class BigBangCinematicOverlay {
     }
   }
 
-  /** Nodes = the real galaxies plus seeded dwarf knots; edges = nearest neighbours. */
-  private buildWeb(galaxies: Galaxy[], C: number): void {
-    const live = galaxies.filter(gl => gl.starIds.length > 0);
-    const key = live.map(gl => gl.id).join(',');
-    if (this.web && this.webKey === key) return;
-    this.webKey = key;
-    let spread = 600;
-    for (const gl of live) spread = Math.max(spread, Math.hypot(gl.cx - C, gl.cy - C));
-    const nodes: WebNode[] = live.map(gl => ({ x: gl.cx, y: gl.cy, real: gl }));
-    const seed = live.reduce((s, gl) => s * 31 + gl.id, 7);
-    const extra = 26;
-    for (let i = 0; i < extra; i++) {
-      const a = hash(seed + i * 11) * Math.PI * 2;
-      const r = Math.sqrt(hash(seed + i * 11 + 5)) * spread * 1.45;
-      nodes.push({ x: C + Math.cos(a) * r, y: C + Math.sin(a) * r, real: null });
-    }
-    const edges: Array<[number, number, number]> = [];
-    const seen = new Set<string>();
-    for (let i = 0; i < nodes.length; i++) {
-      const near = nodes.map((nd, j) => ({ j, d: Math.hypot(nd.x - nodes[i].x, nd.y - nodes[i].y) }))
-        .filter(o => o.j !== i).sort((p, q) => p.d - q.d).slice(0, nodes[i].real ? 4 : 3);
-      for (const o of near) {
-        const k = i < o.j ? `${i}-${o.j}` : `${o.j}-${i}`;
-        if (seen.has(k) || o.d > spread * 1.3) continue;
-        seen.add(k);
-        edges.push([i, o.j, hash(seed + edges.length * 13) - 0.5]);
-      }
-    }
-    this.web = { nodes, edges };
-  }
-
   private drawWeb(cine: BigBangCinematic, engine: BigBangEngine, g: Graphics, W: number, H: number): void {
+    // Fades down to the resting web the universe view keeps (PixiBigBangRenderer).
     const a = ramp(cine.since('web'), -0.5, 2.5) * (1 - ramp(cine.since('galaxies'), 0.5, 4.0));
     if (a <= 0.003) return;
-    const C = 2800;
-    this.buildWeb(engine.currentGalaxies, C);
-    const web = this.web!;
+    this.web = buildCosmicWeb(engine.currentGalaxies, WORLD_SIZE / 2, this.web);
+    const web = this.web;
     const cam = engine.currentCamera, sc = cam.scale;
     const P = (x: number, y: number) => [W / 2 + (x - cam.x) * sc, H / 2 + (y - cam.y) * sc] as const;
     const flow = cine.since('web');
-    for (const [i, j, bend] of web.edges) {
-      const A = web.nodes[i], B = web.nodes[j];
-      const strong = !!(A.real || B.real);
-      const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
-      const dx = B.x - A.x, dy = B.y - A.y;
-      const qx = mx - dy * bend * 0.45, qy = my + dx * bend * 0.45;
-      const pts: Array<readonly [number, number]> = [];
-      const SEG = 22;
-      for (let s = 0; s <= SEG; s++) {
-        const u = s / SEG, iu = 1 - u;
-        // A slow wobble across the curve so threads read as gas, not wire.
-        const len = Math.hypot(dx, dy) || 1;
-        const wob = Math.sin(u * Math.PI) * Math.sin(u * 9.4 + bend * 20 + flow * 0.35) * len * 0.035;
-        const bx = iu * iu * A.x + 2 * iu * u * qx + u * u * B.x - dy / len * wob;
-        const by = iu * iu * A.y + 2 * iu * u * qy + u * u * B.y + dx / len * wob;
-        pts.push(P(bx, by));
-      }
+    const SEG = 22;
+    for (const edge of web.edges) {
+      const [i, j] = edge;
+      const strong = !!(web.nodes[i].real || web.nodes[j].real);
+      const pts = threadPoints(web, edge, flow, SEG).map(([x, y]) => P(x, y));
       // Gas sheath, then the bright thread.
       for (const [w, al] of [[9, 0.045], [3, 0.08], [1, strong ? 0.42 : 0.24]] as const) {
         g.moveTo(pts[0][0], pts[0][1]);
@@ -381,7 +338,7 @@ export class BigBangCinematicOverlay {
         g.stroke({ color: 0x9aa6ff, width: w, alpha: al * a });
       }
       // Matter streaming along the thread toward the galaxy it feeds.
-      const toB = B.real && !A.real ? true : A.real && !B.real ? false : hash(i * 31 + j) < 0.5;
+      const toB = flowsToB(web, edge);
       for (let k = 0; k < 4; k++) {
         let u = (flow * 0.11 + k / 4 + hash(i * 7 + j * 13)) % 1;
         if (!toB) u = 1 - u;

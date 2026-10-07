@@ -783,6 +783,19 @@ export class BigBangEngine {
   cinematic: BigBangCinematic | null = null;
   /** Fires once when the cinematic ends (ran out or skipped). */
   onCinematicEnd: (() => void) | null = null;
+  /**
+   * Screen pixels the HUD covers on each edge (rail, chat panel, top and
+   * bottom bars; `deck` = how far up the faith deck reaches). Set by the UI.
+   * Framing and follow centre their subject in the uncovered play area.
+   */
+  viewInsets = { l: 0, r: 0, t: 0, b: 0, deck: 0 };
+
+  /** World offset that puts a framed subject in the middle of the play area. */
+  private framingOffset(scale = this.camera.ts): { dx: number; dy: number } {
+    if (this.cinematicActive) return { dx: 0, dy: 0 };
+    const v = this.viewInsets, s = Math.max(0.01, scale);
+    return { dx: (v.r - v.l) / 2 / s, dy: (v.b - v.t) / 2 / s };
+  }
   onPlanetCatastrophe: ((mergedWith: string) => void) | null = null;
 
   /**
@@ -1572,6 +1585,33 @@ export class BigBangEngine {
     cb?.();
   }
 
+  /**
+   * The whole universe in one view: the live galaxies' bounding box, fitted
+   * inside the screen (with room for the HUD / letterbox top and bottom).
+   */
+  universeFrame(): { x: number; y: number; scale: number } {
+    const C = WORLD_SIZE / 2;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const g of this.galaxies) {
+      if (!g.starIds.length) continue;
+      const r = g.radius * 1.2;
+      x0 = Math.min(x0, g.cx - r); x1 = Math.max(x1, g.cx + r);
+      y0 = Math.min(y0, g.cy - r); y1 = Math.max(y1, g.cy + r);
+    }
+    if (!isFinite(x0)) return { x: C, y: C, scale: 0.12 };
+    const W = this.canvas.width || 1200, H = this.canvas.height || 800;
+    // Outside the cinematic the HUD is up: fit into what it leaves uncovered
+    // (above the faith deck, between the rail and the chat panel).
+    const v = this.cinematicActive ? { l: 0, r: 0, t: 0, b: 0, deck: 0 } : this.viewInsets;
+    const bottom = Math.max(v.b, v.deck);
+    // Galaxy names sit above each disc: keep ~48 px of headroom for them.
+    const head = this.cinematicActive ? 0 : 48;
+    const aw = Math.max(200, W - v.l - v.r), ah = Math.max(160, H - v.t - bottom - head);
+    const fitW = this.cinematicActive ? 0.8 : 0.94, fitH = this.cinematicActive ? 0.7 : 0.96;
+    const scale = Math.max(0.06, Math.min(0.21, Math.min(aw * fitW / (x1 - x0), ah * fitH / (y1 - y0))));
+    return { x: (x0 + x1) / 2 + (v.r - v.l) / 2 / scale, y: (y0 + y1) / 2 + (bottom - v.t - head) / 2 / scale, scale };
+  }
+
   /** Where the player's home world is right now (its sun's position if it has none). */
   private homeWorldPos(ps: StarBody): { x: number; y: number } {
     const home = this.homeWorld(ps);
@@ -1589,19 +1629,8 @@ export class BigBangEngine {
     const ps = this.getPlayerStar();
     const gal = ps ? this.galaxies.find(g => g.id === ps.galaxyId) : undefined;
     const logLerp = (a: number, b: number, k: number) => Math.exp(Math.log(a) + (Math.log(b) - Math.log(a)) * k);
-    // Frame the whole universe: the galaxies' bounding box, fitted inside the
-    // letterboxed view.
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const g of this.galaxies) {
-      if (!g.starIds.length) continue;
-      const r = g.radius * 1.2;
-      x0 = Math.min(x0, g.cx - r); x1 = Math.max(x1, g.cx + r);
-      y0 = Math.min(y0, g.cy - r); y1 = Math.max(y1, g.cy + r);
-    }
-    if (!isFinite(x0)) { x0 = y0 = C - 800; x1 = y1 = C + 800; }
     const W = this.canvas.width || 1200, H = this.canvas.height || 800;
-    const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
-    const UNI = Math.max(0.08, Math.min(0.32, Math.min(W * 0.86 / (x1 - x0), H * 0.7 / (y1 - y0))));
+    const { x: mx, y: my, scale: UNI } = this.universeFrame();
     if (cine.since('firstStars') < -0.5) {
       // Before the stars: centred close in (the overlay covers the view).
       sc = 1.2;
@@ -1742,6 +1771,8 @@ export class BigBangEngine {
         tx = ps.x + o.x; ty = ps.y + o.y;
       }
     }
+    const off = this.framingOffset();
+    tx += off.dx; ty += off.dy;
     // Snappier than the general camera lerp so the home star doesn't drift
     // into the fog while the galaxy swirls at high speed.
     const k = 0.18;
@@ -3642,6 +3673,9 @@ export class BigBangEngine {
   get currentExploredAreas(): Array<{ x: number; y: number; r: number }> { return this.exploredAreas; }
   get currentSupernovaFlashes(): SupernovaFlash[] { return this.supernovaFlashes; }
   get currentRevelationFlashes(): RevelationFlash[] { return this.revelationFlashes; }
+  /** Radio signals from other civilisations: travelling until decoded. */
+  get currentCosmicSignals(): ReadonlyArray<{ starId: number; civName: string; startTick: number; decodedAt: number; decoded: boolean }> { return this.cosmicSignals; }
+  get currentTick(): number { return this.tick + this.tickAccumulator; }
   get currentBgStarCache(): Array<{ x: number; y: number; r: number }> { return this.bgStarCache; }
   get currentBgStarCacheW(): number { return this.bgStarCacheW; }
   get currentBgStarCacheH(): number { return this.bgStarCacheH; }
@@ -5034,9 +5068,10 @@ export class BigBangEngine {
       // Frame the home WORLD (the follow keeps it centred as it orbits).
       const home = this.homeWorld(ps);
       const o = home ? planetOffsetFromStar(home, this.animTick) : { x: 0, y: 0 };
-      this.camera.tx = ps.x + o.x;
-      this.camera.ty = ps.y + o.y;
       this.camera.ts = deep ? 11 : 8.5;
+      const off = this.framingOffset();
+      this.camera.tx = ps.x + o.x + off.dx;
+      this.camera.ty = ps.y + o.y + off.dy;
       this.cameraFollowHome = true;
     }
   }
@@ -6092,20 +6127,23 @@ export class BigBangEngine {
     // Universe and galaxy tiers frame the whole structure; the closer tiers
     // frame the player, since that is what they are for.
     if (tier === 'universe') {
-      this.camera.tx = WORLD_SIZE / 2;
-      this.camera.ty = WORLD_SIZE / 2;
+      const f = this.universeFrame();
+      this.camera.tx = f.x;
+      this.camera.ty = f.y;
+      this.camera.ts = f.scale;
       this.cameraFollowHome = false;
     } else {
       this.cameraFollowHome = true;
       const ps = this.getPlayerStar();
       if (ps) {
+        const off = this.framingOffset(def.nominal);
         if (tier === 'galaxy') {
           const gal = this.galaxies.find(gx => gx.id === ps.galaxyId);
-          this.camera.tx = gal ? gal.cx : ps.x;
-          this.camera.ty = gal ? gal.cy : ps.y;
+          this.camera.tx = (gal ? gal.cx : ps.x) + off.dx;
+          this.camera.ty = (gal ? gal.cy : ps.y) + off.dy;
         } else {
-          this.camera.tx = ps.x;
-          this.camera.ty = ps.y;
+          this.camera.tx = ps.x + off.dx;
+          this.camera.ty = ps.y + off.dy;
         }
       }
     }

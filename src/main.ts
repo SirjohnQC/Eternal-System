@@ -595,7 +595,7 @@ function startCinematic(eng: BigBangEngine, onDone: () => void): void {
     overlay?.classList.add('leaving');
     // Fade the HUD back in over the world.
     document.body.classList.add('hud-reveal');
-    requestAnimationFrame(() => document.body.classList.remove('cinematic'));
+    requestAnimationFrame(() => { document.body.classList.remove('cinematic'); updateViewInsets(); });
     window.setTimeout(() => {
       overlay?.classList.remove('on', 'leaving');
       if (caption) caption.textContent = '';
@@ -604,6 +604,34 @@ function startCinematic(eng: BigBangEngine, onDone: () => void): void {
     onDone();
   };
 }
+
+/**
+ * Tell the engine how much of each screen edge the HUD covers, so it centres
+ * what it frames in the visible play area rather than behind the chat panel.
+ */
+function updateViewInsets(): void {
+  if (!engine) return;
+  const W = window.innerWidth, H = window.innerHeight;
+  const rect = (sel: string) => {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (!el || !el.offsetParent && getComputedStyle(el).position !== 'fixed') return null;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 ? r : null;
+  };
+  const hudOn = document.body.classList.contains('hud-on') && !document.body.classList.contains('cinematic');
+  if (!hudOn) { engine.viewInsets = { l: 0, r: 0, t: 0, b: 0, deck: 0 }; return; }
+  const rail = rect('.nav-rail'), right = rect('.right-panel'), top = rect('.top-bar'), bottom = rect('.bottom-bar');
+  const deck = rect('.faith-deck-label');
+  engine.viewInsets = {
+    l: rail ? Math.max(0, rail.right) : 0,
+    r: right && right.left > W * 0.5 ? Math.max(0, W - right.left) : 0,
+    t: top ? Math.max(0, top.bottom) : 0,
+    b: bottom ? Math.max(0, H - bottom.top) : 0,
+    deck: deck ? Math.max(0, H - deck.top + 6) : 0,
+  };
+}
+setInterval(updateViewInsets, 500);
+window.addEventListener('resize', updateViewInsets);
 
 /** Attach a PixiBigBangRenderer to the given engine + canvas pair. */
 async function attachPixiRenderer(eng: BigBangEngine, engineCanvas: HTMLCanvasElement): Promise<void> {
@@ -1124,6 +1152,7 @@ function enterUniverse(): void {
   gameState.civilizations = civilizationsBeforeHandoff;
 
   engine = newEngine;
+  updateViewInsets();
   wireEngineEvents(engine);
   void attachPixiRenderer(engine, gameCanvas);
   applyFrameRateCap(pendingFrameRateCap);

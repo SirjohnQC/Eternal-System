@@ -26,6 +26,9 @@ import type {
 } from '../simulation/BigBangEngine';
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
 import { BigBangCinematicOverlay } from './BigBangCinematicOverlay';
+import { buildCosmicWeb, threadPoints, flowsToB, webHash, type CosmicWeb } from './CosmicWeb';
+import { ramp } from '../simulation/BigBangCinematic';
+import { WORLD_SIZE } from '../constants';
 import { bakeGalaxyHaze, bakeGalaxyStars, GALAXY_EXTENT, STARS_RES, type GalaxyShape, type Raster } from './GalaxyArt';
 import type { TradeRoute } from '../simulation/StarPolities';
 
@@ -143,6 +146,9 @@ export class PixiBigBangRenderer {
   private dustLayer!: Graphics;
   /** Galaxy art: one haze + one star-field sprite per galaxy (GalaxyArt bakes). */
   private galaxyLayer!: Container;
+  /** The cosmic web the galaxies sit on, at universe zoom (world-space). */
+  private webLayer!: Graphics;
+  private cosmicWeb: CosmicWeb | null = null;
   private galaxySkins = new Map<number, { key: string; haze: Sprite; stars: Sprite }>();
   private tradeLayer!: Graphics;
   private starLayer!: Graphics;
@@ -252,6 +258,8 @@ export class PixiBigBangRenderer {
 
     this.app.stage.addChild(this.bgLayer);          // screen-space bg stars
     // The galaxies themselves (GalaxyArt), beneath everything else in the world.
+    this.webLayer = new Graphics();
+    this.worldContainer.addChild(this.webLayer);
     this.galaxyLayer = new Container();
     this.worldContainer.addChild(this.galaxyLayer);
     this.worldContainer.addChild(this.nebulaLayer);
@@ -370,6 +378,7 @@ export class PixiBigBangRenderer {
 
     // Draw each layer
     this.drawBgStars(W, H, engine, camera);
+    this.drawCosmicWeb(engine, camera, animTick);
     this.drawGalaxySkins(engine, camera);
     this.drawNebulae(engine.nebulae, animTick);
     if (!critical) {
@@ -1099,6 +1108,51 @@ export class PixiBigBangRenderer {
    * colour, their name and age), living worlds (a green pip); and each
    * galaxy's name with how many of its systems you know.
    */
+  /**
+   * The cosmic web at universe zoom: faint gas threads between the galaxies and
+   * dwarf knots, matter drifting along them toward the galaxies they feed.
+   * Gone by galaxy zoom. During the opening cinematic it fades in as the
+   * cinematic's own (brighter) web fades out, so the two hand over.
+   */
+  private drawCosmicWeb(engine: BigBangEngine, camera: Camera, animTick: number): void {
+    const g = this.webLayer;
+    g.clear();
+    const sc = camera.scale;
+    let a = Math.max(0, Math.min(1, (0.5 - sc) / 0.28));
+    const cine = engine.cinematic;
+    if (cine && !cine.finished) a *= ramp(cine.since('galaxies'), 0.5, 4.0);
+    if (a <= 0.003 || engine.currentGalaxies.length === 0) return;
+    this.cosmicWeb = buildCosmicWeb(engine.currentGalaxies, WORLD_SIZE / 2, this.cosmicWeb);
+    const web = this.cosmicWeb;
+    const px = 1 / sc;
+    const flow = animTick / 60;
+    const SEG = 22;
+    for (const edge of web.edges) {
+      const [i, j] = edge;
+      const strong = !!(web.nodes[i].real || web.nodes[j].real);
+      const pts = threadPoints(web, edge, flow, SEG);
+      for (const [w, al] of [[10, 0.04], [3.5, 0.07], [1.2, strong ? 0.34 : 0.2]] as const) {
+        g.moveTo(pts[0][0], pts[0][1]);
+        for (let k = 1; k < pts.length; k++) g.lineTo(pts[k][0], pts[k][1]);
+        g.stroke({ color: 0x8f9cff, width: w * px, alpha: al * a });
+      }
+      const toB = flowsToB(web, edge);
+      for (let k = 0; k < 3; k++) {
+        let u = (flow * 0.04 + k / 3 + webHash(i * 7 + j * 13)) % 1;
+        if (!toB) u = 1 - u;
+        const idx = Math.min(SEG - 1, Math.floor(u * SEG)), f = u * SEG - idx;
+        const x = pts[idx][0] + (pts[idx + 1][0] - pts[idx][0]) * f;
+        const y = pts[idx][1] + (pts[idx + 1][1] - pts[idx][1]) * f;
+        g.rect(x - px, y - px, 2 * px, 2 * px).fill({ color: 0xdfe4ff, alpha: 0.6 * a });
+      }
+    }
+    for (const nd of web.nodes) {
+      if (nd.real) continue;
+      g.circle(nd.x, nd.y, 9 * px).fill({ color: 0x8f9cff, alpha: 0.07 * a });
+      g.rect(nd.x - px, nd.y - px, 2 * px, 2 * px).fill({ color: 0xe8ecff, alpha: 0.7 * a });
+    }
+  }
+
   private drawGalaxyMarkers(engine: BigBangEngine, shown: StarBody[], camera: Camera, W: number, H: number, animTick: number): void {
     if (!this.markerGfx) { this.markerGfx = new Graphics(); this.labelContainer.addChildAt(this.markerGfx, 0); }
     const g = this.markerGfx;
@@ -1111,16 +1165,69 @@ export class PixiBigBangRenderer {
     const strength = engine.galaxyTierStrength;
     if (strength > 0.45) {
       const knownIn = new Map<number, number>();
-      if (settled) for (const st of shown) if (st.galaxyId != null) knownIn.set(st.galaxyId, (knownIn.get(st.galaxyId) ?? 0) + 1);
+      const civsIn = new Map<number, number>();
+      if (settled) for (const st of shown) {
+        if (st.galaxyId == null) continue;
+        knownIn.set(st.galaxyId, (knownIn.get(st.galaxyId) ?? 0) + 1);
+        if (!st.isDead && !st.isPlayerStar && st.biologyPhase === 'intelligent' && st.civLevel >= 1) civsIn.set(st.galaxyId, (civsIn.get(st.galaxyId) ?? 0) + 1);
+      }
+      const homeId = sc < 0.3 ? engine.getPlayerStar()?.galaxyId : undefined;
       for (const gal of engine.currentGalaxies) {
         if (gal.starIds.length === 0) continue;
-        const [x, y] = toScreen(gal.x, gal.y - gal.radius * 1.02);
+        let [x, y] = toScreen(gal.x, gal.y - gal.radius * 1.02);
+        // The home galaxy wears the YOUR GALAXY brackets out here: name above them.
+        if (settled && gal.id === homeId) y = Math.min(y, toScreen(gal.cx, gal.cy)[1] - (gal.radius * 1.12 * sc + 13) - 6);
         if (x < -200 || x > W + 200 || y < -60 || y > H + 60) continue;
         const col = cssToHex(gal.color), a = Math.min(1, (strength - 0.45) / 0.3);
         let alive = 0;
         for (const id of gal.starIds) { const st = engine.stars.find(q => q.id === id); if (st && !st.isDead) alive++; }
         this.label(`gal${gal.id}`, gal.name.toUpperCase(), x, y - 26, col, 13, a);
-        this.label(`galn${gal.id}`, settled ? `${alive} systems · ${knownIn.get(gal.id) ?? 0} known` : `${alive} systems`, x, y - 10, 0x9a8db0, 10, a * 0.9);
+        const civs = civsIn.get(gal.id) ?? 0;
+        const count = settled ? `${alive} systems · ${knownIn.get(gal.id) ?? 0} known${civs ? ` · ${civs} civ${civs > 1 ? 's' : ''}` : ''}` : `${alive} systems`;
+        this.label(`galn${gal.id}`, count, x, y - 10, 0x9a8db0, 10, a * 0.9);
+      }
+    }
+    // Out at universe zoom the home WORLD is a speck: mark the home GALAXY.
+    const ps = settled && sc < 0.3 ? engine.getPlayerStar() : undefined;
+    const homeGal = ps ? engine.currentGalaxies.find(q => q.id === ps.galaxyId) : undefined;
+    if (ps && homeGal) {
+      const a = Math.min(1, (0.3 - sc) / 0.08);
+      const [x, y] = toScreen(homeGal.cx, homeGal.cy);
+      const r = homeGal.radius * 1.12 * sc + 6;
+      const pulse = 0.7 + 0.3 * Math.sin(animTick * 0.05);
+      const n = Math.max(24, Math.round(r * 0.55));
+      for (let i = 0; i < n; i++) {
+        const th = i / n * Math.PI * 2 + animTick * 0.002;
+        g.rect(Math.round(x + Math.cos(th) * r) - 1, Math.round(y + Math.sin(th) * r) - 1, 2, 2).fill({ color: 0xffcc44, alpha: 0.6 * a * pulse });
+      }
+      const p = r + 7, arm = 8;
+      for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+        const bx = x + sx * p, by = y + sy * p;
+        g.rect(sx < 0 ? bx : bx - arm, sy < 0 ? by : by - 2, arm, 2).fill({ color: 0xffcc44, alpha: a * pulse });
+        g.rect(sx < 0 ? bx : bx - 2, sy < 0 ? by : by - arm, 2, arm).fill({ color: 0xffcc44, alpha: a * pulse });
+      }
+      this.label('yourgal', 'YOUR GALAXY', x, y + p + 12, 0xffd27a, 11, a);
+      // Your world inside it: one gold pixel pip.
+      const [wx, wy] = toScreen(ps.x, ps.y);
+      g.rect(Math.round(wx) - 1, Math.round(wy) - 1, 3, 3).fill({ color: 0xffd27a, alpha: 0.95 });
+    }
+    // Radio signals still being decoded: ripples spreading from their source.
+    if (settled && sc < 1.6) {
+      const now = engine.currentTick;
+      for (const sig of engine.currentCosmicSignals) {
+        if (sig.decoded) continue;
+        const src = engine.stars.find(q => q.id === sig.starId);
+        if (!src || src.isDead) continue;
+        const [x, y] = toScreen(src.x, src.y);
+        if (x < -80 || x > W + 80 || y < -80 || y > H + 80) continue;
+        for (let k = 0; k < 3; k++) {
+          const f = ((animTick / 110) + k / 3) % 1;
+          g.circle(x, y, 7 + 46 * f).stroke({ color: 0x6cf0ff, width: 1.5, alpha: 0.65 * (1 - f) });
+        }
+        if (sc >= 0.3) {
+          const pct = Math.max(0, Math.min(99, Math.floor((now - sig.startTick) / Math.max(1, sig.decodedAt - sig.startTick) * 100)));
+          this.label(`sig${sig.starId}`, `SIGNAL · DECODING ${pct}%`, x, y - 22, 0x8ff4ff, 10, 0.95);
+        }
       }
     }
     if (settled && sc < 1.6) {
@@ -1131,6 +1238,7 @@ export class PixiBigBangRenderer {
         const [x, y] = toScreen(st.x, st.y);
         if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
         if (st.isPlayerStar) {
+          if (sc < 0.3) continue;   // the YOUR GALAXY marker covers it out here
           const p = 13, arm = 5;
           for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
             const cx = x + sx * p, cy = y + sy * p;
