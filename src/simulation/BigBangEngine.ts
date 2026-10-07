@@ -1,4 +1,8 @@
 import { NationSystem } from './Nations';
+import {
+  emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports,
+  type InterstellarState, type StarView, type HomeView, type TradeRoute,
+} from './StarPolities';
 import { SeedRNG } from '../utils/SeedRNG';
 import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
@@ -468,6 +472,8 @@ export interface EngineSnapshot {
   playerSpecies?:   SpeciesGenome[];
   playerBiosphere?: PlanetBiosphere;
   civilizations?: Record<number, Civilization>;
+  /** Other stars' civilisations as agents, and trade routes between stars (StarPolities). */
+  interstellar?: InterstellarState;
 }
 
 export interface Camera {
@@ -484,6 +490,9 @@ import {
   CIV_TICK_RATE, WAR_TICK_RATE, RADIO_TICK_RATE, RADIO_DECODE_TICKS,
   BIO_PHASE_TICKS,
 } from '../constants';
+
+/** Ticks between steps of the other stars' civilisations (StarPolities). */
+const POLITY_STEP = 500;
 
 // M25 cosmology: stars ORBIT their galaxy — they do not fall into neighbours.
 // Pairwise N-body gravity + heavy damping was the old model; everything drifted
@@ -649,6 +658,9 @@ export class BigBangEngine {
   orbitalFleets: OrbitalFleet[] = [];
   cosmicEvents: CosmicEvent[] = [];
   activeWars: War[] = [];
+  /** Other stars' civilisations as agents, and the trade routes between stars (StarPolities.ts). */
+  interstellar: InterstellarState = emptyInterstellar();
+  private lastPolityTick = 0;
   private supernovaFlashes: SupernovaFlash[] = [];
   private galaxies: Galaxy[] = [];
   /**
@@ -1517,6 +1529,7 @@ export class BigBangEngine {
       this.updateStarFormation();
       this.updateAsteroids();
       this.updateCivilizations();
+      if (this.tick - this.lastPolityTick >= POLITY_STEP) this.stepPolities();
       this.updateCosmicSignals();
       this.updateFleets();
       this.updateWars();
@@ -2193,7 +2206,9 @@ export class BigBangEngine {
       // other civilisation still advances on the clock.
       const playerNations = star.isPlayerStar && runtimeState.playerNations?.isFounded;
       const advanceRate = this.civAdvanceRate(star);
-      if (!playerNations && star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
+      // Other stars' civilisations climb by what they learn (stepPolities);
+      // only the player's world before its nations still follows the clock.
+      if (star.isPlayerStar && !playerNations && star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
           star.civLevel < TECH_LEVELS.length - 1) {
         this.advanceCiv(star);
       }
@@ -2202,10 +2217,21 @@ export class BigBangEngine {
       // reaches for war; the universe stat decides the era's general violence.
       if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0) {
         const c = this.cultureFor(star);
-        const warChance = Math.min(0.95, (this.stats.hostility / 40)
-          * (c ? cultureMultiplier(c.values.militarism, 1) : 1)
-          * (c ? cultureMultiplier(c.values.xenophobia, 0.5) : 1));
-        if (this.rng.chance(warChance)) this.launchFleet(star);
+        const drive = !star.isPlayerStar && c ? warDrive(this.interstellar, star.id, c.values) : null;
+        if (drive) {
+          // A people at odds with a rival in reach: hard pressed and martial, it
+          // goes to war (the universe's violence still weighs on it).
+          const target = this.stars.find(s => s.id === drive.target && !s.isDead && s.hasLife);
+          if (target && this.rng.chance(Math.min(0.95, drive.chance * (0.5 + this.stats.hostility / 20)))) this.launchFleet(star, target, true);
+        } else if (!this.interstellar.polities[star.id] || star.isPlayerStar) {
+          const warChance = Math.min(0.95, (this.stats.hostility / 40)
+            * (c ? cultureMultiplier(c.values.militarism, 1) : 1)
+            * (c ? cultureMultiplier(c.values.xenophobia, 0.5) : 1));
+          if (this.rng.chance(warChance)) this.launchFleet(star);
+        } else if (this.rng.chance(this.stats.hostility / 400)) {
+          // Even at peace with everyone in reach, a few still send ships out to look.
+          this.launchFleet(star, undefined, false);
+        }
       }
 
       // Cosmic radio — Space Age+ NPC civs emit signals periodically
@@ -2930,6 +2956,76 @@ export class BigBangEngine {
     this.nationEra = star.civLevel;
   }
 
+  /**
+   * Other stars' civilisations live (StarPolities): their state, study,
+   * relations and trade, stepped together. Their era is what they learn;
+   * new routes and ages are news; goods bound for the home world reach its
+   * nations.
+   */
+  private stepPolities(): void {
+    const dt = this.tick - this.lastPolityTick;
+    this.lastPolityTick = this.tick;
+    const rate = CIV_TICK_RATE * (21 - this.stats.evolution) / 10;
+    const eras = Math.min(0.5, dt / rate);
+    const ps = this.getPlayerStar();
+    const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+    const views: StarView[] = [];
+    for (const s of this.stars) {
+      if (s.isDead || !s.hasLife || s.biologyPhase !== 'intelligent') continue;
+      if (s.isPlayerStar && !ns) continue;
+      const life = s.planets.find(p => p.hasLife) ?? s.planets[s.bestPlanetIndex ?? 0];
+      const c = this.cultureFor(s);
+      views.push({
+        id: s.id, x: s.x, y: s.y,
+        values: c?.values ?? { militarism: 0.5, piety: 0.5, curiosity: 0.5, collectivism: 0.5, xenophobia: 0.5 },
+        biosphere: life?.biosphere ?? 0.5, habitability: this.habitabilityOf(s), planetType: life?.type ?? 'rocky',
+        belt: s.asteroidBeltDensity ?? 0, civLevel: s.civLevel, isPlayer: s.isPlayerStar,
+      });
+    }
+    let home: HomeView | null = null;
+    if (ps && ns) {
+      const live = ns.nations.filter(n => !n.fallen);
+      const avg = (k: 'militarism' | 'piety' | 'curiosity' | 'collectivism' | 'xenophobia') => live.reduce((a, n) => a + n.values[k], 0) / Math.max(1, live.length);
+      const mx = (k: 'hunger' | 'crowding' | 'scarcity' | 'unrest' | 'pollution') => live.reduce((a, n) => Math.max(a, n.pressures[k]), 0);
+      home = {
+        starId: ps.id, techs: [...new Set(live.flatMap(n => n.techs))], era: ns.maxEra,
+        pressures: { hunger: mx('hunger'), crowding: mx('crowding'), scarcity: mx('scarcity'), unrest: mx('unrest'), pollution: mx('pollution') },
+        values: { militarism: avg('militarism'), piety: avg('piety'), curiosity: avg('curiosity'), collectivism: avg('collectivism'), xenophobia: avg('xenophobia') },
+      };
+    }
+    const news = stepInterstellar(this.interstellar, views, home, eras, () => this.rng.next());
+    const name = (id: number) => this.stars.find(s => s.id === id)?.civName ?? 'a distant people';
+    const known = (id: number) => { const s = this.stars.find(x => x.id === id); return !!s && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
+    for (const n of news) {
+      const star = this.stars.find(s => s.id === n.starId);
+      if (n.kind === 'era' && star && !star.isPlayerStar) {
+        const p = this.interstellar.polities[star.id];
+        while (p && star.civLevel < Math.min(p.era, TECH_LEVELS.length - 1)) this.advanceCiv(star);
+      } else if (n.kind === 'trade' || n.kind === 'trade-closed') {
+        const a = n.starId, b = n.other!;
+        if (!known(a) && !known(b)) continue;
+        const toName = n.to != null ? name(n.to) : '';
+        const line = n.kind === 'trade'
+          ? (n.goods === 'knowledge' ? `Scholars now travel between ${name(a)} and ${name(b)}.` : `A trade route opened between ${name(a)} and ${name(b)}: ${n.goods} flows to ${toName}.`)
+          : `The trade route between ${name(a)} and ${name(b)} has fallen silent.`;
+        this.onCivEvent?.(line);
+        // The home world remembers it in its chronicle.
+        if (ns && ps && (a === ps.id || b === ps.id)) ns.worldEvent(this.tick, line, [n.kind === 'trade' ? 'two peoples among the stars, each with what the other lacked' : 'ill will between the stars']);
+      }
+    }
+    // Off-world goods reach the home world's nations (the neediest first).
+    if (ns && ps) {
+      const imp = homeImports(this.interstellar, ps.id);
+      ns.setOffworld(imp.food, imp.materials);
+    }
+  }
+
+  /** Trade routes the player can see (both ends known), for the galaxy view. */
+  visibleTradeRoutes(): TradeRoute[] {
+    const known = (id: number) => { const s = this.stars.find(x => x.id === id); return !!s && !s.isDead && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
+    return this.interstellar.routes.filter(r => known(r.a) && known(r.b));
+  }
+
   cultureFor(star: StarBody): Civilization | null {
     return gameState.civilizations[star.id] ?? null;
   }
@@ -3118,8 +3214,8 @@ export class BigBangEngine {
     return out;
   }
 
-  private launchFleet(attacker: StarBody): void {
-    const targets = this.stars.filter(s =>
+  private launchFleet(attacker: StarBody, toward?: StarBody, hostileArg?: boolean): void {
+    const targets = toward ? [toward] : this.stars.filter(s =>
       !s.isDead && s.id !== attacker.id && s.hasLife &&
       Math.abs(s.x - attacker.x) < 400 && Math.abs(s.y - attacker.y) < 400
     );
@@ -3127,7 +3223,7 @@ export class BigBangEngine {
 
     const target = this.rng.pick(targets);
     const contactC = this.cultureFor(attacker);
-    const hostile = this.rng.chance(Math.min(0.95, (this.stats.hostility / 25)
+    const hostile = hostileArg ?? this.rng.chance(Math.min(0.95, (this.stats.hostility / 25)
       * (contactC ? cultureMultiplier(contactC.values.xenophobia, 1) : 1)));
 
     this.fleets.push({
@@ -3190,6 +3286,8 @@ export class BigBangEngine {
               resolved: false,
             };
             this.activeWars.push(war);
+            // Wrongs remembered on both sides; their trade ends.
+            grieve(this.interstellar, from.id, to.id, 0.45, this.getPlayerStar()?.id ?? -1);
             this.exploredAreas.push({ x: to.x, y: to.y, r: 50 });
             this.spawnSiegeFleets(war, from, to);
             const known = this.isStarKnownToPlayer(from) || this.isStarKnownToPlayer(to);
@@ -6027,6 +6125,7 @@ export class BigBangEngine {
       })),
       playerBiosphere: { ...gameState.playerBiosphere },
       civilizations: gameState.civilizations,
+      interstellar: this.interstellar,
     };
   }
 
@@ -6058,6 +6157,9 @@ export class BigBangEngine {
     this.orbitalFleets = snap.orbitalFleets ?? [];
     this.cosmicEvents = snap.cosmicEvents;
     this.activeWars = snap.activeWars;
+    this.interstellar = snap.interstellar ?? emptyInterstellar();
+    this.interstellar.home ??= { attitude: {}, grievance: {} };
+    this.lastPolityTick = snap.tick;
     this.exploredAreas = snap.exploredAreas;
     this.playerFogIndex = -1;
     this.cameraFollowHome = true;

@@ -25,6 +25,7 @@ import type {
   Camera, Galaxy, Planet,
 } from '../simulation/BigBangEngine';
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
+import type { TradeRoute } from '../simulation/StarPolities';
 
 import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA } from '../simulation/GameState';
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
@@ -359,7 +360,7 @@ export class PixiBigBangRenderer {
     } else {
       this.dustLayer.clear();
     }
-    this.drawTradeRoutes(engine.stars, camera);
+    this.drawTradeRoutes(engine.visibleTradeRoutes(), starMap, animTick, camera);
     this.drawStars(engine.stars, engine.currentPlayerStarId, animTick, camera, tight);
     this.drawReligions(engine.stars, engine.currentRevelationFlashes, animTick, camera);
     this.drawAsteroids(engine.asteroids);
@@ -795,20 +796,39 @@ export class PixiBigBangRenderer {
 
   // ─── Trade routes ─────────────────────────────────────────────────────────
 
-  private drawTradeRoutes(stars: StarBody[], camera: Camera): void {
+  /**
+   * The trade routes the civilisations opened (StarPolities): a dotted lane in
+   * the colour of what it carries — gold grain, copper ore, blue knowledge —
+   * with cargo ships plying it, laden toward the people that lacked it.
+   */
+  private drawTradeRoutes(routes: TradeRoute[], starMap: Map<number, StarBody>, animTick: number, camera: Camera): void {
     this.tradeLayer.clear();
     if (camera.scale < 0.3) return;
-    const tradeCivs = stars.filter(s => s.civLevel >= 5 && !s.isDead);
-    for (let i = 0; i < tradeCivs.length; i++) {
-      for (let j = i + 1; j < tradeCivs.length; j++) {
-        const a = tradeCivs[i], b = tradeCivs[j];
-        const dx = a.x - b.x, dy = a.y - b.y;
-        if (Math.sqrt(dx*dx + dy*dy) > 300) continue;
-        dashedLine(
-          this.tradeLayer, a.x, a.y, b.x, b.y,
-          3 / camera.scale, 6 / camera.scale,
-          0x44aaff, 0.6 / camera.scale, 0.12,
-        );
+    const COLOR: Record<string, number> = { grain: 0xe8c066, ore: 0xd08850, knowledge: 0x6cc8ff };
+    const px = 1 / camera.scale;
+    for (const r of routes) {
+      const a = starMap.get(r.a), b = starMap.get(r.b);
+      if (!a || !b) continue;
+      const color = COLOR[r.goods] ?? 0xe8c066;
+      dashedLine(this.tradeLayer, a.x, a.y, b.x, b.y, 2 * px, 5 * px, color, 0.8 * px, 0.35);
+      // Ships: three on the lane, the laden ones heading for the receiver.
+      const [from, to] = r.to === r.a ? [b, a] : [a, b];
+      const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+      const ux = (to.x - from.x) / len, uy = (to.y - from.y) / len;
+      for (let k = 0; k < 3; k++) {
+        const outbound = k !== 1;            // two laden ships toward the receiver, one coming back
+        let t = ((animTick * 0.0016 * (240 / Math.max(120, len)) + k / 3 + (r.a * 0.137)) % 1);
+        if (!outbound) t = 1 - t;
+        const x = from.x + (to.x - from.x) * t, y = from.y + (to.y - from.y) * t;
+        const sx = outbound ? ux : -ux, sy = outbound ? uy : -uy;
+        const sz = (outbound ? 2.4 : 1.8) * px;
+        // A small hull: nose forward, square stern.
+        this.tradeLayer
+          .moveTo(x + sx * sz * 1.6, y + sy * sz * 1.6)
+          .lineTo(x - sx * sz - sy * sz * 0.8, y - sy * sz + sx * sz * 0.8)
+          .lineTo(x - sx * sz + sy * sz * 0.8, y - sy * sz - sx * sz * 0.8)
+          .closePath()
+          .fill({ color: outbound ? color : 0xcfd6e6, alpha: 0.95 });
       }
     }
   }

@@ -49,6 +49,9 @@ export interface NationState {
   /** Food and materials arriving (+) or leaving (-) by trade, applied next step. */
   tradeFood: number;
   tradeMaterials: number;
+  /** Goods from other stars (StarPolities trade), as extra shares of food and materials. */
+  offworldFood: number;
+  offworldMaterials: number;
 }
 
 /**
@@ -464,6 +467,22 @@ export class NationSystem {
     return n ? this.log(n, tick, what, because, causes) : 0;
   }
 
+  /**
+   * Goods arriving from other stars (StarPolities): shares of food and
+   * materials, landing with the nations that lack them most (all of them
+   * when none is short).
+   */
+  setOffworld(food: number, materials: number): void {
+    const live = this.nations.filter(n => !n.fallen);
+    const share = (need: (n: Nation) => number, total: number, key: 'offworldFood' | 'offworldMaterials') => {
+      const w = live.map(n => Math.max(0, need(n) - 0.15));
+      const sum = w.reduce((a, b) => a + b, 0);
+      live.forEach((n, i) => { n.state[key] = total <= 0 ? 0 : sum > 0 ? total * live.length * w[i] / sum / live.length * 1.5 : total * 0.5; });
+    };
+    share(n => n.pressures.hunger, food, 'offworldFood');
+    share(n => n.pressures.scarcity, materials, 'offworldMaterials');
+  }
+
   /** Write the player's own act (a card cast) to the chronicle. Returns its id. */
   remark(tick: number, what: string, because: string[], causes: number[] = []): number {
     return this.add({ tick, nation: -1, what, because, causes, kind: 'divine' }).id;
@@ -669,7 +688,7 @@ export class NationSystem {
       this.nations.push({
         id: idx, name, form, government, ideology: ideologyFor(values), values, flag, color: flag.colors[0],
         capital: { row: r, col: c }, founded: tick,
-        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1, tradeFood: 0, tradeMaterials: 0 },
+        state: { population: 0, foodYield: 0, foodNeed: 0, materials: 0, land: 0, cohesion: 0.8, knowledge: 0, pollution: 0, inequality: 0, harvest: 1, tradeFood: 0, tradeMaterials: 0, offworldFood: 0, offworldMaterials: 0 },
         pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 },
         techs: [], research: null, era: 0, fallen: false, omens: [], marks: {}, history: [],
       });
@@ -1137,8 +1156,8 @@ export class NationSystem {
       // slowly by itself), and foul land yields less.
       s.pollution = Math.max(0, Math.min(1, s.pollution * 0.96 + fx.pollution * 3 + om.pollution));
       s.inequality = Math.max(0, s.inequality * 0.995);
-      s.land = land[k]; s.materials = Math.max(0, mats[k] * fx.materials * om.materials + s.tradeMaterials);
-      s.foodYield = Math.max(1e-6, food[k] * fx.food * om.food * s.harvest * (1 - 0.5 * s.pollution) + s.tradeFood);
+      s.land = land[k]; s.materials = Math.max(0, mats[k] * fx.materials * om.materials * (1 + (s.offworldMaterials ?? 0)) + s.tradeMaterials);
+      s.foodYield = Math.max(1e-6, food[k] * fx.food * om.food * s.harvest * (1 - 0.5 * s.pollution) * (1 + (s.offworldFood ?? 0)) + s.tradeFood);
       // People grow toward what the food carries (logistic) and starve above
       // it; crowding (beyond what the towns house) slows them with disease.
       const carry = s.foodYield / FOOD_PER_PERSON;

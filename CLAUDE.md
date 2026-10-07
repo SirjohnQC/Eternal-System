@@ -49,7 +49,7 @@ npx esbuild tools/smokeTest.ts --bundle --platform=node --format=esm \
 ```
 
 - `smokeTest.ts` — whole-simulation "is everything still working" check; run after any sim change.
-- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era).
+- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars.
 - `*Check.ts` — targeted checks (weather, zoom, formation, settlement, moon, sky, ...);
   exit non-zero on failure. `weatherCheck` and `zoomCheck` want `node --expose-gc`.
 - `*Render.ts` — write PNGs for visual review (usually take `<out.png>` as the first arg).
