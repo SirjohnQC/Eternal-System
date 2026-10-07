@@ -505,10 +505,11 @@ async function launchBigBangAsync(): Promise<void> {
   _pixiRenderer?.warmStarTextures();
 
   setBigBangLoadProgress(62, 'Charting the galaxies');
-  await engine.warmVisualCaches((done, total, label) => {
-    const pct = 62 + Math.round((done / total) * 30);
-    setBigBangLoadProgress(pct, label);
-  });
+  // The galaxies are drawn by the Pixi renderer (GalaxyArt); without it, the
+  // engine's own pixel envelopes.
+  const chart = (done: number, total: number, label: string) => setBigBangLoadProgress(62 + Math.round((done / total) * 30), label);
+  if (_pixiRenderer) await _pixiRenderer.warmGalaxyArt(engine.currentGalaxies, chart);
+  else await engine.warmVisualCaches(chart);
 
   setBigBangLoadProgress(100, 'Let there be light');
   await new Promise<void>(r => setTimeout(r, 180));

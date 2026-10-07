@@ -25,9 +25,10 @@ import type {
   Camera, Galaxy, Planet,
 } from '../simulation/BigBangEngine';
 import { planetOffsetFromStar } from '../simulation/BigBangEngine';
+import { bakeGalaxyHaze, bakeGalaxyStars, GALAXY_EXTENT, STARS_RES, type GalaxyShape, type Raster } from './GalaxyArt';
 import type { TradeRoute } from '../simulation/StarPolities';
 
-import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA } from '../simulation/GameState';
+import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA, TECH_LEVELS } from '../simulation/GameState';
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
 import { bakePlanetTexture } from '../simulation/PlanetRenderer';
 import { paintMoon, type MoonKindArt } from './MoonArt';
@@ -139,6 +140,9 @@ export class PixiBigBangRenderer {
   private nebulaLayer!: Graphics;
   /** Galactic dust lanes + inter-system debris (world-space). */
   private dustLayer!: Graphics;
+  /** Galaxy art: one haze + one star-field sprite per galaxy (GalaxyArt bakes). */
+  private galaxyLayer!: Container;
+  private galaxySkins = new Map<number, { key: string; haze: Sprite; stars: Sprite }>();
   private tradeLayer!: Graphics;
   private starLayer!: Graphics;
   private religionLayer!: Graphics;
@@ -241,6 +245,9 @@ export class PixiBigBangRenderer {
     this.labelContainer = new Container();
 
     this.app.stage.addChild(this.bgLayer);          // screen-space bg stars
+    // The galaxies themselves (GalaxyArt), beneath everything else in the world.
+    this.galaxyLayer = new Container();
+    this.worldContainer.addChild(this.galaxyLayer);
     this.worldContainer.addChild(this.nebulaLayer);
     this.dustLayer = new Graphics();
     this.worldContainer.addChild(this.dustLayer);
@@ -355,6 +362,7 @@ export class PixiBigBangRenderer {
 
     // Draw each layer
     this.drawBgStars(W, H, engine, camera);
+    this.drawGalaxySkins(engine, camera);
     this.drawNebulae(engine.nebulae, animTick);
     if (!critical) {
       this.drawGalacticMedium(engine.currentGalaxies, engine.stars, engine.currentPlayerStarId, animTick, camera);
@@ -362,15 +370,23 @@ export class PixiBigBangRenderer {
       this.dustLayer.clear();
     }
     this.drawTradeRoutes(engine.visibleTradeRoutes(), starMap, animTick, camera);
-    this.drawStars(engine.stars, engine.currentPlayerStarId, animTick, camera, tight);
-    this.drawReligions(engine.stars, engine.currentRevelationFlashes, animTick, camera);
+    // Out at galaxy and universe zoom the fog is light enough to show the
+    // galaxies' light, so worlds the player has not found are not drawn at
+    // all (they were only ever hidden by the fog's darkness).
+    const settled = engine.phase === 'settled';
+    const known = settled && camera.scale < 1.8 ? new Set(engine.stars.filter(s => engine.isStarKnownToPlayer(s)).map(s => s.id)) : null;
+    const shown = known ? engine.stars.filter(s => known.has(s.id)) : engine.stars;
+    const seenFleet = (a: number, b: number) => !known || known.has(a) || known.has(b);
+    this.drawStars(shown, engine.currentPlayerStarId, animTick, camera, tight);
+    this.drawReligions(shown, engine.currentRevelationFlashes, animTick, camera);
     this.drawAsteroids(engine.asteroids);
-    this.drawSystemDebris(engine.stars, engine.currentPlayerStarId, animTick, camera);
-    this.drawFleets(engine.fleets, starMap, camera);
+    this.drawSystemDebris(shown, engine.currentPlayerStarId, animTick, camera);
+    this.drawFleets(known ? engine.fleets.filter(f => seenFleet(f.fromStarId, f.toStarId)) : engine.fleets, starMap, camera);
     this.drawOrbitalFleets(engine.orbitalFleets, starMap, animTick, camera);
-    this.drawWars(engine.activeWars, starMap, animTick, camera);
-    this.drawPlanets(engine.stars, engine.currentPlayerStarId, animTick, camera);
+    this.drawWars(known ? engine.activeWars.filter(w => seenFleet(w.attackerStarId, w.defenderStarId)) : engine.activeWars, starMap, animTick, camera);
+    this.drawPlanets(shown, engine.currentPlayerStarId, animTick, camera);
     this.drawCosmicEffects(engine.currentSupernovaFlashes, animTick, camera, W, H);
+    this.drawGalaxyMarkers(engine, shown, camera, W, H, animTick);
     // Haze last among world visuals so color sits over the solar system.
     if (!tight) {
       this.drawSystemHazeOverlay(W, H, engine, camera, animTick);
@@ -688,7 +704,9 @@ export class PixiBigBangRenderer {
   ): void {
     this.dustLayer.clear();
     const sc = camera.scale;
-    if (sc < 0.18 || sc > 3.5) return;
+    // The galaxy tier is drawn by the galaxy art (face-on, matching the
+    // systems' circular orbits); this flattened dust only adds ambience close in.
+    if (sc < 1.5 || sc > 3.5) return;
 
     let dustVis = 1;
     if (sc < 0.45) dustVis = (sc - 0.18) / 0.27;
@@ -949,6 +967,180 @@ export class PixiBigBangRenderer {
     L.rect(cx - px, cy - px, 2 * px, 2 * px).fill({ color: 0xffffff, alpha: fade });
   }
 
+  // ─── Galaxies ─────────────────────────────────────────────────────────────
+
+  private static galaxyShape(gal: Galaxy): GalaxyShape {
+    return { id: gal.id, morph: gal.morph, armCount: gal.armCount, armPitch: gal.armPitch, barLength: gal.barLength, color: gal.color };
+  }
+  private static galaxyKey(gal: Galaxy): string {
+    return `${gal.morph}|${gal.armCount}|${gal.armPitch.toFixed(2)}|${gal.barLength.toFixed(2)}|${gal.color}`;
+  }
+
+  private rasterTexture(r: Raster, linear: boolean): Texture {
+    const cv = document.createElement('canvas');
+    cv.width = r.size; cv.height = r.size;
+    const g = cv.getContext('2d');
+    if (g) { const img = g.createImageData(r.size, r.size); img.data.set(r.data); g.putImageData(img, 0, 0); }
+    const tex = Texture.from(cv);
+    tex.source.scaleMode = linear ? 'linear' : 'nearest';
+    return tex;
+  }
+
+  /** Bake (or re-bake) one galaxy's art. */
+  private bakeGalaxySkin(gal: Galaxy): { key: string; haze: Sprite; stars: Sprite } {
+    const old = this.galaxySkins.get(gal.id);
+    if (old) { old.haze.destroy({ texture: true, textureSource: true }); old.stars.destroy({ texture: true, textureSource: true }); }
+    const shape = PixiBigBangRenderer.galaxyShape(gal);
+    const haze = new Sprite(this.rasterTexture(bakeGalaxyHaze(shape), true));
+    const stars = new Sprite(this.rasterTexture(bakeGalaxyStars(shape), false));
+    for (const sp of [haze, stars]) { sp.anchor.set(0.5); sp.visible = false; this.galaxyLayer.addChild(sp); }
+    stars.blendMode = 'add';
+    const skin = { key: PixiBigBangRenderer.galaxyKey(gal), haze, stars };
+    this.galaxySkins.set(gal.id, skin);
+    return skin;
+  }
+
+  /** Bake every galaxy's art up front (behind the loading screen). */
+  async warmGalaxyArt(galaxies: Galaxy[], onProgress?: (done: number, total: number, label: string) => void): Promise<void> {
+    const total = Math.max(1, galaxies.length);
+    for (let i = 0; i < galaxies.length; i++) {
+      const gal = galaxies[i];
+      const skin = this.galaxySkins.get(gal.id);
+      if (!skin || skin.key !== PixiBigBangRenderer.galaxyKey(gal)) this.bakeGalaxySkin(gal);
+      onProgress?.(i + 1, total, `Mapping ${gal.name}`);
+      await new Promise<void>(r => setTimeout(r, 0));
+    }
+  }
+
+  /**
+   * The galaxies as star clouds (GalaxyArt): a soft haze and a crisp field
+   * of thousands of stars per galaxy, face-on like the systems' orbits, the
+   * arm pattern turning with the galaxy. Shown at universe and galaxy zoom
+   * (and through the Big Bang), fading out toward system zoom.
+   */
+  private drawGalaxySkins(engine: BigBangEngine, camera: Camera): void {
+    const strength = engine.galaxyTierStrength, sc = camera.scale;
+    const seen = new Set<number>();
+    if (strength > 0.01) {
+      const { halfW, halfH } = viewHalfExtents(camera, 40 / Math.max(0.01, sc));
+      let baked = 0;
+      for (const gal of engine.currentGalaxies) {
+        if (gal.starIds.length === 0) continue;
+        const size = gal.radius * 2 * GALAXY_EXTENT;
+        if (!inView(gal.x, gal.y, camera, halfW + size / 2, halfH + size / 2)) continue;
+        let skin = this.galaxySkins.get(gal.id);
+        if (!skin || skin.key !== PixiBigBangRenderer.galaxyKey(gal)) {
+          if (baked >= 1 && skin) { /* keep the old art one more frame */ }
+          else if (baked >= 1) continue;                  // at most one bake per frame
+          else { skin = this.bakeGalaxySkin(gal); baked++; }
+        }
+        seen.add(gal.id);
+        const rot = engine.galaxyPatternAngle(gal);
+        for (const sp of [skin.haze, skin.stars]) {
+          sp.x = gal.x; sp.y = gal.y; sp.width = size; sp.height = size; sp.rotation = rot; sp.visible = true;
+        }
+        skin.haze.alpha = Math.min(1, strength * 1.35);
+        // Stars: full from galaxy zoom; softer at universe zoom, where each is sub-pixel.
+        const near = Math.max(0, Math.min(1, (sc - 0.16) / 0.2));
+        skin.stars.alpha = Math.min(1, strength * 1.1) * (0.45 + 0.55 * near);
+        // Crisp pixels when magnified, smooth when minified (no shimmer while zooming).
+        const want = size * sc >= STARS_RES ? 'nearest' : 'linear';
+        if (skin.stars.texture.source.scaleMode !== want) skin.stars.texture.source.scaleMode = want;
+      }
+    }
+    for (const [id, skin] of this.galaxySkins) if (!seen.has(id)) { skin.haze.visible = false; skin.stars.visible = false; }
+  }
+
+  // ─── Galaxy-zoom markers and names (screen space) ─────────────────────────
+
+  private markerGfx: Graphics | null = null;
+  private labelPool = new Map<string, Text>();
+  private labelsUsed = new Set<string>();
+
+  private labelFontReady = false;
+
+  /** A pooled screen-space label (Pixelify Sans), shown this frame. */
+  private label(key: string, text: string, x: number, y: number, color: number, size: number, alpha = 1): void {
+    // Labels made before the pixel font loaded fell back to monospace: remake them once it is in.
+    if (!this.labelFontReady && typeof document !== 'undefined' && document.fonts?.check('12px "Pixelify Sans"')) {
+      this.labelFontReady = true;
+      for (const t of this.labelPool.values()) t.destroy();
+      this.labelPool.clear();
+    }
+    let t = this.labelPool.get(key);
+    if (!t) {
+      t = new Text({ text, style: new TextStyle({ fontFamily: 'Pixelify Sans, monospace', fontSize: size, fill: color, letterSpacing: 1,
+        dropShadow: { color: 0x000000, alpha: 0.9, blur: 0, distance: 1, angle: Math.PI / 2 } }) });
+      t.anchor.set(0.5, 0);
+      this.labelContainer.addChild(t);
+      this.labelPool.set(key, t);
+    }
+    if (t.text !== text) t.text = text;
+    if ((t.style.fill as unknown) !== color) t.style.fill = color;
+    t.x = Math.round(x); t.y = Math.round(y); t.alpha = alpha; t.visible = true;
+    this.labelsUsed.add(key);
+  }
+
+  /**
+   * Out at galaxy and universe zoom, constant-size markers: your world (gold
+   * frame, YOUR WORLD), the civilisations you know (a ring in their flag's
+   * colour, their name and age), living worlds (a green pip); and each
+   * galaxy's name with how many of its systems you know.
+   */
+  private drawGalaxyMarkers(engine: BigBangEngine, shown: StarBody[], camera: Camera, W: number, H: number, animTick: number): void {
+    if (!this.markerGfx) { this.markerGfx = new Graphics(); this.labelContainer.addChildAt(this.markerGfx, 0); }
+    const g = this.markerGfx;
+    g.clear();
+    this.labelsUsed.clear();
+    const sc = camera.scale;
+    const toScreen = (x: number, y: number) => [W / 2 + (x - camera.x) * sc, H / 2 + (y - camera.y) * sc] as const;
+    const settled = engine.phase === 'settled';
+    // Galaxy names, while the galaxy tier is the subject.
+    const strength = engine.galaxyTierStrength;
+    if (strength > 0.45) {
+      const knownIn = new Map<number, number>();
+      if (settled) for (const st of shown) if (st.galaxyId != null) knownIn.set(st.galaxyId, (knownIn.get(st.galaxyId) ?? 0) + 1);
+      for (const gal of engine.currentGalaxies) {
+        if (gal.starIds.length === 0) continue;
+        const [x, y] = toScreen(gal.x, gal.y - gal.radius * 1.02);
+        if (x < -200 || x > W + 200 || y < -60 || y > H + 60) continue;
+        const col = cssToHex(gal.color), a = Math.min(1, (strength - 0.45) / 0.3);
+        let alive = 0;
+        for (const id of gal.starIds) { const st = engine.stars.find(q => q.id === id); if (st && !st.isDead) alive++; }
+        this.label(`gal${gal.id}`, gal.name.toUpperCase(), x, y - 26, col, 13, a);
+        this.label(`galn${gal.id}`, settled ? `${alive} systems · ${knownIn.get(gal.id) ?? 0} known` : `${alive} systems`, x, y - 10, 0x9a8db0, 10, a * 0.9);
+      }
+    }
+    if (settled && sc < 1.6) {
+      const pulse = 0.6 + 0.3 * Math.sin(animTick * 0.05);
+      const labels = sc >= 0.3;
+      for (const st of shown) {
+        if (st.isDead) continue;
+        const [x, y] = toScreen(st.x, st.y);
+        if (x < -40 || x > W + 40 || y < -40 || y > H + 40) continue;
+        if (st.isPlayerStar) {
+          const p = 13, arm = 5;
+          for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+            const cx = x + sx * p, cy = y + sy * p;
+            g.rect(sx < 0 ? cx : cx - arm, sy < 0 ? cy : cy - 1.5, arm, 1.5).fill({ color: 0xffcc44, alpha: pulse });
+            g.rect(sx < 0 ? cx : cx - 1.5, sy < 0 ? cy : cy - arm, 1.5, arm).fill({ color: 0xffcc44, alpha: pulse });
+          }
+          this.label('you', 'YOUR WORLD', x, y + 17, 0xffd27a, 11);
+          continue;
+        }
+        if (st.biologyPhase === 'intelligent' && st.civLevel >= 1) {
+          const flag = gameState.factionFlags[st.id];
+          const col = flag ? cssToHex(flag.primaryColor) : cssToHex(CIV_COLORS[Math.min(st.civLevel, CIV_COLORS.length - 1)]);
+          g.circle(x, y, 9).stroke({ color: col, width: 1.5, alpha: 0.85 });
+          if (labels) this.label(`civ${st.id}`, `${st.civName} · ${TECH_LEVELS[st.civLevel] ?? ''}`, x, y + 12, 0xd8ccf0, 10, 0.95);
+        } else if (st.hasLife) {
+          g.rect(Math.round(x + 6), Math.round(y - 7), 2, 2).fill({ color: 0x5dcc8a, alpha: 0.9 });
+        }
+      }
+    }
+    for (const [k, t] of this.labelPool) if (!this.labelsUsed.has(k)) t.visible = false;
+  }
+
   // ─── Trade routes ─────────────────────────────────────────────────────────
 
   /**
@@ -1091,7 +1283,8 @@ export class PixiBigBangRenderer {
 
       const band = starTempBand(star.temperature);
       const profile = starVisualProfile(band);
-      const size = Math.max(star.radius * 3.4, 2.2);
+      // At least a few screen pixels out at galaxy zoom, so a known world never vanishes into the galaxy's light.
+      const size = Math.max(star.radius * 3.4, 2.2, camera.scale < 1.6 ? 5 / camera.scale : 0);
       const pulse = 1 + profile.pulseAmp * Math.sin(animTick * profile.pulseSpeed + star.id);
       const sc = camera.scale;
       // Far zoom: body + glow only. Corona/haze are fill-rate heavy across a galaxy.
@@ -1205,7 +1398,7 @@ export class PixiBigBangRenderer {
       sprite.y = star.y;
       sprite.visible = true;
 
-      if (star.isPlayerStar && camera.scale < 1.6) {
+      if (star.isPlayerStar && camera.scale < 1.6 && camera.scale >= 1.2) {
         // Corner brackets outside the corona, not a box drawn across the sun.
         // (Closer in, the brackets frame the home WORLD instead.)
         const alpha = 0.55 + 0.25 * Math.sin(animTick * 0.05);
@@ -1275,11 +1468,13 @@ export class PixiBigBangRenderer {
         this.flagSprites.set(star.id, sprite);
       }
 
-      const size = 6;
-      sprite.width = size * 1.5;
-      sprite.height = size;
+      // A readable flag out at galaxy zoom (constant on screen), world-sized close in.
+      const k = camera.scale < 1.6 ? 1 / camera.scale : 1;
+      const size = camera.scale < 1.6 ? 9 : 6;
+      sprite.width = size * 1.5 * k;
+      sprite.height = size * k;
       sprite.x = star.x;
-      sprite.y = star.y - star.radius * 5 - 4;
+      sprite.y = camera.scale < 1.6 ? star.y - 17 * k : star.y - star.radius * 5 - 4;
       sprite.visible = true;
     }
   }

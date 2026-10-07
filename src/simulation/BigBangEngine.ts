@@ -544,6 +544,8 @@ const PLANET_ORBIT_MU = 0.0012;
 const ASTEROID_SPAWN   = 35;      // spawn asteroids more frequently
 const PANSPERMIA_DIST  = 80;
 const FOG_ALPHA        = 0.93;
+/** Fog over the galaxies at galaxy / universe zoom (unknown worlds are not drawn there). */
+const FOG_ALPHA_FAR    = 0.5;
 
 // ── Life model tuning (see LifeSystem.ts) ───────────────────────────────────
 // Per-star, per-tick chance of abiogenesis at habitability 1.0 and life 20.
@@ -3412,7 +3414,7 @@ export class BigBangEngine {
       // still-live canvas, in world space, keeps the tier visible in both modes.
       ctx.save();
       this.applyCamera(ctx, W, H);
-      this.drawGalaxies(ctx);
+      this.drawGalaxies(ctx, false);
       ctx.restore();
     } else {
       ctx.fillStyle = '#000008';
@@ -3535,7 +3537,32 @@ export class BigBangEngine {
    * faint disc + halo speckles) and blitted with nearest-neighbour. No soft
    * radial gradients — those read as modern VFX, not a CRT observatory.
    */
-  private drawGalaxies(ctx: CanvasRenderingContext2D): void {
+  /**
+   * Where a galaxy's spiral pattern points now: its tilt, turned as one piece
+   * at the angular speed of its middle disc (0.6 radius). Systems orbit
+   * differentially (inner ones faster), so they drift slowly through the arms
+   * — a density wave, as real arms are. Used by the renderer's galaxy art.
+   */
+  galaxyPatternAngle(gal: Galaxy): number {
+    const r = Math.max(8, gal.radius * 0.6);
+    const soft2 = r * r + GALACTIC_SOFT * GALACTIC_SOFT;
+    const omega = Math.min(Math.sqrt(GALACTIC_MU / (soft2 * Math.sqrt(soft2))), MAX_GALACTIC_OMEGA);
+    return gal.tilt + omega * (this.tick + this.tickAccumulator);
+  }
+
+  /** How strongly the galaxy tier shows (1 at universe / galaxy zoom, 0 by system zoom; full during inflation). */
+  get galaxyTierStrength(): number {
+    let strength = Math.max(0, Math.min(1, (1.8 - this.camera.scale) / 1.5));
+    if (this.phase === 'inflation') strength = Math.max(strength, Math.min(1, this.tick / 90));
+    return strength;
+  }
+
+  /**
+   * Galaxy names (and, without Pixi, the old pixel envelopes). In the real
+   * game (pixiMode) the galaxies themselves are drawn by PixiBigBangRenderer
+   * from GalaxyArt; `envelopes` false skips the old 128 px sprites.
+   */
+  private drawGalaxies(ctx: CanvasRenderingContext2D, envelopes = true): void {
     if (this.galaxies.length === 0) return;
 
     const sc = this.camera.scale;
@@ -3554,7 +3581,7 @@ export class BigBangEngine {
     const pad = 80 / Math.max(0.01, sc);
     const halfW = (typeof window !== 'undefined' ? window.innerWidth : 1200) * 0.5 / Math.max(0.01, sc) + pad;
     const halfH = (typeof window !== 'undefined' ? window.innerHeight : 800) * 0.5 / Math.max(0.01, sc) + pad;
-    for (const gal of this.galaxies) {
+    if (envelopes) for (const gal of this.galaxies) {
       if (gal.starIds.length === 0) continue;
       const size = gal.radius * 2.2;
       // Wider spacing grew envelopes a lot — skip blit if the disc is off-camera.
@@ -3575,8 +3602,9 @@ export class BigBangEngine {
     ctx.restore();
     ctx.imageSmoothingEnabled = prevSmooth;
 
-    // Labels, only while the galaxy tier is actually the subject.
-    if (strength > 0.45) {
+    // Labels, only while the galaxy tier is actually the subject (the Pixi
+    // renderer draws its own, in the game's pixel font).
+    if (strength > 0.45 && envelopes) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.font = `${Math.max(7, 11 / sc)}px "Courier New", monospace`;
@@ -4659,7 +4687,12 @@ export class BigBangEngine {
       fogCtx.setTransform(1, 0, 0, 1, 0, 0);
       fogCtx.globalCompositeOperation = 'source-over';
       fogCtx.clearRect(0, 0, W, H);
-      fogCtx.fillStyle = `rgba(0, 0, 8, ${FOG_ALPHA})`;
+      // Close in, the fog hides what is not yet known. Out at galaxy and
+      // universe zoom the unknown worlds are not drawn at all (the renderer
+      // skips them), so the fog only dims the galaxies' light, as the night
+      // sky shows a galaxy's glow without its worlds.
+      const out = Math.max(0, Math.min(1, (1.8 - this.camera.scale) / 0.6));
+      fogCtx.fillStyle = `rgba(0, 0, 8, ${FOG_ALPHA - (FOG_ALPHA - FOG_ALPHA_FAR) * out})`;
       fogCtx.fillRect(0, 0, W, H);
 
       fogCtx.globalCompositeOperation = 'destination-out';
