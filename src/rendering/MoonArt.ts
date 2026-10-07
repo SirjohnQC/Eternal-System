@@ -23,6 +23,8 @@ export interface MoonArtOpts {
   /** Light direction in the image plane (x right, y down), any length; (0,0) = full face lit. */
   lx: number; ly: number;
   colonised?: boolean;
+  /** A lumpy captured rock: the silhouette is a seeded potato, not a disc. */
+  irregular?: boolean;
 }
 
 const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (v + 0.5) / 16);
@@ -58,9 +60,20 @@ export function paintMoon(o: MoonArtOpts): { width: number; height: number; data
     craters.push([Math.cos(a) * d, Math.sin(a) * d, 0.08 + hash(i, 3, s) * 0.16]);
   }
   const [br, bg, bb] = o.rgb;
+  // Irregular body: the edge radius wobbles with angle (three seeded
+  // harmonics, 0.62..1 of the box), and the shading normal is taken on the
+  // sphere the point would sit on if the body were round, so the lumps shade.
+  const irr = !!o.irregular;
+  const h1 = hash(1, 91, s) * 6.283, h2 = hash(2, 91, s) * 6.283, h3 = hash(3, 91, s) * 6.283;
+  const a1 = 0.10 + hash(4, 91, s) * 0.08, a2 = 0.06 + hash(5, 91, s) * 0.06, a3 = 0.04;
+  const edgeAt = (th: number) => 1 - (a1 + a2 + a3) + a1 * Math.cos(2 * th + h1) + a2 * Math.cos(3 * th + h2) + a3 * Math.cos(5 * th + h3);
   for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
-    const u = (x + 0.5 - R) / R, v = (y + 0.5 - R) / R, rr = u * u + v * v;
-    if (rr > 1) continue;
+    let u = (x + 0.5 - R) / R, v = (y + 0.5 - R) / R, rr = u * u + v * v;
+    if (irr) {
+      const e = edgeAt(Math.atan2(v, u));
+      if (rr > e * e) continue;
+      u /= e; v /= e; rr = Math.min(1, u * u + v * v);
+    } else if (rr > 1) continue;
     const z = Math.sqrt(1 - rr);
     // Lambert, quantised to five steps with a dithered terminator.
     const lam = (u * lx + v * ly + z * lz) / lnorm;

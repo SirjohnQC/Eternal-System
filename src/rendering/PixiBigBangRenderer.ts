@@ -30,6 +30,7 @@ import { CIV_COLORS, gameState, runtimeState, DEFAULT_PLANET_DNA } from '../simu
 import { drawFactionFlag, type FactionFlag } from '../simulation/FactionFlag';
 import { bakePlanetTexture } from '../simulation/PlanetRenderer';
 import { paintMoon, type MoonKindArt } from './MoonArt';
+import { moonViewOrbit, moonViewSize, moonViewMinScale, moonIsIrregular } from '../simulation/MoonSize';
 import {
   bakeStarBody, bakeStarCorona, bakeStarGlow, STAR_BODY_FRAMES, CORONA_BODY_FRAC, bakePlanetSprite, bakeMoonSprite,
   wrapEquirectToGlobe, starTempBand, starVisualProfile, parseHexColor,
@@ -767,30 +768,184 @@ export class PixiBigBangRenderer {
           .fill({ color: 0xb8a878, alpha: dustAlpha * (0.55 + (i % 3) * 0.15) });
       }
 
-      if (!star.asteroidBelt || camera.scale < 1.05) continue;
-      const dens = Math.max(0.15, star.asteroidBeltDensity ?? 0.5);
-      const beltR = Math.max(outer * 0.55, star.radius * 5);
-      const beltW = Math.max(0.8, outer * (0.04 + dens * 0.1));
-      const rocks = Math.max(4, Math.floor((star.isPlayerStar ? 16 : 10) * dens));
-      const beltSpin = animTick * 0.0024;
-      for (let i = 0; i < rocks; i++) {
-        const a = (i / rocks) * Math.PI * 2 + beltSpin + star.id * 0.31;
-        const rr = beltR + Math.sin(i * 2.7 + star.id) * beltW;
-        const x = star.x + Math.cos(a) * rr;
-        const y = star.y + Math.sin(a) * rr;
-        const sz = Math.max(0.35 / camera.scale, 0.4 + (i % 4) * 0.16 * dens);
-        this.asteroidLayer.rect(x - sz * 0.5, y - sz * 0.5, sz, sz)
-          .fill({ color: i % 3 === 0 ? 0xa89878 : 0x887868, alpha: 0.55 + dens * 0.3 });
-      }
+      // Drifting rocks and the odd comet crossing the system (every system
+      // with planets, belt or not).
+      this.drawSystemDrifters(star, outer, animTick, camera);
 
-      if (camera.scale >= 1.4) {
-        this.asteroidLayer.circle(star.x, star.y, beltR).stroke({
-          color: 0xc4b090,
-          width: Math.max(0.4 / camera.scale, beltW * 0.35),
-          alpha: 0.06 + dens * 0.1,
-        });
+      if (!star.asteroidBelt || camera.scale < 1.05) continue;
+      this.drawBelt(star, animTick, camera);
+    }
+  }
+
+  /**
+   * Per-star belt field, built once: the belt sits in the widest gap between
+   * planet orbits (rocks never sweep through a planet), and every rock keeps
+   * its own orbit radius, phase, size class and tint. Rocks move on Kepler's
+   * clock (angular speed ~ r^-1.5), so the inner edge visibly outruns the
+   * outer edge and the belt shears instead of turning like a wheel.
+   */
+  private beltCache = new Map<number, {
+    key: string; r0: number; w: number;
+    rf: Float32Array; a0: Float32Array; sp: Float32Array; sz: Uint8Array; tint: Uint8Array;
+  }>();
+
+  private ensureBelt(star: StarBody): {
+    key: string; r0: number; w: number;
+    rf: Float32Array; a0: Float32Array; sp: Float32Array; sz: Uint8Array; tint: Uint8Array;
+  } {
+    const dens = Math.max(0.15, star.asteroidBeltDensity ?? 0.5);
+    const key = `${star.planets.length}|${dens.toFixed(2)}|${star.isPlayerStar ? 1 : 0}`;
+    const hit = this.beltCache.get(star.id);
+    if (hit && hit.key === key) return hit;
+    // Widest gap between orbits, from just outside the star to the outermost.
+    const radii = star.planets.map(p => p.orbitalRadius).sort((x, y) => x - y);
+    let lo = star.radius * 3, best = 0, r0 = Math.max(star.radius * 5, (radii[radii.length - 1] ?? 20) * 0.55), w = 3;
+    for (const r of radii) {
+      const gap = r - lo;
+      if (gap > best) { best = gap; r0 = (lo + r) / 2; w = gap * 0.2; }
+      lo = r;
+    }
+    w = Math.max(1.4, Math.min(w, r0 * 0.16)) * (0.8 + dens * 0.3);
+    let sd = (star.id * 2654435761 ^ 0x9e3779b9) >>> 0;
+    const rand = () => { sd ^= sd << 13; sd ^= sd >>> 17; sd ^= sd << 5; return (sd >>> 0) / 4294967296; };
+    // 200..560 bodies for the home system, ~65% elsewhere; over half of
+    // them are 1-px dust that only shows up close.
+    const n = Math.round((140 + 420 * dens) * (star.isPlayerStar ? 1 : 0.65));
+    const rf = new Float32Array(n), a0 = new Float32Array(n), sp = new Float32Array(n);
+    const sz = new Uint8Array(n), tint = new Uint8Array(n);
+    // A belt has a few clumps (Kirkwood-like gaps between them): angle bias.
+    const clumps = 3 + Math.floor(rand() * 3), cph = rand() * Math.PI * 2;
+    for (let i = 0; i < n; i++) {
+      // Radius: bell-shaped, dense in the middle, thin at the edges.
+      const u = (rand() + rand() + rand()) / 1.5 - 1;
+      rf[i] = u;
+      let a = rand() * Math.PI * 2;
+      if (rand() < 0.45) a += Math.sin(a * clumps + cph) * 0.25;
+      a0[i] = a;
+      const r = r0 + u * w;
+      sp[i] = 0.0042 * Math.pow(Math.max(1, r) / 20, -1.5);
+      const q = rand();
+      sz[i] = q < 0.55 ? 0 : q < 0.84 ? 1 : q < 0.96 ? 2 : 3;   // dust, pebble, rock, boulder
+      tint[i] = Math.floor(rand() * 4);
+    }
+    const out = { key, r0, w, rf, a0, sp, sz, tint };
+    this.beltCache.set(star.id, out);
+    return out;
+  }
+
+  /** Belt rock palette: [body, lit] per tint; 0-1 grey-brown stone, 2 rust, 3 pale ice/stone. */
+  // Fill styles built once and reused every frame (no per-rock allocation).
+  private static readonly BELT_DARK = [0x4a423c, 0x5a4e42, 0x5a3c2c, 0x5c6066].map(color => ({ color, alpha: 1 }));
+  private static readonly BELT_BODY = [0x8a7e70, 0xa08c74, 0x9a6e50, 0xa4a8ae].map(color => ({ color, alpha: 1 }));
+  private static readonly BELT_LIT  = [0xd0c2aa, 0xe4d0ac, 0xe0a678, 0xe4ecf4].map(color => ({ color, alpha: 1 }));
+  private static readonly BELT_DUST = [0x8a7e70, 0xa08c74, 0x9a6e50, 0xa4a8ae].map(color => ({ color, alpha: 0.75 }));
+
+  private drawBelt(star: StarBody, animTick: number, camera: Camera): void {
+    const B = this.ensureBelt(star);
+    const sc = camera.scale, px = 1 / sc;
+    const dens = Math.max(0.15, star.asteroidBeltDensity ?? 0.5);
+    const L = this.asteroidLayer;
+    const { halfW, halfH } = viewHalfExtents(camera, 4 / sc);
+    const n = B.rf.length;
+    // Far out, fewer specks (still a belt, not noise).
+    const step = sc < 1.4 ? 2 : 1;
+    for (let i = 0; i < n; i += step) {
+      const s = B.sz[i];
+      if (s === 0 && sc < 1.25) continue;
+      const r = B.r0 + B.rf[i] * B.w;
+      const a = B.a0[i] + animTick * B.sp[i];
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const x = star.x + ca * r, y = star.y + sa * r;
+      if (!inView(x, y, camera, halfW, halfH)) continue;
+      const t = B.tint[i];
+      if (s === 0) {
+        L.rect(x, y, px, px).fill(PixiBigBangRenderer.BELT_DUST[t]);
+        continue;
+      }
+      // Pebble 2px, rock 3px, boulder 4px across (screen px, or the world
+      // size up close), snapped to the screen grid; shaded as a lumpy pixel
+      // body: lit pixels toward the star, a dark rim away from it.
+      const n = Math.max(s + 1, Math.round((s + 1) * 0.3 * sc));
+      const x0 = Math.round(x * sc - n / 2) / sc, y0 = Math.round(y * sc - n / 2) / sc;
+      const d = n * px;
+      L.rect(x0, y0 + (n > 2 ? px : 0), d, d - (n > 2 ? 2 * px : 0)).fill(PixiBigBangRenderer.BELT_BODY[t]);
+      if (n > 2) L.rect(x0 + px, y0, d - 2 * px, d).fill(PixiBigBangRenderer.BELT_BODY[t]);
+      // Star sits at (-ca, -sa) from the rock: light that side, shade the other.
+      const sx = ca > 0.35 ? 0 : ca < -0.35 ? 2 : 1, sy = sa > 0.35 ? 0 : sa < -0.35 ? 2 : 1;
+      const lx = x0 + (sx === 0 ? 0 : sx === 2 ? d - px * (n > 2 ? 2 : 1) : d / 2 - px);
+      const ly = y0 + (sy === 0 ? px * (n > 2 ? 1 : 0) : sy === 2 ? d - px * 2 : d / 2 - px);
+      L.rect(lx, ly, n > 2 ? 2 * px : px, px).fill(PixiBigBangRenderer.BELT_LIT[t]);
+      if (n > 2) {
+        const dx = x0 + (sx === 2 ? px : sx === 0 ? d - 2 * px : d / 2 - px);
+        const dy = y0 + (sy === 2 ? px : sy === 0 ? d - 2 * px : d / 2);
+        L.rect(dx, dy, 2 * px, px).fill(PixiBigBangRenderer.BELT_DARK[t]);
       }
     }
+  }
+
+  /**
+   * Rocks drifting across a system on straight paths, and now and then a
+   * comet. Stateless: each body's position is a pure function of animTick and
+   * a per-star hash, so nothing is allocated or stored per frame, and the same
+   * system shows the same traffic whenever it is looked at.
+   */
+  private drawSystemDrifters(star: StarBody, outer: number, animTick: number, camera: Camera): void {
+    const sc = camera.scale;
+    if (sc < 1.15) return;
+    const px = 1 / sc, L = this.asteroidLayer;
+    const span = outer * 1.5;
+    const h = (k: number) => {
+      let v = Math.imul((star.id + 1) * 374761393 + k * 668265263, 1274126177);
+      v ^= v >>> 15; v = Math.imul(v, 2246822519); v ^= v >>> 13;
+      return (v >>> 0) / 4294967296;
+    };
+    // Drifting rocks: 4 for the home system, 2 elsewhere.
+    const nRocks = star.isPlayerStar ? 4 : 2;
+    for (let i = 0; i < nRocks; i++) {
+      const period = 2400 + h(i * 7 + 1) * 3600;
+      const ph = ((animTick / period) + h(i * 7 + 2)) % 1;
+      const dir = h(i * 7 + 3) * Math.PI * 2, off = (h(i * 7 + 4) - 0.5) * span * 1.4;
+      const dx = Math.cos(dir), dy = Math.sin(dir);
+      const along = (ph * 2 - 1) * span;
+      const x = star.x + dx * along - dy * off, y = star.y + dy * along + dx * off;
+      const d = (h(i * 7 + 5) < 0.4 ? 2 : 1) * px;
+      const a = Math.min(1, (1 - Math.abs(ph * 2 - 1)) * 4) * 0.85;
+      L.rect(x - d / 2, y - d / 2, d, d).fill({ color: 0x9a8e80, alpha: a });
+      if (d > px) L.rect(x - d / 2, y - d / 2, px, px).fill({ color: 0xd0c4b0, alpha: a });
+    }
+    // Comets: at most one visible per system at a time. Each cycle, a comet
+    // crosses on a chord passing near the star for ~45% of the cycle.
+    const cycle = star.isPlayerStar ? 3600 : 6000;
+    const k = Math.floor(animTick / cycle);
+    const ph = (animTick / cycle) - k;
+    const pass = 0.45;
+    if (ph > pass || h(k * 13 + 99) > (star.isPlayerStar ? 0.85 : 0.5)) return;
+    const u = ph / pass;                              // 0..1 across the pass
+    const dir = h(k * 13 + 100) * Math.PI * 2;
+    const miss = (0.18 + h(k * 13 + 101) * 0.5) * outer * (h(k * 13 + 102) < 0.5 ? -1 : 1);
+    const dx = Math.cos(dir), dy = Math.sin(dir);
+    // Faster near the star: ease the parameter through the middle.
+    const e = u - 0.5, along = (e * 2 + Math.sin(e * Math.PI * 2) * -0.25) * span;
+    const cx = star.x + dx * along - dy * miss, cy = star.y + dy * along + dx * miss;
+    const rx = cx - star.x, ry = cy - star.y, rr = Math.max(1, Math.hypot(rx, ry));
+    const ax = rx / rr, ay = ry / rr;                 // tail points away from the star
+    const fade = Math.min(1, Math.min(u, 1 - u) * 8);
+    // Tail grows as it nears the star.
+    const heat = Math.min(1, outer * 0.45 / rr);
+    const tailLen = (6 + heat * 26) * px * Math.max(1, sc * 0.35);
+    const seg = Math.max(6, Math.round(tailLen / px / 2));
+    for (let j = seg; j >= 1; j--) {
+      const f = j / seg;
+      const tx = cx + ax * tailLen * f, ty = cy + ay * tailLen * f;
+      const w = (f < 0.35 ? 2 : 1) * px;
+      // Ion tail (blue-white, straight) with a fainter dust tail curving off.
+      L.rect(tx - w / 2, ty - w / 2, w, w).fill({ color: f < 0.4 ? 0xe6f4ff : 0x9cc8f0, alpha: (1 - f) * 0.75 * fade });
+      const bend = f * f * tailLen * 0.35;
+      L.rect(tx - ay * bend - px / 2, ty + ax * bend - px / 2, px, px).fill({ color: 0xe8d0a0, alpha: (1 - f) * 0.35 * fade });
+    }
+    // Coma and nucleus.
+    L.circle(cx, cy, 2.6 * px).fill({ color: 0xbfe0ff, alpha: 0.18 * fade });
+    L.rect(cx - px, cy - px, 2 * px, 2 * px).fill({ color: 0xffffff, alpha: fade });
   }
 
   // ─── Trade routes ─────────────────────────────────────────────────────────
@@ -1391,29 +1546,31 @@ export class PixiBigBangRenderer {
         if (planet.moons.length > 0) {
           for (let m = 0; m < planet.moons.length; m++) {
             const moon = planet.moons[m];
-            const large = moon.radius >= planet.radius * 0.4;
-            if (!large && camera.scale < 0.85) continue;
-            if (large && camera.scale < 0.55) continue;
-
+            // Size by class (MoonSize): giants show from further out, captured
+            // rocks only up close; each keeps its own orbit radius.
+            if (camera.scale < moonViewMinScale(moon, planet)) continue;
+            const mSize = moonViewSize(moon, planet, camera.scale);
             const ma = moon.orbitalAngle + animTick * moon.orbitalSpeed;
-            const moonOrbit = Math.max(moon.orbitalRadius, body * (large ? 1.15 : 0.85));
+            const moonOrbit = moonViewOrbit(moon, m, body);
             const mx = px + Math.cos(ma) * moonOrbit;
             const my = py + Math.sin(ma) * moonOrbit;
 
             const mk = (moon.kind as MoonKind) || 'rock';
             // Big enough on screen: the shared MoonArt moon (the planet view
             // draws the same one), lit from its star, colony and all.
-            const mOnScreen = Math.max(moon.radius * (large ? 3.6 : 2.8), (large ? 1.6 : 0.9) / camera.scale) * camera.scale;
+            const mOnScreen = mSize * camera.scale;
+            const irr = moonIsIrregular(moon, planet);
             let mTex: Texture;
-            if (mOnScreen >= 8) {
-              const px = mOnScreen >= 28 ? 32 : 16;
+            if (mOnScreen >= 6 || irr) {
+              const px = mOnScreen >= 28 ? 32 : mOnScreen >= 12 ? 16 : 8;
               const la = Math.round(Math.atan2(star.y - my, star.x - mx) / (Math.PI / 8));
-              const mTexKey = `moonart|${star.id}|${i}|${m}|${px}|${la}|${moon.colonised ? 1 : 0}`;
+              const mTexKey = `moonart|${star.id}|${i}|${m}|${px}|${la}|${moon.colonised ? 1 : 0}|${irr ? 1 : 0}`;
               mTex = this.moonTextures.get(mTexKey) ?? this.nearestTex(this.moonTextures, mTexKey, (() => {
                 const f = paintMoon({
                   kind: mk as MoonKindArt, rgb: parseHexColor(moon.color, [180, 176, 168]) as [number, number, number],
                   size: px, seed: (planet.genomeSeed ?? 1) * 31 + m * 977,
                   lx: Math.cos(la * Math.PI / 8), ly: Math.sin(la * Math.PI / 8), colonised: moon.colonised,
+                  irregular: irr,
                 });
                 const cv = document.createElement('canvas');
                 cv.width = f.width; cv.height = f.height;
@@ -1435,12 +1592,11 @@ export class PixiBigBangRenderer {
               mSprite.texture = mTex;
             }
 
-            const mSize = Math.max(
-              moon.radius * (large ? 3.6 : 2.8),
-              (large ? 1.6 : 0.9) / camera.scale,
-            );
-            mSprite.width = mSize;
-            mSprite.height = mSize;
+            // A lumpy body fills ~3/4 of its texture box: draw the box larger
+            // so its silhouette, not its box, matches the size class.
+            const mBox = irr ? mSize * 1.3 : mSize;
+            mSprite.width = mBox;
+            mSprite.height = mBox;
             mSprite.x = mx;
             mSprite.y = my;
             mSprite.visible = true;

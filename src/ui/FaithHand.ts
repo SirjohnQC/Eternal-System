@@ -56,7 +56,7 @@ const EFFECT_OF: Record<ActionId, DivineEffectKind> = {
   concord: 'prophet', discord: 'smite', zeal: 'revelation', calm: 'prophet', fervor: 'smite',
   exodus: 'nudge', blight: 'sink', pestilence: 'smite', theft: 'sight', foe: 'smite', schism: 'revelation',
   golden: 'revelation', revolt: 'smite', cure: 'bless', seafaring: 'water',
-  rains: 'water', drought: 'sink', quake: 'raise', volcano: 'smite', ice_age: 'sink', comet: 'smite',
+  rains: 'water', drought: 'sink', quake: 'raise', volcano: 'smite', ice_age: 'sink', comet: 'meteor',
   hardy: 'fertility', herds: 'fertility', murrain: 'sink', awaken: 'nudge', mutate: 'nudge',
   sight: 'sight', meteor: 'smite', seed: 'fertility', terraform: 'revelation',
 };

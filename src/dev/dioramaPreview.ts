@@ -18,6 +18,7 @@ import type { BiologyPhase } from '../simulation/GameState';
 import { installZoomBench } from './zoomBench';
 import { NationSystem } from '../simulation/Nations';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
+import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 
 const stage = document.getElementById('stage')!;
@@ -39,6 +40,27 @@ const destiny: DestinyType = isDestinyType(destinyParam) ? destinyParam : 'ocean
 if (formation) type = formationFaceType(formation, destiny);
 let seed = Number(params.get('seed')) || 1;
 
+/**
+ * The home world's moons, rolled by the engine's own generator (rollMoons).
+ * ?moons=N re-rolls until the world has exactly N (1-3; a gas giant 2-6);
+ * ?moons=0 gives none. Omitted: the roll for this seed as it falls.
+ */
+function previewMoons(): Planet['moons'] {
+  const want = params.get('moons');
+  const parent = { type, radius: type === 'gas' ? 2.4 : 1.1 };
+  // The preview planet has radius 6: rescale so size relative to it holds.
+  const fit = (ms: Planet['moons']) => ms.map(m => ({ ...m, radius: m.radius * 6 / parent.radius }));
+  if (want === null) return fit(rollMoons(parent, 'I', seed * 7919));
+  // The generator caps an ordinary world at 3 moons and a gas giant at 6.
+  const n = Math.max(0, Math.min(type === 'gas' ? 6 : 3, Number(want) || 0));
+  if (n === 0) return [];
+  for (let s = 0; s < 4000; s++) {
+    const ms = rollMoons(parent, 'I', seed * 7919 + s * 104729);
+    if (ms.length === n) return fit(ms);
+  }
+  return fit(rollMoons(parent, 'I', seed * 7919));
+}
+
 function makePlanet(): Planet {
   return {
     orbitalAngle: 0, orbitalRadius: 40, orbitalSpeed: orbitSpeed(40),
@@ -46,14 +68,7 @@ function makePlanet(): Planet {
     radius: 6, type, hasLife: true, biosphere: 0.8,
     color: '#3a8f3a', discovery: 'landing', name: `Preview-${seed}`,
     genomeSeed: seed,
-    moons: [
-      { name: 'I-a', radius: 1.6, orbitalRadius: 14, orbitalAngle: 0.6,
-        orbitalSpeed: 0.09, color: '#d6ecf8', kind: 'ice',
-        habitability: 0.52, colonised: false, colonisedTick: null },
-      { name: 'I-b', radius: 0.9, orbitalRadius: 22, orbitalAngle: 3.1,
-        orbitalSpeed: 0.05, color: '#8c7f78', kind: 'iron',
-        habitability: 0.11, colonised: false, colonisedTick: null },
-    ],
+    moons: previewMoons(),
   };
 }
 
@@ -183,15 +198,28 @@ renderer.setClock(() => (performance.now() / (1000 / 60)) * YEAR);
 // Frame-budget bench for the zoom camera (tools/zoomBench.ts drives it).
 installZoomBench(renderer);
 
-// ?fx=revelation — replay a divine power on a loop so the animation can be
+// ?fx=revelation | meteor — replay a divine power (or a meteor strike) on a loop so the animation can be
 // looked at without a running game and 15 Divine Points.
 const fx = params.get('fx');
 if (fx) {
   const at = params.get('fxCell');
   const cell = at ? { row: Number(at.split(',')[0]), col: Number(at.split(',')[1]) } : null;
-  const fire = () => renderer.playDivineEffect(fx as never, cell);
+  // ?fx=meteor[&fxSize=0.4..1.2] — the meteor strike sequence (11 s cycle,
+  // so each crater can be seen cooling before the next one lands).
+  const meteorSize = Number(params.get('fxSize') ?? 0.8);
+  const fire = fx === 'meteor'
+    ? () => renderer.playMeteorStrike(cell, meteorSize)
+    : () => renderer.playDivineEffect(fx as never, cell);
   setTimeout(fire, 300);
-  setInterval(fire, 3000);
+  if (params.get('fxOnce') !== '1') setInterval(fire, fx === 'meteor' ? 11000 : 3000);
+}
+// A strike button in the top bar, for poking at it by hand.
+{
+  const btn = document.createElement('button');
+  btn.textContent = 'meteor';
+  btn.title = 'Play a meteor strike on a land cell in view';
+  btn.addEventListener('click', () => renderer.playMeteorStrike(null, Number(params.get('fxSize') ?? 0.8)));
+  document.getElementById('reroll')?.after(btn);
 }
 // Dev console / test access.
 (window as unknown as { __renderer?: unknown }).__renderer = renderer;

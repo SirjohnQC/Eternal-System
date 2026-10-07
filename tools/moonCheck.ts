@@ -94,6 +94,66 @@ console.log('  compositions: ' + [...kinds.entries()]
   .sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}×${n}`).join(', '));
 check('several compositions occur', kinds.size >= 3, `${kinds.size} kinds`);
 
+// ── Sizes and counts (moons of clearly different sizes; more than one) ────
+// Control: the pre-2026-10-06 roll gave ordinary worlds at most 1 moon (2 when
+// radius > 0.9), gas giants at most 4, and two size bands that overlapped
+// heavily; within one system the biggest/smallest ratio rarely passed 2.
+{
+  const { moonSizeClass, moonIsIrregular, moonInclination } = await import('../src/simulation/MoonSize');
+  const classes = new Map<string, number>();
+  let ordinaryMulti = 0, ordinaryWithMoons = 0, gasCount = 0, gasMoonsMax = 0;
+  let ordinaryThree = 0, gasSpreadOk = 0, gasTotal = 0, overlapping = 0, irregular = 0, sameTilt = 0;
+  const countsHist = new Map<number, number>();
+  for (const st of stars) for (const pl of st.planets) {
+    const ms: Moon[] = pl.moons;
+    countsHist.set(ms.length, (countsHist.get(ms.length) ?? 0) + 1);
+    for (const m of ms) {
+      const c = moonSizeClass(m, pl);
+      classes.set(c, (classes.get(c) ?? 0) + 1);
+      if (moonIsIrregular(m, pl)) irregular++;
+    }
+    if (pl.type === 'gas') {
+      gasTotal++; gasCount += ms.length; gasMoonsMax = Math.max(gasMoonsMax, ms.length);
+      if (ms.length >= 2) {
+        const r = ms.map(m => m.radius);
+        if (Math.max(...r) >= Math.min(...r) * 3) gasSpreadOk++;
+      }
+    } else if (ms.length > 0) {
+      ordinaryWithMoons++;
+      if (ms.length >= 2) ordinaryMulti++;
+      if (ms.length >= 3) ordinaryThree++;
+    }
+    // Neighbouring orbits must clear both bodies.
+    const sorted = [...ms].sort((a, b) => a.orbitalRadius - b.orbitalRadius);
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].orbitalRadius - sorted[i - 1].orbitalRadius < sorted[i].radius + sorted[i - 1].radius) overlapping++;
+    }
+    for (let i = 1; i < ms.length; i++) if (moonInclination(ms[i], i) === moonInclination(ms[i - 1], i - 1)) sameTilt++;
+  }
+  console.log('  moons per planet: ' + [...countsHist.entries()].sort((a, b) => a[0] - b[0]).map(([k, n]) => `${k}:${n}`).join('  '));
+  console.log('  size classes: ' + [...classes.entries()].map(([k, n]) => `${k}×${n}`).join(', '));
+  check('all four size classes occur', classes.size === 4, `${classes.size} classes`);
+  check('ordinary worlds sometimes have 2-3 moons', ordinaryMulti >= Math.max(1, ordinaryWithMoons * 0.2),
+        `${ordinaryMulti}/${ordinaryWithMoons} mooned ordinary worlds have several`);
+  check('some ordinary worlds have three moons (old roll capped them at 2)', ordinaryThree > 0, `${ordinaryThree} worlds`);
+  check('gas giants keep retinues', gasTotal === 0 || (gasCount / gasTotal >= 3 && gasMoonsMax >= 5),
+        `mean ${(gasCount / Math.max(1, gasTotal)).toFixed(1)}, max ${gasMoonsMax}`);
+  check('a gas giant\'s moons differ clearly in size', gasTotal === 0 || gasSpreadOk >= gasTotal * 0.7,
+        `${gasSpreadOk}/${gasTotal} have biggest >= 3x smallest`);
+  check('captured rocks are lumpy', irregular > 0, `${irregular} irregular`);
+  check('moon orbits never overlap', overlapping === 0, `${overlapping} overlapping pairs`);
+  check('moons in one system cross the sky on different tilts', sameTilt === 0, `${sameTilt} shared tilts`);
+
+  // Old saves: a moon without the new fields still answers sensibly.
+  const old: Moon = { name: 'Old-a', radius: 0.1, orbitalRadius: 3, orbitalAngle: 0, orbitalSpeed: 0.005,
+    color: '#b9b2a6', kind: 'rock', habitability: 0.2, colonised: false, colonisedTick: null };
+  const parent = { radius: 1, type: 'rocky' as const };
+  const tilt = moonInclination(old, 0);
+  check('old-save moons default sensibly', typeof moonIsIrregular(old, parent) === 'boolean'
+        && Number.isFinite(tilt) && Math.abs(tilt) <= 0.35 && moonInclination(old, 0) === tilt,
+        `irregular=${moonIsIrregular(old, parent)} tilt=${tilt.toFixed(3)}`);
+}
+
 // ── Habitability spread ─────────────────────────────────────────────────────
 const habs = allMoons.map(m => m.habitability).sort((a, b) => a - b);
 const q = (p: number) => habs[Math.min(habs.length - 1, Math.floor(p * habs.length))];
