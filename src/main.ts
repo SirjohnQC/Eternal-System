@@ -28,7 +28,7 @@ import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { BigBangCinematic } from './simulation/BigBangCinematic';
 import { newForge } from './simulation/Forge';
 import { subEraOf, SUB_ERA_NAMES } from './simulation/Technology';
-import { runForge, forgeActive } from './ui/ForgeUI';
+import { runForge, forgeActive, forgeAwaitingDescent, forgeDescend } from './ui/ForgeUI';
 import { initUniverseMap, showDormantGalaxyCard, currentOverlay } from './ui/UniverseMapUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
@@ -542,9 +542,11 @@ async function launchBigBangAsync(): Promise<void> {
   }, 1800);
 
   // After the opening: the Forge (the home world forged from Fate Cards).
-  const afterOpening = () => { greet(); startForgeIfDue(); };
+  // Out of the cinematic the view stays on the home system; the Forge waits
+  // there until the player descends to the molten world.
+  const afterOpening = (fromCinematic = false) => { greet(); startForgeIfDue(fromCinematic); };
   // ?cine=0 (dev) skips the opening cinematic.
-  if (new URLSearchParams(location.search).get('cine') !== '0') startCinematic(engine, afterOpening);
+  if (new URLSearchParams(location.search).get('cine') !== '0') startCinematic(engine, () => afterOpening(true));
   else afterOpening();
   engine.start();
 }
@@ -556,7 +558,7 @@ async function launchBigBangAsync(): Promise<void> {
  * forge has finished. Lab runs (`skipFormation`) and `?forge=0` keep the old
  * timed formation.
  */
-function startForgeIfDue(): void {
+function startForgeIfDue(holdInSystem = false): void {
   if (!engine || gameState.skipFormation) return;
   if (new URLSearchParams(location.search).get('forge') === '0') return;
   if (gameState.forge?.phase === 'done' || !engine.isHomeForming()) return;
@@ -586,7 +588,8 @@ function startForgeIfDue(): void {
     chat: (text, who) => addChatMessage(text, who),
     godName: () => gameState.godName || 'the god',
     planetName: () => gameState.playerPlanetName || 'Your world',
-  });
+  }, { holdInSystem });
+  if (holdInSystem && forgeAwaitingDescent()) engine.setZoomTier('system');
 }
 
 // ─── Opening cinematic (BigBangCinematic) ─────────────────────────────────────
@@ -1236,6 +1239,8 @@ function enterUniverse(): void {
 async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<void> {
   const target = star ?? engine?.getPlayerStar();
   if (!target) return;
+  // Opening the home world while the Forge waits on the system view: descend.
+  if (target.isPlayerStar && forgeAwaitingDescent()) forgeDescend(false);
 
   if (planetIndex == null) {
     const home = target.planets.findIndex(p => p.discovery === 'landing' || p.hasLife);
@@ -5741,7 +5746,7 @@ function initZoomTiers(): void {
   initUniverseMap({
     engine: () => engine,
     setOverlay: (m) => _pixiRenderer?.setMapOverlay(m),
-    blocked: () => document.body.classList.contains('cinematic') || gameState.forge?.phase === 'draft' || planetViewOpen(),
+    blocked: () => document.body.classList.contains('cinematic') || (gameState.forge?.phase === 'draft' && !forgeAwaitingDescent()) || planetViewOpen(),
   });
   for (const btn of document.querySelectorAll<HTMLButtonElement>('.zt-btn')) {
     btn.addEventListener('click', () => {
@@ -5750,7 +5755,7 @@ function initZoomTiers(): void {
       AudioManager.playSfx('ui_click');
       // The Forge's draft needs the world in view: the scale is held until
       // the forging is complete.
-      if (gameState.forge?.phase === 'draft') return;
+      if (gameState.forge?.phase === 'draft' && !forgeAwaitingDescent()) return;
       // The planet tier is not a camera position — it is the surface view. Zoom
       // to the system first so closing it lands somewhere sensible.
       if (tier === 'planet') {

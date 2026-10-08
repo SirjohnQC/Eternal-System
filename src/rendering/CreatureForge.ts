@@ -787,6 +787,50 @@ function planHumanoid(B: Body, t: Traits): void {
   uprightLimbs(B, t, gNear, gFar, { hipY: -0.1, shY: 0.27 * tall, legW: 0.06, armW: 0.045 });
 }
 
+/**
+ * Almost human, and not: a stooped, heavy-shouldered people on short legs,
+ * long arms reaching to the knuckles, a jutting brow and muzzle, furred.
+ */
+function planSimian(B: Body, t: Traits): void {
+  const k = t.bulk;
+  const gFar = B.group(-1, 0.03), gBody = B.group(0, 0.08), gNear = B.group(1, 0.03), gHead = B.group(0, 0.05);
+  // A barrel chest leaning forward over the hips.
+  B.ell([0.04, 0.1, 0], [0.17 * k, 0.2, 0.15 * k], PRIMARY, gBody);
+  B.ell([0.1, 0.06, 0], [0.1 * k, 0.13, 0.11 * k], BELLY, gBody);
+  B.ell([-0.04, -0.08, 0], [0.12 * k, 0.1, 0.11 * k], PRIMARY, gBody);
+  // Shoulders hunched up around a short neck.
+  B.ell([0.08, 0.27, 0], [0.13 * k, 0.07, 0.17 * k], PRIMARY, gBody);
+  const brain = 1 + Math.max(0, t.intel - 6) * 0.04;
+  const h: V3 = [0.17, 0.36, 0], hr = 0.1 * brain;
+  B.ell(h, [hr * 1.0, hr * 0.95, hr * 0.92], PRIMARY, gHead);
+  // Heavy brow ridge and a muzzle, a pale face.
+  B.ell([h[0] + hr * 0.55, h[1] + hr * 0.3, 0], [hr * 0.38, hr * 0.16, hr * 0.85], MARK, gHead);
+  B.ell([h[0] + hr * 0.75, h[1] - hr * 0.35, 0], [hr * 0.48, hr * 0.4, hr * 0.6], BELLY, gHead);
+  B.eyes.push({ p: [h[0] + hr * 0.82, h[1] + hr * 0.08, hr * 0.42], style: 'vision', size: 0.85 });
+  // Fur: a darker mantle over the back and crown.
+  B.ell([-0.02, 0.24, 0], [0.14 * k, 0.1, 0.16 * k], MARK, gBody);
+  B.ell([h[0] - hr * 0.25, h[1] + hr * 0.55, 0], [hr * 0.8, hr * 0.45, hr * 0.85], MARK, gHead);
+  for (const [sd, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
+    const z = sd * 0.09 * k;
+    const [ls, ll] = step(sd > 0 ? 0 : 0.5, 0.62);
+    const lx = STRIDE * 0.7 * ls, ly = 0.06 * ll;
+    // Short bowed legs.
+    const knee: V3 = [0.08 + lx * 0.5, -0.3 + ly * 0.6, z * 1.3];
+    B.cone([-0.04, -0.1, z], knee, 0.075 * k, 0.065 * k, PRIMARY, g);
+    B.cone(knee, [0.02 + lx, -0.48 + ly, z], 0.065 * k, 0.05 * k, PRIMARY, g);
+    B.ell([0.06 + lx, -0.49 + ly, z], [0.075, 0.025, 0.045], BELLY, g);
+    // Long arms hanging to the ground: knuckles down, swinging opposite the legs.
+    const [as2, al] = step(sd > 0 ? 0.5 : 0, 0.62);
+    const ax = STRIDE * 0.6 * as2;
+    const sh: V3 = [0.12, 0.25, sd * 0.17 * k];
+    const elbow: V3 = [0.24 + ax * 0.5, 0.0, sd * 0.2 * k];
+    B.ell(sh, [0.07, 0.065, 0.065], PRIMARY, g);
+    B.cone(sh, elbow, 0.06 * k, 0.05 * k, PRIMARY, g);
+    B.cone(elbow, [0.3 + ax, -0.4 + 0.04 * al, sd * 0.2 * k], 0.05 * k, 0.042 * k, PRIMARY, g);
+    B.ell([0.31 + ax, -0.45 + 0.04 * al, sd * 0.2 * k], [0.05, 0.045, 0.045], BELLY, g);
+  }
+}
+
 function planReptilian(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.03), gBody = B.group(0, 0.08), gNear = B.group(1, 0.03), gHead = B.group(0, 0.05);
@@ -925,8 +969,9 @@ function planSapient(B: Body, t: Traits): void {
   if (b === 'filamentous' || b === 'colonial') return planMycoid(B, t);
   // Vertebrates: humanoid, reptilian or avian, by lineage.
   const r = hash3(t.seed, 5, 5, 5);
-  if (t.mobility.includes('wing') || r < 0.22) return planAvian(B, t);
-  if (r < 0.5 || t.aggr >= 7) return planReptilian(B, t);
+  if (t.mobility.includes('wing') || r < 0.2) return planAvian(B, t);
+  if (r < 0.42 || t.aggr >= 8) return planReptilian(B, t);
+  if (r < 0.68) return planSimian(B, t);
   return planHumanoid(B, t);
 }
 
@@ -940,8 +985,9 @@ export function sapientFormOf(g: SpeciesGenome): string | null {
   if (b === 'gelatinous' || b === 'radial' || b === 'cartilaginous' || b === 'shelled') return 'cephaloid';
   if (b === 'filamentous' || b === 'colonial') return 'mycoid';
   const r = hash3(hashStr(g.id), 5, 5, 5);
-  if (g.physicalTraits.mobilityType.includes('wing') || r < 0.22) return 'avian';
-  if (r < 0.5 || g.dna.aggression >= 7) return 'reptilian';
+  if (g.physicalTraits.mobilityType.includes('wing') || r < 0.2) return 'avian';
+  if (r < 0.42 || g.dna.aggression >= 8) return 'reptilian';
+  if (r < 0.68) return 'simian';
   return 'humanoid';
 }
 

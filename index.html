@@ -2038,6 +2038,13 @@ body.forging .faith-deck,body.forging #close-planet-btn{display:none !important}
 .fr-stamp{justify-content:center;font-family:var(--font-pixel);font-size:12px;letter-spacing:5px;color:#ffcc44;border-bottom:none;margin-top:6px}
 #forge-modal .forge-go{opacity:0;animation:frIn .5s ease forwards;animation-delay:calc(var(--k,0) * .55s + .35s)}
 .forge-whisper .forge-go{animation-delay:1.4s}
+/* Straight out of the Big Bang: the home system, and a way down to the molten world. */
+#forge-descend{position:fixed;left:50%;bottom:118px;transform:translateX(-50%);z-index:320;text-align:center;
+  padding:14px 26px 16px;background:linear-gradient(rgba(19,15,34,.88),rgba(8,6,15,.92));border:1px solid rgba(200,169,110,.5);
+  box-shadow:0 0 40px rgba(200,169,110,.12);opacity:0;animation:frIn .8s ease forwards;animation-delay:1.6s}
+#forge-descend .fd-line{font-family:'Cinzel',serif;font-size:15px;color:#f1deb4;margin-bottom:10px}
+#forge-descend .fd-go{padding:9px 22px;letter-spacing:3px}
+body.forge-await .faith-deck{display:none !important}
 @keyframes frIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .fw-quote{font-family:'Cinzel',serif;font-style:italic;font-size:16px;line-height:1.5;color:#f3e2bb;margin:0 10px}
 .fw-card-wrap{display:flex;justify-content:center;margin:20px 0 18px}

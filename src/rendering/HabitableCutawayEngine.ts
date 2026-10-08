@@ -309,6 +309,8 @@ export interface CutawayBakeOpts extends CutawayGeom {
    * the host can animate them every frame (they are not baked into the crust).
    */
   fallsOut?: CrustFall[] | null;
+  /** Identity crust bakes of a gas giant: lightning sites in its cloud decks, flashed per frame. */
+  flashOut?: Array<{ x: number; y: number; id: number }> | null;
   /** Volcano chimneys to paint, in this bake's screen coordinates; same rule as `decalSites`. */
   chimneySites?: VolcanoChimney[] | null;
   /** This world's volcanoes (see `volcanoProfile`). Omitted: lava worlds get active ones. */
@@ -898,6 +900,40 @@ export function gasStormColor(seed: number): RGB {
   return hsvToRGB(st[0], st[1], st[2]);
 }
 
+export interface GasOval { x: number; y: number; rx: number; ry: number }
+/** A giant's weather, in disc coordinates: the great storm, the small ovals, the jets. */
+export function gasWeatherOf(seed: number, bandCount: number): { great: GasOval; ovals: GasOval[]; jetPh: number[]; jetF: number[] } {
+  const ws = new Stream(seed ^ 0x510e527f);
+  const great = { x: ws.range(-0.45, 0.45), y: (ws.next() < 0.5 ? -1 : 1) * ws.range(0.18, 0.42), rx: ws.range(0.13, 0.2), ry: 0 };
+  great.ry = great.rx * 0.55;
+  const ovals = Array.from({ length: 3 + ws.int(0, 3) }, () => {
+    const r = ws.range(0.03, 0.055);
+    return { x: ws.range(-0.8, 0.8), y: ws.range(-0.7, 0.7), rx: r, ry: r * 0.6 };
+  });
+  const jetPh = Array.from({ length: bandCount + 1 }, () => ws.range(0, Math.PI * 2));
+  const jetF = Array.from({ length: bandCount + 1 }, () => ws.range(5, 11));
+  return { great, ovals, jetPh, jetF };
+}
+
+/** A floating island over a giant's cloud sea: disc position, size (disc units), hover (px). */
+export interface GasIsle { x: number; y: number; r: number; lift: number; seed: number }
+/** Two to four islands of rock ride the cloud tops, clear of the great storm. */
+export function gasIslesOf(seed: number): GasIsle[] {
+  const s = new Stream(seed ^ 0x1f83d9ab);
+  const { great } = gasWeatherOf(seed, 10);
+  const out: GasIsle[] = [];
+  const want = 2 + s.int(0, 2);
+  for (let t = 0; t < 40 && out.length < want; t++) {
+    const a = s.range(0, Math.PI * 2), d = Math.sqrt(s.next()) * 0.66;
+    const x = Math.cos(a) * d, y = Math.sin(a) * d;
+    const r = s.range(0.1, 0.16);
+    if (Math.hypot((x - great.x) / (great.rx + r), (y - great.y) / (great.ry + r * 0.6)) < 1.15) continue;
+    if (out.some(o => Math.hypot(o.x - x, (o.y - y) * 1.6) < o.r + r + 0.08)) continue;
+    out.push({ x, y, r, lift: s.range(12, 20), seed: (seed * 31 + t * 977) >>> 0 });
+  }
+  return out;
+}
+
 /** Cloud decks for a giant's cutaway: its own bands, darkening to a lit core. */
 function gasCrustPalette(bands: RGB[]): CutawayPalette {
   const avg = averageBands(bands);
@@ -1074,23 +1110,38 @@ export function* surfaceSteps(
     // Weather: one great storm (an anticyclone, in the family's colour) and a
     // string of small white ovals riding the belts; zonal jets shear the band
     // edges into waves and festoons. All seeded: a giant keeps its storm.
-    const ws = new Stream(seed ^ 0x510e527f);
     const stormC = gasStormColor(seed);
-    const great = { x: ws.range(-0.45, 0.45), y: (ws.next() < 0.5 ? -1 : 1) * ws.range(0.18, 0.42), rx: ws.range(0.13, 0.2), ry: 0 };
-    great.ry = great.rx * 0.55;
-    const ovals = Array.from({ length: 3 + ws.int(0, 3) }, () => {
-      const r = ws.range(0.03, 0.055);
-      return { x: ws.range(-0.8, 0.8), y: ws.range(-0.7, 0.7), rx: r, ry: r * 0.6 };
-    });
-    const jetPh = Array.from({ length: bandCount + 1 }, () => ws.range(0, Math.PI * 2));
-    const jetF = Array.from({ length: bandCount + 1 }, () => ws.range(5, 11));
-    for (let py = yScan0; py <= y1; py++) {
+    const { great, ovals, jetPh, jetF } = gasWeatherOf(seed, bandCount);
+    const isles = gasIslesOf(seed);
+    // The far rim is not a clean edge: cloud heaps bulge up over it, so the
+    // giant reads as gas all the way to its horizon.
+    const heapRows = Math.min(yFace0 - yTop, Math.ceil(ry * 0.1));
+    const heapTop = bands[0];
+    const bandAvg = averageBands(bands as RGB[]);
+    for (let py = Math.max(0, yScan0 - heapRows); py <= y1; py++) {
       const dy = (py - cyTop) / ry;
       for (let px = x0; px <= x1; px++) {
         iters++;
         const dx = (px - cx) / rx;
         const r = Math.hypot(dx, dy);
-        if (r > 1) continue;
+        if (r > 1) {
+          if (dy > -0.15) continue;
+          const ang = Math.atan2(dy, dx);
+          const p1 = 0.5 + 0.5 * Math.sin(ang * 23 + seed * 0.37), p2 = 0.5 + 0.5 * Math.sin(ang * 53 + seed * 0.11);
+          const bump = (0.05 * p1 * p1 + 0.03 * p2 * p2) * clamp01((-dy - 0.15) / 0.35);
+          // In screen px the bump rises straight up from the rim.
+          const rimY = cyTop - ry * Math.sqrt(Math.max(0, 1 - dx * dx));
+          const up = rimY - py;
+          if (Math.abs(dx) >= 1 || up < 0 || up > bump * ry * 1.6) continue;
+          const tq = up / Math.max(1, bump * ry * 1.6);
+          const lit = quantise(0.92 + 0.22 * (1 - tq) * 0.5 + 0.14 * clamp01(dx + 0.3), 0.06);
+          const o = ((py - yTop) * bw + (px - x0)) * 4;
+          d[o] = Math.min(255, mix(heapTop.r, 250, 0.35) * lit);
+          d[o + 1] = Math.min(255, mix(heapTop.g, 246, 0.35) * lit);
+          d[o + 2] = Math.min(255, mix(heapTop.b, 240, 0.35) * lit);
+          d[o + 3] = 255;
+          continue;
+        }
 
         // Sample position, swirled inside the storms (a spiral: inner cloud
         // turned further than outer).
@@ -1131,6 +1182,36 @@ export function* surfaceSteps(
           const eye = isGreat && inStorm > 0.8 ? 0.85 : 1;
           cr = mix(cr, sc.r, t) * eye; cg = mix(cg, sc.g, t) * eye; cb = mix(cb, sc.b, t) * eye;
           if (inStorm < 0.12) { cr *= 0.85; cg *= 0.85; cb *= 0.85; }
+        }
+        // Softer bands, so the cloud sea leads and the stripes follow.
+        { const av = bandAvg; cr = mix(cr, av.r, 0.25); cg = mix(cg, av.g, 0.25); cb = mix(cb, av.b, 0.25); }
+        // A sea of cloud: billows heaped on billows, lit from the upper right,
+        // the creases between them in shade (world-anchored: cells keep their
+        // size as the camera zooms).
+        {
+          // (billow returns a shared record: read it before the next call)
+          // Three sizes: great heaps, billows on them, puffs on those; the
+          // grid is warped by noise so the cells never line up like cobbles.
+          const wu = (noise2(dx * 3.1, dy * 3.1, seed + 3) - 0.5) * 1.6, wv = (noise2(dx * 3.1 + 9, dy * 3.1, seed + 7) - 0.5) * 1.6;
+          let b = billow(dx * rx / (30 * k) + wu * 0.4, dy * ry / (30 * k) + wv * 0.4, seed + 5);
+          const hh = b.h, ho = billowOff;
+          b = billow(dx * rx / (12 * k) + wu, dy * ry / (12 * k) + wv, seed + 11);
+          const bh = b.h, bc = b.crease, bo = billowOff;
+          b = billow(dx * rx / (5 * k) + 7.3 + wu * 2, dy * ry / (5 * k) + wv * 2, seed + 29);
+          const sh = b.h, so = billowOff;
+          let bf = 0.8 + 0.1 * hh + 0.1 * ho + 0.12 * bh + 0.1 * bo + 0.04 * sh + 0.05 * so;
+          // Only the shaded side of a seam darkens: billows overlap, not tile.
+          if (bc < 0.07 && bo < 0) bf *= 0.9;
+          bf = quantise(bf, 0.06);
+          cr *= bf; cg *= bf; cb *= bf;
+          // The highest tops catch the sun and bleach toward white.
+          const top = clamp01((bh * 0.6 + hh * 0.4 - 0.55) * 2.2) * clamp01(bo + 0.3) * 0.4;
+          if (top > 0.08) { const tq = quantise(top, 0.12); cr = mix(cr, 250, tq); cg = mix(cg, 246, tq); cb = mix(cb, 238, tq); }
+        }
+        // The islands' shadows fall on the clouds, down and to the left.
+        for (const is of isles) {
+          const sx2 = (dx - is.x + 0.035) / (is.r * 1.05), sy2 = (dy - is.y - 0.05) / (is.r * 0.62);
+          if (sx2 * sx2 + sy2 * sy2 < 1) { cr *= 0.66; cg *= 0.68; cb *= 0.76; break; }
         }
 
         const key = quantise(0.88 + 0.22 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
@@ -1939,17 +2020,19 @@ export function* crustSteps(
   if (fallPal && out && !opts.camera && k === 1) {
     out.length = 0;
     const fallW = Math.max(10, baseRx * (0.14 + hash1(7, seed + 601) * 0.12));
-    const skip = 0.35 + hash1(8, seed + 601) * 0.35;
+    const gas = opts.planetType === 'gas';
+    const skip = gas ? 0.5 : 0.35 + hash1(8, seed + 601) * 0.35;
     for (let c = Math.floor(ox0 / fallW) - 1; c <= Math.floor(ox1 / fallW) + 1; c++) {
       if (hash1(c * 37 + 5, seed + 91) < skip) continue;
       const fcx = (c + 0.3 + hash1(c * 11, seed + 93) * 0.4) * fallW;
       if (Math.abs(fcx / baseRx) > 0.86) continue;
-      const fw = 1 + Math.floor(hash1(c * 19, seed + 97) * 4);
+      const fw = (gas ? 2 : 1) + Math.floor(hash1(c * 19, seed + 97) * (gas ? 5 : 4));
       const x0 = Math.round(cx + fcx - fw / 2);
       const tops: number[] = [];
       let any = false;
       for (let X = x0; X < x0 + fw; X++) {
-        const ok = X >= rimX0 && X <= rimX1 && rimWater[X - rimX0] === 1;
+        // A giant's cloud spills off anywhere along its rim.
+        const ok = X >= rimX0 && X <= rimX1 && (gas || rimWater[X - rimX0] === 1);
         tops.push(ok ? Math.ceil(wallBottom[X - rimX0]) - 1 : NaN);
         any = any || ok;
       }
@@ -1957,8 +2040,19 @@ export function* crustSteps(
       out.push({
         x0, w: fw, tops, id: c,
         len: Math.round(baseCrust * (0.45 + hash1(c * 29, seed + 99) * 0.55)),
-        speed: opts.planetType === 'lava' ? 7 + hash1(c, seed + 103) * 4 : 30 + hash1(c, seed + 103) * 16,
+        speed: gas ? 5 + hash1(c, seed + 103) * 4 : opts.planetType === 'lava' ? 7 + hash1(c, seed + 103) * 4 : 30 + hash1(c, seed + 103) * 16,
       });
+    }
+  }
+  // Lightning in a giant's hanging cloud decks: sites planned here, flashed
+  // per frame by the host (never baked).
+  const flashes = opts.flashOut;
+  if (flashes && opts.planetType === 'gas' && !opts.camera && k === 1) {
+    flashes.length = 0;
+    for (let x = rimX0; x <= rimX1 && flashes.length < 14; x += 3) {
+      const depth = prof[x - P0];
+      if (depth < 10 || hash1(x * 13 + 1, seed + 811) < 0.86) continue;
+      flashes.push({ x, y: wallBottom[x - rimX0] + depth * (0.25 + hash1(x, seed + 813) * 0.45), id: x });
     }
   }
   const it = zoomIters();
@@ -1970,7 +2064,7 @@ const WALL_LIFE: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', '
 /** Worlds whose underside carries moss and vines instead of embers. */
 const MOSSY_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm']);
 /** Worlds whose liquid pours off the rim in falls (lava worlds pour lava). */
-const FALL_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm', 'lava']);
+const FALL_TYPES: ReadonlySet<HabitableType> = new Set<HabitableType>(['ocean', 'rocky', 'toxic', 'storm', 'lava', 'gas']);
 
 /** One fall off the rim, in base-world px (the identity bake's). */
 export interface CrustFall {
@@ -1989,14 +2083,16 @@ export interface CrustFall {
 const FALL_ALPHAS = 6;
 
 /** CSS for a world's falls: [edge, core, glint, dim] x FALL_ALPHAS fades. Null: this world has none. */
-export function fallLutFor(type: HabitableType): string[] | null {
+export function fallLutFor(type: HabitableType, palIn?: CutawayPalette): string[] | null {
   if (!FALL_TYPES.has(type)) return null;
-  const pal = paletteFor(type);
+  const pal = palIn ?? paletteFor(type);
   const cols = type === 'lava'
     ? [pal.ember, pal.emberHot, rgb(255, 236, 170), shade(pal.ember, 0.7)]
     : [pal.waterSurf.mid, pal.waterSurf.light, pal.waterSurf.glint, pal.waterLip];
   const lut: string[] = [];
-  for (const c of cols) for (let a = 0; a < FALL_ALPHAS; a++) lut.push(css(c, 1 - (a / FALL_ALPHAS) * 0.6));
+  // A giant's spill is vapour, not water: thin and fading fast.
+  const a0 = type === 'gas' ? 0.42 : 1, fade = type === 'gas' ? 0.9 : 0.6;
+  for (const c of cols) for (let a = 0; a < FALL_ALPHAS; a++) lut.push(css(c, a0 * (1 - (a / FALL_ALPHAS) * fade)));
   return lut;
 }
 
@@ -2461,6 +2557,31 @@ function* shoreDistanceCore(
   return dist;
 }
 
+/**
+ * A billow field (jittered-grid Worley): `h` is the dome height of the
+ * nearest puff (1 at its centre), `crease` how close to the seam between
+ * two puffs. `billowOff` is set to how far toward the light (upper right)
+ * the point sits on its puff, -1..1, so callers can light the dome.
+ */
+let billowOff = 0;
+const billowOut = { h: 0, crease: 0 };
+function billow(u: number, v: number, seed: number): { h: number; crease: number } {
+  const iu = Math.floor(u), iv = Math.floor(v);
+  let f1 = 9, f2 = 9, ou = 0, ov = 0;
+  for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+    const ju = iu + a, jv = iv + b;
+    const pu = ju + 0.15 + 0.7 * hash1(ju * 73 + jv * 151, seed);
+    const pv = jv + 0.15 + 0.7 * hash1(ju * 37 + jv * 211, seed + 5);
+    const du = u - pu, dv = v - pv, d = du * du + dv * dv;
+    if (d < f1) { f2 = f1; f1 = d; ou = du; ov = dv; } else if (d < f2) f2 = d;
+  }
+  const r1 = Math.sqrt(f1);
+  billowOut.h = clamp01(1 - r1 / 0.8);
+  billowOut.crease = Math.sqrt(f2) - r1;
+  billowOff = Math.max(-1, Math.min(1, (ou * 0.75 - ov * 0.66) / 0.55));
+  return billowOut;
+}
+
 /** 2-D smooth value noise → [0,1). */
 function noise2(x: number, y: number, seed: number): number {
   const x0 = Math.floor(x), y0 = Math.floor(y);
@@ -2554,6 +2675,121 @@ const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5].map(v => (
  * `landCover` (land bake RGBA, same space as occupancy) so opaque foliage
  * wins and water does not paint over it.
  */
+/**
+ * A giant's moving sky, painted over its baked cloud sea every few frames:
+ * pale wisps streaming along the bands (alternate bands flow opposite ways,
+ * as jets do) and the great storm's arms turning. In the fluid layer's slot.
+ */
+export function paintGasDrift(
+  img: ImageData, geom: HabitableGeom, seed: number, bands: readonly RGB[], elapsed: number, layerBob: number,
+  k = 1, rowLo = 0, rowHi = Infinity,
+): void {
+  const { cx, rx, ry } = geom;
+  const cy = geom.cyTop + layerBob;
+  const W = img.width, H = img.height, d = img.data;
+  const n = bands.length;
+  if (!n) return;
+  const { great } = gasWeatherOf(seed, n);
+  const stormC = gasStormColor(seed);
+  const speeds = bands.map((_, i) => (i % 2 ? 1 : -1) * (0.010 + hash1(i, seed + 61) * 0.016));
+  const y0 = Math.max(0, Math.floor(cy - ry), rowLo), y1 = Math.min(H - 1, Math.ceil(cy + ry), rowHi - 1);
+  const x0 = Math.max(0, Math.floor(cx - rx)), x1 = Math.min(W - 1, Math.ceil(cx + rx));
+  const t = elapsed;
+  const swirl = t * 0.35;
+  for (let py = y0; py <= y1; py++) {
+    const dy = (py - cy) / ry;
+    const bi = Math.max(0, Math.min(n - 1, Math.floor((dy * 0.5 + 0.5) * n)));
+    const v = speeds[bi];
+    const base = bands[bi];
+    for (let px = x0; px <= x1; px++) {
+      const dx = (px - cx) / rx;
+      const r2 = dx * dx + dy * dy;
+      if (r2 > 1) continue;
+      let a = 0, cr = 0, cg = 0, cb = 0;
+      // Wisps: long and thin along the band, drifting with its jet.
+      const u = (dx - t * v) * rx / (26 * k), w = dy * ry / (3.2 * k);
+      const nz = noise2(u, w, seed + 401) * 0.65 + noise2(u * 2.3, w * 2.1, seed + 409) * 0.35;
+      if (nz > 0.6) {
+        a = quantise(Math.min(1, (nz - 0.6) * 4), 0.34) * 0.5;
+        cr = Math.min(255, base.r * 0.5 + 128); cg = Math.min(255, base.g * 0.5 + 126); cb = Math.min(255, base.b * 0.5 + 122);
+      }
+      // The great storm turns: two bright arms spiral round its eye.
+      const ux = (dx - great.x) / great.rx, uy = (dy - great.y) / great.ry, ur = Math.hypot(ux, uy);
+      if (ur < 1.15) {
+        const arm = Math.sin(Math.atan2(uy, ux) * 2 + ur * 7 - swirl * 2.2);
+        if (arm > 0.8) {
+          const aa = (ur < 1 ? 0.45 : 0.2) * (arm > 0.93 ? 1 : 0.6);
+          if (aa > a) { a = aa; cr = Math.min(255, stormC.r * 0.6 + 100); cg = Math.min(255, stormC.g * 0.6 + 96); cb = Math.min(255, stormC.b * 0.6 + 92); }
+        }
+      }
+      if (a <= 0) continue;
+      if (r2 > 0.86) a *= clamp01((1 - r2) / 0.14);
+      const o = (py * W + px) * 4;
+      d[o] = cr; d[o + 1] = cg; d[o + 2] = cb; d[o + 3] = Math.round(a * 255);
+    }
+  }
+}
+
+/**
+ * One floating island, baked once: a grassy top (lit on the right), a rock
+ * keel hanging to a point, a few trees. Anchor = the top surface's centre.
+ */
+export function bakeGasIsle(is: GasIsle, rxPx: number, ryPx: number): { canvas: HTMLCanvasElement; ax: number; ay: number } {
+  const a = Math.max(5, Math.round(is.r * rxPx)), b = Math.max(3, Math.round(is.r * ryPx));
+  const keel = Math.round(a * 1.25);
+  const trees = 2 + (is.seed % 3);
+  const W = a * 2 + 3, H = b * 2 + keel + 14;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  if (!g) return { canvas: c, ax: a + 1, ay: 8 + b };
+  const img = g.createImageData(W, H), d = img.data;
+  const put = (x: number, y: number, col: RGB) => {
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const o = (y * W + x) * 4; d[o] = col.r; d[o + 1] = col.g; d[o + 2] = col.b; d[o + 3] = 255;
+  };
+  const ax = a + 1, ay = 8 + b;
+  const rockA = rgb(122, 104, 92), rockB = rgb(88, 74, 70), rockC = rgb(58, 50, 52);
+  const grass = rgb(96, 138, 80), grassLit = rgb(132, 170, 98), grassDark = rgb(64, 98, 64);
+  const cliff = 3;
+  // Keel: an inverted, ragged cone under the rim.
+  for (let x = -a; x <= a; x++) {
+    const e = 1 - Math.abs(x) / (a + 0.5);
+    const rimY = Math.round(b * Math.sqrt(Math.max(0, 1 - (x / a) ** 2)));
+    // An inverted mountain: full in the middle, ragged fangs toward the edges.
+    const fang = hash1(Math.floor((x + a) / 2) * 7 + 3, is.seed);
+    const depth = rimY + cliff + Math.round(keel * (Math.pow(e, 0.9) * 0.75 + Math.pow(e, 2.5) * 0.45) * (0.5 + fang * 0.6));
+    for (let y = 0; y <= depth; y++) {
+      const t = (y - rimY) / Math.max(1, depth - rimY);
+      const lit = x > a * 0.25 ? rockA : x > -a * 0.3 ? rockB : rockC;
+      const band = hash1(Math.floor((y + x * 0.2) / 3), is.seed + 3) > 0.7;
+      // A sliver of soil under the turf, then strata down to the dark point.
+      const soil = y > rimY && y <= rimY + 1;
+      put(ax + x, ay + y, soil ? rgb(104, 80, 58) : t > 0.82 ? rockC : band ? rockB : lit);
+    }
+  }
+  // Top surface.
+  for (let y = -b; y <= b; y++) for (let x = -a; x <= a; x++) {
+    const q = (x / a) ** 2 + (y / b) ** 2;
+    if (q > 1) continue;
+    const rim = q > 0.72;
+    const col = rim ? (x > 0 ? grassLit : grassDark) : (hash1(x * 13 + y * 31, is.seed + 9) > 0.8 ? grassDark : grass);
+    put(ax + x, ay + y, col);
+  }
+  // Trees: a trunk pixel and a two-tone crown.
+  for (let i = 0; i < trees; i++) {
+    const tx = Math.round((hash1(i * 17, is.seed + 21) - 0.5) * a * 1.1), ty = Math.round((hash1(i * 29, is.seed + 23) - 0.5) * b);
+    const h = 3 + Math.floor(hash1(i, is.seed + 25) * 3);
+    put(ax + tx, ay + ty, rgb(70, 50, 40));
+    for (let yy = 1; yy <= h; yy++) for (let xx = -1; xx <= 1; xx++) {
+      if (Math.abs(xx) === 1 && (yy === 1 || yy === h)) continue;
+      put(ax + tx + xx, ay + ty - yy, xx > 0 || yy === h ? rgb(78, 140, 80) : rgb(40, 92, 54));
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return { canvas: c, ax, ay };
+}
+
 export function paintFluids(
   img: ImageData, geom: HabitableGeom, occupancy: Uint8Array,
   planetType: HabitableType, elapsed: number, layerBob: number,
@@ -3041,12 +3277,52 @@ export class HabitableCutawayEngine {
   /** Falls off the rim (identity bake), animated by `drawFalls`. */
   private readonly falls: CrustFall[] = [];
   private fallLut: string[] | null = null;
+  /** Gas giants: lightning sites in the hanging cloud decks, and the floating islands. */
+  private readonly flashes: Array<{ x: number; y: number; id: number }> = [];
+  private isles: Array<{ is: GasIsle; spr: { canvas: HTMLCanvasElement; ax: number; ay: number } }> = [];
 
-  /** Animate the falls through the host's base-world -> screen map (see drawCrustFalls). */
+  /**
+   * The surface's moving parts, through the host's base-world -> screen map:
+   * falls off the rim (see drawCrustFalls); on a gas giant also lightning in
+   * its cloud decks and the floating islands riding the cloud tops.
+   */
   drawFalls(g: CanvasRenderingContext2D, t: number, sx: (x: number) => number, sy: (y: number) => number): void {
     if (this.fallLut && this.falls.length && this.surfaceBakeOpts) {
       drawCrustFalls(g, this.falls, this.fallLut, t, sx, sy, this.surfaceBakeOpts.seed);
     }
+    if (this.planetType !== 'gas') return;
+    const seed = this.seed;
+    for (const f of this.flashes) {
+      const period = 2.5 + hash1(f.id, seed + 821) * 6;
+      const ph = (t + hash1(f.id, seed + 823) * period) / period;
+      const fr = ph - Math.floor(ph);
+      if (fr > 0.05) continue;
+      // A double flicker: bright, a gap, bright again.
+      if (fr > 0.018 && fr < 0.03) continue;
+      const X = sx(f.x), Y = sy(f.y), s = Math.max(1, Math.round(sx(f.x + 1) - X));
+      // The cloud lit from inside: a soft cross-shaped glow, not a box.
+      g.fillStyle = 'rgba(255,248,220,0.16)';
+      g.fillRect(Math.round(X - 7 * s), Math.round(Y - 2 * s), 14 * s, 4 * s);
+      g.fillRect(Math.round(X - 3 * s), Math.round(Y - 5 * s), 6 * s, 10 * s);
+      g.fillStyle = 'rgba(255,250,235,0.35)';
+      g.fillRect(Math.round(X - 3 * s), Math.round(Y - 2 * s), 6 * s, 4 * s);
+      g.fillStyle = 'rgba(255,255,250,0.95)';
+      // A short forked bolt.
+      const fork = hash1(f.id + Math.floor(ph), seed + 829) > 0.5 ? 1 : -1;
+      for (let i = 0; i < 4; i++) g.fillRect(Math.round(X + (i % 2) * fork * s), Math.round(Y + i * s), s, s);
+      g.fillRect(Math.round(X - fork * s), Math.round(Y + 2 * s), s, s);
+    }
+    const geo = this.geom;
+    const prev = g.imageSmoothingEnabled;
+    g.imageSmoothingEnabled = false;
+    for (const { is, spr } of this.isles) {
+      const bob = Math.sin(t * 0.5 + (is.seed % 100)) * 1.4;
+      const X = geo.cx + is.x * geo.rx - spr.ax, Y = geo.cyTop + is.y * geo.ry - is.lift + bob - spr.ay;
+      const X0 = sx(X), Y0 = sy(Y);
+      const w = sx(X + spr.canvas.width) - X0, h = sy(Y + spr.canvas.height) - Y0;
+      g.drawImage(spr.canvas, Math.round(X0), Math.round(Y0), Math.round(w), Math.round(h));
+    }
+    g.imageSmoothingEnabled = prev;
   }
   private w = 1;
   private h = 1;
@@ -3210,8 +3486,11 @@ export class HabitableCutawayEngine {
     // Surface first: it fills occupancy, which the crust reads to know where
     // the sea meets the rim (water column, falls).
     if (landG) paintCutawaySurface(landG, this.identityPaintOpts());
-    if (crustG) paintCutawayCrust(crustG, { ...bakeOpts, fallsOut: this.falls });
-    this.fallLut = fallLutFor(opts.planetType);
+    if (crustG) paintCutawayCrust(crustG, { ...bakeOpts, fallsOut: this.falls, flashOut: this.flashes });
+    const gas = opts.planetType === 'gas' && this.gasBands.length > 0;
+    this.fallLut = fallLutFor(opts.planetType, gas ? gasCrustPalette(this.gasBands) : undefined);
+    if (!gas) this.flashes.length = 0;
+    this.isles = gas ? gasIslesOf(opts.seed).map(is => ({ is, spr: bakeGasIsle(is, this.geom.rx, this.geom.ry) })) : [];
     // After the paint, which records each site's footing. A new planet or
     // size: everything is shown grown.
     this.flora.setPlan(this.liveFlora ? this.planDecals : null, this.elapsed, true);
@@ -3745,7 +4024,9 @@ export class HabitableCutawayEngine {
       if (doWater) {
         const [r0, r1] = this.nextBand(0, fluids.height);
         fluids.data.fill(0, r0 * fluids.width * 4, r1 * fluids.width * 4);
-        if (!cs) {
+        if (this.planetType === 'gas') {
+          paintGasDrift(fluids, geom, this.seed, this.gasBands, elapsed, layerBob, k, r0, r1);
+        } else if (!cs) {
           paintFluids(fluids, geom, this.idOccupancy, this.planetType, elapsed, layerBob, this.idShoreDist, 1, 1, null, this.idLandCover, this.magmaHeat, r0, r1);
         } else {
           paintFluids(fluids, geom, cs.occupancy, this.planetType, elapsed, layerBob, cs.shoreDist, k, k, this.fluidMapOf(cs), cs.landCover, this.magmaHeat, r0, r1);

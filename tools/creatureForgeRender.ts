@@ -55,8 +55,9 @@ const showcase: Array<[string, SpeciesGenome]> = [
   ['colony', G('co', { locomotion: 'stationary', environment: 'ocean', metabolism: 'photosynthetic', diet: 'producer' }, { bodyStructure: 'colonial', size: 'tiny' })],
   ['starfish', G('st', { locomotion: 'crawling', environment: 'coastal', diet: 'carnivore' }, { bodyStructure: 'radial' })],
   // The sapient forms a thinking walker becomes.
-  ['humanoid', G('hu7', { intelligence: 8, social: 8, aggression: 2 }, {})],
-  ['reptilian', G('re1', { intelligence: 8, aggression: 8 }, { size: 'large' })],
+  ['humanoid', G('ap2', { intelligence: 8, social: 8, aggression: 2 }, {})],
+  ['simian', G('ap4', { intelligence: 8, aggression: 3 }, {})],
+  ['reptilian', G('ap1', { intelligence: 8, aggression: 4 }, { size: 'large' })],
   ['avian', G('av1', { intelligence: 8 }, { mobilityType: 'feathered wings' })],
   ['insectoid', G('in1', { intelligence: 8 }, { bodyStructure: 'exoskeletal', sensorySystem: 'compound eyes' })],
   ['cephaloid', G('ce1', { intelligence: 8 }, { bodyStructure: 'gelatinous' })],

@@ -296,21 +296,59 @@ function breakSeal(m: HTMLElement): void {
  * Show the Forge for gameState.forge, at whatever phase it is in (new game or
  * a reloaded save).
  */
-export function runForge(d: ForgeDeps): void {
+export function runForge(d: ForgeDeps, opts: { holdInSystem?: boolean } = {}): void {
   const s = st();
   if (!s || s.phase === 'done') return;
   deps = d;
   lastShape = '';
   lastStage = null;
   document.body.classList.add('forging');
-  d.openWorld();
   syncWorld(true);
+  // Straight out of the Big Bang: linger on the home system (the new star,
+  // its worlds still glowing) and let the player descend when ready.
+  if (opts.holdInSystem && s.phase === 'draft' && s.played.length === 0) {
+    awaitingDescent = true;
+    document.body.classList.add('forge-await');
+    showDescend();
+    return;
+  }
+  d.openWorld();
   if (s.phase === 'draft') {
     renderDraft();
     d.chat(`${d.godName()}: The world is still fire. Shape it, and I will watch what you make.`, 'god');
   } else if (s.phase === 'reveal') showReveal();
   else if (s.phase === 'cooling') { s.coolingStart = Date.now(); showCooling(); }
   else if (s.phase === 'whisper') showWhisper();
+}
+
+let awaitingDescent = false;
+
+/** True while the Forge waits on the system view for the player to descend. */
+export function forgeAwaitingDescent(): boolean { return awaitingDescent; }
+
+function showDescend(): void {
+  document.getElementById('forge-descend')?.remove();
+  const el = document.createElement('div');
+  el.id = 'forge-descend';
+  el.innerHTML = `<div class="fd-line">A new star burns. Around it, ${deps!.planetName()} is still fire.</div>
+    <button class="forge-go fd-go">DESCEND TO ${deps!.planetName().toUpperCase()}</button>`;
+  document.body.appendChild(el);
+  el.querySelector<HTMLButtonElement>('.fd-go')!.onclick = () => forgeDescend(true);
+}
+
+/**
+ * Leave the system view for the molten world and start the draft.
+ * `open`: also open the world (false when the host is already opening it).
+ */
+export function forgeDescend(open: boolean): void {
+  if (!awaitingDescent || !deps) return;
+  awaitingDescent = false;
+  document.body.classList.remove('forge-await');
+  document.getElementById('forge-descend')?.remove();
+  if (open) deps.openWorld();
+  syncWorld(true);
+  renderDraft();
+  deps.chat(`${deps.godName()}: The world is still fire. Shape it, and I will watch what you make.`, 'god');
 }
 
 /** True while the Forge is running (the HUD hides the faith deck, etc.). */
