@@ -254,6 +254,15 @@ export interface WeatherPainterOpts {
    */
   ditherX?: number;
   ditherY?: number;
+  /**
+   * Lift of the one cloud deck above the face, px (see `deck`). A camera
+   * painter passes the identity painter's deck x k: its lookup covers only
+   * the view, and the tallest ground IN VIEW put the deck at a height that
+   * changed with the camera (clouds jumped at each settle or re-centre, and
+   * drops lived ~27% shorter at zoom 4). Default: the tallest ground in this
+   * lookup + clearance (the identity painter: the whole face).
+   */
+  deck?: number;
 }
 /** Steps of fall simulated when a painter first comes up (snow takes ~8). */
 const PRIME_STEPS = 8;
@@ -391,6 +400,9 @@ export class WeatherPainter {
   private poleW = new Float32Array(WX_NY);
   /** Scratch for one weather row during the polar longitudinal blur. */
   private poleScratch = new Float32Array(WX_NX);
+  /** Per-frame seed coverage (`WeatherSim.fillSeedMasks`), cloud and rain cores; exact (Float64). */
+  private maskCloud = new Float64Array(WX_N);
+  private maskRain = new Float64Array(WX_N);
   private detail = new Float32Array(DT_W * DT_H);
   /** Cauliflower domes (overlapping spherical puffs), same lattice as `detail`. */
   private puff = new Float32Array(DT_W * DT_H);
@@ -429,6 +441,8 @@ export class WeatherPainter {
    * left a cloudLift-tall empty strip at the front of the disc.
    */
   readonly skyY: Int16Array;
+  /** Lift of the cloud deck above the face, px: the near-rim cloud altitude (`WeatherPainterOpts.deck`). */
+  readonly deck: number;
   /**
    * Vertical coverage in lookup px: how many screen rows this sample stamps,
    * from skyY down toward the next face row's skyY at the same x. Perspective
@@ -501,7 +515,7 @@ export class WeatherPainter {
     // showed worst when zoomed (play report: "clouds get chopped").
     let top = 0;
     for (let n = 0; n < lut.count; n++) { const l = lut.py[n] - lut.ground[n]; if (l > top) top = l; }
-    const deck = top + clearance;
+    const deck = this.deck = opts.deck ?? top + clearance;
     for (let n = 0; n < lut.count; n++) {
       // dy +1 = near/front, -1 = far/back. Rise into the dome only toward the back.
       const dy = dys ? dys[n] : 0;
@@ -1151,6 +1165,9 @@ export class WeatherPainter {
       const v = sim.events.list[e];
       if (v.kind === VX.TYPHOON || v.kind === VX.BLIZZARD) { this.tyX = v.x; this.tyY = v.y; this.tyR = v.r; this.tyP = v.power; }
     }
+    // Seed coverage for every cell in one call (no boxed per-cell return).
+    const maskC = this.maskCloud, maskR = this.maskRain;
+    sim.fillSeedMasks(maskC, maskR);
     for (let k = 0; k < WX_N; k++) {
       const c = sim.prevCloud[k] + (sim.cloud[k] - sim.prevCloud[k]) * t;
       const a = sim.prevAsh[k] + (sim.ash[k] - sim.prevAsh[k]) * t;
@@ -1162,13 +1179,13 @@ export class WeatherPainter {
       // mean cloud field is thinner and ocean skies fell under the readability floor.
       // Water cloud is masked to the drifting seeds, thinned on the lee, with a
       // cap on the windward slope. Ash and smog stay on their vents and cities.
-      const mask = sim.seedMask(k % WX_NX, (k / WX_NX) | 0, false);
+      const mask = maskC[k];
       // Seeds carry the weather. The windward slope keeps a cap, and a mass
       // thins once it has crossed onto the lee.
       const hi = sim.highCloud[k];
       const water = Math.min(1, c * mask * (1 - 0.72 * sim.leeCloud[k]) + hi * 0.55);
       this.dens[k] = (water * CLOUD_GAIN + a * 0.9 + s * 0.8) * KIND_GAIN[kind] * nebGain;
-      this.rainF[k] = sim.snow[k] ? 0 : sim.precip[k] * sim.seedMask(k % WX_NX, (k / WX_NX) | 0, true);
+      this.rainF[k] = sim.snow[k] ? 0 : sim.precip[k] * maskR[k];
     }
     // Polar anti-spoke: longitudinal box blur (not a flat row mean). A mean
     // erased every lon difference, so the disc's N/S tips — which project to

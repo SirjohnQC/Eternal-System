@@ -804,9 +804,9 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
     /**
      * The swell's phase is SWELL_K * shore distance + omega * t. Demodulate
      * each water pixel's brightness at omega over two periods, sum per world
-     * shore-distance bin, and find the spatial wavenumber whose phase ramp
-     * best matches (a matched filter over K; no unwrapping). Independent of
-     * the painter's constants except omega (1.6 rad/s on ocean).
+     * shore-distance bin, and fit the spatial wavenumber to the phase ramp
+     * across the surf band (see below). Independent of the painter's
+     * constants except omega (1.6 rad/s on ocean) and the surf band's reach.
      */
     const OMEGA = 1.6, PERIODS = 2, PER = 16;
     const measure = (eng: any, geom: any, k: number, kPaint: number) => {
@@ -828,19 +828,30 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
           re[b] += lum * c; im[b] += lum * sn;
         }
       }
-      let best = 0, bestK = 0;
-      const power = (K: number) => {
-        let sr = 0, si = 0;
-        for (let b = 0; b < NB; b++) {
-          const s = (b + 0.5) * BIN, c = Math.cos(K * s), sn = Math.sin(K * s);
-          // Sum A(s) e^{-iKs}: brightness(t) ~ f(K s + omega t), demodulated by e^{+i omega t}... sign-agnostic: take both.
-          sr += re[b] * c + im[b] * sn; si += im[b] * c - re[b] * sn;
+      // Updated 2026-10-08: since the pixel-art water rework (d0dca2a,
+      // 85531c2) the swell is the SURF: drawn only within FOAM_REACH x 2.2 =
+      // 11 world px of a coast (half a ~21 px wavelength), and open water
+      // carries the caustic web and glints instead. A matched filter over
+      // 0-60 px then fit mostly caustics/glints (19.5 vs 22.9 px, ratio
+      // 1.175) although the surf itself is world-anchored. The wavenumber is
+      // now the slope of the demodulated phase across the surf band (1.5-11
+      // world px, past the always-foam wet edge), a weighted least-squares fit
+      // of the phase unwrapped bin to bin (< pi per 0.5-px bin).
+      const LO = 1.5, HI = 11;
+      let prev = NaN, off = 0, sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, nb = 0;
+      for (let b = 0; b < NB; b++) {
+        const s = (b + 0.5) * BIN, amp = Math.hypot(re[b], im[b]);
+        if (s < LO || s >= HI || !(amp > 0)) continue;
+        const ph = Math.atan2(im[b], re[b]);
+        if (!Number.isNaN(prev)) {
+          while (ph + off - prev > Math.PI) off -= 2 * Math.PI;
+          while (ph + off - prev < -Math.PI) off += 2 * Math.PI;
         }
-        return sr * sr + si * si;
-      };
-      const powerAbs = (K: number) => Math.max(power(K), power(-K));
-      for (let K = 0.03; K <= 2.5; K += 0.002) { const p = powerAbs(K); if (p > best) { best = p; bestK = K; } }
-      return { lambda: 2 * Math.PI / bestK, n: idx.length };
+        prev = ph + off; nb++;
+        sw += amp; sx += amp * s; sy += amp * prev; sxx += amp * s * s; sxy += amp * s * prev;
+      }
+      const slope = (sw * sxy - sx * sy) / (sw * sxx - sx * sx);
+      return { lambda: nb >= 8 ? 2 * Math.PI / Math.abs(slope) : NaN, n: idx.length };
     };
     const B = bakeEngine('ocean', 7), eng = B.engine as any, g = B.engine.geom;
     const m1 = measure(eng, g, 1, 1);
@@ -983,15 +994,26 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
         farN, nearN,
       };
     };
+    // Updated 2026-10-08: clouds sit on ONE deck since 679ada3 ("Clouds on
+    // one deck (no chopped slabs)"): the floor of the lift is the tallest
+    // ground of the whole face + clearance, no longer each column's own
+    // ground + clearance (which cut clouds over terraces into slabs). The
+    // fixture computes that deck independently from the identity lookup;
+    // a camera painter's deck is the same world height, x k.
+    const deckOf = (p: any) => {
+      let top = 0;
+      for (let i = 0; i < p.lut.count; i++) top = Math.max(top, p.lut.py[i] - p.lut.ground[i]);
+      return top + 6;
+    };
+    const idDeck = deckOf(id);
     const skyErr = (p: any) => {
-      const lut = p.lut, dy = lut.dy, k = Math.max(1, Math.round(p.cloudLift / (MAX_LIFT + 6)));
-      const clearance = Math.max(1, Math.round(6 * k));
+      const lut = p.lut, dy = lut.dy, k = p.cloudLift / (MAX_LIFT + 6);
+      const deck = idDeck * k;
       let worst = 0, n = 0;
       for (let i = 0; i < lut.count; i++) {
         const d = dy ? dy[i] : 0;
         const perspective = p.cloudLift * 0.5 * (1 - d);
-        const local = (lut.py[i] - lut.ground[i]) + clearance;
-        const lift = perspective > local ? perspective : local;
+        const lift = perspective > deck ? perspective : deck;
         const want = Math.round(lut.py[i] - (lift < 1 ? 1 : lift));
         worst = Math.max(worst, Math.abs(p.skyY[i] - want));
         n++;
@@ -1004,17 +1026,25 @@ console.log('\n  FRAME LAYERS (Task 5: water, day/night, atmosphere, weather, vi
       R1.farN > 0 && Math.abs(R1.far - id.cloudLift) <= 2
       && E1.worst <= 1 && E4.worst <= 1 && cp.cloudLift === (MAX_LIFT + 6) * 4,
       `zoom 1 far ${R1.far.toFixed(1)} px (want ~${id.cloudLift}, n=${R1.farN}); skyY err id ${E1.worst} / cam ${E4.worst}; cam cloudLift ${cp.cloudLift}`);
-    check('weather: near/front rim keeps clouds (gap << cloudLift)',
+    // Updated 2026-10-08 (one deck, 679ada3): the near rim sits on the deck
+    // (tallest ground + 6 px, here ~19 of cloudLift 24), not a few px over
+    // its own ground (the old bar: <= 12 px, < cloudLift / 2). The claim kept:
+    // the near rim is on the deck (not lifted to the full cloudLift), and the
+    // zoom-4 near rim is the same deck x 4.
+    check('weather: near/front rim keeps clouds (on the deck, below cloudLift)',
       R1.nearN > 0 && R4.nearN > 0
-      && R1.near >= 1 && R1.near <= 12 && R1.near < id.cloudLift * 0.5
-      && R4.near >= 1 && R4.near <= 12 * 4 && R4.near < cp.cloudLift * 0.5,
-      `zoom 1 near lift ${R1.near.toFixed(1)} px (cloudLift ${id.cloudLift}), zoom 4 near lift ${R4.near.toFixed(1)} px (cloudLift ${cp.cloudLift})`);
+      && Math.abs(R1.near - idDeck) <= 1 && R1.near < id.cloudLift
+      && Math.abs(R4.near - 4 * idDeck) <= 1 && R4.near < cp.cloudLift,
+      `zoom 1 near lift ${R1.near.toFixed(1)} px (deck ${idDeck}, cloudLift ${id.cloudLift}), zoom 4 near lift ${R4.near.toFixed(1)} px (deck x4 ${4 * idDeck}, cloudLift ${cp.cloudLift})`);
     const brokenLift = new WP.WeatherPainter(id.lut, eng.weatherClimate, id.cloudLift, 7);
     // Force the old uniform mental model: every skyY = py - cloudLift.
     for (let i = 0; i < brokenLift.lut.count; i++) brokenLift.skyY[i] = brokenLift.lut.py[i] - brokenLift.cloudLift;
     const Rb = rimLift(brokenLift);
+    // The control fails the near-rim bar above (the deck), as the old one
+    // failed the old bar (its +8 px margin assumed a near rim hugging its own
+    // ground; the deck leaves cloudLift - deck, ~5 px).
     check('  control: uniform full-lift empties the near rim relative to perspective',
-      Rb.nearN > 0 && Rb.near > R1.near + 8,
+      Rb.nearN > 0 && Rb.near > R1.near && !(Math.abs(Rb.near - idDeck) <= 1),
       `uniform near ${Rb.near.toFixed(1)} vs perspective ${R1.near.toFixed(1)}`);
 
     // Lightning density per screen area (Ruling 4), pooled over storm seeds.
@@ -1192,7 +1222,13 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
    * sky image, for ocean 3 and lava 4 — captured from the pre-Task-6 code
    * (1c76aa4). Zoom 1 must stay exactly today's.
    */
-  const OVERLAY_GOLDEN = '39ae35c0/bd2a126f c0c7e6ed/bd2a126f';
+  // Re-captured 2026-10-08 at fda1790 (the same value before and after this
+  // fix round: none of its changes touch zoom 1). The zoom-1 overlays were
+  // deliberately redrawn since 1c76aa4: the pixel-art sun (239ab22, sky image
+  // hash), MoonArt moons on per-moon orbits (03e34e3, ccb0360), land
+  // creatures and towns moved into the depth-sorted flora pass (679ada3,
+  // fbd7885, e6165b5), procedural decals and settlements reworked.
+  const OVERLAY_GOLDEN = '801c0e6e/d1d5425c 0002c90e/d1d5425c';
 
   /** Records every drawing call with its arguments (numbers as given, no rounding). */
   class Rec extends PixelCtx {
@@ -1292,8 +1328,13 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     setCam(lava, cam);
     const reChim = key(Eng.planVolcanoChimneys(lava.cutaway.camSet.opts), back);
     const lref = records(lava);
+    // Updated 2026-10-08: the renderer bakes with `volcanoes: null` since
+    // 60841a2 ("Volcanoes built into the terrain"): volcanoes are terrain, no
+    // chimney plan exists (0 chimneys on every world), so an empty chimney set
+    // cannot move. Chimneys count only while the renderer plans some.
+    const chimOk = lref.chimneys === '' || reChim !== lref.chimneys;
     check('  control: re-planning at the camera moves dots, towns, decals and chimneys',
-      reDots !== ref.dots && reTowns !== ref.towns && reDecals !== ref.decals && reChim !== lref.chimneys,
+      reDots !== ref.dots && reTowns !== ref.towns && reDecals !== ref.decals && chimOk,
       `dots ${reDots !== ref.dots}, towns ${reTowns !== ref.towns}, decals ${reDecals !== ref.decals}, chimneys ${reChim !== lref.chimneys}`);
     setCam(rG, ID); rG.markSurfaceDirty(true); setCam(lava, ID); lava.markSurfaceDirty(true);
   }
@@ -1311,18 +1352,45 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
       for (const d of r.cityDots) best = Math.min(best, Math.hypot(W(d)[0] - w.x, W(d)[1] - w.y));
       worstL = Math.max(worstL, best);
     }
-    const gi = rec(); r.drawInhabitants(gi, H.ELAPSED);
-    const imgs = gi.log.filter(e => e[0] === 'drawImage' && e.length === 6);
-    const ents = [...r.inhabitants, ...r.settlements].filter((c: any) => !(c.submersion > 0));
-    let worstS = 0, sized = imgs.length === ents.length && imgs.length > 0;
-    for (let i = 0; i < Math.min(imgs.length, ents.length); i++) {
-      const [, , dx, dy, w, h] = imgs[i];
-      const c = ents[i], p = worldToScreen(cam, VW, VH, ...W(c));
-      if (w !== Math.round(c.w) * s || h !== Math.round(c.h) * s) sized = false;
-      worstS = Math.max(worstS, Math.abs(dx + w / 2 - p.x), Math.abs(dy + h - p.y) - 0.6 * s);
-    }
-    check('overlays through the camera: lights at worldToScreen, sprites x round(k)', lights.length > 0 && worstL <= 0.5 + 1e-9 && sized && worstS <= 1,
-      `${lights.length} lights, worst ${worstL.toFixed(3)} world px; ${imgs.length}/${ents.length} sprites, sized x${s} ${sized}, worst anchor ${worstS.toFixed(2)} px`);
+    // Updated 2026-10-08: on a cutaway world `drawInhabitants` now draws only
+    // swimmers (none in this fixture). Land creatures and towns are props of
+    // the flora pass, depth-sorted with the trees (679ada3, fbd7885), and
+    // they are no longer one sprite magnified x round(k): buildings are
+    // re-painted with more detail at S = round(k) (10x17 -> ~21x52 px at
+    // zoom 4) and creatures big enough on screen are forged at their true
+    // screen size (c21b946). The scaling claim is therefore gone; the
+    // placement claim stays: (a) the engine draws the props through the
+    // shown camera (the FloraView it passes is that camera), and (b) every
+    // building's foot lands at worldToScreen of its base-world foot (+/- 0.5
+    // px rounding), read from the drawn rect and the sprite's foot offset.
+    const fl = r.cutaway.flora;
+    let view: any = null;
+    const probe = { wy: -1e9, draw: (_g: any, v: any) => { view = { ...v }; } };
+    fl.props.unshift(probe);
+    try {
+      (r.cutaway as any).floraVersion = -1;
+      r.cutaway.drawFlora(new PixelCanvas(VW, VH).getContext(), H.ELAPSED, 0);
+    } finally { fl.props.splice(fl.props.indexOf(probe), 1); }
+    const viewOk = !!view && view.K === cam.zoom && view.fx === cam.fx && view.fy === cam.fy && view.W === VW && view.H === VH;
+    const S = Math.max(1, Math.round(cam.zoom));
+    let worstS = 0, nB = 0;
+    const blds = r.townPlan.buildings as any[];
+    blds.forEach((b: any, i: number) => {
+      const gb = rec();
+      const wy = b.y - (r.townLift[i] ?? 0);
+      // The prop's own draw (pushTownProps), through the camera's view.
+      const prop = fl.props.find((p: any) => p.wy === wy);
+      if (!prop) return;
+      prop.draw(gb, { K: cam.zoom, fx: cam.fx, fy: cam.fy, W: VW, H: VH, r: 1, dx: 0, dy: 0, bob: 0, vw: VW, vh: VH });
+      const d = gb.log.find(e => e[0] === 'drawImage');
+      const spr = r.buildingSprite(i, S);
+      if (!d || !spr) return;
+      nB++;
+      const p = worldToScreen(cam, VW, VH, b.x, wy);
+      worstS = Math.max(worstS, Math.hypot(d[2] + spr.fx - p.x, d[3] + spr.fy - p.y));
+    });
+    check('overlays through the camera: lights at worldToScreen, props through the camera', lights.length > 0 && worstL <= 0.5 + 1e-9 && viewOk && nB > 0 && worstS <= 0.75,
+      `${lights.length} lights, worst ${worstL.toFixed(3)} world px; flora view ${view ? `K ${view.K} focus ${view.fx},${view.fy} ${view.W}x${view.H}` : 'none'} (${viewOk}); ${nB}/${blds.length} buildings, worst foot ${worstS.toFixed(2)} px`);
     setCam(r, ID);
   }
 
@@ -1384,7 +1452,13 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     };
     setCam(r, ID); r.drawSky(rec());
     const s1 = sunCentre(r.skyImage.data);
-    const cam = { zoom: 4, fx: g.cx + 6, fy: 60 };
+    // Updated 2026-10-08: the focus follows the zoom-1 sun. The fixed focus
+    // (g.cx + 6) assumed the old sun spot near x 278; the orbit sky / pixel
+    // sun (239ab22, ccb0360) puts it near x 427 here, so the x1.3 transform
+    // put the 18-px disc across the right edge (x 475 of 480): the clipped
+    // disc measured 14 px and its centroid moved 1.5 px. 20 px left of the
+    // sun keeps the far-transformed disc wholly in view.
+    const cam = { zoom: 4, fx: Math.round(s1.x) - 20, fy: 60 };
     setCam(r, cam); r.drawSky(rec());
     const s4 = sunCentre(r.skyImage.data);
     const f = farScale(4), want = { x: (s1.x - cam.fx) * f + VW / 2, y: (s1.y - cam.fy) * f + VH / 2 };
@@ -1399,7 +1473,9 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     SkyP.paintSky(img, SkyP.skyLayout(r.cutaway.activeGeom, VW, VH), { sunAz: sky.sun.az, sunElev: sky.sun.elev, sunSizeScale: sky.sun.sizeScale, sunRgb: [255, 236, 180], siblings: [] });
     const sc = sunCentre(img.data);
     const errC = Math.hypot(sc.x - want.x, sc.y - want.y);
-    check('  control: skyLayout(camera geometry) puts the sun elsewhere', !(errC <= 1), `err ${errC.toFixed(1)} px`);
+    // With the focus beside the sun (above) the camera-geometry layout puts it off the canvas (no sun px).
+    check('  control: skyLayout(camera geometry) puts the sun elsewhere', sc.n === 0 || !(errC <= 1),
+      sc.n === 0 ? 'off the canvas' : `err ${errC.toFixed(1)} px`);
     setCam(r, ID);
   }
 
@@ -1409,14 +1485,23 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
     const moonsAt = (cam: any) => {
       setCam(r, cam);
       const gg = rec(); r.drawMoons(gg, ELAPSED_MOON, false); r.drawMoons(gg, ELAPSED_MOON, true);
-      const arcs = gg.log.filter(e => e[0] === 'arc');
+      // Updated 2026-10-08: moons are MoonArt sprites now (03e34e3 "one shared
+      // pixel moon, planet view matches the system view"; ccb0360 orbits per
+      // moon), drawn as drawImage(sprite d x d, round(x - d/2), round(y - d/2))
+      // around an orbit centre at cyTop - 0.95 ry — no longer a pair of arcs
+      // (halo 1.9 r + disc) around cyTop - 1.35 ry. Centre and radius are read
+      // from the sprite rect; both are whole px, so the orbit bar allows the
+      // rounding at each zoom (0.5 + 4 x 0.5 px), the radius bar stays 1 px.
       const out: Array<{ x: number; y: number; r: number }> = [];
-      for (let i = 0; i + 1 < arcs.length; i++) {
-        const a = arcs[i], b = arcs[i + 1];
-        if (a[1] === b[1] && a[2] === b[2] && Math.abs(a[3] - 1.9 * b[3]) < 1e-9) out.push({ x: b[1], y: b[2], r: b[3] });
+      for (const e of gg.log) {
+        if (e[0] !== 'drawImage' || e.length !== 4) continue;
+        const m = /^img(\d+)x(\d+)$/.exec(String(e[1]));
+        if (!m) continue;
+        const d = +m[1];
+        out.push({ x: e[2] + d / 2, y: e[3] + d / 2, r: d / 2 });
       }
       const A = r.cutaway.activeGeom;
-      return { moons: out, ox: A.cx, oy: A.cyTop - A.ry * 1.35 };
+      return { moons: out, ox: A.cx, oy: A.cyTop - A.ry * 0.95 };
     };
     const m1 = moonsAt(ID), m4 = moonsAt({ zoom: 4, fx: g.cx + 30, fy: g.cyTop - 40 });
     let worstO = 0, worstR = 0;
@@ -1424,7 +1509,7 @@ console.log('\n  PLACEMENT (Task 6: stable placement, effects, far layers, moons
       worstO = Math.max(worstO, Math.abs((m4.moons[i].x - m4.ox) - 4 * (m1.moons[i].x - m1.ox)), Math.abs((m4.moons[i].y - m4.oy) - 4 * (m1.moons[i].y - m1.oy)));
       worstR = Math.max(worstR, Math.abs(m4.moons[i].r - 4 * m1.moons[i].r));
     }
-    check('moons: orbit radius and moon size on screen x4 at zoom 4 (+/- 1 px)', m1.moons.length === 2 && m4.moons.length === 2 && worstO <= 1 && worstR <= 1,
+    check('moons: orbit radius and moon size on screen x4 at zoom 4 (orbit +/- 2.5 px, radius +/- 1 px)', m1.moons.length === 2 && m4.moons.length === 2 && worstO <= 2.5 && worstR <= 1,
       `${m1.moons.length}/${m4.moons.length} moons; worst orbit offset ${worstO.toFixed(2)} px, worst radius ${worstR.toFixed(2)} px (r ${m1.moons.map(m => m.r.toFixed(2))} -> ${m4.moons.map(m => m.r.toFixed(2))})`);
     setCam(r, ID);
   }
@@ -1577,6 +1662,13 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
   let t = T0;
   /** n wheel notches (deltaY < 0 zooms in) at CSS offset (mx, my) from the mount centre. */
   const wheel = (r: any, n: number, dir: number, mx = 60, my = 30) => { for (let i = 0; i < n; i++) r.zoom.wheel(mx, my, dir, t += 4); };
+  /**
+   * Notches that reach MAX_ZOOM 4. Updated 2026-10-08: the wheel step was
+   * deliberately softened from x1.16 to x1/0.9 per notch (0dd4618, "smaller
+   * ... for a smoother feel"): 10 notches now reach 2.87, not 4 (1.16^10 =
+   * 4.4 clamped). (1/0.9)^16 = 5.4 clamps to 4, as the settle check above.
+   */
+  const ZOOM4_NOTCHES = 16;
   /** Pump view steps until the camera set is shown (bake is time-sliced ~8 ms). */
   const settleFrame = (r: any) => {
     t += SETTLE_MS + 1;
@@ -1720,7 +1812,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
     const other: any = await H.makeRenderer('lava', 4);
     let sim0: any = null;
     tryCheck('new planet: setup — zoomed and settled', () => {
-      wheel(r, 10, -1); settleFrame(r);
+      wheel(r, ZOOM4_NOTCHES, -1); settleFrame(r);
       sim0 = e.weatherSim;
       return [e.showCamera && r.zoom.viewZoom === 4 && !!sim0, `shown ${e.showCamera}, zoom ${r.zoom.viewZoom}`];
     });
@@ -1893,7 +1985,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
     const gc = (globalThis as any).gc as (() => void) | undefined;
     sizeMount(r, 960, 640);
     r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
-    wheel(r, 10, -1); settleFrame(r);
+    wheel(r, ZOOM4_NOTCHES, -1); settleFrame(r);
     const sink: unknown[] = [];
     const measure = (extra: boolean) => {
       let best = Infinity;
@@ -1926,7 +2018,7 @@ console.log('\n  RENDERER (Task 7: progressive zoom in the renderer, resize, pla
     const zoomedFresh = () => {
       sizeMount(r, 960, 640); r.resize();
       r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
-      wheel(r, 10, -1); settleFrame(r);
+      wheel(r, ZOOM4_NOTCHES, -1); settleFrame(r);
     };
     tryCheck('hide (0x0 mount) while zoomed: no throw, every camera field finite, zoom kept', () => {
       zoomedFresh();
@@ -2067,7 +2159,9 @@ console.log('\n  SMOOTH PAN (Task 7b, spec 5b: sharp layers slide over an oversc
     return n;
   };
   /** A clean start, zoomed in `notches` toward the rim's open sea and settled. */
-  const fresh = (notches = 10) => {
+  // Updated 2026-10-08: 16 notches reach zoom 4 at the softened x1/0.9 wheel
+  // step (0dd4618); 10 now stop at 2.87 (see ZOOM4_NOTCHES in RENDERER).
+  const fresh = (notches = 16) => {
     r.bakeBudgetMs = Infinity;
     r.refreshData(r.grid, r.biosphere, r.species, r.planet, r.star, 0);
     wheel(notches, -1); settleAll();
@@ -2308,7 +2402,7 @@ console.log('\n  SMOOTH PAN (Task 7b, spec 5b: sharp layers slide over an oversc
   });
   let inView = 0, lutAll = 0;
   tryCheck('bounded: per-frame cloud loop visits only lookup entries in the view while panning (zoom 2.1)', () => {
-    fresh(5);
+    fresh(7);   // (1/0.9)^7 = 2.09 (was fresh(5) at the old x1.16 step, see fresh)
     drag(6, -40, 12, true);
     const it = countedFrame(-280, 84);
     r.zoom.panEnd(t += 16);
@@ -2455,13 +2549,22 @@ console.log('\n  SMOOTH PAN (Task 7b, spec 5b: sharp layers slide over an oversc
     const gc = (globalThis as any).gc as (() => void) | undefined;
     const sink: unknown[] = [];
     let step = 0;
+    // Updated 2026-10-08: the pointer path is precomputed (whole CSS px, as
+    // pointer events mostly deliver). This driver loop runs only 6000
+    // iterations of a tiny body, so V8 had not optimized it yet (traced: it
+    // tiered up only after this check): each Math.sin / cos / multiply in it
+    // was a boxed heap number, ~100+ KB per 1000 frames of the harness's own
+    // garbage counted against the game. The control below still adds one
+    // 8-double array per frame to the same loop.
+    const PATH = 4096, PX = new Int32Array(PATH), PY = new Int32Array(PATH);
+    for (let i = 0; i < PATH; i++) { PX[i] = Math.round(480 + Math.sin(i * 0.05) * 200); PY[i] = Math.round(320 + Math.cos(i * 0.07) * 100); }
     const measure = (extra: boolean) => {
       let best = Infinity;
       for (let rep = 0; rep < 3; rep++) {
         gc?.(); const h0 = process.memoryUsage().heapUsed;
         for (let i = 0; i < 1000; i++) {
-          step++;
-          r.zoom.panMove(480 + Math.sin(step * 0.05) * 200, 320 + Math.cos(step * 0.07) * 100, t += 16);
+          step = (step + 1) & (PATH - 1);
+          r.zoom.panMove(PX[step], PY[step], t += 16);
           r.updateView(t);
           if (extra) sink.push(new Float64Array(8));
         }
@@ -2486,7 +2589,7 @@ console.log('\n  SMOOTH PAN (Task 7b, spec 5b: sharp layers slide over an oversc
     });
     tryCheck('weather painter with a moving view: no per-frame allocation (zoom 2.1, 1000 frames)', () => {
       if (!gc) return [false, 'run with node --expose-gc'];
-      fresh(5);
+      fresh(7);   // zoom 2.09 at the x1/0.9 step (see fresh)
       const p = e.camSet.painter, sim = e.weatherSim;
       const img = { width: VW, height: VH, data: new Uint8ClampedArray(VW * VH * 4) };
       let f = 0;

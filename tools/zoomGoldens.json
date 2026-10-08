@@ -22,12 +22,12 @@
     "backdrop": "c604f381"
   },
   "gas": {
-    "crust": "d6612cb3",
-    "land": "ebf5e471",
+    "crust": "b4900e38",
+    "land": "ec22570e",
     "fluids": "bae41dc5",
     "dayNight": "fd20612c",
-    "shadows": "bae41dc5",
-    "atmosphere": "a911af10",
+    "shadows": "72db3452",
+    "atmosphere": "f052a9af",
     "weather": "bae41dc5",
     "sky": "58edd18e",
     "backdrop": "c604f381"

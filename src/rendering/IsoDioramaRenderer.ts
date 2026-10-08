@@ -457,7 +457,7 @@ export class IsoDioramaRenderer {
    * `bgLayer`. `bgFarFor` is the camera and panorama it was baked for.
    */
   private bgFar: HTMLCanvasElement | null = null;
-  private bgFarFor: { zoom: number; fy: number; W: number; H: number; seed: number } | null = null;
+  private bgFarFor: { zoom: number; fy: number; my: number; W: number; H: number; seed: number } | null = null;
   private skyCanvas!:    HTMLCanvasElement;   // sun, arc, siblings (putImageData only)
   private skyImage:      ImageData | null = null;
   /** This frame's sky, from the real orbits. Read by the weather seasons. */
@@ -466,13 +466,20 @@ export class IsoDioramaRenderer {
   private clock:         (() => number) | null = null;
   private crustLayer!:   HTMLCanvasElement;   // rock underside + rim cut band
   private surfaceLayer!: HTMLCanvasElement;   // top face terrain
-  private cutaway = new HabitableCutawayEngine();
+  /**
+   * Spec 5b: camera sets are baked with half a view of overscan on each side
+   * (the engine's `overscan`), so a normal drag while zoomed slides the sharp
+   * layers and never reaches an edge (the identity strip); a set is then 2x2
+   * views. The engine's default stays 0 (the exact view, pre-5b) for tools.
+   */
+  private cutaway = Object.assign(new HabitableCutawayEngine(), { overscan: 0.5 });
   /** Creature bodies for a new zoom are forged inside the camera bake (see prewarmCreatures). */
   private static readonly PRELOAD_MS = 1.5;
   private preload: Generator<void, void, unknown> | null = null;
   private preloadVer = -1;
   private preloadN = -1;
-  private preloadSeed = -1;
+  /** The planet name the preload ran for (planetSeed hashes it; a string compare does not allocate). */
+  private preloadName: string | null = null;
   /** The planet's nations (borders + capital flags); null: none drawn. */
   private nationSource: (() => NationSystem | null) | null = null;
   private nationVer = -1;
@@ -1671,24 +1678,30 @@ export class IsoDioramaRenderer {
   }
 
   /**
-   * The far panorama for `cam`: the same backdrop re-baked at `farScale(k)`
-   * about the focus (stars stay 1 px). Skipped when the one baked already
-   * matches. Settle-time only.
+   * The far panorama for `cam`'s zoom: the same backdrop re-baked at
+   * `farScale(k)` (stars stay 1 px), about the view centre, with `my` rows of
+   * vertical overscan above and below — enough for ANY focus at this zoom
+   * (spec 5b), so a vertical pan slides it and never needs a re-bake. Keyed
+   * on zoom and size only; skipped when the one baked already matches.
+   * Settle-time only.
    */
   private bakeFarBackdrop(cam: Camera): void {
     const s = farScale(cam.zoom), W = backdropWidth(this.VW), H = this.VH;
     const seed = this.planetSeed ^ 0x9e3779b9;
+    // A focus lies in [H / 2k, H - H / 2k]: the view centre moves at most
+    // (H/2)(1 - 1/k) base px, i.e. that x s far px, from the bake's centre.
+    const my = Math.ceil((H / 2) * (1 - 1 / cam.zoom) * s) + 1;
     const f = this.bgFarFor;
-    if (f && f.zoom === cam.zoom && f.fy === cam.fy && f.W === W && f.H === H && f.seed === seed) return;
+    if (f && f.zoom === cam.zoom && f.W === W && f.H === H && f.seed === seed) return;
     if (!this.bgFar) this.bgFar = document.createElement('canvas');
-    const Ws = Math.round(W * s);
-    this.bgFar.width = Ws; this.bgFar.height = H;
+    const Ws = Math.round(W * s), Hi = H + 2 * my;
+    this.bgFar.width = Ws; this.bgFar.height = Hi;
     const g = this.bgFar.getContext('2d');
     if (!g) return;
-    const img = g.createImageData(Ws, H);
-    bakeBackdrop(img, { seed, vw: this.VW, scale: s, fy: cam.fy });
+    const img = g.createImageData(Ws, Hi);
+    bakeBackdrop(img, { seed, vw: this.VW, scale: s, fy: H / 2, vh: H, oy: my });
     g.putImageData(img, 0, 0);
-    this.bgFarFor = { zoom: cam.zoom, fy: cam.fy, W, H, seed };
+    this.bgFarFor = { zoom: cam.zoom, fy: H / 2, my, W, H, seed };
   }
 
   /**
@@ -1704,6 +1717,12 @@ export class IsoDioramaRenderer {
     this.cutaway.setCamera(cam);
     const id = isIdentity(cam, this.VW, this.VH);
     this.cutaway.showCamera = !id;
+    // Draw the new set through its own camera. The last frame's view step
+    // (applySettle -> setView(controller.liveCamera())) may have pinned the
+    // live view to another camera — at init it is the identity camera, so a
+    // set shown here was drawn, placed and picked through zoom 1 (spec 5b
+    // regression: every overlay, the sky and the moons ignored the camera).
+    this.cutaway.setView(null);
     this.pickBuf = this.cutaway.pick;
     if (!id) this.bakeFarBackdrop(cam);
   }
@@ -3237,10 +3256,12 @@ export class IsoDioramaRenderer {
    */
   private stepPreload(): void {
     if (!this.habitable || this.cutaway.bakePending) return;
-    // Compared as numbers: this runs every frame and must not allocate.
-    const v = this.cutaway.flora.version, n = this.inhabitants.length, seed = this.planetSeed;
-    if (v !== this.preloadVer || n !== this.preloadN || seed !== this.preloadSeed) {
-      this.preloadVer = v; this.preloadN = n; this.preloadSeed = seed;
+    // Compared as numbers and a string: this runs every frame and must not
+    // allocate. Not `planetSeed`: its hash is a uint32 above 2^31, a boxed
+    // heap number per call (zoomCheck "drag view step").
+    const v = this.cutaway.flora.version, n = this.inhabitants.length, name = this.planet?.name ?? null;
+    if (v !== this.preloadVer || n !== this.preloadN || name !== this.preloadName) {
+      this.preloadVer = v; this.preloadN = n; this.preloadName = name;
       this.preload = this.preloadAll();
     }
     const it = this.preload;
@@ -3850,10 +3871,10 @@ export class IsoDioramaRenderer {
     }
     const sL = farScale(L.zoom);
     // Source: the unzoomed panorama or the far bake, whichever scale is nearer.
-    let src: HTMLCanvasElement = this.bgLayer, s0 = 1, fy0 = H / 2, sx = 1;
+    let src: HTMLCanvasElement = this.bgLayer, s0 = 1, fy0 = H / 2, sx = 1, oy0 = 0;
     const far = this.bgFar, ff = this.bgFarFor;
     if (far && ff && ff.W === W && ff.H === H && Math.abs(farScale(ff.zoom) - sL) < Math.abs(1 - sL)) {
-      src = far; s0 = farScale(ff.zoom); fy0 = ff.fy; sx = far.width / W;
+      src = far; s0 = farScale(ff.zoom); fy0 = ff.fy; sx = far.width / W; oy0 = ff.my;
     }
     g.save();
     if (css) {
@@ -3867,10 +3888,11 @@ export class IsoDioramaRenderer {
     g.fillStyle = '#05060f';
     g.fillRect(0, 0, VW, H);
     // World panorama (x, y) -> displayed (X, Y): X = (x - off - fx) sL + VW/2,
-    // Y = (y - fy) sL + H/2; the source holds x at x*sx and y at (y - fy0) s0 + H/2.
+    // Y = (y - fy) sL + H/2; the source holds x at x*sx and y at
+    // (y - fy0) s0 + H/2 + oy0 (oy0: the far bake's vertical overscan rows).
     const kx = sL / sx, ky = sL / s0;
     const ex = -(off + L.fx) * sL + VW / 2;
-    const ey = (fy0 - L.fy) * sL + H / 2 - (H / 2) * ky;
+    const ey = (fy0 - L.fy) * sL + H / 2 - (H / 2 + oy0) * ky;
     const period = W * sL, dw = src.width * kx, dh = src.height * ky;
     let x0 = ex % period;
     if (x0 > 0) x0 -= period;
@@ -4055,7 +4077,11 @@ export class IsoDioramaRenderer {
       // Size from the moon's real size relative to its planet (MoonSize):
       // a captured rock is a 6-9 px lump, a giant moon ~a third of the face.
       const st = moonSizeT(m, planet);
-      const d = Math.max(5, Math.round((6 + (rx * 0.30 - 6) * Math.pow(st, 0.9)) * Math.min(k, 2)));
+      // Sized in BASE px (rx / k is the identity face), then x k like the
+      // orbit: `rx` is already the camera's, so scaling it again by the zoom
+      // grew a giant moon k^2 (8x at zoom 4 with the old min(k, 2)) while its
+      // orbit grew k.
+      const d = Math.max(5, Math.round((6 + ((rx / k) * 0.30 - 6) * Math.pow(st, 0.9)) * k));
       const irr = moonIsIrregular(m, planet);
       const key = `${i}|${d}|${lb}|${m.colonised ? 1 : 0}|${irr ? 1 : 0}`;
       let cv = this.moonSprites.get(key);

@@ -345,7 +345,12 @@ export class WeatherSim {
     const ry = rain ? (rainy >= 1.5 ? 3.2 : 2.4) : (rainy <= 0 ? 2 : rainy >= 1.5 ? 4.6 : 3.8);
     const rx2 = rx * rx, ry2 = ry * ry;
     const wind = this.baseWindU(j);
-    const n = this.sysN, sx = this.sysX, sy = this.sysY, st = this.sysT;
+    // Only the slots that exist: a wet climate counts 7 regions
+    // (rainRegionCount) but there are 6 slots, and reading slot 6 (undefined)
+    // turned every load in this loop generic, so each di / dj / e was a boxed
+    // heap number (~8 KB of garbage per painter frame). Slot 6 never covered
+    // a cell (its NaN distance fails e < 1), so skipping it changes nothing.
+    const n = Math.min(this.sysN, this.sysT.length), sx = this.sysX, sy = this.sysY, st = this.sysT;
     for (let s = 0; s < n; s++) {
       if (st[s] <= 0) continue;
       let di = i - sx[s];
@@ -410,6 +415,23 @@ export class WeatherSim {
   seedMask(i: number, j: number, rain: boolean): number {
     this.seedCover(i, j, rain);
     return this.coverM;
+  }
+
+  /**
+   * `seedMask` for every field cell, written into `cloud` (rain false) and
+   * `rain` (rain true), WX_N each — the painter's per-frame path. A double
+   * returned from a call that is not inlined is boxed: per-cell `seedMask`
+   * calls in the painter's WX_N loop were ~1.2 MB of garbage per thousand
+   * frames (zoomCheck "weather painter with a moving view").
+   */
+  fillSeedMasks(cloud: Float64Array, rain: Float64Array): void {
+    for (let k = 0; k < WX_N; k++) {
+      const i = k % WX_NX, j = (k / WX_NX) | 0;
+      this.seedCover(i, j, false);
+      cloud[k] = this.coverM;
+      this.seedCover(i, j, true);
+      rain[k] = this.coverM;
+    }
   }
 
   /** Drift live regions with the band wind; respawn them after their clear gap. */

@@ -3727,6 +3727,8 @@ export class HabitableCutawayEngine {
       scale: k, pmax: WEATHER_PMAX * Math.max(1, lut.count / this.idLutCount),
       area: lut.count / this.idLutCount,
       ditherX: Math.round(set.camera.fx * k - set.W / 2), ditherY: Math.round(set.camera.fy * k - set.H / 2),
+      // The whole world's deck, x k: not the tallest ground in this view.
+      deck: this.weatherPainter ? this.weatherPainter.deck * k : undefined,
     });
     return painter;
   }
