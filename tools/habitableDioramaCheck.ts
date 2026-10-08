@@ -342,6 +342,9 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   check('hitTest centre', classHit !== null, JSON.stringify(classHit));
   const frameCanvas = makeCanvas(VW, VH);
   const frameCtx = frameCanvas.getContext() as RecordingCtx;
+  // The bake snapshots the land once (snapshotLandCover, for the fluids'
+  // overhang test); only reads made while drawing a frame count here.
+  const getsBefore = canvases.reduce((n, c) => n + c.ctx.getImageDataCalls, 0);
   engine.frame({
     g: frameCtx as unknown as CanvasRenderingContext2D,
     dt: 1 / 60, elapsed: 1, drawBackdrop: () => {},
@@ -349,7 +352,7 @@ for (const planetType of ['ocean', 'rocky'] as const) {
   });
   check('frame composites alpha layers', frameCtx.putImageDataCalls === 0,
         `${frameCtx.putImageDataCalls} live putImageData calls`);
-  const liveGets = canvases.reduce((n, c) => n + c.ctx.getImageDataCalls, 0);
+  const liveGets = canvases.reduce((n, c) => n + c.ctx.getImageDataCalls, 0) - getsBefore;
   check('frame does not read back pixels', liveGets === 0,
         `${liveGets} getImageData calls`);
   const imageAllocations = frameCtx.createImageDataCalls;

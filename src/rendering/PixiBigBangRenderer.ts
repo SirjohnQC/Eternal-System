@@ -2115,7 +2115,7 @@ export class PixiBigBangRenderer {
           let cached = this.planetTextures.get(texKey);
           if (!cached) {
             const equirect = bakePlanetTexture(
-              star.id, i, kind, dna, gs * 2, bioPhase, grid,
+              star.id, i, kind, dna, gs * 2, bioPhase, grid, planet.genomeSeed,
             );
             const ringTint = parseHexColor(planet.color, [200, 190, 160]);
             const globe = wrapEquirectToGlobe(equirect, gs, {
@@ -2133,7 +2133,10 @@ export class PixiBigBangRenderer {
             this.planetTextures,
             texKey,
             bakePlanetSprite(kind, planet.hasLife, {
-              size: 24, seed, colorHex: planet.color, rings: withRings,
+              // Giants and machine worlds take their look from the genome seed,
+              // as their planet view does.
+              size: 24, seed: (kind === 'gas' || kind === 'mechanical') && planet.genomeSeed != null ? planet.genomeSeed : seed,
+              colorHex: planet.color, rings: withRings,
             }),
           );
         }

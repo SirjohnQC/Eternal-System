@@ -1328,6 +1328,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
 
     planetRenderer?.stop();
     planetRenderer = new PlanetRenderer(canvas);
+    planetRenderer.eraLabel = (st) => eraName(st);
     planetRenderer.init(target, planetIndex);
 
     // Apply current war state if this star is under attack
@@ -5875,7 +5876,7 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
       } else if (!planet.isDead) {
         const dna = isHome ? (gameState.playerPlanetDNA ?? planet.dna ?? DEFAULT_PLANET_DNA) : (planet.dna ?? DEFAULT_PLANET_DNA);
         const eq = bakePlanetTexture(star.id, planetIndex, isHome && star.formationDestiny && star.formationStage ? 'lava' : planet.type, dna, 96, isHome && planet.hasLife ? (star.biologyPhase ?? null) : null,
-          isHome ? runtimeState.playerPlanetGrid : null);
+          isHome ? runtimeState.playerPlanetGrid : null, planet.genomeSeed);
         src = wrapEquirectToGlobe(eq, 48, { rings: planet.type === 'gas', seed: star.id * 17 + planetIndex * 31 });
       }
     } catch { src = null; }

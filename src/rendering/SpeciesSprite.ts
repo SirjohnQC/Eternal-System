@@ -273,6 +273,13 @@ function drawBody(gr: Grid, cx: number, cy: number, rx: number, ry: number, plan
       break;
     }
     case 'colonial': {
+      // A speck of a colony still reads as several cells: three separate
+      // dots with light nuclei, not one blob.
+      if (Math.min(rx, ry) < 2.2) {
+        const pts: Array<[number, number]> = [[cx - rx * 0.8, cy + ry * 0.4], [cx + rx * 0.8, cy + ry * 0.4], [cx, cy - ry * 0.7]];
+        for (const [x, y] of pts) { gr.disc(x, y, 0.75, 0.75, BODY, FLESH); gr.set(x, y, LIGHT, FLESH); }
+        break;
+      }
       // A clump of cells: three overlapping lobes make a lumpy outline, each
       // with its own nucleus.
       const r = Math.max(0.8, Math.min(rx, ry) * 0.75);
@@ -284,6 +291,14 @@ function drawBody(gr: Grid, cx: number, cy: number, rx: number, ry: number, plan
     }
     case 'segmented': {
       gr.disc(cx, cy, rx, ry, BODY, FLESH);
+      // Too small to notch: dark bands across every other column.
+      if (Math.min(rx, ry) < 2.2) {
+        for (let x = Math.floor(cx - rx) + 1; x <= Math.ceil(cx + rx); x += 2) {
+          const t = gr.topFlesh(x), b = gr.bottomFlesh(x);
+          if (t >= 0) for (let y = t; y <= b; y++) gr.set(x, y, DARK, FLESH);
+        }
+        break;
+      }
       // Pinch every third column: notched outline reads as segments.
       const x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx);
       for (let x = x0 + 2; x < x1 - 1; x += 3) {

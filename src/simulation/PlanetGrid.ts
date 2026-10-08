@@ -161,6 +161,53 @@ function fbmWrapX(
 
 export const SEA_LEVEL = 0.48;
 
+/**
+ * Worlds whose share of water is set directly, because the land shapes
+ * (continents, archipelagos, canyons) and the uniform bias below put their
+ * seas in the wrong place: ice and crystal worlds came out bone dry, toxic and
+ * storm worlds nearly all sea. `level` is the elevation under which the type's
+ * own classifyBiome draws water; `share` the wanted fraction at average DNA.
+ */
+const SEA_CALIBRATION: Record<string, { level: number; share: number }> = {
+  ice:     { level: SEA_LEVEL - 0.12, share: 0.18 },
+  crystal: { level: SEA_LEVEL - 0.14, share: 0.12 },
+  toxic:   { level: SEA_LEVEL,        share: 0.55 },
+  storm:   { level: SEA_LEVEL,        share: 0.55 },
+};
+
+/**
+ * The planet view lowers the ground toward the disc's rim (its rim falloff,
+ * up to 0.30 at the edge), so water there comes easily; the share above is
+ * what the player SEES on the face. Sampled falloffs, weighted by area.
+ */
+const RIM_SAMPLES = Array.from({ length: 12 }, (_, k) => {
+  const r = Math.sqrt((k + 0.5) / 12);
+  const t = Math.max(0, Math.min(1, (r - 0.34) / 0.66));
+  return t * t * 0.30;
+});
+
+/** Shift a world's elevations so its type's water covers about the wanted share of the face. */
+function calibrateSeas(grid: PlanetGrid, planetType: string, oceanCoverage: number): void {
+  const cal = SEA_CALIBRATION[planetType];
+  if (!cal) return;
+  // DNA still matters: a barren world keeps less, an ocean world more.
+  const share = Math.max(0.02, Math.min(0.85, cal.share * Math.max(0.3, oceanCoverage) / 0.6 * (planetType === 'ice' || planetType === 'crystal' ? 0.6 / 0.28 : 1)));
+  const elevs: number[] = [];
+  for (const row of grid) for (const c of row) elevs.push(c.elevation);
+  const wetAt = (shift: number): number => {
+    let w = 0;
+    for (const e of elevs) for (const f of RIM_SAMPLES) if (e + shift - f < cal.level) w++;
+    return w / (elevs.length * RIM_SAMPLES.length);
+  };
+  let lo = -0.6, hi = 0.6;          // more shift = drier
+  for (let it = 0; it < 24; it++) {
+    const mid = (lo + hi) / 2;
+    if (wetAt(mid) > share) lo = mid; else hi = mid;
+  }
+  const shift = (lo + hi) / 2;
+  for (const row of grid) for (const c of row) c.elevation = Math.max(0, Math.min(1, c.elevation + shift));
+}
+
 /** Soft cap on oceanCoverage per planet type (grid elevation bias). */
 const TYPE_OCEAN_COVERAGE: Record<string, number> = {
   ocean:   0.88,
@@ -779,6 +826,7 @@ export function generatePlanetGrid(
     }
   }
 
+  calibrateSeas(grid, planetType, params.oceanCoverage);
   layRainShadow(grid, planetType);
   for (const row of grid) {
     for (const cell of row) {

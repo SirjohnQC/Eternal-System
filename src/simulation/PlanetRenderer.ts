@@ -1,3 +1,4 @@
+import { makeGasBands, gasStormColor } from '../rendering/GasLook';
 import { SeedRNG } from '../utils/SeedRNG';
 import { StarBody, PlanetFormationStage } from './BigBangEngine';
 import { TECH_LEVELS, gameState, runtimeState, DEFAULT_PLANET_DNA, PlanetDNA } from './GameState';
@@ -44,6 +45,8 @@ export class PlanetRenderer {
   private dragStart = { x: 0, y: 0 };
   private dragCamStart = { x: 0, y: 0 };
 
+  /** The era as the rest of the UI names it ("Late Medieval"); set by the host. */
+  eraLabel: ((star: StarBody) => string) | null = null;
   private readonly MAP_W = 1200;
   private readonly MAP_H = 600;
 
@@ -951,7 +954,7 @@ export class PlanetRenderer {
       techStr = `  ${bioLabels[star.biologyPhase] ?? star.biologyPhase}`;
       ctx.fillStyle = '#44cc88';
     } else {
-      techStr = star.hasLife ? `  ${TECH_LEVELS[civLevel]} (Level ${civLevel})` : '  No intelligent life detected';
+      techStr = star.hasLife ? `  ${this.eraLabel?.(star) ?? TECH_LEVELS[civLevel]}` : '  No intelligent life detected';
       ctx.fillStyle = '#7b5ea7';
     }
     ctx.fillText(techStr, W / 2 - 100, 30);
@@ -1201,6 +1204,8 @@ export function bakePlanetTexture(
   size = 128,
   biologyPhase: string | null = null,
   grid: PlanetGrid | null = null,
+  /** The planet's genome seed: a giant's family and bands, a machine world's plating. */
+  lookSeed?: number,
 ): HTMLCanvasElement {
   const offscreen = document.createElement('canvas');
   offscreen.width = size;
@@ -1210,11 +1215,33 @@ export function bakePlanetTexture(
   const imageData = ctx.createImageData(W, H);
   const data = imageData.data;
   const seed = starId * 7777;
+  // A giant in its family's bands (the same ones its planet view shows).
+  const gasBands = type === 'gas' && lookSeed != null ? makeGasBands(lookSeed) : null;
+  const storm = gasBands ? gasStormColor(lookSeed!) : null;
+  const stormX = lookSeed != null ? ((lookSeed >>> 3) % 97) / 97 : 0, stormY = lookSeed != null && (lookSeed >>> 6) & 1 ? 0.66 : 0.32;
   for (let py = 0; py < H; py++) {
     for (let px = 0; px < W; px++) {
       let r: number, g: number, b: number;
 
-      if (grid) {
+      if (gasBands) {
+        const lat = py / H, lon = px / W;
+        const wave = Math.sin(lon * Math.PI * 2 * 3 + lat * 17 + (lookSeed! % 13)) * 0.3
+          + (_fbm(lon * 6, lat * 3, lookSeed! & 0xffff, 3) - 0.5) * 0.8;
+        const n = gasBands.length;
+        const c = gasBands[Math.max(0, Math.min(n - 1, Math.floor(lat * n + wave)))];
+        r = c.r; g = c.g; b = c.b;
+        // The great storm: an oval in the family's storm colour.
+        const sdx = Math.min(Math.abs(lon - stormX), 1 - Math.abs(lon - stormX)) / 0.06, sdy = (lat - stormY) / 0.045;
+        if (storm && sdx * sdx + sdy * sdy < 1) { r = storm.r; g = storm.g; b = storm.b; }
+      } else if (type === 'mechanical') {
+        // Plating in a grid of seams, rust patches, lit nodes.
+        const base = 120 + (((px * 7 + py * 13) ^ (lookSeed ?? 0)) & 15);
+        r = base; g = base + 6; b = base + 14;
+        const seamX = px % 6 === 0, seamY = py % 5 === 0;
+        if (seamX || seamY) { r *= 0.55; g *= 0.55; b *= 0.6; }
+        if (seamX && seamY && ((px * 31 + py * 17 + (lookSeed ?? 0)) % 4) === 0) { r = 120; g = 240; b = 250; }
+        else if (!seamX && !seamY && _fbm(px / W * 5, py / H * 3, (lookSeed ?? 1) & 0xffff, 2) > 0.62) { r = 138; g = 92; b = 62; }
+      } else if (grid) {
         // Data-driven path: sample biome color from simulation grid
         const cell = sampleGrid(grid, px / W, py / H);
         // Classify for THIS world type, as the planet view does: the stored

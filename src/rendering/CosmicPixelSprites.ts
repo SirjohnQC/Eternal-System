@@ -6,6 +6,7 @@
  * continents/clouds on ocean worlds. Nearest-neighbour blit only.
  */
 
+import { makeGasBands, gasStormColor } from './GasLook';
 import { paintSunBody, paintSunCorona, SUN_PALETTES } from './SunArt';
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
@@ -403,7 +404,12 @@ export function bakePlanetSprite(
 
   const palettes = PLANET_PALETTES[kind] ?? PLANET_PALETTES.rocky;
   let base = palettes[variantIndex(seed, palettes.length)];
-  if (opts.colorHex) {
+  // A giant wears its family's bands (the same ones its planet view shows).
+  const gasBands = kind === 'gas' ? makeGasBands(seed) : null;
+  if (gasBands) {
+    const n = gasBands.length;
+    base = [gasBands.reduce((a, c) => a + c.r, 0) / n, gasBands.reduce((a, c) => a + c.g, 0) / n, gasBands.reduce((a, c) => a + c.b, 0) / n];
+  } else if (opts.colorHex) {
     base = mix(base, parseHexColor(opts.colorHex, base), 0.55);
   }
   if (life && kind !== 'lava') {
@@ -435,7 +441,9 @@ export function bakePlanetSprite(
 
   // Features
   if (kind === 'gas') {
-    paintGasBands(pack.img.data, w, h, cx, cy, R, base, seed);
+    paintGasBands(pack.img.data, w, h, cx, cy, R, base, seed, gasBands!);
+  } else if (kind === 'mechanical') {
+    paintMachinePlates(pack.img.data, w, h, cx, cy, R, base, seed);
   } else if (kind === 'ocean' || kind === 'toxic' || life) {
     paintContinents(pack.img.data, w, h, cx, cy, R, life, seed);
   } else if (kind === 'rocky' || kind === 'lava' || kind === 'desert' || kind === 'carbon' || kind === 'storm') {
@@ -456,33 +464,67 @@ export function bakePlanetSprite(
 
 function paintGasBands(
   data: Uint8ClampedArray, w: number, h: number,
-  cx: number, cy: number, R: number, base: RGB, seed: number,
+  cx: number, cy: number, R: number, base: RGB, seed: number, bands: ReadonlyArray<{ r: number; g: number; b: number }>,
 ): void {
-  const dark = shade(base, 0.4);
-  const light = hilite(base, 0.28);
-  const spot = [180, 60, 45] as RGB;
+  // Each pixel takes its band's colour, keeping the sphere's light and shade
+  // (its brightness relative to the base). Band edges wave a little.
+  const n = bands.length;
+  const baseL = Math.max(1, base[0] + base[1] + base[2]);
   for (let y = Math.floor(cy - R); y <= Math.ceil(cy + R); y++) {
-    const bandOn = ((y + seed) >> 1) & 1;
-    const col = bandOn ? dark : light;
     for (let x = Math.floor(cx - R); x <= Math.ceil(cx + R); x++) {
       const dx = x - cx, dy = y - cy;
-      if (dx * dx + dy * dy > R * R * 0.88) continue;
+      if (dx * dx + dy * dy > R * R) continue;
       const i = (y * w + x) * 4;
       if (data[i + 3] < 200) continue;
-      data[i] = (data[i] * 0.5 + col[0] * 0.5) | 0;
-      data[i + 1] = (data[i + 1] * 0.5 + col[1] * 0.5) | 0;
-      data[i + 2] = (data[i + 2] * 0.5 + col[2] * 0.5) | 0;
+      const lat = dy / R;
+      const wave = Math.sin(dx / R * 5 + seed * 0.7 + lat * 9) * 0.35;
+      const bi = Math.max(0, Math.min(n - 1, Math.floor((lat * 0.5 + 0.5) * n + wave)));
+      const c = bands[bi];
+      const lum = (data[i] + data[i + 1] + data[i + 2]) / baseL;
+      data[i] = Math.min(255, c.r * lum) | 0;
+      data[i + 1] = Math.min(255, c.g * lum) | 0;
+      data[i + 2] = Math.min(255, c.b * lum) | 0;
     }
   }
-  // Great Red Spot–style blotch
-  const sx = Math.round(cx + R * 0.25);
-  const sy = Math.round(cy + R * (0.1 + (seed % 5) * 0.05));
+  // The great storm, in the family's colour.
+  const st = gasStormColor(seed);
+  const sx = Math.round(cx + R * (((seed >>> 3) % 7) / 7 - 0.4));
+  const sy = Math.round(cy + R * (((seed >>> 6) & 1 ? 1 : -1) * (0.2 + ((seed >>> 8) % 4) * 0.06)));
   for (let oy = -1; oy <= 1; oy++) {
     for (let ox = -2; ox <= 2; ox++) {
       if (ox * ox + oy * oy * 2 > 5) continue;
       const i = ((sy + oy) * w + (sx + ox)) * 4;
-      if (data[i + 3] > 200) {
-        data[i] = spot[0]; data[i + 1] = spot[1]; data[i + 2] = spot[2];
+      if (i < 0 || i >= data.length || data[i + 3] <= 200) continue;
+      const rim = ox * ox + oy * oy * 2 > 2;
+      data[i] = rim ? (st.r * 0.7) | 0 : st.r | 0;
+      data[i + 1] = rim ? (st.g * 0.7) | 0 : st.g | 0;
+      data[i + 2] = rim ? (st.b * 0.7) | 0 : st.b | 0;
+    }
+  }
+}
+
+/** A machine world from orbit: plated in a grid of seams, rust patches, lit nodes. */
+function paintMachinePlates(
+  data: Uint8ClampedArray, w: number, h: number,
+  cx: number, cy: number, R: number, base: RGB, seed: number,
+): void {
+  const seam = shade(base, 0.5), rust: RGB = [138, 92, 62], glow: RGB = [120, 240, 250];
+  for (let y = Math.floor(cy - R); y <= Math.ceil(cy + R); y++) {
+    for (let x = Math.floor(cx - R); x <= Math.ceil(cx + R); x++) {
+      const dx = x - cx, dy = y - cy;
+      if (dx * dx + dy * dy > R * R * 0.86) continue;
+      const i = (y * w + x) * 4;
+      if (data[i + 3] < 200) continue;
+      // Steel plate, keeping the sphere's light and shade.
+      const lum = (data[i] + data[i + 1] + data[i + 2]) / Math.max(1, base[0] + base[1] + base[2]);
+      data[i] = Math.min(255, 150 * lum) | 0; data[i + 1] = Math.min(255, 158 * lum) | 0; data[i + 2] = Math.min(255, 172 * lum) | 0;
+      const gx = (x + seed) % 4 === 0, gy = (y + (seed >> 2)) % 3 === 0;
+      const hsh = ((x * 73856093) ^ (y * 19349663) ^ seed) >>> 0;
+      if (gx || gy) {
+        data[i] = (data[i] * 0.4 + seam[0] * 0.6) | 0; data[i + 1] = (data[i + 1] * 0.4 + seam[1] * 0.6) | 0; data[i + 2] = (data[i + 2] * 0.4 + seam[2] * 0.6) | 0;
+        if (gx && gy && hsh % 5 === 0) { data[i] = glow[0]; data[i + 1] = glow[1]; data[i + 2] = glow[2]; }
+      } else if (hsh % 11 === 0) {
+        data[i] = (data[i] * 0.4 + rust[0] * 0.6) | 0; data[i + 1] = (data[i + 1] * 0.4 + rust[1] * 0.6) | 0; data[i + 2] = (data[i + 2] * 0.4 + rust[2] * 0.6) | 0;
       }
     }
   }

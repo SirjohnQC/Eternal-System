@@ -1892,9 +1892,9 @@ export class BigBangEngine {
    * The old code clamped x and y independently, which pinned any star that flew
    * far enough to one of four straight walls and made the cosmos spread out into
    * a visible square with dense corners. Here a star that reaches the edge is set
-   * back onto the circle and loses only its outward radial velocity — its
-   * tangential motion is preserved, so it slides along the rim and settles
-   * instead of sticking to a wall.
+   * back just inside the circle and its outward motion turned back inward —
+   * its tangential motion is preserved, and it neither sticks to a wall nor
+   * rides the rim.
    */
   private constrainToUniverse(star: StarBody): void {
     const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
@@ -1906,11 +1906,15 @@ export class BigBangEngine {
     star.x = cx + nx * UNIVERSE_RADIUS;
     star.y = cy + ny * UNIVERSE_RADIUS;
 
+    // Turn the outward motion back inward (softened), so a free star that
+    // reaches the edge drifts back in rather than riding the rim forever.
     const radialV = star.vx * nx + star.vy * ny;
     if (radialV > 0) {
-      star.vx -= radialV * nx;
-      star.vy -= radialV * ny;
+      star.vx -= 1.5 * radialV * nx;
+      star.vy -= 1.5 * radialV * ny;
     }
+    // Set a hair inside the rim, so it is not counted as pinned on the line.
+    star.x -= nx * 2; star.y -= ny * 2;
   }
 
   private updateInflation(): void {
@@ -1952,12 +1956,21 @@ export class BigBangEngine {
         star.y = target.y;
       }
       const r = Math.hypot(star.x - gal.cx, star.y - gal.cy);
-      star.orbitRadius = Math.max(28, Math.min(r, gal.radius * 0.95));
+      star.orbitRadius = Math.max(28, Math.min(r, gal.radius * 0.95, this.maxOrbitIn(gal)));
       star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
       this.setCircularOrbit(star, gal, this.rng.nextFloat(0.92, 1.08));
       this.placeStarOnOrbit(star, gal, star.orbitAngle!, star.age);
     }
     this.spawnTargets.clear();
+  }
+
+  /**
+   * Widest orbit a star can hold around `gal` and still stay inside the
+   * universe at the far point of its (slightly eccentric) ellipse.
+   */
+  private maxOrbitIn(gal: Galaxy): number {
+    const fromCentre = Math.hypot(gal.cx - WORLD_SIZE / 2, gal.cy - WORLD_SIZE / 2);
+    return Math.max(28, (UNIVERSE_RADIUS * 0.97 - fromCentre) / 1.09);
   }
 
   /** Tangential velocity for a circular orbit at the star's current radius. */
@@ -2033,6 +2046,9 @@ export class BigBangEngine {
       if (star.orbitRadius == null || star.orbitRadius < 8) {
         star.orbitRadius = Math.max(28, Math.hypot(star.x - gal.cx, star.y - gal.cy));
       }
+      // A galaxy near the edge of the universe (and galaxies grow) must not
+      // swing its outer stars onto the rim, where they used to stick.
+      star.orbitRadius = Math.min(star.orbitRadius, this.maxOrbitIn(gal));
       if (star.orbitAngle == null) {
         star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
       }
@@ -4798,7 +4814,7 @@ export class BigBangEngine {
           const texKey = `globe_${star.id}_${i}_${kind}_${grid ? star.formationStage ?? '' : ''}_${p.hasLife ? 1 : 0}_${dna.climate}_${dna.oceans}_${dna.chaos}_${bioPhase ?? ''}`;
           let globe = this.planetTextureCache.get(texKey);
           if (!globe) {
-            const equirect = bakePlanetTexture(star.id, i, kind, dna, 96, bioPhase, grid);
+            const equirect = bakePlanetTexture(star.id, i, kind, dna, 96, bioPhase, grid, p.genomeSeed);
             globe = wrapEquirectToGlobe(equirect, 48, {
               rings: withRings,
               ringTint: parseHexColor(p.color, [200, 190, 160]),
@@ -4813,7 +4829,8 @@ export class BigBangEngine {
           }
         } else {
           const spr = bakePlanetSprite(kind, p.hasLife, {
-            size: 24, seed, colorHex: p.color, rings: withRings,
+            size: 24, seed: (kind === 'gas' || kind === 'mechanical') && p.genomeSeed != null ? p.genomeSeed : seed,
+            colorHex: p.color, rings: withRings,
           });
           if (withRings) {
             ctx.drawImage(spr, px - body * 0.925, py - body * 0.575, body * 1.85, body * 1.15);
