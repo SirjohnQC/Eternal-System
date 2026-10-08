@@ -213,6 +213,16 @@ export function classifyBiome(
     return moist > 0.50 ? 'tundra' : 'desert';
   }
 
+  if (planetType === 'mechanical') {
+    // A machine world: coolant basins, plated plains, rust flats, tower ridges.
+    if (elev < SEA_LEVEL - 0.20) return 'deep_ocean';
+    if (elev < SEA_LEVEL - 0.12) return 'ocean';
+    if (elev < SEA_LEVEL - 0.08) return 'shallow';
+    if (elev > 0.74) return 'mountain';
+    if (moist < 0.22) return 'desert';
+    return moist < 0.55 ? 'plains' : 'grassland';
+  }
+
   if (planetType === 'storm') {
     if (elev < SEA_LEVEL - 0.10) return 'deep_ocean';
     if (elev < SEA_LEVEL - 0.02) return 'ocean';

@@ -183,9 +183,15 @@ let savedTick = 0;
     `${engine.habitabilityOf(ps0).toFixed(2)} (${ps0.planets[homeIdx]?.type})`);
 
   let threw: string | null = null;
+  let pinnedAt400k = 0;
   const t0 = Date.now();
   try {
     for (let i = 0; i < 400_000; i++) engine.update();
+    pinnedAt400k = (engine as any).stars.filter((s: any) => !s.isDead
+      && Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1).length;
+    // Peoples start young and eras climb harder (sub-eras), so a universe can
+    // take longer to reach its first war: keep going until one fires (capped).
+    for (let i = 0; i < 800_000 && seen.war === 0; i++) engine.update();
   } catch (err) { threw = (err as Error).message; }
   const elapsed = Date.now() - t0;
 
@@ -196,8 +202,9 @@ let savedTick = 0;
 
   // Universe shape
   const radii = stars.map((s: any) => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2));
-  const pinned = radii.filter((r: number) => r > UNIVERSE_RADIUS - 1).length;
-  check('no stars pinned to the universe boundary', pinned === 0, `${pinned} pinned`);
+  // Measured at 400k ticks, as before the run could go on looking for a war.
+  const pinned = pinnedAt400k;
+  check('no stars pinned to the universe boundary', pinned === 0, `${pinned} pinned (${radii.filter((r: number) => r > UNIVERSE_RADIUS - 1).length} by the end)`);
 
   // Life spread
   const phases = new Set(living.map((s: any) => s.biologyPhase));

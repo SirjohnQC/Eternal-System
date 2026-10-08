@@ -87,6 +87,8 @@ export const TECHS: Tech[] = [
     { knowledge: 1.3, cohesion: 0.04 }, 'printed books for everyone'),
   T('medicine', 'Medicine', 3, ['sanitation'], { crowding: 0.7 }, { curiosity: 0.2 },
     { housing: 1.25 }, 'learned to fight disease'),
+  T('railways', 'Railways', 3, ['steam', 'iron'], { scarcity: 0.5, crowding: 0.3 }, { collectivism: 0.1 },
+    { materials: 1.15, food: 1.1, pollution: 0.002 }, 'laid iron roads across the land'),
   // ── Atomic ──
   T('electricity', 'Electricity', 4, ['factories'], { scarcity: 0.4, curiosity: 0.6 }, { curiosity: 0.3 },
     { knowledge: 1.2, materials: 1.2 }, 'lit its cities with electricity'),
@@ -98,6 +100,8 @@ export const TECHS: Tech[] = [
     { inequality: -0.15, cohesion: 0.04 }, 'promised care to every citizen'),
   T('fission', 'Nuclear Fission', 4, ['electricity'], { scarcity: 0.7 }, { militarism: 0.4, curiosity: 0.2 },
     { materials: 1.3, pollution: 0.002 }, 'split the atom'),
+  T('antibiotics', 'Antibiotics', 4, ['medicine'], { crowding: 0.8 }, { curiosity: 0.2 },
+    { housing: 1.2 }, 'tamed infection'),
   // ── Space Age ──
   T('computing', 'Computing', 5, ['electricity'], { curiosity: 1 }, { curiosity: 0.5 },
     { knowledge: 1.5 }, 'built thinking machines'),
@@ -109,6 +113,8 @@ export const TECHS: Tech[] = [
     { materials: 1.3, food: 1.2, inequality: 0.12 }, 'let machines do the work'),
   T('arcologies', 'Arcologies', 5, ['medicine', 'electricity'], { crowding: 1 }, { collectivism: 0.3 },
     { housing: 1.6 }, 'raised cities into the sky'),
+  T('satellites', 'Satellites', 5, ['rocketry', 'computing'], { curiosity: 0.8, unrest: 0.2 }, { curiosity: 0.3 },
+    { knowledge: 1.15, cohesion: 0.03 }, 'ringed its world with satellites'),
   // ── Interstellar ──
   T('orbital', 'Orbital Stations', 6, ['rocketry', 'computing'], { crowding: 0.6, curiosity: 0.6 }, { curiosity: 0.3 },
     { housing: 1.1, knowledge: 1.1 }, 'built homes in orbit'),
@@ -118,6 +124,10 @@ export const TECHS: Tech[] = [
     { knowledge: 1.6, inequality: 0.1, cohesion: -0.03 }, 'woke the first artificial minds'),
   T('fusion', 'Fusion', 6, ['clean_energy', 'fission'], { scarcity: 0.8, pollution: 0.6 }, {},
     { materials: 1.5, pollution: -0.006 }, 'lit a star in a bottle'),
+  T('asteroid_mining', 'Asteroid Mining', 6, ['orbital'], { scarcity: 1 }, {},
+    { materials: 1.6 }, 'mined the asteroids'),
+  T('terraforming', 'Terraforming', 6, ['fusion', 'orbital'], { crowding: 0.7, hunger: 0.4 }, { curiosity: 0.2 },
+    { housing: 1.25, food: 1.15 }, 'remade a barren world in its image'),
   // ── Post-Human ──
   T('gene_shaping', 'Gene Shaping', 7, ['medicine', 'ai'], { crowding: 0.5, hunger: 0.4 }, { piety: -0.4 },
     { housing: 1.3, food: 1.2, cohesion: -0.05 }, 'rewrote its own bodies'),
@@ -125,17 +135,68 @@ export const TECHS: Tech[] = [
     { housing: 1.5 }, 'moved minds out of flesh'),
   T('nanoforges', 'Nanoforges', 7, ['fusion', 'ai'], { scarcity: 1 }, {},
     { materials: 2 }, 'built anything from anything'),
+  T('longevity', 'Longevity', 7, ['gene_shaping'], { unrest: 0.4, crowding: 0.3 }, { piety: -0.3 },
+    { cohesion: 0.03, inequality: 0.08 }, 'learned not to grow old'),
+  T('dyson_swarm', 'Dyson Swarm', 7, ['nanoforges', 'asteroid_mining'], { scarcity: 0.8, curiosity: 0.4 }, {},
+    { materials: 1.4, knowledge: 1.2 }, 'wrapped its star in a swarm of mirrors'),
+  T('exocortex', 'Exocortex', 7, ['ai', 'uploads'], { curiosity: 1 }, { curiosity: 0.4 },
+    { knowledge: 1.5 }, 'grew minds beyond the skull'),
   // ── Post-Biological ──
   T('communion', 'Machine Communion', 8, ['uploads'], { unrest: 1 }, { collectivism: 0.5 },
     { cohesion: 0.1, inequality: -0.1 }, 'joined its minds into one'),
   T('stellar', 'Stellar Engineering', 8, ['nanoforges', 'colony_ark'], { scarcity: 0.8, curiosity: 0.8 }, { curiosity: 0.4 },
     { materials: 1.5, knowledge: 1.3 }, 'began to reshape its star'),
+  T('seedships', 'Seedships', 8, ['colony_ark', 'gene_shaping'], { crowding: 0.6, curiosity: 0.5 }, { curiosity: 0.3 },
+    { housing: 1.2 }, 'scattered the seeds of life among the stars'),
+  T('starlifting', 'Starlifting', 8, ['stellar'], { scarcity: 1 }, {},
+    { materials: 1.8 }, 'lifted matter out of its sun'),
+  T('matrioshka', 'Matrioshka Brain', 8, ['dyson_swarm', 'exocortex'], { curiosity: 1 }, {},
+    { knowledge: 2 }, 'turned its star into a single thought'),
+  T('transcendence', 'Transcendence', 8, ['communion', 'matrioshka'], { unrest: 0.6, curiosity: 0.6 }, { piety: 0.2 },
+    { cohesion: 0.12 }, 'stepped out of the material world'),
 ];
 
 export const TECH_BY_ID: Record<string, Tech> = Object.fromEntries(TECHS.map(t => [t.id, t]));
 
 /** Techs of an era a nation must know to stand in that era. */
 export const TECHS_PER_ERA = 2;
+
+// ─── Sub-eras: Early, Middle and Late ─────────────────────────────────────────
+//
+// Every era holds six techs. Two put a people in its EARLY age, four in its
+// MIDDLE, all six in its LATE. The next era's techs open only from the Middle
+// on, so an era has to be half mastered before it can be left; and each era's
+// knowledge costs more than the last.
+
+export const SUB_ERA_NAMES = ['Early', 'Middle', 'Late'] as const;
+/** Techs of the current era known before the next era's can be studied. */
+export const FRONTIER_GATE = 4;
+
+/** How many techs each era holds. */
+export const ERA_SIZE: number[] = (() => {
+  const n = new Array(9).fill(0);
+  for (const t of TECHS) n[t.era]++;
+  return n;
+})();
+
+/** 0 Early, 1 Middle, 2 Late — how far into `era` the techs `known` reach. */
+export function subEraOf(known: readonly string[], era = eraOf(known)): number {
+  if (era <= 0) return 0;
+  let k = 0;
+  for (const id of known) if (TECH_BY_ID[id]?.era === era) k++;
+  return k >= ERA_SIZE[era] ? 2 : k >= FRONTIER_GATE ? 1 : 0;
+}
+
+/**
+ * How hard one tech is to learn for a people standing in `era`: the frontier
+ * costs full effort, growing with each age; mastering one's own age is real
+ * work too; catching up on older ages is cheap (others have shown the way).
+ * Research progress is divided by this.
+ */
+export function studyCost(t: Tech, era: number): number {
+  const ageCost = 1 + 0.12 * (t.era - 1);
+  return t.era > era ? ageCost : t.era === era ? 0.6 * ageCost : 0.3;
+}
 
 /** The highest era in which `known` holds TECHS_PER_ERA techs (eras are climbed in order). */
 export function eraOf(known: readonly string[]): number {
@@ -149,7 +210,11 @@ export function eraOf(known: readonly string[]): number {
 /** Techs that can be studied now: not known, every prerequisite known, era at most one past the current. */
 export function available(known: readonly string[]): Tech[] {
   const have = new Set(known), era = eraOf(known);
-  return TECHS.filter(t => !have.has(t.id) && t.era <= era + 1 && t.requires.every(r => have.has(r)));
+  // The next era opens from the Middle of this one (the first era is open to all).
+  let inEra = 0;
+  for (const id of known) if (TECH_BY_ID[id]?.era === era) inEra++;
+  const reach = era === 0 || inEra >= Math.min(FRONTIER_GATE, ERA_SIZE[era]) ? era + 1 : era;
+  return TECHS.filter(t => !have.has(t.id) && t.era <= reach && t.requires.every(r => have.has(r)));
 }
 
 /**

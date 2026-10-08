@@ -1,11 +1,12 @@
 import { NationSystem } from './Nations';
 import {
-  emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports,
+  emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
 } from './StarPolities';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
+import { subEraOf, SUB_ERA_NAMES } from './Technology';
 import {
   generateCosmos, sectorAt, sectorState, chartedByTech, dormantGalaxies as allDormant,
   type Cosmos, type DormantGalaxy, type SectorState,
@@ -160,7 +161,7 @@ export interface Planet {
   periapsisAngle: number;
   radius: number;
   type: 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
-      | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+      | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon' | 'mechanical';
   hasLife: boolean;
   /** Scorched / frozen husk — no biosphere, drawn as ash/gray. */
   isDead?: boolean;
@@ -534,6 +535,14 @@ const GALACTIC_SOFT    = 50;
 /** Hard cap on galactic angular speed (radians per sim tick). At 200×
  *  (~200 ticks/sec) this is ~0.7°/sec — just noticeable, not a blender. */
 const MAX_GALACTIC_OMEGA = 0.00006;
+/** A world's own evolutionary pace (NPC timer scale, ~0.06–0.24, median ~0.12), seeded. */
+function npcPace(starId: number, seed: number): number {
+  let h = (Math.imul(starId | 0, 2654435761) ^ Math.imul(seed | 0, 40503)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0;
+  const u = ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  return 0.12 * Math.exp((u - 0.5) * 1.4);
+}
+
 /** Eccentricity phase advance per tick — slow radial breathing, not pulsing. */
 const ORBIT_ECC_RATE   = 0.00002;
 /**
@@ -1319,13 +1328,17 @@ export class BigBangEngine {
 
       // Spread the head start across the whole ladder, weighted toward the
       // early phases — most worlds that have life have only simple life.
+      // Intelligence is rare: about one seeded world in nine starts awake.
       const roll = this.rng.next();
-      const startIdx = roll < 0.34 ? 0 : roll < 0.55 ? 1 : roll < 0.70 ? 2
-                     : roll < 0.82 ? 3 : 4;
+      const startIdx = roll < 0.36 ? 0 : roll < 0.60 ? 1 : roll < 0.78 ? 2
+                     : roll < 0.89 ? 3 : 4;
       s.biologyPhase = BIO_PHASE_SEQUENCE[startIdx];
 
       if (s.biologyPhase === 'intelligent') {
-        s.civLevel = this.rng.nextInt(0, 4);
+        // Mostly young civilisations (the universe has not had long), with
+        // the odd old people already in its Medieval age.
+        const ageRoll = this.rng.next();
+        s.civLevel = ageRoll < 0.3 ? 0 : ageRoll < 0.6 ? 1 : ageRoll < 0.8 ? 2 : 3;
         if (this.rng.chance(0.5)) {
           s.religionName = this.generateReligionName();
           s.religionDevotion = this.rng.nextFloat(0.1, 0.5);
@@ -2493,15 +2506,18 @@ export class BigBangEngine {
         this.advanceCiv(star);
       }
 
-      // Wars — only spacefaring+ civs. Culture decides how readily THIS people
+      // Wars — only spacefaring civs (Space Age+): a people whose ships cannot
+      // reach another star cannot make war on it (the same reach that bounds
+      // trade, StarPolities.reachOf). Culture decides how readily THIS people
       // reaches for war; the universe stat decides the era's general violence.
-      if (star.civLevel >= 3 && star.age % WAR_TICK_RATE === 0) {
+      if (star.civLevel >= 5 && star.age % WAR_TICK_RATE === 0) {
         const c = this.cultureFor(star);
         const drive = !star.isPlayerStar && c ? warDrive(this.interstellar, star.id, c.values) : null;
         if (drive) {
           // A people at odds with a rival in reach: hard pressed and martial, it
           // goes to war (the universe's violence still weighs on it).
-          const target = this.stars.find(s => s.id === drive.target && !s.isDead && s.hasLife);
+          const target = this.stars.find(s => s.id === drive.target && !s.isDead && s.hasLife
+            && Math.hypot(s.x - star.x, s.y - star.y) <= reachOf(star.civLevel));
           if (target && this.rng.chance(Math.min(0.95, drive.chance * (0.5 + this.stats.hostility / 20)))) this.launchFleet(star, target, true);
         } else if (!this.interstellar.polities[star.id] || star.isPlayerStar) {
           const warChance = Math.min(0.95, (this.stats.hostility / 40)
@@ -2880,8 +2896,10 @@ export class BigBangEngine {
    */
   private updateBiologyPhase(star: StarBody): void {
     const evoMod = (21 - this.stats.evolution) / 10;           // slower = higher stat inverse
-    // NPC worlds fast-track (12% of player speed) so the universe feels populated
-    const speedMult = star.isPlayerStar ? 1.0 : 0.12;
+    // NPC worlds fast-track so the universe feels populated — each at its own
+    // pace (seeded per star, about 6% to 24% of the player's timer), so some
+    // race ahead and some crawl, and they do not wake together.
+    const speedMult = star.isPlayerStar ? 1.0 : npcPace(star.id, this.tick0Seed);
     // Player DNA adaptation branch slightly accelerates bio progression
     const dnaMod = star.isPlayerStar
       ? Math.max(0.6, 1 - this.playerEffect('bioResilience') * 0.4)
@@ -3237,7 +3255,39 @@ export class BigBangEngine {
     for (const line of ns.drainNews()) this.onCivEvent?.(line);
     // The world stands in the era its most advanced nation has reached.
     while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);
+    // A new sub-era (Middle, Late) of the age the world already stands in is
+    // news too: the climb inside an age is the long part.
+    const sub = this.civSubOf(star);
+    if (star.civLevel === this.nationEra && sub > this.nationSub && star.civLevel >= 1) {
+      this.onCivEvent?.(`Your civilization enters the ${this.eraNameOf(star)}.`);
+    }
+    this.nationSub = star.civLevel === this.nationEra || sub > this.nationSub ? sub : 0;
     this.nationEra = star.civLevel;
+  }
+
+  private nationSub = 0;
+
+  /**
+   * 0 Early, 1 Middle, 2 Late: how far into its era a civilisation is — the
+   * player's from its most advanced nation, another star's from its polity.
+   */
+  civSubOf(star: StarBody): number {
+    if (star.civLevel < 1) return 0;
+    if (star.isPlayerStar) {
+      const ns = runtimeState.playerNations;
+      if (!ns?.isFounded) return 0;
+      let best = 0;
+      for (const n of ns.nations) if (!n.fallen && n.era === ns.maxEra) best = Math.max(best, subEraOf(n.techs, n.era));
+      return best;
+    }
+    const p = this.interstellar.polities[star.id];
+    return p ? subEraOf(p.techs, p.era) : 0;
+  }
+
+  /** "Late Medieval", "Early Space Age"; plain "Primitive" before the first age. */
+  eraNameOf(star: StarBody): string {
+    const name = TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)] ?? 'Primitive';
+    return star.civLevel < 1 ? name : `${SUB_ERA_NAMES[this.civSubOf(star)]} ${name}`;
   }
 
   /**
@@ -3423,16 +3473,25 @@ export class BigBangEngine {
   private genomeSummaryForNpc(star: StarBody): GenomeSummary {
     const rng = this.rng.fork(`npcgenome_${star.id}`);
     const env = rng.pick(['land', 'ocean', 'coastal', 'deep_sea', 'aerial']);
+    // The people's form follows their chemistry: machine worlds raise
+    // mechanoids, mineral life crystallines, the rest any of the familiar plans.
+    const arch = this.archetypeOf(star);
+    const body = arch === 'machine_lattice' ? 'mechanical'
+      : (arch === 'silicate_thermo' || arch === 'lithic_endolith') && rng.chance(0.6) ? 'crystalline'
+      : arch === 'aerial_float' ? rng.pick(['gelatinous', 'radial', 'colonial'])
+      : rng.pick(['vertebrate', 'vertebrate', 'vertebrate', 'exoskeletal', 'segmented', 'colonial', 'gelatinous', 'cartilaginous', 'filamentous', 'shelled']);
+    // Most peoples that build walk; a few swim, crawl or fly.
+    const loco = rng.chance(0.7) ? 'walking' : rng.pick(['swimming', 'crawling', 'flying']);
     return {
       speciesName: star.civName,
       metabolism: rng.pick(['heterotrophic', 'photosynthetic', 'chemosynthetic']),
-      locomotion: rng.pick(['walking', 'swimming', 'crawling', 'flying', 'stationary']),
+      locomotion: loco,
       environment: env,
       diet: rng.pick(['omnivore', 'carnivore', 'herbivore', 'producer']),
       respiration: rng.pick(['aerobic', 'anaerobic', 'mixed']),
       reproduction: rng.pick(['sexual', 'asexual', 'spore']),
       size: rng.pick(['small', 'medium', 'large']),
-      bodyStructure: rng.pick(['vertebrate', 'exoskeletal', 'colonial', 'segmented']),
+      bodyStructure: body,
       sensorySystem: rng.pick(['vision', 'echolocation', 'chemoreception']),
       intelligence: rng.nextInt(6, 10),
       social: rng.nextInt(1, 10),
@@ -6053,6 +6112,7 @@ export class BigBangEngine {
       desert:  ['#d4a85a', '#c09040', '#e0b870', '#b88838', '#f0c880', '#a07830'],
       storm:   ['#4a4860', '#5a5470', '#3a3850', '#6a6080', '#484860', '#706890'],
       carbon:  ['#2a2a30', '#383840', '#1e1e24', '#44444c', '#323238', '#505058'],
+      mechanical: ['#8a9098', '#6e747c', '#a0a4a8', '#7a6a58', '#5c6470', '#9a8a70'],
     };
     const chaosLevels: PlanetDNA['chaos'][] = ['serene', 'turbulent', 'storm'];
     const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
@@ -6100,6 +6160,9 @@ export class BigBangEngine {
       } else if (type === 'storm') {
         climate = heat > 0.55 ? 'temperate' : 'frozen';
         ocean = this.rng.pick(['mixed', 'ocean_world', 'barren']);
+      } else if (type === 'mechanical') {
+        climate = heat > 0.7 ? 'desert' : heat < 0.35 ? 'frozen' : 'temperate';
+        ocean = this.rng.chance(0.5) ? 'mixed' : 'barren';
       } else if (type === 'gas') {
         climate = heat > 0.65 ? 'desert' : heat < 0.3 ? 'frozen' : 'temperate';
         ocean = 'barren';
@@ -6165,6 +6228,8 @@ export class BigBangEngine {
       if (r < 0.68) return 'crystal';
       if (r < 0.78) return 'desert';
       if (r < 0.88) return 'storm';
+      // A machine world is the rarest roll of all: a planet of old machinery.
+      if (r > 0.982) return 'mechanical';
       return this.rng.chance(0.5) ? 'rocky' : 'ice';
     }
     // Cold fringe: ice, rocky, gas, storm, carbon, crystal
@@ -6174,6 +6239,7 @@ export class BigBangEngine {
     if (r < 0.74) return 'storm';
     if (r < 0.86) return 'carbon';
     if (r < 0.94) return 'crystal';
+    if (r > 0.99) return 'mechanical';
     return 'ice';
   }
 

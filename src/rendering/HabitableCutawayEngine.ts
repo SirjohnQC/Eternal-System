@@ -128,7 +128,7 @@ const quantise = (f: number, step = SHADE_STEP) => Math.round(f / step) * step;
 
 export type HabitableType =
   | 'ocean' | 'rocky' | 'ice' | 'lava' | 'gas'
-  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon' | 'mechanical';
 
 /** Alias — every planet type uses the cutaway bake. */
 export type CutawayPlanetType = HabitableType;
@@ -780,6 +780,46 @@ const CARBON_PALETTE: CutawayPalette = {
   emberHot: rgb(100, 160, 220),
 };
 
+/** A machine world: plated plains, rust flats, coolant seas, lit seams in the crust. */
+const MECH_PALETTE: CutawayPalette = {
+  biome: {
+    deep_ocean: rgb(14, 40, 52),
+    ocean:      rgb(24, 70, 84),
+    shallow:    rgb(50, 120, 130),
+    beach:      rgb(120, 118, 112),
+    plains:     rgb(118, 124, 132),
+    grassland:  rgb(96, 104, 112),
+    forest:     rgb(78, 86, 96),
+    jungle:     rgb(64, 72, 82),
+    desert:     rgb(138, 96, 64),
+    savanna:    rgb(124, 104, 80),
+    tundra:     rgb(150, 156, 162),
+    snow:       rgb(196, 202, 208),
+    mountain:   rgb(70, 74, 82),
+    volcanic:   rgb(90, 56, 40),
+  },
+  foam:      rgb(150, 230, 230),
+  waterSurf: {
+    deep:  rgb(14, 40, 52),
+    mid:   rgb(28, 80, 94),
+    light: rgb(60, 140, 150),
+    glint: rgb(140, 240, 240),
+  },
+  waterLip:  rgb(30, 80, 92),
+  waterDeep: rgb(10, 28, 36),
+  facet:     rgb(120, 220, 230),
+  strata: [
+    rgb(88, 92, 98),
+    rgb(110, 84, 62),
+    rgb(70, 74, 80),
+    rgb(52, 56, 62),
+    rgb(38, 40, 46),
+    rgb(22, 24, 28),
+  ],
+  ember:    rgb(60, 200, 220),
+  emberHot: rgb(150, 250, 255),
+};
+
 const PALETTE_BY_TYPE: Record<HabitableType, CutawayPalette> = {
   ocean: OCEAN_PALETTE,
   rocky: ROCKY_PALETTE,
@@ -791,6 +831,7 @@ const PALETTE_BY_TYPE: Record<HabitableType, CutawayPalette> = {
   desert: DESERT_PALETTE,
   storm: STORM_PALETTE,
   carbon: CARBON_PALETTE,
+  mechanical: MECH_PALETTE,
 };
 
 function paletteFor(type: HabitableType): CutawayPalette {
@@ -814,19 +855,67 @@ function hsvToRGB(hDeg: number, s: number, v: number): RGB {
 }
 
 /** Seed a gas-giant latitude-band palette (shared by surface, rings, haze). */
+/**
+ * A gas giant's look, by family: Jovian (cream zones, ochre and rust belts),
+ * Saturnine (pale gold, soft), Neptunian (deep blues, white streaks), hot
+ * Jupiter (dark plum and ember), ammonia (teal and jade). The bands alternate
+ * light ZONES and darker BELTS, the way real giants do, with seeded jitter so
+ * no two giants of a family match.
+ */
+export type GasFamily = 'jovian' | 'saturnine' | 'neptunian' | 'hot' | 'ammonia';
+const GAS_FAMILIES: Record<GasFamily, { zone: [number, number, number]; belt: [number, number, number]; storm: [number, number, number]; spread: number }> = {
+  jovian:    { zone: [38, 0.22, 0.94], belt: [22, 0.62, 0.66], storm: [12, 0.72, 0.78], spread: 14 },
+  saturnine: { zone: [46, 0.28, 0.95], belt: [36, 0.42, 0.80], storm: [40, 0.18, 0.98], spread: 8 },
+  neptunian: { zone: [205, 0.45, 0.88], belt: [222, 0.72, 0.60], storm: [230, 0.85, 0.36], spread: 12 },
+  hot:       { zone: [345, 0.40, 0.72], belt: [10, 0.75, 0.42], storm: [28, 0.85, 0.95], spread: 18 },
+  ammonia:   { zone: [168, 0.30, 0.90], belt: [150, 0.55, 0.58], storm: [190, 0.2, 0.98], spread: 12 },
+};
+export function gasFamilyOf(seed: number): GasFamily {
+  // A hash, not the LCG: neighbouring seeds must not share a family.
+  const r = hash1(seed * 7 + 3, 0x3c6e);
+  return r < 0.36 ? 'jovian' : r < 0.58 ? 'saturnine' : r < 0.80 ? 'neptunian' : r < 0.91 ? 'ammonia' : 'hot';
+}
 export function makeGasBands(seed: number): RGB[] {
   const s = new Stream(seed ^ 0x6a09e667);
-  const hueBase = s.range(0, 360);
-  const bandCount = 8 + s.int(0, 4);
+  const f = GAS_FAMILIES[gasFamilyOf(seed)];
+  const bandCount = 9 + s.int(0, 5);
   const bands: RGB[] = [];
   for (let i = 0; i < bandCount; i++) {
-    const warm = s.next() > 0.38;
-    const hue = (hueBase + (warm ? s.range(-22, 22) : s.range(150, 220))) % 360;
-    const sat = warm ? s.range(0.48, 0.78) : s.range(0.32, 0.58);
-    const val = warm ? s.range(0.72, 0.96) : s.range(0.58, 0.82);
+    // Polar bands darken toward the caps; the equator is the brightest zone.
+    const lat = Math.abs(i / (bandCount - 1) - 0.5) * 2;
+    const zone = i % 2 === 0;
+    const b = zone ? f.zone : f.belt;
+    const hue = (b[0] + s.range(-f.spread, f.spread) + 360) % 360;
+    const sat = Math.max(0, Math.min(1, b[1] * s.range(0.8, 1.2)));
+    const val = Math.max(0, Math.min(1, b[2] * s.range(0.9, 1.05) * (1 - lat * lat * 0.28)));
     bands.push(hsvToRGB(hue, sat, val));
   }
   return bands;
+}
+/** The colour of a giant's great storm. */
+export function gasStormColor(seed: number): RGB {
+  const st = GAS_FAMILIES[gasFamilyOf(seed)].storm;
+  return hsvToRGB(st[0], st[1], st[2]);
+}
+
+/** Cloud decks for a giant's cutaway: its own bands, darkening to a lit core. */
+function gasCrustPalette(bands: RGB[]): CutawayPalette {
+  const avg = averageBands(bands);
+  const bright = bands.reduce((a, c) => (c.r + c.g + c.b > a.r + a.g + a.b ? c : a), bands[0]);
+  const dark = bands.reduce((a, c) => (c.r + c.g + c.b < a.r + a.g + a.b ? c : a), bands[0]);
+  return {
+    ...GAS_PALETTE,
+    strata: [
+      shade(avg, 0.9), shade(bright, 0.78), shade(dark, 0.72),
+      shade(dark, 0.5), shade(avg, 0.32), shade(dark, 0.2),
+    ],
+    waterLip: shade(bright, 0.85),
+    waterDeep: shade(dark, 0.35),
+    waterSurf: { deep: shade(dark, 0.5), mid: shade(avg, 0.8), light: bright, glint: shade(bright, 1.15) },
+    facet: shade(bright, 1.1),
+    ember: shade(bright, 1.05),
+    emberHot: rgb(255, 240, 210),
+  };
 }
 
 function averageBands(bands: RGB[]): RGB {
@@ -981,7 +1070,20 @@ export function* surfaceSteps(
       : makeGasBands(seed);
     const bandCount = bands.length;
     // The dark band-edge line is a 1-px stroke: its threshold narrows with zoom.
-    const edgeLine = k === 1 ? 0.08 : 0.08 / k;
+    const edgeLine = k === 1 ? 0.06 : 0.06 / k;
+    // Weather: one great storm (an anticyclone, in the family's colour) and a
+    // string of small white ovals riding the belts; zonal jets shear the band
+    // edges into waves and festoons. All seeded: a giant keeps its storm.
+    const ws = new Stream(seed ^ 0x510e527f);
+    const stormC = gasStormColor(seed);
+    const great = { x: ws.range(-0.45, 0.45), y: (ws.next() < 0.5 ? -1 : 1) * ws.range(0.18, 0.42), rx: ws.range(0.13, 0.2), ry: 0 };
+    great.ry = great.rx * 0.55;
+    const ovals = Array.from({ length: 3 + ws.int(0, 3) }, () => {
+      const r = ws.range(0.03, 0.055);
+      return { x: ws.range(-0.8, 0.8), y: ws.range(-0.7, 0.7), rx: r, ry: r * 0.6 };
+    });
+    const jetPh = Array.from({ length: bandCount + 1 }, () => ws.range(0, Math.PI * 2));
+    const jetF = Array.from({ length: bandCount + 1 }, () => ws.range(5, 11));
     for (let py = yScan0; py <= y1; py++) {
       const dy = (py - cyTop) / ry;
       for (let px = x0; px <= x1; px++) {
@@ -990,20 +1092,46 @@ export function* surfaceSteps(
         const r = Math.hypot(dx, dy);
         if (r > 1) continue;
 
-        const latN = dy; // −1 … 1 across the foreshortened disc
-        const turb = fbm1(latN * 7.5 + dx * 1.6, seed + 3, 4) * 0.28
-                   + fbm1(latN * 22 + dx * 4.0, seed + 91, 3) * 0.10;
-        const bandF = (latN * 0.5 + 0.5) * bandCount + (turb - 0.38) * 0.55;
+        // Sample position, swirled inside the storms (a spiral: inner cloud
+        // turned further than outer).
+        let sx = dx, sy = dy, inStorm = 0;
+        for (const o of [great, ...ovals]) {
+          const ux = (dx - o.x) / o.rx, uy = (dy - o.y) / o.ry, ur = Math.hypot(ux, uy);
+          if (ur < 1.6) {
+            const tw = Math.pow(Math.max(0, 1 - ur / 1.6), 1.6) * (o === great ? 3.2 : 2.2);
+            const ca = Math.cos(tw), sa = Math.sin(tw);
+            sx = o.x + (ux * ca - uy * sa) * o.rx;
+            sy = o.y + (ux * sa + uy * ca) * o.ry;
+            if (ur < 1) inStorm = Math.max(inStorm, (1 - ur) * (o === great ? 1 : 0.85));
+            break;
+          }
+        }
+        const turb = fbm1(sy * 7.5 + sx * 1.6, seed + 3, 4) * 0.22
+                   + fbm1(sy * 22 + sx * 4.0, seed + 91, 3) * 0.08;
+        let bandF = (sy * 0.5 + 0.5) * bandCount + (turb - 0.3) * 0.5;
+        // Jets: each band edge waves along the longitude.
+        const bi = Math.max(0, Math.min(bandCount, Math.round(bandF)));
+        bandF += Math.sin(sx * jetF[bi] + jetPh[bi]) * 0.16 + Math.sin(sx * jetF[bi] * 2.7 + jetPh[bi] * 3) * 0.05;
         const i0 = Math.max(0, Math.min(bandCount - 1, Math.floor(bandF)));
         const i1 = Math.max(0, Math.min(bandCount - 1, i0 + 1));
         const ft0 = bandF - Math.floor(bandF);
-        const ft = ft0 < 0.16 ? 0 : ft0 > 0.84 ? 1 : 0.5;
+        // Soft but pixel-stepped edge: four tones across the boundary.
+        const ft = ft0 < 0.62 ? 0 : quantise((ft0 - 0.62) / 0.38, 0.25);
         const c0 = bands[i0], c1 = bands[i1];
-        const curl = 0.96 + fbm1(latN * 60 + dx * 9, seed + 707, 2) * 0.10;
+        const curl = 0.95 + fbm1(sy * 60 + sx * 9, seed + 707, 2) * 0.1;
         let cr = mix(c0.r, c1.r, ft) * curl;
         let cg = mix(c0.g, c1.g, ft) * curl;
         let cb = mix(c0.b, c1.b, ft) * curl;
-        if (ft0 < edgeLine) { cr *= 0.72; cg *= 0.72; cb *= 0.72; }
+        if (ft0 > 1 - edgeLine) { cr *= 0.82; cg *= 0.82; cb *= 0.82; }
+        if (inStorm > 0) {
+          // The storm's own cloud, with a pale rim and a darker eye.
+          const isGreat = inStorm > 0 && Math.hypot((dx - great.x) / great.rx, (dy - great.y) / great.ry) < 1;
+          const sc = isGreat ? stormC : rgb(244, 240, 232);
+          const t = quantise(Math.min(1, inStorm * 2.2), 0.25) * (isGreat ? 0.85 : 0.9);
+          const eye = isGreat && inStorm > 0.8 ? 0.85 : 1;
+          cr = mix(cr, sc.r, t) * eye; cg = mix(cg, sc.g, t) * eye; cb = mix(cb, sc.b, t) * eye;
+          if (inStorm < 0.12) { cr *= 0.85; cg *= 0.85; cb *= 0.85; }
+        }
 
         const key = quantise(0.88 + 0.22 * clamp01(dx * KEY_X + dy * KEY_Y + 0.5), 0.065);
         const ao = 1 - Math.pow(clamp01((r - 0.70) / 0.30), 2) * 0.22;
@@ -1116,10 +1244,11 @@ export function* surfaceSteps(
         continue;
       }
 
-      const base = opts.barren ? barrenGround(biome, cell.elevation, cell.moisture) : pal.biome[biome];
+      // A machine world's plating is not life: it stays metal when barren.
+      const base = opts.barren && opts.planetType !== 'mechanical' ? barrenGround(biome, cell.elevation, cell.moisture) : pal.biome[biome];
       let br = base.r, bg = base.g, bb = base.b;
 
-      if (!opts.barren && biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
+      if (!opts.barren && opts.planetType !== 'mechanical' && biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
                  && biome !== 'volcanic' && biome !== 'beach') {
         // Vegetation responds to the living biosphere, gated on the cell's own
         // fertility so deserts and savanna still read as themselves.
@@ -1519,7 +1648,10 @@ export function* crustSteps(
   // The engine always passes `wall` (the camera's, on a camera bake); the
   // fallback is for legacy callers and is only correct at identity.
   const wall = opts.wall ?? habitableGeom(VW, VH).wall;
-  const pal = paletteFor(opts.planetType);
+  // A giant has no rock: its cutaway shows cloud decks in its own colours.
+  const pal = opts.planetType === 'gas'
+    ? gasCrustPalette(opts.gasBands?.length ? opts.gasBands : makeGasBands(seed))
+    : paletteFor(opts.planetType);
   g.clearRect(0, 0, VW, VH);
   // Camera bakes: world-class sizes x k, per-px frequencies keyed on WORLD x
   // (screenToWorld), hashes floored at base resolution. Identity: k = 1 and the
@@ -1601,7 +1733,7 @@ export function* crustSteps(
         const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
         const n = noise2(wx / 7, depth / k / 4, seed + 541);
         // Water worlds keep a clean cliff face; caverns are for land worlds.
-        const inner = opts.planetType !== 'ocean' && depth > 1.5 * k && depth < wallH - 1.5 * k;
+        const inner = opts.planetType !== 'ocean' && opts.planetType !== 'gas' && depth > 1.5 * k && depth < wallH - 1.5 * k;
         if (inner && n > 0.66) {
           // Cavern: near-black, the odd crystal glint in the dark.
           c = hash1(fwx * 61 + wy * 97, seed + 547) > 0.985 ? pal.facet : shade(pal.strata[pal.strata.length - 1], 0.32);

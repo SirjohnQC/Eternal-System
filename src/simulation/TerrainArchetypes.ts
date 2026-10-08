@@ -268,7 +268,7 @@ export function structureFor(planetType: string, seed: number): LandStructure {
   const r = ((h >>> 0) % 1000) / 1000;
   const water = planetType === 'ocean' || planetType === 'toxic' || planetType === 'storm';
   const dry = planetType === 'desert' || planetType === 'ice' || planetType === 'rocky'
-    || planetType === 'carbon' || planetType === 'crystal';
+    || planetType === 'carbon' || planetType === 'crystal' || planetType === 'mechanical';
   if (water) {
     // Clean circular domes are a rare roll. The common split is a ragged coast.
     if (r < 0.08) return 'discs';

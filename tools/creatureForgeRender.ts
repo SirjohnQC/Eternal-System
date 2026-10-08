@@ -54,6 +54,15 @@ const showcase: Array<[string, SpeciesGenome]> = [
   ['cell', G('ce', { locomotion: 'swimming', environment: 'ocean', metabolism: 'chemosynthetic', diet: 'producer' }, { bodyStructure: 'single-celled', mobilityType: 'flagella', size: 'microscopic', sensorySystem: 'photoreception' })],
   ['colony', G('co', { locomotion: 'stationary', environment: 'ocean', metabolism: 'photosynthetic', diet: 'producer' }, { bodyStructure: 'colonial', size: 'tiny' })],
   ['starfish', G('st', { locomotion: 'crawling', environment: 'coastal', diet: 'carnivore' }, { bodyStructure: 'radial' })],
+  // The sapient forms a thinking walker becomes.
+  ['humanoid', G('hu7', { intelligence: 8, social: 8, aggression: 2 }, {})],
+  ['reptilian', G('re1', { intelligence: 8, aggression: 8 }, { size: 'large' })],
+  ['avian', G('av1', { intelligence: 8 }, { mobilityType: 'feathered wings' })],
+  ['insectoid', G('in1', { intelligence: 8 }, { bodyStructure: 'exoskeletal', sensorySystem: 'compound eyes' })],
+  ['cephaloid', G('ce1', { intelligence: 8 }, { bodyStructure: 'gelatinous' })],
+  ['mycoid', G('my1', { intelligence: 8, metabolism: 'chemosynthetic' }, { bodyStructure: 'filamentous' })],
+  ['crystalline', G('cr1', { intelligence: 8 }, { bodyStructure: 'crystalline' })],
+  ['mechanoid', G('me1', { intelligence: 9 }, { bodyStructure: 'mechanical' })],
   ['worm', G('wo', { locomotion: 'swimming', environment: 'deep_sea', diet: 'decomposer', metabolism: 'chemosynthetic' }, { bodyStructure: 'filamentous', mobilityType: 'undulating fringe2' })],
 ];
 

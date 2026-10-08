@@ -17,7 +17,7 @@ import {
   governmentFor, ideologyFor, type CultureValues, type GenomeSummary, type Government, type Ideology,
 } from './Civilization';
 import { SeedRNG } from '../utils/SeedRNG';
-import { available, appeal, effectOf, eraOf, TECH_BY_ID, TECHS_PER_ERA, type Need, type Tech } from './Technology';
+import { available, appeal, effectOf, eraOf, TECH_BY_ID, TECHS_PER_ERA, studyCost, type Need, type Tech } from './Technology';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -846,7 +846,7 @@ export class NationSystem {
       // the way); only the frontier costs full effort.
       const t = TECH_BY_ID[r.id];
       const taught = teacher ? (teacher.how === 'trade' ? 1.5 : teacher.how === 'war' ? 1.3 : 1.2) : 1;
-      r.progress += eras * TECHS_PER_ERA * pace * taught / (t.era > n.era ? 1 : 0.3);
+      r.progress += eras * TECHS_PER_ERA * pace * taught / studyCost(t, n.era);
       if (r.progress < 1) continue;
       n.techs.push(t.id);
       n.research = null;

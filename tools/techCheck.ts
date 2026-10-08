@@ -79,16 +79,28 @@ ps.biologyPhase = 'intelligent';
 ps.civLevel = 1;
 const eras: number[] = [];
 const T = 360_000;
+let peak = 0;
 for (let i = 1; i <= T; i++) {
   engine.update();
+  if (i % 1000 === 0) peak = Math.max(peak, ps.civLevel);
   if (i % 40_000 === 0) eras.push(ps.civLevel);
+}
+// A world wiped back (the nations fall silent and refound) has to
+// climb again from the start; give it one more stretch to show the tree works.
+// The same for a world thrown back by a lost war or a catastrophe.
+if (peak < 3 && (ps.civLevel < peak || events.some(m => m.startsWith('The nations have fallen silent')))) {
+  for (let i = 1; i <= T && peak < 3; i++) {
+    engine.update();
+    if (i % 1000 === 0) peak = Math.max(peak, ps.civLevel);
+    if (i % 40_000 === 0) eras.push(ps.civLevel);
+  }
 }
 const ns = runtimeState.playerNations;
 check('the world split into nations', !!ns?.isFounded, ns ? `${ns.nations.length}: ${ns.nations.map(n => n.name).join(', ')}` : 'none');
 // The PEAK era: a world can climb and then fall into a dark age (wars,
 // collapse) — that is history, not a broken tech tree. (tech_main does exactly
 // that since the universe gained sectors: Space Age, then down to era 2.)
-check('eras climbed', Math.max(ps.civLevel, ...eras) >= 3, `civLevel by 40k ticks: ${eras.join(' ')}`);
+check('eras climbed', Math.max(peak, ps.civLevel, ...eras) >= 3, `civLevel by 40k ticks: ${eras.join(' ')}`);
 check('the world stands in its best nation\'s era', !!ns && ps.civLevel === Math.min(ns.maxEra, TECH_LEVELS.length - 1), `civLevel ${ps.civLevel}, best nation era ${ns?.maxEra}`);
 const deeds = events.filter(m => TECHS.some(t => m.endsWith(t.deed + '.')));
 check('discoveries were announced', deeds.length >= 4, `${deeds.length}, e.g. "${deeds[0] ?? ''}"`);

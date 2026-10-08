@@ -14,10 +14,10 @@ import { forgeFlora, type FloraKind } from '../src/rendering/FloraForge';
 const out = process.argv[2] ?? 'renders/flora.png';
 const PX = Number(process.argv[3] ?? 32);
 const TYPES = (process.argv[4] ?? 'ocean,desert,toxic,crystal').split(',');
-const KINDS: FloraKind[] = process.argv[5] ? process.argv[5].split(',') as FloraKind[] : ['conifer', 'broadleaf', 'palm', 'bush', 'grass', 'cactus', 'mushroom', 'boulder', 'ore', 'crystal'];
+const KINDS: FloraKind[] = process.argv[5] ? process.argv[5].split(',') as FloraKind[] : ['conifer', 'broadleaf', 'palm', 'bush', 'grass', 'cactus', 'mushroom', 'fern', 'bulb', 'spire', 'pylon', 'boulder', 'ore', 'crystal'];
 const GROUND: Record<string, [number, number, number]> = {
   ocean: [92, 128, 70], rocky: [120, 110, 92], desert: [196, 160, 104], toxic: [110, 120, 60],
-  crystal: [120, 130, 160], ice: [190, 205, 215], carbon: [70, 56, 50], lava: [80, 50, 40],
+  crystal: [120, 130, 160], ice: [190, 205, 215], carbon: [70, 56, 50], lava: [80, 50, 40], mechanical: [118, 124, 132],
 };
 const VARS = 4, COLS = KINDS.length * 1, CELL = PX + 6, SCALE = 4;
 const W = COLS * VARS * CELL, H = TYPES.length * CELL;

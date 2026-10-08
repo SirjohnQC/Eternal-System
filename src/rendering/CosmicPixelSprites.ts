@@ -68,7 +68,7 @@ export function starTempBand(temperature: number): StarTempBand {
 
 export type PlanetKind =
   | 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
-  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon' | 'mechanical';
 
 /** Palette families — pick by seed for more variety than a single midtone. */
 const PLANET_PALETTES: Record<PlanetKind, RGB[]> = {
@@ -134,6 +134,12 @@ const PLANET_PALETTES: Record<PlanetKind, RGB[]> = {
     [55, 55, 60],
     [28, 28, 32],
     [70, 72, 78],
+  ],
+  mechanical: [
+    [138, 144, 152],
+    [110, 116, 124],
+    [122, 106, 88],
+    [96, 104, 116],
   ],
 };
 

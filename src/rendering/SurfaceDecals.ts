@@ -14,6 +14,7 @@ import { forgeFlora, groundKey, FLORA_VARIANTS, type FloraSprite } from './Flora
 
 export type DecalKind =
   | 'conifer' | 'broadleaf' | 'palm' | 'scrub' | 'bush' | 'grass' | 'cactus' | 'mushroom'
+  | 'fern' | 'bulb' | 'spire' | 'pylon'
   | 'rock' | 'ore' | 'crystal';
 
 /** Trees: they clump in groves and need a living world to reach full size. */
@@ -22,12 +23,13 @@ export function isWoody(k: DecalKind): boolean {
 }
 /** Not life: stone and crystal, which a dead or still-forming world carries too. */
 export function isMineralKind(k: DecalKind): boolean {
-  return k === 'rock' || k === 'ore' || k === 'crystal';
+  return k === 'rock' || k === 'ore' || k === 'crystal' || k === 'pylon';
 }
 /** The atlas only draws the original five; newer kinds borrow the nearest shape. */
 const ATLAS_FALLBACK: Record<DecalKind, DecalKind> = {
   conifer: 'conifer', broadleaf: 'broadleaf', palm: 'broadleaf', scrub: 'scrub', bush: 'scrub',
   grass: 'scrub', cactus: 'cactus', mushroom: 'scrub', rock: 'rock', ore: 'rock', crystal: 'rock',
+  fern: 'scrub', bulb: 'scrub', spire: 'conifer', pylon: 'rock',
 };
 
 export interface DecalSite {
@@ -226,8 +228,9 @@ export function planSurfaceDecals(
       // worlds), plain rock otherwise.
       const mineral = (): DecalKind => {
         const m = hash1(bx * 41 + by * 13, seed ^ 0x0e);
+        if (opts.planetType === 'mechanical' && m < 0.4) return 'pylon';   // machinery, alive or not
         if (m < (opts.planetType === 'crystal' ? 0.5 : 0.05)) return 'crystal';
-        return m > 0.88 ? 'ore' : 'rock';
+        return m > (opts.planetType === 'mechanical' ? 0.6 : 0.88) ? 'ore' : 'rock';
       };
       if (mineralsOnly) {
         // A world still forming (or lifeless by choice): stone only, crags
@@ -278,8 +281,12 @@ export function planSurfaceDecals(
       // only: the count and spacing above are already decided.
       if (kind === 'scrub' && !mineralsOnly) {
         const g = hash1(bx * 23 + by * 7, seed ^ 0x51);
-        if ((opts.planetType === 'toxic' || opts.planetType === 'carbon') && g < 0.45) kind = 'mushroom';
+        if (opts.planetType === 'mechanical') kind = g < 0.6 ? 'pylon' : 'scrub';
+        else if ((opts.planetType === 'toxic' || opts.planetType === 'carbon') && g < 0.45) kind = 'mushroom';
+        else if ((opts.planetType === 'carbon' || opts.planetType === 'ice' || opts.planetType === 'storm') && g < 0.62) kind = 'bulb';
         else if (opts.planetType === 'crystal' && g < 0.4) kind = 'crystal';
+        else if ((opts.planetType === 'crystal' && g < 0.62) || (opts.planetType === 'ice' && g > 0.9)) kind = 'spire';
+        else if ((biome === 'forest' || biome === 'jungle') && g < 0.5) kind = 'fern';
         else if (biome === 'grassland' || biome === 'plains' || biome === 'savanna') kind = g < 0.55 ? 'grass' : g < 0.55 + life * 0.3 ? 'bush' : 'scrub';
         else if (biome !== 'mountain' && biome !== 'tundra' && g < life * 0.4) kind = 'bush';
       } else if (kind === 'cactus' && opts.planetType === 'toxic' && hash1(bx + by * 3, seed) < 0.5) {
@@ -339,6 +346,9 @@ export function defaultDecalScale(kind: DecalKind): number {
     case 'crystal': return 0.44;
     case 'grass': return 0.28;
     case 'mushroom': return 0.32;
+    case 'fern': case 'bulb': return 0.3;
+    case 'spire': return 0.42;
+    case 'pylon': return 0.4;
     case 'scrub': case 'bush': case 'cactus': return 0.34;
     default: return 0.38;
   }

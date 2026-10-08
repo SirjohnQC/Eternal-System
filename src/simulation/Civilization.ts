@@ -214,6 +214,7 @@ const MATERIAL_BY_BODY: Record<string, string> = {
   radial: 'spun fibre', shelled: 'fused shell', cartilaginous: 'lashed cartilage',
   vertebrate: 'quarried stone', exoskeletal: 'resin and chitin',
   gelatinous: 'gel membrane', filamentous: 'woven filament',
+  mechanical: 'riveted alloy', crystalline: 'grown crystal',
 };
 
 function architectureFor(g: GenomeSummary, v: CultureValues): Architecture {

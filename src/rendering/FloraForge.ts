@@ -22,6 +22,7 @@ import {
 
 export type FloraKind =
   | 'conifer' | 'broadleaf' | 'palm' | 'bush' | 'grass' | 'scrub' | 'cactus' | 'mushroom'
+  | 'fern' | 'bulb' | 'spire' | 'pylon'
   | 'rock' | 'boulder' | 'ore' | 'crystal';
 
 // Materials (indices into this module's palette).
@@ -43,13 +44,15 @@ const FOLIAGE: Record<string, { h: number; s: number; l: number; h2: number }> =
   storm:   { h: 140, s: 0.36, l: 0.34, h2: 118 },
   lava:    { h: 20,  s: 0.5,  l: 0.3,  h2: 0 },
   gas:     { h: 40,  s: 0.4,  l: 0.5,  h2: 20 },
+  // Machine worlds: verdigris and rust (the "plants" are grown metal).
+  mechanical: { h: 172, s: 0.32, l: 0.42, h2: 24 },
 };
 
 /** Worlds whose boulders grow moss. */
 const FOLIAGE_WORLDS = new Set(['ocean', 'rocky', 'ice', 'storm']);
 
 /** Crystal and ore colours per planet type. */
-const CRYSTAL_HUE: Record<string, number> = { crystal: 190, toxic: 290, carbon: 330, ice: 200, lava: 20, desert: 40 };
+const CRYSTAL_HUE: Record<string, number> = { crystal: 190, toxic: 290, carbon: 330, ice: 200, lava: 20, desert: 40, mechanical: 185 };
 
 function rgbToHsl(c: RGB): [number, number, number] {
   const r = c[0] / 255, g = c[1] / 255, b = c[2] / 255;
@@ -209,6 +212,75 @@ function planCrystal(B: Body, v: number): void {
   }
 }
 
+/** Fronds unrolling from a crown at the ground: the forest floor. */
+function planFern(B: Body, v: number): void {
+  const g = B.group(0, 0.0);
+  const n = 5 + (v % 3);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + rnd(v, 1);
+    const len = 0.32 + rnd(v, 10 + i) * 0.14;
+    const base: V3 = [0, -0.48, 0];
+    const mid: V3 = [Math.cos(a) * len * 0.5, -0.48 + len * 0.55, Math.sin(a) * len * 0.35];
+    const tip: V3 = [Math.cos(a) * len, -0.5 + len * 0.3, Math.sin(a) * len * 0.7];
+    B.tri(base, mid, [mid[0] - Math.sin(a) * 0.06, mid[1] - 0.02, mid[2] + Math.cos(a) * 0.06], 0.012, i % 2 ? LEAF : LEAF2, g);
+    B.tri(mid, tip, [mid[0] + Math.sin(a) * 0.06, mid[1] - 0.04, mid[2] - Math.cos(a) * 0.06], 0.012, i % 2 ? LEAF2 : LEAF, g);
+  }
+}
+
+/** Swollen glowing bulbs on stalks: cold, dark and toxic worlds. */
+function planBulb(B: Body, v: number): void {
+  const gS = B.group(0, 0.02), gB = B.group(0, 0.03);
+  const n = 2 + (v % 3);
+  for (let i = 0; i < n; i++) {
+    const x = (i - (n - 1) / 2) * 0.17 + (rnd(v, i) - 0.5) * 0.05;
+    const h = 0.25 + rnd(v, 5 + i) * 0.3, r = 0.08 + rnd(v, 9 + i) * 0.05;
+    B.cone([x, -0.5, 0], [x + (rnd(v, 13 + i) - 0.5) * 0.08, -0.5 + h, 0], 0.025, 0.02, LEAF2, gS);
+    B.ell([x, -0.5 + h + r * 0.7, 0], [r, r * 1.15, r], LEAF, gB);
+    B.dots.push({ p: [x + r * 0.3, -0.5 + h + r * 1.1, r * 0.8], mat: GLOW });
+  }
+}
+
+/** A tall ribbed spire grown like coral: alien forests of crystal and ice worlds. */
+function planSpire(B: Body, v: number): void {
+  const g = B.group(0, 0.03), gT = B.group(0, 0.0);
+  const h = 0.85 + rnd(v, 1) * 0.35;
+  B.cone([0, -0.5, 0], [0.03, -0.5 + h, 0], 0.09, 0.015, LEAF, g);
+  for (let i = 0; i < 4; i++) {
+    const y = -0.5 + h * (0.2 + i * 0.18);
+    B.ell([0, y, 0], [0.11 - i * 0.02, 0.025, 0.1 - i * 0.02], LEAF2, g);
+  }
+  const side = 1 + (v % 2);
+  for (let i = 0; i < side; i++) {
+    const sd = i ? -1 : 1, y = -0.5 + h * (0.3 + rnd(v, 4 + i) * 0.2);
+    B.cone([0, y, 0], [sd * 0.18, y + 0.32, 0.02], 0.045, 0.01, LEAF, g);
+  }
+  B.dots.push({ p: [0.03, -0.5 + h, 0.02], mat: GLOW });
+  void gT;
+}
+
+/** Machine-world "flora": masts, pipes and dishes the old machinery grows. */
+function planPylon(B: Body, v: number): void {
+  const g = B.group(0, 0.0, true, true);
+  const h = 0.7 + rnd(v, 1) * 0.4;
+  if (v % 3 === 0) {
+    // A pipe cluster with a valve wheel.
+    for (let i = 0; i < 3; i++) {
+      const x = (i - 1) * 0.1, ph = h * (0.45 + rnd(v, 3 + i) * 0.35);
+      B.cone([x, -0.5, 0], [x, -0.5 + ph, 0], 0.045, 0.045, ROCK, g);
+      B.ell([x, -0.5 + ph, 0], [0.06, 0.025, 0.06], TRUNK, g);
+    }
+    B.ell([0.05, -0.2, 0.08], [0.07, 0.07, 0.015], ORE, g);
+  } else {
+    // A lattice mast with a dish or a lit beacon.
+    B.ell([0, -0.47, 0], [0.16, 0.04, 0.14], ROCK2, g);
+    B.cone([-0.07, -0.47, 0], [0, -0.5 + h, 0], 0.025, 0.012, ROCK, g);
+    B.cone([0.07, -0.47, 0], [0, -0.5 + h, 0], 0.025, 0.012, ROCK, g);
+    for (let i = 1; i < 4; i++) B.cone([-0.07 * (1 - i / 4), -0.47 + h * i / 4, 0], [0.07 * (1 - i / 4), -0.47 + h * i / 4, 0], 0.012, 0.012, TRUNK, g);
+    if (v % 2) B.ell([0.06, -0.5 + h * 0.85, 0.03], [0.11, 0.08, 0.025], ROCK2, g);
+    B.dots.push({ p: [0, -0.5 + h, 0.02], mat: GLOW });
+  }
+}
+
 function planFor(kind: FloraKind, v: number): Body {
   const B = new Body();
   switch (kind) {
@@ -220,6 +292,10 @@ function planFor(kind: FloraKind, v: number): Body {
     case 'grass': planGrass(B, v); break;
     case 'cactus': planCactus(B, v); break;
     case 'mushroom': planMushroom(B, v); break;
+    case 'fern': planFern(B, v); break;
+    case 'bulb': planBulb(B, v); break;
+    case 'spire': planSpire(B, v); break;
+    case 'pylon': planPylon(B, v); break;
     case 'crystal': planCrystal(B, v); break;
     case 'ore': planOre(B, v); break;
     case 'rock': case 'boulder': default: planBoulder(B, v); break;
@@ -258,7 +334,7 @@ export function forgeFlora(kind: FloraKind, variant: number, px: number, planetT
         hash3(Math.floor(w[0] * 22), Math.floor(w[2] * 22), 1, v) > 0.8) return { m: FLOWER, dl: 1 };
     return { m, dl: 0 };
   });
-  // Glow tips on crystals.
+  // Glow tips on crystals, bulbs, spires and beacons.
   for (const d of B.dots) {
     const c = SCENE_CAM.toCam(d.p);
     const x = Math.round(c[0] * R.s + R.ox - 0.5), y = Math.round(R.oy - c[1] * R.s - 0.5);
@@ -277,7 +353,7 @@ export function forgeFlora(kind: FloraKind, variant: number, px: number, planetT
 
 /** Minerals take their stone from the ground; plants do not. */
 export function isMineral(kind: FloraKind): boolean {
-  return kind === 'rock' || kind === 'boulder' || kind === 'ore' || kind === 'crystal';
+  return kind === 'rock' || kind === 'boulder' || kind === 'ore' || kind === 'crystal' || kind === 'pylon';
 }
 
 /** Quantise a ground colour so nearby shades share one cached sprite. */

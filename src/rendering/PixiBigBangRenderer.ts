@@ -1538,7 +1538,7 @@ export class PixiBigBangRenderer {
           const flag = gameState.factionFlags[st.id];
           const col = flag ? cssToHex(flag.primaryColor) : cssToHex(CIV_COLORS[Math.min(st.civLevel, CIV_COLORS.length - 1)]);
           g.circle(x, y, 9).stroke({ color: col, width: 1.5, alpha: 0.85 });
-          if (labels) this.label(`civ${st.id}`, `${st.civName} · ${TECH_LEVELS[st.civLevel] ?? ''}`, x, y + 12, 0xd8ccf0, 10, 0.95);
+          if (labels) this.label(`civ${st.id}`, `${st.civName} · ${engine.eraNameOf(st)}`, x, y + 12, 0xd8ccf0, 10, 0.95);
         } else if (st.hasLife) {
           g.rect(Math.round(x + 6), Math.round(y - 7), 2, 2).fill({ color: 0x5dcc8a, alpha: 0.9 });
         }

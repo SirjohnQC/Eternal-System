@@ -106,7 +106,7 @@ const FORGE_BAKES_PER_FRAME = 3;
 
 export type PlanetType =
   | 'ocean' | 'rocky' | 'lava' | 'ice' | 'gas'
-  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon' | 'mechanical';
 
 interface RGB { r: number; g: number; b: number }
 
@@ -269,6 +269,19 @@ const PALETTES: Record<PlanetType, PlanetPalette> = {
     ore:      [rgb(80, 110, 160), rgb(60, 90, 140), rgb(120, 150, 190)],
     hasDome:  true,
     keyLight: rgb(140, 170, 210),
+  },
+  mechanical: {
+    halo:     rgb(90, 200, 220),
+    skyLow:   rgb(70, 84, 96),
+    skyHigh:  rgb(26, 32, 42),
+    cutWater: rgb(24, 70, 84),
+    strata: [
+      rgb(88, 92, 98), rgb(110, 84, 62), rgb(70, 74, 80),
+      rgb(52, 56, 62), rgb(38, 40, 46), rgb(22, 24, 28),
+    ],
+    ore:      [rgb(80, 220, 230), rgb(200, 150, 80), rgb(150, 250, 255)],
+    hasDome:  true,
+    keyLight: rgb(190, 220, 230),
   },
 };
 
@@ -4582,6 +4595,7 @@ function planetTypeRGB(type: string): RGB {
     case 'desert':  return rgb(210, 170, 90);
     case 'storm':   return rgb(80, 70, 110);
     case 'carbon':  return rgb(40, 42, 48);
+    case 'mechanical': return rgb(120, 126, 134);
     default:        return rgb(150, 130, 95);
   }
 }

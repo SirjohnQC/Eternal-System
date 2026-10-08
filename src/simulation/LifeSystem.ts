@@ -38,7 +38,7 @@ import { BIO_PHASE_SEQUENCE } from './GameState';
 
 export type PlanetKind =
   | 'rocky' | 'ocean' | 'gas' | 'ice' | 'lava'
-  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon';
+  | 'toxic' | 'crystal' | 'desert' | 'storm' | 'carbon' | 'mechanical';
 
 // ─── Biochemistry archetypes ──────────────────────────────────────────────────
 
@@ -47,7 +47,8 @@ export type LifeArchetype =
   | 'cryo_ammonia'      // liquid ammonia under ice; slow, patient
   | 'silicate_thermo'   // high-temperature mineral metabolism; very slow, very tough
   | 'aerial_float'      // buoyant colonies in a gas envelope; rarely builds anything
-  | 'lithic_endolith';  // rock-boring chemoautotrophs; nearly unkillable, nearly static
+  | 'lithic_endolith'   // rock-boring chemoautotrophs; nearly unkillable, nearly static
+  | 'machine_lattice';  // self-assembling metal lattices on mechanical worlds; rare, strange
 
 export interface ArchetypeProfile {
   label: string;
@@ -73,7 +74,7 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
     label: 'carbon–water',
     affinity: {
       ocean: 1.0, rocky: 0.85, ice: 0.20, lava: 0.05, gas: 0.10,
-      toxic: 0.70, crystal: 0.40, desert: 0.50, storm: 0.45, carbon: 0.30,
+      toxic: 0.70, crystal: 0.40, desert: 0.50, storm: 0.45, carbon: 0.30, mechanical: 0.05,
     },
     tempo: 1.0, filter: 1.0, ceiling: 'intelligent', resilience: 1.0,
     flavour: 'Carbon chains in liquid water — the common solution.',
@@ -82,7 +83,7 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
     label: 'cryogenic ammonia',
     affinity: {
       ocean: 0.20, rocky: 0.15, ice: 1.0, lava: 0.0, gas: 0.25,
-      toxic: 0.10, crystal: 0.20, desert: 0.05, storm: 0.15, carbon: 0.25,
+      toxic: 0.10, crystal: 0.20, desert: 0.05, storm: 0.15, carbon: 0.25, mechanical: 0.02,
     },
     tempo: 0.42, filter: 1.25, ceiling: 'primitive', resilience: 1.35,
     flavour: 'Slow chemistry in sub-zero ammonia seas beneath the ice.',
@@ -91,7 +92,7 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
     label: 'silicate thermophile',
     affinity: {
       ocean: 0.05, rocky: 0.35, ice: 0.0, lava: 1.0, gas: 0.05,
-      toxic: 0.20, crystal: 0.30, desert: 0.40, storm: 0.20, carbon: 0.50,
+      toxic: 0.20, crystal: 0.30, desert: 0.40, storm: 0.20, carbon: 0.50, mechanical: 0.15,
     },
     tempo: 0.30, filter: 1.45, ceiling: 'complex', resilience: 1.8,
     flavour: 'Mineral metabolism that treats molten rock as a solvent.',
@@ -100,7 +101,7 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
     label: 'aerial',
     affinity: {
       ocean: 0.10, rocky: 0.05, ice: 0.10, lava: 0.05, gas: 1.0,
-      toxic: 0.35, crystal: 0.10, desert: 0.15, storm: 0.70, carbon: 0.05,
+      toxic: 0.35, crystal: 0.10, desert: 0.15, storm: 0.70, carbon: 0.05, mechanical: 0.0,
     },
     tempo: 0.75, filter: 1.30, ceiling: 'complex', resilience: 0.8,
     flavour: 'Buoyant colonies drifting in a bottomless atmosphere.',
@@ -109,10 +110,19 @@ export const ARCHETYPES: Record<LifeArchetype, ArchetypeProfile> = {
     label: 'endolithic',
     affinity: {
       ocean: 0.15, rocky: 0.55, ice: 0.35, lava: 0.30, gas: 0.0,
-      toxic: 0.25, crystal: 0.80, desert: 0.45, storm: 0.20, carbon: 0.90,
+      toxic: 0.25, crystal: 0.80, desert: 0.45, storm: 0.20, carbon: 0.90, mechanical: 0.25,
     },
     tempo: 0.22, filter: 1.55, ceiling: 'multicellular', resilience: 2.4,
     flavour: 'Chemoautotrophs boring through rock, indifferent to the surface.',
+  },
+  machine_lattice: {
+    label: 'machine lattice',
+    affinity: {
+      ocean: 0.0, rocky: 0.02, ice: 0.0, lava: 0.04, gas: 0.0,
+      toxic: 0.0, crystal: 0.08, desert: 0.02, storm: 0.0, carbon: 0.06, mechanical: 1.0,
+    },
+    tempo: 0.55, filter: 0.9, ceiling: 'intelligent', resilience: 2.2,
+    flavour: 'Self-copying metal lattices that grew out of a world of old machinery.',
   },
 };
 
@@ -130,6 +140,7 @@ const TYPE_BASE: Record<PlanetKind, number> = {
   desert:  0.48,
   storm:   0.40,
   carbon:  0.38,
+  mechanical: 0.30,
 };
 
 export interface HabitabilityInput {

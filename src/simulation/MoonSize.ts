@@ -97,6 +97,7 @@ export function rollMoons(planet: Pick<Planet, 'type' | 'radius'>, label: string
     desert:  ['rock', 'iron', 'carbon'],
     storm:   ['ice', 'rock', 'ocean'],
     carbon:  ['carbon', 'rock', 'iron'],
+    mechanical: ['iron', 'iron', 'rock'],
   };
   // Captured rocks are bare: rock, iron, carbon only.
   const CAPTURED: MoonKind[] = ['rock', 'rock', 'carbon', 'iron'];

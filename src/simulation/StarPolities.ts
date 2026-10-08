@@ -20,7 +20,7 @@
  * Pure simulation over plain JSON state (saved with the engine).
  */
 import type { CultureValues } from './Civilization';
-import { available, appeal, effectOf, eraOf, TECH_BY_ID, TECHS_PER_ERA, type Need } from './Technology';
+import { available, appeal, effectOf, eraOf, TECH_BY_ID, TECHS_PER_ERA, studyCost, type Need } from './Technology';
 
 export interface PolityPressures { hunger: number; crowding: number; scarcity: number; unrest: number; pollution: number }
 
@@ -215,7 +215,7 @@ export function stepInterstellar(st: InterstellarState, stars: StarView[], home:
       const t = TECH_BY_ID[p.research.id];
       const taught = teacherOf(st, home, v.id, t.id) ? 1.6 : 1;
       const pace = Math.max(0.35, Math.min(1.9, (0.7 + 0.6 * v.values.curiosity) * Math.sqrt(fx.knowledge) * (1 - 0.6 * pr.unrest)));
-      p.research.progress += eras * TECHS_PER_ERA * pace * taught / (t.era > p.era ? 1 : 0.3);
+      p.research.progress += eras * TECHS_PER_ERA * pace * taught / studyCost(t, p.era);
       if (p.research.progress >= 1) {
         p.techs.push(t.id);
         p.inequality = clamp01(p.inequality + (t.effect.inequality ?? 0));
@@ -280,9 +280,17 @@ export function stepInterstellar(st: InterstellarState, stars: StarView[], home:
       st.routes = st.routes.filter(r => r !== route);
       news.push({ kind: 'trade-closed', starId: a, other: b, text: 'trade dried up' });
       route = undefined;
-    } else if (route && route.goods !== 'knowledge') {
-      // Needs change: the route carries whatever is lacked now, or nothing much.
+    } else if (route) {
+      // Needs change: the route carries whatever is lacked now. Once no one
+      // is short of anything, two curious peoples send scholars instead (a
+      // route opened in a lean year does not carry only grain forever), and
+      // a new shortage turns it back to goods.
       if (want && (want[0] !== route.goods || want[1].id !== route.to)) { route.goods = want[0]; route.to = want[1].id; }
+      else if (!want && knowledge && route.goods !== 'knowledge') {
+        route.goods = 'knowledge';
+        route.to = A.era <= B.era ? A.id : B.id;
+        news.push({ kind: 'trade', starId: a, other: b, goods: 'knowledge', to: route.to, text: 'scholars began to travel' });
+      }
     }
     if (route) {
       const recv = st.polities[route.to];

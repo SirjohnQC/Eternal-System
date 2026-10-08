@@ -183,7 +183,16 @@ console.log('\n═══ Engine: the civilisations of the universe live ══�
   const levels0 = new Map(engine.stars.map((s: any) => [s.id, s.civLevel]));
   let maxRoutes = 0, advances = 0;
   const adv = engine.advanceCiv.bind(engine); engine.advanceCiv = (s: any) => { if (!s.isPlayerStar) advances++; adv(s); };
-  for (let i = 0; i < 400_000; i++) { engine.update(); if (i % 5000 === 0) maxRoutes = Math.max(maxRoutes, engine.interstellar.routes.length); }
+  // Eras have sub-eras and climb harder (Technology.studyCost), and peoples
+  // start young, so a universe takes longer to reach war-capable ages: run
+  // at least 400k ticks, and on until wars and trade have both appeared
+  // (capped, so a dead universe still fails).
+  let ticks = 0;
+  for (; ticks < 1_200_000 && (ticks < 400_000 || wars === 0 || (maxRoutes === 0 && events.length === 0)); ticks++) {
+    engine.update();
+    if (ticks % 5000 === 0) maxRoutes = Math.max(maxRoutes, engine.interstellar.routes.length);
+  }
+  console.log(`  (ran ${ticks} ticks)`);
   const pols = Object.values(engine.interstellar.polities) as any[];
   pc('every intelligent world elsewhere is a polity', engine.stars.filter((s: any) => !s.isDead && !s.isPlayerStar && s.biologyPhase === 'intelligent').every((s: any) => engine.interstellar.polities[s.id]), `${pols.length} polities`);
   pc('their eras match what they know', engine.stars.filter((s: any) => engine.interstellar.polities[s.id]).every((s: any) => s.civLevel === Math.min(8, engine.interstellar.polities[s.id].era)),

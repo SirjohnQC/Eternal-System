@@ -27,6 +27,7 @@ import type { Civilization } from './simulation/Civilization';
 import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { BigBangCinematic } from './simulation/BigBangCinematic';
 import { newForge } from './simulation/Forge';
+import { subEraOf, SUB_ERA_NAMES } from './simulation/Technology';
 import { runForge, forgeActive } from './ui/ForgeUI';
 import { initUniverseMap, showDormantGalaxyCard, currentOverlay } from './ui/UniverseMapUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
@@ -37,6 +38,8 @@ import {
 } from './simulation/PlanetGrid';
 import { ARCHETYPES } from './simulation/LifeSystem';
 import type { SpeciesGenome } from './simulation/SpeciesGenome';
+import type { GenomeSummary } from './simulation/Civilization';
+import { sapientFormOf } from './rendering/CreatureForge';
 import { speciesRGB, clearSpeciesPalette } from './ui/speciesPalette';
 import {
   generateBranchSet, emptyInvestment, branchesFromIds, dnaPointCost, type BranchDef,
@@ -682,6 +685,11 @@ function updateViewInsets(): void {
 }
 setInterval(updateViewInsets, 500);
 window.addEventListener('resize', updateViewInsets);
+
+/** "Late Medieval": a star's era with its sub-era (Early / Middle / Late). */
+function eraName(star: StarBody): string {
+  return engine?.eraNameOf(star) ?? TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)] ?? 'Primitive';
+}
 
 /** Attach a PixiBigBangRenderer to the given engine + canvas pair. */
 async function attachPixiRenderer(eng: BigBangEngine, engineCanvas: HTMLCanvasElement): Promise<void> {
@@ -1587,7 +1595,7 @@ function showTileNation(target: TileRef): void {
   }
   const builds = nationArch(_dioramaRenderer?.townArch ?? null, { values: n.values, government: n.government, color: n.color, id: n.id }).summary;
   setText('pi-tile-nation-detail', [
-    `${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
+    `${n.era > 0 ? SUB_ERA_NAMES[subEraOf(n.techs, n.era)] + ' ' : ''}${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
     `Builds ${builds}`,
     studying ? `Working on ${studying}` : '',
     dealings.length ? dealings.join('. ') + '.' : '',
@@ -1708,7 +1716,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     if (phaseSect) phaseSect.style.setProperty('background', `hsl(${140 + phasePct},70%,45%)`);
   } else if (star.hasLife && star.biologyPhase === 'intelligent') {
     const civPhase = civLevelToPhase(civLevel);
-    setText('pi-era', CIV_PHASE_LABELS[civPhase] + ` — ${TECH_LEVELS[civLevel]}`);
+    setText('pi-era', CIV_PHASE_LABELS[civPhase] + ` — ${eraName(star)}`);
     // How this civilisation builds (its architecture genome), once it does.
     const arch = star.isPlayerStar ? _dioramaRenderer?.townArch : null;
     setStyle('pi-arch-row', 'display', arch ? '' : 'none');
@@ -1818,7 +1826,24 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     : (star.hasLife ? star.civName + 'ians' : '—');
 
   const iconEl = document.getElementById('pi-species-icon');
-  if (iconEl) iconEl.textContent = star.hasLife ? SPECIES_ICONS[civLevel] : '—';
+  // Another world's people: draw them (their form follows their body plan).
+  const npcCiv = !isPlayer && star.biologyPhase === 'intelligent' ? gameState.civilizations[star.id] : undefined;
+  const npcGenome = npcCiv ? genomeFromSummary(npcCiv.sourceGenome, `npc_${star.id}`) : null;
+  if (iconEl) {
+    const key = npcGenome ? `npc_${star.id}` : '';
+    if (npcGenome) {
+      if (iconEl.dataset['portrait'] !== key) {
+        iconEl.textContent = '';
+        const c = creatureCanvas(npcGenome, 40);
+        c.style.imageRendering = 'pixelated';
+        iconEl.appendChild(c);
+        iconEl.dataset['portrait'] = key;
+      }
+    } else {
+      iconEl.dataset['portrait'] = '';
+      iconEl.textContent = star.hasLife ? SPECIES_ICONS[civLevel] : '—';
+    }
+  }
   setText('pi-species-name', speciesName);
 
   let speciesDesc = 'No life detected on this world.';
@@ -1828,7 +1853,9 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     speciesDesc = `${BIO_PHASE_LABELS[star.biologyPhase]} · Evolving`;
     if (isPlayer) speciesDesc += ` · Invest DNA points to guide development`;
   } else if (star.hasLife) {
-    speciesDesc = `Emerged on ${displayName} · ${TECH_LEVELS[civLevel]} era`;
+    speciesDesc = `Emerged on ${displayName} · ${eraName(star)}`;
+    const form = npcGenome ? sapientFormOf(npcGenome) : null;
+    if (form) speciesDesc = `A ${form} people · ${speciesDesc}`;
     if (dna) speciesDesc += ` · ${dna.climate} world`;
   }
   setText('pi-species-desc', speciesDesc);
@@ -1843,7 +1870,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     }).join('');
   }
 
-  setText('pi-tech-level', star.hasLife ? TECH_LEVELS[civLevel] : 'N/A');
+  setText('pi-tech-level', star.hasLife ? eraName(star) : 'N/A');
   setText('pi-tech-desc', star.hasLife ? (TECH_DESCRIPTIONS[civLevel] ?? '') : 'No civilization present.');
 
   // DNA codex section
@@ -2044,7 +2071,7 @@ function openSystemPanel(star: StarBody): void {
   nameEl.textContent = sysName;
 
   const knownCount = star.planets.filter(p => p.discovery !== 'none').length;
-  const civInfo = star.hasLife ? (TECH_LEVELS[star.civLevel] ?? 'Unknown') : 'No intelligent life';
+  const civInfo = star.hasLife ? eraName(star) : 'No intelligent life';
   const starLeader = gameState.leaders.find(l => l.starId === star.id);
   const leaderInfo = starLeader ? ` | ${starLeader.ideology} — ${starLeader.name}` : '';
   techEl.textContent = `${civInfo}${leaderInfo}  ·  ${knownCount}/${star.planets.length} planets charted`;
@@ -2281,7 +2308,7 @@ function updateBottomBar(star: { civName: string; civLevel: number; hasLife: boo
   // Civ bar: show TECH_LEVELS only once intelligent
   const ps = engine?.getPlayerStar();
   const inBioPhase = ps && ps.biologyPhase !== 'intelligent';
-  if (el3) el3.textContent = inBioPhase ? '—' : (star.hasLife ? TECH_LEVELS[star.civLevel] : '—');
+  if (el3) el3.textContent = inBioPhase ? '—' : (star.hasLife ? eraName(star as StarBody) : '—');
   updatePhaseBar();
 }
 
@@ -5114,6 +5141,22 @@ const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI'
 const roman = (n: number) => ROMAN[n - 1] ?? String(n);
 
 /** A crisp creature canvas whose long edge is about `px` screen pixels. */
+/** A drawable genome for a people known only by their culture's summary. */
+function genomeFromSummary(g: GenomeSummary, id: string): SpeciesGenome {
+  const mobility = g.locomotion === 'flying' ? 'feathered wings' : g.locomotion === 'swimming' ? 'fins' : 'legs';
+  return {
+    id, name: g.speciesName, originTick: 0, population: 1, isExtinct: false, ancestorId: null,
+    dna: {
+      metabolism: g.metabolism, locomotion: g.locomotion, environment: g.environment, reproduction: g.reproduction,
+      diet: g.diet, respiration: g.respiration, intelligence: g.intelligence, social: g.social,
+      aggression: g.aggression, adaptability: g.adaptability,
+    },
+    physicalTraits: { size: g.size, bodyStructure: g.bodyStructure, mobilityType: mobility, sensorySystem: g.sensorySystem },
+    habitat: { biome: g.biome, temperatureRange: g.temperatureRange },
+    evolutionaryPotential: { landTransition: 1, intelligenceGrowth: 0, toolUse: 1 },
+  } as SpeciesGenome;
+}
+
 function creatureCanvas(g: SpeciesGenome, px: number): HTMLCanvasElement {
   return bakeCreaturePortrait(g, px);
 }
@@ -5776,7 +5819,7 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     rows.push(['Type', cap(String(planet.type))]);
     rows.push(['Life', planet.isDead ? 'Dead world' : planet.hasLife ? (isHome ? cap(String(star.biologyPhase ?? 'present')) : 'Present') : 'None detected']);
     if (isHome && engine?.isHomeForming() && star.formationStage) rows.push(['Forming', cap(String(star.formationStage).replace(/_/g, ' '))]);
-    if (isHome && star.civLevel > 0) rows.push(['Civilisation', TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)]]);
+    if (isHome && star.civLevel > 0) rows.push(['Civilisation', eraName(star)]);
     rows.push(['Moons', String(planet.moons.length)]);
     rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
