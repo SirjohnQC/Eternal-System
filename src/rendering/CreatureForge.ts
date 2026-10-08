@@ -734,34 +734,80 @@ function planWorm(B: Body, t: Traits): void {
 // avians; armoured lineages insectoids; soft-bodied ones cephaloids; fungal
 // mats mycoids; silicate life crystallines; machine life mechanoids.
 
+// Each people moves in its own way: the plans below bob, lean, sway or scan
+// their upper body with these helpers, and give uprightLimbs a gait (stride,
+// how long a foot stays down, how high it lifts, how the arms swing).
+
+interface Mark { p: number; e: number; d: number }
+const markOf = (B: Body): Mark => ({ p: B.prims.length, e: B.eyes.length, d: B.dots.length });
+/** Move everything added to `B` since `m` through `f` (shared points moved once). */
+function moveSince(B: Body, m: Mark, f: (v: V3) => V3): void {
+  const seen = new Map<V3, V3>();
+  const g = (v: V3): V3 => { let r = seen.get(v); if (!r) { r = f(v); seen.set(v, r); } return r; };
+  for (let i = m.p; i < B.prims.length; i++) {
+    const q = B.prims[i];
+    q.a = g(q.a); q.b = g(q.b); q.c = g(q.c); q.bc = g(q.bc);
+  }
+  for (let i = m.e; i < B.eyes.length; i++) B.eyes[i].p = g(B.eyes[i].p);
+  for (let i = m.d; i < B.dots.length; i++) B.dots[i].p = g(B.dots[i].p);
+}
+/** Shift by (dx, dy), then turn by `a` radians (nose up = +) about `pv` in the side plane. */
+const pose = (pv: V3, a: number, dx = 0, dy = 0) => (v: V3): V3 => {
+  const c = Math.cos(a), sn = Math.sin(a), x = v[0] - pv[0], y = v[1] - pv[1];
+  return [pv[0] + x * c - y * sn + dx, pv[1] + x * sn + y * c + dy, v[2]];
+};
+/** Up-and-down of a walk: twice per cycle (each footfall). */
+const bob2 = (amp: number, o = 0) => MOVING ? amp * (0.5 - 0.5 * Math.cos((PH + o) * TAU * 2)) : 0;
+
+interface Gait {
+  /** Stride length (x STRIDE), share of the cycle a foot is planted, lift height (x1). */
+  stride?: number; duty?: number; lift?: number;
+  /** Arm swing against the legs (x STRIDE); 0 holds them still. */
+  armSwing?: number;
+  /** Insect arms: quick alternating twitches instead of a swing. */
+  twitch?: boolean;
+  /** Machine: knees locked straight, motion snapped to servo steps. */
+  stiff?: boolean;
+  /** Vertical offset of hips and shoulders this pose (the body's bob). */
+  bob?: number;
+}
+
 /** Two walking legs and one or two pairs of arms, for the upright forms. */
 function uprightLimbs(B: Body, t: Traits, gNear: number, gFar: number, o: {
   hipY: number; shY: number; legW: number; armW: number; mat?: number; hand?: number; armPairs?: number; digitigrade?: boolean; robot?: boolean;
-}): void {
+} & Gait): void {
   const k = t.bulk, mat = o.mat ?? PRIMARY, hand = o.hand ?? BELLY;
+  const bob = o.bob ?? 0, hipY = o.hipY + bob;
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     const z = s * 0.08 * k;
-    const ph = s > 0 ? 0 : 0.5, [ls, ll] = step(ph, 0.62);
-    const lx = STRIDE * ls, ly = 0.07 * ll, ax = -0.4 * STRIDE * ls;
-    const knee: V3 = o.digitigrade ? [0.08 + lx * 0.5, o.hipY - 0.2 + ly * 0.6, z] : [0.03 + lx * 0.5, (o.hipY - 0.5) / 2 + ly * 0.6, z];
-    B.cone([0, o.hipY, z], knee, o.legW * k, o.legW * 0.78 * k, mat, g);
+    const ph = s > 0 ? 0 : 0.5;
+    let [ls, ll] = step(ph, o.duty ?? 0.62);
+    if (o.stiff) { ls = Math.round(ls * 4) / 4; ll = Math.round(ll * 2) / 2; }
+    const lx = STRIDE * (o.stride ?? 1) * ls, ly = 0.07 * (o.lift ?? 1) * ll;
+    const ax = -(o.armSwing ?? 0.4) * STRIDE * ls;
+    const foot: V3 = [lx, -0.5 + ly, z];
+    const knee: V3 = o.stiff ? [lx * 0.5 + 0.01, (hipY + foot[1]) / 2, z]
+      : o.digitigrade ? [0.08 + lx * 0.5, hipY - 0.2 + ly * 0.6, z] : [0.03 + lx * 0.5, (hipY - 0.5) / 2 + ly * 0.6, z];
+    B.cone([0, hipY, z], knee, o.legW * k, o.legW * 0.78 * k, mat, g);
     if (o.digitigrade) {
       const ankle: V3 = [-0.02 + lx * 0.8, -0.38 + ly, z];
       B.cone(knee, ankle, o.legW * 0.78 * k, o.legW * 0.6 * k, mat, g);
       B.cone(ankle, [0.03 + lx, -0.5 + ly, z], o.legW * 0.55 * k, o.legW * 0.45 * k, mat, g);
     } else {
-      B.cone(knee, [lx, -0.5 + ly, z], o.legW * 0.78 * k, o.legW * 0.62 * k, mat, g);
+      B.cone(knee, foot, o.legW * 0.78 * k, o.legW * 0.62 * k, mat, g);
     }
     if (o.robot) B.ell(knee, [0.045, 0.045, 0.045], ACCENT, g);
     B.ell([0.04 + lx, -0.49 + ly, z], [0.065, 0.024, 0.04], o.robot ? ACCENT : MARK, g);
     for (let pr = 0; pr < (o.armPairs ?? 1); pr++) {
-      const ay = o.shY - pr * 0.12, az = s * (0.16 - pr * 0.02) * k, reach = s > 0 ? 1 : 0.5;
-      const elbow: V3 = [0.05 * reach + ax * 0.6, ay - 0.17, az * 1.1];
+      const ay = o.shY - pr * 0.12 + bob, az = s * (0.16 - pr * 0.02) * k, reach = s > 0 ? 1 : 0.5;
+      // Insect arms twitch in quick alternation; the rest swing with the stride.
+      const aX = o.twitch && MOVING ? 0.035 * Math.sin((PH * 2 + pr * 0.5 + (s > 0 ? 0 : 0.25)) * TAU) : ax;
+      const elbow: V3 = [0.05 * reach + aX * 0.6, ay - 0.17, az * 1.1];
       B.ell([0, ay, az * 0.85], [0.055, 0.05, 0.05], mat, g);
       B.cone([0, ay, az], elbow, o.armW * k, o.armW * 0.78 * k, mat, g);
-      B.cone(elbow, [0.17 * reach + ax, ay - 0.24, az * 1.1], o.armW * 0.78 * k, o.armW * 0.6 * k, mat, g);
+      B.cone(elbow, [0.17 * reach + aX, ay - 0.24, az * 1.1], o.armW * 0.78 * k, o.armW * 0.6 * k, mat, g);
       if (o.robot) B.ell(elbow, [0.035, 0.035, 0.035], ACCENT, g);
-      B.ell([0.19 * reach + ax, ay - 0.25, az * 1.1], [0.034, 0.03, 0.03], hand, g);
+      B.ell([0.19 * reach + aX, ay - 0.25, az * 1.1], [0.034, 0.03, 0.03], hand, g);
     }
   }
 }
@@ -772,6 +818,9 @@ function planHumanoid(B: Body, t: Traits): void {
   // Build varies by lineage: slender and tall, or broad and stocky.
   const lean = hash3(t.seed, 11, 2, 7);
   const w = 0.13 + lean * 0.05, tall = 1 + (0.5 - lean) * 0.12;
+  // Gait: an easy upright walk, arms swinging, the body rising at each step.
+  const bob = bob2(0.014);
+  const m = markOf(B);
   B.ell([0, 0.12 * tall, 0], [w * k, 0.22 * tall, w * 0.85 * k], PRIMARY, gBody);
   B.ell([0, -0.08, 0], [w * 0.8 * k, 0.1, w * 0.7 * k], PRIMARY, gBody);
   B.cone([0.01, 0.3 * tall, 0], [0.02, 0.4 * tall, 0], 0.055, 0.05, PRIMARY, gBody);
@@ -784,7 +833,8 @@ function planHumanoid(B: Body, t: Traits): void {
   headParts(B, t, h, hr, gHead, gNear, gFar);
   // A tunic band: the first thing a people makes is clothing.
   B.ell([0, 0.0, 0], [w * 1.04 * k, 0.05, w * 0.9 * k], ACCENT, gBody);
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.1, shY: 0.27 * tall, legW: 0.06, armW: 0.045 });
+  moveSince(B, m, pose([0, -0.1, 0], 0, 0, bob));
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.1, shY: 0.27 * tall, legW: 0.06, armW: 0.045, bob });
 }
 
 /**
@@ -794,6 +844,10 @@ function planHumanoid(B: Body, t: Traits): void {
 function planSimian(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.03), gBody = B.group(0, 0.08), gNear = B.group(1, 0.03), gHead = B.group(0, 0.05);
+  // Gait: a rolling knuckle-walk; the heavy chest rocks side to side over
+  // the hips and drops onto each arm.
+  const rock = 0.07 * sw(0), bob = bob2(0.018, 0.25);
+  const m = markOf(B);
   // A barrel chest leaning forward over the hips.
   B.ell([0.04, 0.1, 0], [0.17 * k, 0.2, 0.15 * k], PRIMARY, gBody);
   B.ell([0.1, 0.06, 0], [0.1 * k, 0.13, 0.11 * k], BELLY, gBody);
@@ -810,6 +864,7 @@ function planSimian(B: Body, t: Traits): void {
   // Fur: a darker mantle over the back and crown.
   B.ell([-0.02, 0.24, 0], [0.14 * k, 0.1, 0.16 * k], MARK, gBody);
   B.ell([h[0] - hr * 0.25, h[1] + hr * 0.55, 0], [hr * 0.8, hr * 0.45, hr * 0.85], MARK, gHead);
+  moveSince(B, m, pose([-0.04, -0.1, 0], rock, 0, -bob));
   for (const [sd, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     const z = sd * 0.09 * k;
     const [ls, ll] = step(sd > 0 ? 0 : 0.5, 0.62);
@@ -822,7 +877,7 @@ function planSimian(B: Body, t: Traits): void {
     // Long arms hanging to the ground: knuckles down, swinging opposite the legs.
     const [as2, al] = step(sd > 0 ? 0.5 : 0, 0.62);
     const ax = STRIDE * 0.6 * as2;
-    const sh: V3 = [0.12, 0.25, sd * 0.17 * k];
+    const sh = pose([-0.04, -0.1, 0], rock, 0, -bob)([0.12, 0.25, sd * 0.17 * k]);
     const elbow: V3 = [0.24 + ax * 0.5, 0.0, sd * 0.2 * k];
     B.ell(sh, [0.07, 0.065, 0.065], PRIMARY, g);
     B.cone(sh, elbow, 0.06 * k, 0.05 * k, PRIMARY, g);
@@ -834,6 +889,10 @@ function planSimian(B: Body, t: Traits): void {
 function planReptilian(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.03), gBody = B.group(0, 0.08), gNear = B.group(1, 0.03), gHead = B.group(0, 0.05);
+  // Gait: long, low strides; the body pitches forward and back over the
+  // hips against the swing of the tail, arms held close.
+  const pitch = 0.06 * sw(0.1), bob = bob2(0.01);
+  const m = markOf(B);
   B.ell([0, 0.1, 0], [0.16 * k, 0.22, 0.14 * k], PRIMARY, gBody);
   B.ell([0.04, 0.06, 0], [0.11 * k, 0.17, 0.12 * k], BELLY, gBody);
   B.cone([0.02, 0.28, 0], [0.08, 0.42, 0], 0.07, 0.055, PRIMARY, gBody);
@@ -841,25 +900,32 @@ function planReptilian(B: Body, t: Traits): void {
   B.ell(h, [hr * 1.1, hr * 0.9, hr * 0.85], PRIMARY, gHead);
   B.cone([h[0] + hr * 0.5, h[1] - hr * 0.2, 0], [h[0] + hr * 1.9, h[1] - hr * 0.4, 0], hr * 0.55, hr * 0.3, PRIMARY, gHead);
   headParts(B, t, h, hr, gHead, gNear, gFar);
+  moveSince(B, m, pose([0, -0.08, 0], -pitch, 0, bob));
   const tw = 0.05 * sw(0.25);
   B.chain([[-0.1, -0.08, 0], [-0.3, -0.2 + tw * 0.3, 0], [-0.5, -0.3 + tw, 0], [-0.62, -0.33 + tw, 0]], 0.08 * k, 0.015, PRIMARY, gBody);
   // Scutes down the back.
   for (let i = 0; i < 5; i++) B.cone([-0.1 - i * 0.03, 0.3 - i * 0.09, 0], [-0.16 - i * 0.03, 0.34 - i * 0.09, 0], 0.03, 0.006, MARK, gBody);
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.26, legW: 0.075, armW: 0.045, digitigrade: true });
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.26, legW: 0.075, armW: 0.045, digitigrade: true, stride: 1.2, duty: 0.6, armSwing: 0.1, bob });
 }
 
 function planAvian(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.03), gBody = B.group(0, 0.08), gNear = B.group(1, 0.03), gHead = B.group(0, 0.04);
+  // Gait: short, high-stepping strides; the head jerks forward and holds
+  // (the bird's head-bob) while the body bounces.
+  const bob = bob2(0.02), jerk = MOVING ? 0.04 * Math.tanh(4 * sw(0.15)) : 0;
+  const m = markOf(B);
   B.ell([0, 0.12, 0], [0.15 * k, 0.21, 0.13 * k], PRIMARY, gBody);
   B.ell([0.05, 0.08, 0], [0.1 * k, 0.15, 0.11 * k], BELLY, gBody);
   B.cone([0.02, 0.3, 0], [0.06, 0.42, 0], 0.05, 0.045, PRIMARY, gBody);
   const h: V3 = [0.08, 0.5, 0], hr = 0.1 * (1 + Math.max(0, t.intel - 6) * 0.04);
+  const mh = markOf(B);
   B.ell(h, [hr, hr, hr * 0.9], PRIMARY, gHead);
   // Beak and crest.
   B.cone([h[0] + hr * 0.7, h[1] - hr * 0.1, 0], [h[0] + hr * 1.8, h[1] - hr * 0.45, 0], hr * 0.32, hr * 0.04, BONE, gHead);
   for (let i = 0; i < 3; i++) B.cone([h[0] - hr * 0.3, h[1] + hr * 0.7, 0], [h[0] - hr * (1 + i * 0.4), h[1] + hr * (1.5 - i * 0.2), (i - 1) * 0.03], 0.03, 0.005, ACCENT, gHead);
   headParts(B, t, h, hr, gHead, gNear, gFar);
+  moveSince(B, mh, pose(h, 0, jerk, 0));
   // Folded wing-arms: feathered sleeves from shoulder to wrist.
   for (const [sd, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     const z = sd * 0.15 * k, fl = 0.03 * flap();
@@ -867,18 +933,24 @@ function planAvian(B: Body, t: Traits): void {
   }
   // Tail fan.
   B.tri([-0.12, -0.04, 0], [-0.38, -0.2, 0.07], [-0.36, -0.08, -0.07], 0.012, WING, gBody);
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.24, legW: 0.045, armW: 0.035, digitigrade: true, hand: BONE });
+  moveSince(B, m, pose([0, -0.08, 0], 0, 0, bob));
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.24, legW: 0.045, armW: 0.035, digitigrade: true, hand: BONE, stride: 0.75, duty: 0.55, lift: 1.8, armSwing: 0, bob });
 }
 
 function planInsectoid(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.02), gBody = B.group(0, 0.03), gNear = B.group(1, 0.02), gHead = B.group(0, 0.02);
-  // Abdomen behind, an upright thorax, a narrow waist.
+  // Gait: a quick skitter of short steps; the arms twitch, the head and its
+  // antennae tilt as it tastes the air, the abdomen bobs behind.
+  const bob = bob2(0.006), tilt = 0.08 * sw(0.3);
+  const ma = markOf(B);
   B.ell([-0.18, -0.08, 0], [0.2, 0.13 * k, 0.13 * k], PRIMARY, gBody);
   B.ell([0.0, 0.16, 0], [0.1 * k, 0.17, 0.1 * k], SHELL, gBody);
   B.ell([0.0, 0.0, 0], [0.06, 0.05, 0.06], MARK, gBody);
   for (let i = 0; i < 3; i++) B.ell([-0.12 - i * 0.08, -0.06 + i * 0.01, 0], [0.025, 0.12 * k, 0.12 * k], MARK, gBody);
+  moveSince(B, ma, pose([0, 0, 0], 0.03 * sw(0), 0, bob));
   const h: V3 = [0.06, 0.42, 0], hr = 0.08 * (1 + Math.max(0, t.intel - 6) * 0.05);
+  const mh = markOf(B);
   B.ell(h, [hr * 1.1, hr * 1.2, hr], PRIMARY, gHead);
   // Mandibles and antennae, whatever the senses.
   for (const sd of [1, -1]) {
@@ -886,7 +958,8 @@ function planInsectoid(B: Body, t: Traits): void {
     B.chain([[h[0] + hr * 0.3, h[1] + hr * 0.8, sd * hr * 0.3], [h[0] + hr * 0.9, h[1] + hr * 2.0, sd * hr * 0.5], [h[0] + hr * 1.8, h[1] + hr * 2.4, sd * hr * 0.6]], hr * 0.1, hr * 0.05, ACCENT, sd > 0 ? gNear : gFar);
   }
   B.eyes.push({ p: [h[0] + hr * 0.55, h[1] + hr * 0.3, hr * 0.62], style: 'compound', size: 1.4 });
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.04, shY: 0.28, legW: 0.035, armW: 0.028, mat: MARK, hand: SHELL, armPairs: 2, digitigrade: true });
+  moveSince(B, mh, pose([h[0], h[1] - hr, 0], tilt, 0, bob));
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.04, shY: 0.28, legW: 0.035, armW: 0.028, mat: MARK, hand: SHELL, armPairs: 2, digitigrade: true, stride: 0.55, duty: 0.5, lift: 0.7, twitch: true, bob });
 }
 
 function planCephaloid(B: Body, t: Traits): void {
@@ -894,10 +967,15 @@ function planCephaloid(B: Body, t: Traits): void {
   const gFar = B.group(-1, 0.05), gBody = B.group(0, 0.1), gNear = B.group(1, 0.05);
   // A great mantle that holds the mind, carried on walking tentacles.
   const mh = 0.22 * (1 + Math.max(0, t.intel - 6) * 0.05);
-  B.ell([0, 0.18, 0], [mh * 0.85 * k, mh * 1.15, mh * 0.85 * k], PRIMARY, gBody);
+  // Gait: a ripple runs round the tentacles while the mantle breathes,
+  // swelling tall and settling, and leans into the direction of travel.
+  const pulse = MOVING ? 0.07 * sw(0) : 0;
+  const m = markOf(B);
+  B.ell([0, 0.18, 0], [mh * 0.85 * k * (1 - pulse * 0.5), mh * 1.15 * (1 + pulse), mh * 0.85 * k * (1 - pulse * 0.5)], PRIMARY, gBody);
   B.ell([0.05, 0.1, 0], [mh * 0.6, mh * 0.7, mh * 0.7], BELLY, gBody);
   for (let i = 0; i < 4; i++) B.dots.push({ p: [-0.05 + i * 0.04, 0.32 - i * 0.02, mh * 0.75], mat: i % 2 ? MARK : GLOW });
   B.eyes.push({ p: [mh * 0.55, 0.12, mh * 0.62], style: 'vision', size: 1.3 });
+  moveSince(B, m, pose([0, -0.02, 0], -0.06 - 0.04 * sw(0.2), 0, pulse * mh * 0.5));
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * TAU, cz = Math.cos(a) * 0.12 * k, cx = Math.sin(a) * 0.1;
     const [ss, sl] = step(i / 6, 0.6);
@@ -910,14 +988,21 @@ function planMycoid(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.04), gBody = B.group(0, 0.08), gNear = B.group(1, 0.04);
   // A stalk-body under a broad cap; it walks on root-legs.
+  // Gait: a slow shuffle of roots; the stalk bends and the heavy cap sways
+  // a beat behind it.
+  const bend = 0.05 * sw(0), capSway = 0.09 * sw(0.2);
+  const m = markOf(B);
   B.cone([0, -0.18, 0], [0.02, 0.3, 0], 0.11 * k, 0.08 * k, BELLY, gBody);
+  const mc = markOf(B);
   B.ell([0.02, 0.38, 0], [0.26 * k, 0.11, 0.24 * k], PRIMARY, gBody);
   B.ell([0.02, 0.33, 0], [0.24 * k, 0.04, 0.22 * k], MARK, gBody);
   for (let i = 0; i < 7; i++) {
     const a = hash3(t.seed, i, 3, 1) * TAU, r = 0.08 + hash3(t.seed, i, 4, 1) * 0.12;
     B.dots.push({ p: [0.02 + Math.cos(a) * r, 0.47, Math.sin(a) * r], mat: i % 3 ? ACCENT : GLOW });
   }
+  moveSince(B, mc, pose([0.02, 0.3, 0], capSway));
   B.eyes.push({ p: [0.1, 0.14, 0.09], style: 'spot', size: 1 });
+  moveSince(B, m, pose([0, -0.18, 0], bend));
   for (const [sd, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
     for (let i = 0; i < 2; i++) {
       const z = sd * (0.05 + i * 0.05) * k, [ss, sl] = step(sd > 0 ? i * 0.5 : 0.25 + i * 0.5, 0.6);
@@ -932,6 +1017,10 @@ function planCrystalline(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.0, true, true), gBody = B.group(0, 0.01, true, true), gNear = B.group(1, 0.0, true, true);
   // Faceted shards around a glowing core.
+  // Gait: hardly a walk at all: it glides on short sliding steps, the whole
+  // body floating up and down once a cycle and turning slowly, arms still.
+  const float = MOVING ? 0.025 * sw(0) : 0, turn = 0.05 * sw(0.25);
+  const m = markOf(B);
   B.cone([0, -0.1, 0], [0.02, 0.3, 0], 0.14 * k, 0.08 * k, PRIMARY, gBody);
   B.ell([0.03, 0.12, 0.07], [0.05, 0.06, 0.05], GLOW, gBody);
   B.cone([0.03, 0.32, 0], [0.06, 0.58, 0], 0.09, 0.0, PRIMARY, gBody);
@@ -940,23 +1029,29 @@ function planCrystalline(B: Body, t: Traits): void {
     B.cone([Math.cos(a) * 0.05, 0.2, Math.sin(a) * 0.06], [Math.cos(a) * r * 2, 0.3 + hash3(t.seed, i, 8, 2) * 0.2, Math.sin(a) * r * 1.6], 0.04, 0.0, ACCENT, gBody);
   }
   B.eyes.push({ p: [0.11, 0.4, 0.05], style: 'spot', size: 0.9 });
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.1, shY: 0.22, legW: 0.06, armW: 0.04, hand: GLOW });
+  moveSince(B, m, pose([0, -0.1, 0], turn, 0, float));
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.1, shY: 0.22, legW: 0.06, armW: 0.04, hand: GLOW, stride: 0.35, duty: 0.8, lift: 0.3, armSwing: 0, bob: float });
 }
 
 function planMechanoid(B: Body, t: Traits): void {
   const k = t.bulk;
   const gFar = B.group(-1, 0.0, true, true), gBody = B.group(0, 0.005, true, true), gNear = B.group(1, 0.0, true, true), gHead = B.group(0, 0.005, true, true);
   // A machine body: a plated torso, a sensor head with a lit visor, jointed limbs.
+  // Gait: stiff-legged and exact: knees locked, every joint snapping between
+  // servo positions, the torso level, the head panning to scan.
+  const scan = MOVING ? 0.12 * Math.round(sw(0.1) * 2) / 2 : 0;
   B.cone([0, -0.06, 0], [0, 0.3, 0], 0.15 * k, 0.17 * k, PRIMARY, gBody);
   B.ell([0.06, 0.16, 0], [0.12 * k, 0.1, 0.13 * k], SHELL, gBody);
   B.ell([0.14, 0.18, 0.05], [0.03, 0.03, 0.03], GLOW, gBody);
   B.cone([0, 0.3, 0], [0, 0.38, 0], 0.04, 0.04, ACCENT, gBody);
   const h: V3 = [0.02, 0.47, 0], hr = 0.1;
+  const mh = markOf(B);
   B.cone([h[0], h[1] - hr * 0.8, 0], [h[0], h[1] + hr * 0.8, 0], hr * 1.0, hr * 0.95, PRIMARY, gHead);
   B.ell([h[0] + hr * 0.8, h[1] + hr * 0.1, 0], [hr * 0.25, hr * 0.28, hr * 0.85], GLOW, gHead);
   B.chain([[h[0] - hr * 0.3, h[1] + hr * 0.8, 0], [h[0] - hr * 0.5, h[1] + hr * 2.0, 0]], 0.012, 0.008, ACCENT, gHead);
   B.ell([h[0] - hr * 0.5, h[1] + hr * 2.05, 0], [0.025, 0.025, 0.025], GLOW, gHead);
-  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.27, legW: 0.055, armW: 0.04, hand: ACCENT, robot: true });
+  moveSince(B, mh, pose([h[0], h[1] - hr * 0.8, 0], scan * 0.4, scan * 0.15, 0));
+  uprightLimbs(B, t, gNear, gFar, { hipY: -0.08, shY: 0.27, legW: 0.055, armW: 0.04, hand: ACCENT, robot: true, stiff: true, stride: 0.8, duty: 0.5, lift: 0.6, armSwing: 0.3 });
 }
 
 /** Which people a walking, thinking lineage becomes (see Sapient forms). */
@@ -1247,7 +1342,14 @@ export function forgeCreatureFrames(g: SpeciesGenome, px: number, n = 4): Forged
 }
 
 /** How a body plan moves: frames per second of its cycle (see forgeCreatureFrames). */
+/** Cycles per second of each people's walk (see the gaits in Sapient forms). */
+const SAPIENT_RATE: Record<string, number> = {
+  humanoid: 7, simian: 6, reptilian: 6, avian: 9, insectoid: 12, cephaloid: 5, mycoid: 3, crystalline: 4, mechanoid: 6,
+};
+
 export function motionRate(g: SpeciesGenome): number {
+  const form = (g.dna.locomotion === 'walking' || g.physicalTraits.bodyStructure === 'mechanical' || g.physicalTraits.bodyStructure === 'crystalline') ? sapientFormOf(g) : null;
+  if (form) return SAPIENT_RATE[form] ?? 7;
   const loc = g.dna.locomotion, mob = g.physicalTraits.mobilityType;
   if (loc === 'flying') return g.physicalTraits.bodyStructure === 'exoskeletal' || g.physicalTraits.bodyStructure === 'segmented' ? 16 : mob === 'gas bladders' ? 3 : 7;
   if (loc === 'walking') return 7;

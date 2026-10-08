@@ -49,7 +49,19 @@ const cast: SpeciesGenome[] = [
   G('cell', { locomotion: 'swimming', environment: 'ocean', metabolism: 'chemosynthetic', diet: 'producer' }, { bodyStructure: 'single-celled', mobilityType: 'flagella', size: 'microscopic', sensorySystem: 'photoreception' }),
   G('star', { locomotion: 'crawling', environment: 'coastal', diet: 'carnivore' }, { bodyStructure: 'radial' }),
   G('worm', { locomotion: 'swimming', environment: 'deep_sea', diet: 'decomposer' }, { bodyStructure: 'filamentous' }),
+  // The sapient peoples, each with its own walk.
+  G('ap2', { intelligence: 8, social: 8, aggression: 2 }, {}),
+  G('ap4', { intelligence: 8, aggression: 3 }, {}),
+  G('ap1', { intelligence: 8, aggression: 4 }, { size: 'large' }),
+  G('ap0', { intelligence: 8 }, {}),
+  G('in1', { intelligence: 8 }, { bodyStructure: 'exoskeletal', sensorySystem: 'compound eyes' }),
+  G('ce1', { intelligence: 8 }, { bodyStructure: 'gelatinous' }),
+  G('my1', { intelligence: 8, metabolism: 'chemosynthetic' }, { bodyStructure: 'filamentous' }),
+  G('cr1', { intelligence: 8 }, { bodyStructure: 'crystalline' }),
+  G('me1', { intelligence: 9 }, { bodyStructure: 'mechanical' }),
 ];
+// SAPIENT=1: only the sapient peoples (the last nine).
+if (process.env.SAPIENT === '1') cast.splice(0, cast.length - 9);
 
 const frames = cast.map(g => forgeCreatureFrames(g, PX, N));
 const CELL = Math.max(...frames.flat().map(f => Math.max(f.width, f.height))) + 4;
