@@ -1,5 +1,6 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
+import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
 import { nationArch } from './rendering/Architecture';
@@ -411,6 +412,8 @@ function launchBigBang(): void {
 }
 
 async function launchBigBangAsync(): Promise<void> {
+  // Card icons load now, not when a card first flips (they used to pop in late).
+  void preloadDivineIcons();
   applyPlayModeControls();
   const planetName = (document.getElementById('planet-name-input') as HTMLInputElement)?.value.trim() || 'Terra';
 
