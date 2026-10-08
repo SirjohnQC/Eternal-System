@@ -104,7 +104,11 @@ const ROLL_EVERY = 2;
 export class WeatherEvents {
   readonly list: Vortex[] = [];
   private rng: () => number;
-  private nextRoll = 0;
+  // -0, not 0: V8 stores 0 as a small integer and later rolls as doubles, and
+  // that field change kept deoptimising the cloud painter that reads this
+  // object every frame (garbage each frame). -0 is a double from the start
+  // and compares exactly like 0.
+  private nextRoll = -0;
 
   constructor(seed: number) {
     this.rng = weatherRng((seed ^ 0x70f00d5) >>> 0);
@@ -113,7 +117,7 @@ export class WeatherEvents {
   reset(seed: number): void {
     this.list.length = 0;
     this.rng = weatherRng((seed ^ 0x70f00d5) >>> 0);
-    this.nextRoll = 0;
+    this.nextRoll = -0;
   }
 
   count(kind: number): number {

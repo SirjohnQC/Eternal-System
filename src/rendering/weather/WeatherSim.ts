@@ -294,7 +294,9 @@ export class WeatherSim {
     const rrx = rainy >= 1.5 ? 7 : 5, rry = rainy >= 1.5 ? 3.2 : 2.4;
     const rrx2 = rrx * rrx, rry2 = rry * rry;
     const dry = rainy <= 0;
-    const n = this.sysN, sx = this.sysX, sy = this.sysY, st = this.sysT;
+    // Only the slots that exist (see seedCover): reading the missing 7th slot
+    // made every load in this loop generic and boxed, ~38 KB of garbage a frame.
+    const n = Math.min(this.sysN, this.sysT.length), sx = this.sysX, sy = this.sysY, st = this.sysT;
     const hi = this.highCloud, snow = this.snow, conv = this.convection, form = this.form;
     for (let j = 0; j < WX_NY; j++) {
       const wind = this.baseWindU(j);

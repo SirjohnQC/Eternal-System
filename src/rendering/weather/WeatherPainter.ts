@@ -944,7 +944,7 @@ export class WeatherPainter {
         const topY = yl - T * dome - pf * 4 * k, botY = core ? yl : topY + slab;
         for (let y = Math.floor(topY); y <= botY; y++) {
           const fromTop = y - topY;
-          let r: number, g: number, b: number;
+          let r = 0, g = 0, b = 0;
           if (fromTop < 2 * k) {
             // Anvil top: bright, lit toward the sun, the puffs shading it.
             const sunny = u * sunX > -0.2, f = sunny ? 0.92 + 0.08 * pf : 0.78 + 0.1 * pf;
@@ -1002,7 +1002,7 @@ export class WeatherPainter {
         const sunny = slope * sunX < 0 || (slope * sunX === 0 && q * sunX > 0);
         for (let y = Math.floor(yl - T); y <= yl; y++) {
           const fromTop = y - (yl - T);
-          let r: number, g: number, b: number;
+          let r = 0, g = 0, b = 0;
           // Face shading by height above the ground (level bands), not by
           // distance from each column's own top (that zigzagged).
           const up = (yl - y) / (20 * k);
@@ -1399,7 +1399,8 @@ export class WeatherPainter {
       // perspective stretch does not leave empty scanlines between face rows.
       const yl = sky[n], yh = skyH[n];
       const x = xl + dX, y = yl + dY;
-      let X0: number, X1: number, Y0: number, Y1: number;
+      // Initialised: left undefined they made a mixed phi, and every pixel boxed its numbers.
+      let X0 = 0, X1 = 0, Y0 = 0, Y1 = 0;
       // Unclipped base footprint; a volume cloud rises above it, so the band
       // clip comes after its height is known.
       if (one) {
@@ -1442,7 +1443,7 @@ export class WeatherPainter {
       const c00 = r0 + a, c01 = r0 + b, c10 = r1 + a, c11 = r1 + b, wtx = tx, wty = ty;
       // Cumulus stays puffy. Stratus is a flat layer, a cap hugs the slope,
       // and cirrus is filaments running with the zonal wind.
-      let dd: number;
+      let dd = 0;
       if (kind === WK.CIRRUS) {
         const phase = fy * 2.2 + (fx - shift[jr]) * 0.25;
         const wrapped = phase - Math.floor(phase);
@@ -1604,7 +1605,7 @@ export class WeatherPainter {
       // 1/2 between neighbouring columns and striped the sides solid/sheer.
       const ac = core > 0.2 ? (intensity * A_ONE) | 0 : ai;
       for (let Y = ya; Y < yb; Y++) {
-        let cr: number, cg: number, cb: number;
+        let cr = 0, cg = 0, cb = 0;
         const fromTop = Y - top;
         if (fromTop < topRows) { cr = tR; cg = tG; cb = tB; }
         else {
@@ -1623,10 +1624,10 @@ export class WeatherPainter {
     const it = (globalThis as { __zoomIters?: Record<string, number> }).__zoomIters;
     if (it) it.clouds = (it.clouds ?? 0) + visited;
 
-    const ev = this.events;
-    if (ev) {
-      for (let e = 0; e < ev.list.length; e++) {
-        const v = ev.list[e];
+    const evList = this.events ? this.events.list : null;
+    if (evList) {
+      for (let e = 0, en = evList.length; e < en; e++) {
+        const v = evList[e];
         if (!this.mapField(v.x, v.y)) continue;
         switch (v.kind) {
           case VX.TYPHOON: case VX.BLIZZARD: this.paintSpiral(d, w, h, yLo, v, sunX, sunUp, intensity); break;
@@ -1637,6 +1638,14 @@ export class WeatherPainter {
       }
     }
 
+    // Lightning in its own method: it runs only while a bolt is live, and
+    // inside this function its rarely-run code kept throwing the optimised
+    // painter back to the baseline tier, where every number is a heap object.
+    if (this.fCount > 0) this.paintFlashes(d, w, h, yLo, one, vr, vdx, vdy, intensity);
+  }
+
+  /** Bolts, forks, strikes and halos for the live flashes (see paintClouds). */
+  private paintFlashes(d: Uint8ClampedArray, w: number, h: number, yLo: number, one: boolean, vr: number, vdx: number, vdy: number, intensity: number): void {
     const HR = this.haloR, WA = this.wander;
     for (let f = 0; f < this.fCount; f++) {
       let s = this.fSeed[f], bx = this.fX[f];

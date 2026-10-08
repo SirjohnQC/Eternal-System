@@ -413,7 +413,9 @@ console.log('\n  PHYSICS');
       cover /= WX_N;
       if (corr(snap, s.cloud) > 0.95) frozen++;
       snap = s.cloud.slice();
-      const dead = wet ? cover < 0.02 : peak <= 0.05;
+      // A dry world's sky may clear almost completely for a while (since the
+      // severe-weather rework desert peaks dip to ~0.05); dead still reads 0.
+      const dead = wet ? cover < 0.02 : peak < 0.02;
       if ((bad || dead || cover > 0.75) && !failed1) { failed1 = true; fails.push(`${t} seed ${seed} step ${n}: cover ${(cover * 100).toFixed(1)}% peak ${peak.toFixed(2)}${bad ? ' NaN/range' : ''}`); }
     }
     if (frozen > samples * 0.5) fails.push(`${t} seed ${seed}: frozen in ${frozen}/${samples} samples`);
@@ -452,7 +454,9 @@ console.log('\n  PHYSICS');
     return { worstShare, worstSpell, leastEver, worstSoaked };
   };
   const rc = rainCycle({}), rcAbl = rainCycle({ cycle: true, diurnal: true });
-  const cycles = (r: typeof rc) => r.worstShare <= 0.4 && r.worstSoaked <= 0.02 && r.leastEver >= 0.2;
+  // leastEver 0.15 (was 0.2): rocky worlds can now be dry canyon worlds
+  // (TerrainArchetypes), and one rains on ~19% of its cells in an hour.
+  const cycles = (r: typeof rc) => r.worstShare <= 0.4 && r.worstSoaked <= 0.02 && r.leastEver >= 0.15;
   const fmt = (r: typeof rc) => `median wet share ${(r.worstShare * 100).toFixed(0)}%, wet >80% of the time ${(r.worstSoaked * 100).toFixed(1)}% of planet, least rained-on ${(r.leastEver * 100).toFixed(0)}% (longest spell ${r.worstSpell.toFixed(0)} s)`;
   check('rain comes and goes', cycles(rc), fmt(rc));
   check('  control: no shower cycle', !cycles(rcAbl), fmt(rcAbl));
@@ -724,7 +728,7 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   check('  control: lava ash floor hides the face', blanket > 0.70, `${(blanket * 100).toFixed(0)}% > 70%`);
 
   // Storm reads in a still frame.
-  const stormStats = (over: Partial<ClimateInput>, seed: number, type = 'storm') => {
+  const stormStats = (over: Partial<ClimateInput>, seed: number, type = 'storm', noEvents = false) => {
     const p = painterFor(type, seed, over);
     let minLive = Infinity, minWet = Infinity; const f0 = p.painter.flashesTotal;
     // R4c: the spec's metric is the storm type's STEADY STATE. Rain minima are
@@ -732,6 +736,7 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
     // seed's sim is still ramping (seed 99: ~30 live at frame 0, 57 by frame 30).
     // Flashes are counted over the full minute.
     for (let f = 0; f < 60 * 60; f++) {
+      if (noEvents) p.sim.events.list.length = 0;
       p.frame();
       if (f >= 300 && f % 30 === 0) {
         minLive = Math.min(minLive, p.painter.pCount);
@@ -748,7 +753,10 @@ function painterFor(type: string, seed: number, over: Partial<ClimateInput> = {}
   // drier than ocean worlds in terrain (seed 99 is 2% water). Desert reads 0.
   const STORM_WET_FLOOR = 0.005;
   const st = STORM_SEEDS.map(s => stormStats({}, s));
-  const stCalm = STORM_SEEDS.map(s => stormStats({ extinctionPressure: -0.6 }, s));
+  // Storm worlds brew typhoons whatever the pressure (WeatherEvents, severe
+  // weather per world), and a typhoon flashes in its eyewall; the control is
+  // about storm-cell lightning, so it runs without those events.
+  const stCalm = STORM_SEEDS.map(s => stormStats({ extinctionPressure: -0.6 }, s, 'storm', true));
   // Rain somewhere on the planet at every moment, not on one fixed face: with
   // the shower cycle a storm world can turn a dry region to the viewer (seed
   // 99's face: mean ~23 live particles, the old sim's constant drizzle hid it).
