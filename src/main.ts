@@ -55,6 +55,10 @@ import { runtimeState } from './simulation/GameState';
 import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
+import {
+  SAVE_VERSION, migrateSave, gameStateFromSave,
+  type EternalSaveFile as SaveFile, type ParsedSave,
+} from './simulation/SaveFormat';
 import { symptomsOf } from './simulation/Nations';
 import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
@@ -3965,20 +3969,16 @@ function randomizeSpeciationName(): void {
 
 // ─── Save / Load ──────────────────────────────────────────────────────────────
 
+// The key name predates save versioning; the format version lives inside the
+// save (`SAVE_VERSION`). Don't rename it — existing saves would be orphaned.
 const SAVE_KEY = 'eternal_save_v1';
 
-interface EternalSaveFile {
-  version: 1;
-  savedAt: number;
-  gameState: GameStateData;
-  engine: EngineSnapshot;
-  eventLog: EventLogEntry[];
-}
+type EternalSaveFile = SaveFile<EventLogEntry>;
 
 function buildSaveFile(): EternalSaveFile | null {
   if (!engine) return null;
   return {
-    version: 1,
+    version: SAVE_VERSION,
     savedAt: Date.now(),
     gameState: { ...gameState },
     engine: engine.serialize(),
@@ -4026,20 +4026,33 @@ function showSaveIndicator(label = 'SAVED'): void {
   setTimeout(() => el.classList.remove('visible'), 2000);
 }
 
-async function restoreFromBytes(bytes: Uint8Array): Promise<boolean> {
+/** Decode a gzipped save and bring it to the current format. */
+function parseSaveBytes(bytes: Uint8Array): ParsedSave {
+  let raw: unknown;
   try {
-    const json = ungzip(bytes, { to: 'string' });
-    const save = JSON.parse(json) as EternalSaveFile;
-    if (!save.gameState || !save.engine || save.version !== 1) return false;
-    return applyLoadedSave(save);
+    raw = JSON.parse(ungzip(bytes, { to: 'string' }));
+  } catch {
+    return { ok: false, reason: 'This file could not be read as an Eternal save — it may be corrupt.' };
+  }
+  return migrateSave(raw);
+}
+
+/** Load a save file; on failure returns the reason to show the player. */
+async function restoreFromBytes(bytes: Uint8Array): Promise<{ ok: boolean; reason?: string }> {
+  const parsed = parseSaveBytes(bytes);
+  if (!parsed.ok) return parsed;
+  try {
+    return { ok: applyLoadedSave(parsed.save as EternalSaveFile) };
   } catch (e) {
     logger.error('Save restore failed:', e);
-    return false;
+    return { ok: false, reason: 'The save was read but could not be restored.' };
   }
 }
 
 function applyLoadedSave(save: EternalSaveFile): boolean {
-  Object.assign(gameState, save.gameState);
+  // Defaults first, then the saved fields: a field newer than the save must
+  // not keep the current session's value.
+  Object.assign(gameState, gameStateFromSave(save.gameState));
   gameState.screen = 'game';
 
   // Branch definitions are rebuilt from saved ids by `engine.init()` below, so
@@ -4124,11 +4137,12 @@ function loadFromLocalStorage(): boolean {
   if (!b64) return false;
   try {
     const raw = atob(b64);
-    const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
-    const json = ungzip(bytes, { to: 'string' });
-    const save = JSON.parse(json) as EternalSaveFile;
-    if (!save.gameState || !save.engine || save.version !== 1) return false;
-    return applyLoadedSave(save);
+    const parsed = parseSaveBytes(Uint8Array.from(raw, c => c.charCodeAt(0)));
+    if (!parsed.ok) {
+      logger.warn('Auto-save not loaded:', parsed.reason);
+      return false;
+    }
+    return applyLoadedSave(parsed.save as EternalSaveFile);
   } catch {
     return false;
   }
@@ -4722,8 +4736,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     file.arrayBuffer().then(buf => {
-      void restoreFromBytes(new Uint8Array(buf)).then(ok => {
-        if (!ok) addChatMessage('[ Failed to load save file — it may be corrupt or from an incompatible version. ]', 'system');
+      void restoreFromBytes(new Uint8Array(buf)).then(res => {
+        if (!res.ok) addChatMessage(`[ Failed to load save file — ${res.reason ?? 'it may be corrupt.'} ]`, 'system');
       });
     });
     (e.target as HTMLInputElement).value = '';
