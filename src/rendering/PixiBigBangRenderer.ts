@@ -2183,6 +2183,18 @@ export class PixiBigBangRenderer {
           pixelOrbit(this.planetLayer, px, py, body * 0.72, 0x44ff88, bp, camera.scale);
         }
 
+        // A colony: a small pennant above the world — gold for the player's
+        // people, violet for another civilisation's (Colonies.ts).
+        const colony = engine.colonyAt(star.id, i);
+        if (colony && camera.scale >= 1.6 && reveal >= 1) {
+          const u = Math.max(0.3, 1 / camera.scale);
+          const color = colony.byPlayer ? 0xffcc44 : 0xb48cff;
+          const alpha = colony.status === 'outpost' ? 0.65 : 0.95;
+          const fx = px + body * 0.55, fy = py - body * 0.95;
+          this.planetLayer.rect(fx, fy, u, body * 0.6).fill({ color: 0xd8d0e8, alpha });          // mast
+          this.planetLayer.rect(fx + u, fy, body * 0.32, body * 0.2).fill({ color, alpha });        // pennant
+        }
+
         if (planet.moons.length > 0) {
           for (let m = 0; m < planet.moons.length; m++) {
             const moon = planet.moons[m];

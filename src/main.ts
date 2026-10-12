@@ -5837,6 +5837,11 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     if (isHome && engine?.isHomeForming() && star.formationStage) rows.push(['Forming', cap(String(star.formationStage).replace(/_/g, ' '))]);
     if (isHome && star.civLevel > 0) rows.push(['Civilisation', eraName(star)]);
     rows.push(['Moons', String(planet.moons.length)]);
+    const colony = engine?.colonyAt(star.id, planetIndex);
+    if (colony) {
+      const founder = engine!.colonyFounderName(colony);
+      rows.push(['Colony', `${founder} · ${colony.status === 'outpost' ? 'outpost' : 'colony'} · ${Math.round(colony.population * 100)}%`]);
+    }
     rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
   const card = document.createElement('div');

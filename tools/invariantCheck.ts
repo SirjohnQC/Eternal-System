@@ -25,6 +25,7 @@ const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
 const { runtimeState } = await import('../src/simulation/GameState');
 const { EVOLUTION_TICK_RATE } = await import('../src/simulation/EvolutionEngine');
 const { formationFaceType } = await import('../src/simulation/Formation');
+const { MAX_PER_CIV, MAX_TOTAL } = await import('../src/simulation/Colonies');
 let formingSamples = 0;   // how often the formation rule actually had a forming world to check
 const { assignDominantSpecies } = await import('../src/simulation/SpeciesDistribution');
 
@@ -173,6 +174,31 @@ rule({
   },
 });
 
+rule({
+  // Colonies live on real, living worlds, within the bounds Colonies.ts sets.
+  name: 'colonies are well-formed',
+  check: ({ engine }) => {
+    const e = engine as any, cs = e.colonies.colonies as any[];
+    if (cs.length > MAX_TOTAL) return `${cs.length} colonies > MAX_TOTAL ${MAX_TOTAL}`;
+    const per = new Map<number, number>();
+    for (const c of cs) {
+      const s = e.stars.find((x: any) => x.id === c.starId), p = s?.planets[c.planetIndex];
+      if (!s || s.isDead) return `${c.id} on a missing or dead star #${c.starId}`;
+      if (!p || p.type === 'gas') return `${c.id} on planet ${c.planetIndex} (${p?.type ?? 'missing'})`;
+      if (!(c.population >= 0 && c.population <= 1)) return `${c.id} population ${c.population}`;
+      if (s.isPlayerStar && c.planetIndex === engine.homeIndexOf(s)) return `${c.id} on the player's home world`;
+      per.set(c.founderStarId, (per.get(c.founderStarId) ?? 0) + 1);
+    }
+    for (const [id, n] of per) if (n > MAX_PER_CIV) return `star #${id} has ${n} colonies > ${MAX_PER_CIV}`;
+    for (const f of e.fleets as any[]) {
+      if (!f.ark) continue;
+      const to = e.stars.find((x: any) => x.id === f.toStarId);
+      if (to && !to.planets[f.ark.planetIndex]) return `ark ${f.id} bound for a missing planet`;
+    }
+    return null;
+  },
+});
+
 const lastHome = new Map<string, string>();   // seed -> "starId:index"
 rule({
   // Home is chosen once (start, exodus). Discovery landings at Space Age /
@@ -305,6 +331,52 @@ for (const { seed, stats } of SEEDS) {
       : null;
     break;
   }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: a colony ark, end to end (Colonies.ts, P1) ────────────────────
+// Real engine paths: launch → voyage (fleet) → landfall → growth → save/load.
+{
+  const r: Rule = { name: 'scenario: colony ark launches, lands, grows and survives a save', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_colony');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_colony');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    const launcher = { starId: ps.id, x: ps.x, y: ps.y, era: 6, techs: ['colony_ark'],
+      pressures: { hunger: 0, crowding: 1, scarcity: 0, unrest: 0, pollution: 0 },
+      values: { militarism: 0.5, piety: 0.5, curiosity: 0.8, collectivism: 0.5, xenophobia: 0.2 }, isPlayer: true };
+    const sites = (e.colonyCandidates() as any[]).filter(c => e.canSettle(ps.id, c))
+      .sort((a, b) => b.suitability - a.suitability);
+    if (!sites.length) throw new Error('no settleable world at all');
+    const site = sites[0];
+    e.launchArk(launcher, site);
+    const ark = e.fleets.find((f: any) => f.ark);
+    if (!ark) throw new Error('no ark fleet after launch');
+    // Fly it; a landfall roll is suitability-weighted, so retry the arrival a few times if it is lost.
+    let colony = null;
+    for (let attempt = 0; attempt < 12 && !colony; attempt++) {
+      if (attempt > 0) e.launchArk(launcher, site);
+      for (let i = 0; i < 1_000 && e.fleets.some((f: any) => f.ark); i++) e.updateFleets();
+      colony = e.colonyAt(site.starId, site.planetIndex);
+    }
+    if (!colony) throw new Error(`twelve arks to the best world (suitability ${sites[0].suitability.toFixed(2)}), no landfall`);
+    if (!colony.byPlayer || !colony.lineage) throw new Error('player colony without its own lineage copy');
+    if (colony.lineage === gameState.playerSpecies.find((sp: any) => sp.id === colony.homeLineageId)) throw new Error('lineage is shared, not copied');
+    const p0 = colony.population;
+    for (let i = 0; i < 20; i++) e.stepColonyWorlds([], null);
+    if (!(colony.population > p0)) throw new Error(`no growth on a good world (${p0} → ${colony.population})`);
+    const snap = JSON.parse(JSON.stringify(e.serialize()));
+    const e2 = new BigBangEngine(makeCanvas()) as any;
+    e2.init(SEEDS[0].stats, 'inv_colony');
+    e2.loadState(snap);
+    const c2 = e2.colonyAt(site.starId, site.planetIndex);
+    if (!c2 || Math.abs(c2.population - colony.population) > 1e-9) throw new Error('colony did not survive save/load');
+  } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 

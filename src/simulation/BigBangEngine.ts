@@ -3,6 +3,11 @@ import {
   emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
 } from './StarPolities';
+import {
+  type ColonyState, type Candidate, type Launcher, emptyColonies, launchDrive, pickTarget,
+  takenSites, siteKey, coloniesOf, landfallSucceeds, foundColony, stepColonies, colonyAt,
+  LAUNCH_COOLDOWN, MAX_PER_CIV, MAX_TOTAL, MIN_SUITABILITY,
+} from './Colonies';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
@@ -43,7 +48,7 @@ import {
   type BranchDef,
 } from './DnaBranches';
 import {
-  ARCHETYPES, systemHabitability, idealOrbitRadius, pickArchetype, rollBioTempo,
+  ARCHETYPES, systemHabitability, planetHabitability, idealOrbitRadius, pickArchetype, rollBioTempo,
   resolveTransition, rollCatastrophe, phaseLabel, survivesFloorCollapse,
   STALL_TIME_PENALTY, PLAYER_STALL_TIME_CAP,
   type LifeArchetype, type PlanetKind,
@@ -412,6 +417,8 @@ export interface Fleet {
   progress: number;
   hostile: boolean;
   isPlayerFleet: boolean;
+  /** A colony ark: where it will land, and what the world is worth to its people (Colonies.ts). */
+  ark?: { planetIndex: number; name: string; suitability: number; byPlayer: boolean };
 }
 
 export interface OrbitalFleet {
@@ -508,6 +515,8 @@ export interface EngineSnapshot {
   civilizations?: Record<number, Civilization>;
   /** Other stars' civilisations as agents, and trade routes between stars (StarPolities). */
   interstellar?: InterstellarState;
+  /** Colonies on other worlds (Colonies.ts). Optional: older saves have none. */
+  colonies?: ColonyState;
 }
 
 export interface Camera {
@@ -704,6 +713,7 @@ export class BigBangEngine {
   activeWars: War[] = [];
   /** Other stars' civilisations as agents, and the trade routes between stars (StarPolities.ts). */
   interstellar: InterstellarState = emptyInterstellar();
+  colonies: ColonyState = emptyColonies();
   private lastPolityTick = 0;
   private supernovaFlashes: SupernovaFlash[] = [];
   private galaxies: Galaxy[] = [];
@@ -3463,11 +3473,148 @@ export class BigBangEngine {
         if (ns && ps && (a === ps.id || b === ps.id)) ns.worldEvent(this.tick, line, [n.kind === 'trade' ? 'two peoples among the stars, each with what the other lacked' : 'ill will between the stars']);
       }
     }
+    this.stepColonyWorlds(views, home);
+
     // Off-world goods reach the home world's nations (the neediest first).
     if (ns && ps) {
       const imp = homeImports(this.interstellar, ps.id);
       ns.setOffworld(imp.food, imp.materials);
     }
+  }
+
+  // ── Colonies (Colonies.ts; docs/plans/2026-10-12-expansion-and-divergence.md) ──
+
+  /**
+   * Civilisations that know the colony ark launch one when their pressures and
+   * culture push them; then every colony grows or dies out. Rolls come from a
+   * fork, so colonies never disturb the rest of the universe's random stream.
+   */
+  private stepColonyWorlds(views: StarView[], home: HomeView | null): void {
+    const rng = this.rng.fork(`colonies_${this.tick}`);
+    const launchers: Launcher[] = [];
+    for (const v of views) {
+      if (v.isPlayer) {
+        if (home) launchers.push({ starId: v.id, x: v.x, y: v.y, era: home.era, techs: home.techs, pressures: home.pressures, values: home.values, isPlayer: true });
+        continue;
+      }
+      const p = this.interstellar.polities[v.id];
+      if (p) launchers.push({ starId: v.id, x: v.x, y: v.y, era: p.era, techs: p.techs, pressures: p.pressures, values: v.values, isPlayer: false });
+    }
+
+    const arksFrom = (id: number) => this.fleets.filter(f => f.ark && f.fromStarId === id).length;
+    let candidates: Candidate[] | null = null;
+    for (const l of launchers) {
+      const drive = launchDrive(l);
+      if (drive <= 0) continue;
+      if (this.tick - (this.colonies.lastLaunch[l.starId] ?? -Infinity) < LAUNCH_COOLDOWN) continue;
+      if (coloniesOf(this.colonies, l.starId) + arksFrom(l.starId) >= MAX_PER_CIV) continue;
+      if (this.colonies.colonies.length + this.fleets.filter(f => f.ark).length >= MAX_TOTAL) break;
+      if (!rng.chance(drive * 0.15)) continue;
+      candidates ??= this.colonyCandidates();
+      const taken = takenSites(this.colonies);
+      for (const f of this.fleets) if (f.ark) taken.add(siteKey(f.toStarId, f.ark.planetIndex));
+      const site = pickTarget(l, candidates.filter(c => this.canSettle(l.starId, c)), taken);
+      if (site) this.launchArk(l, site);
+    }
+
+    const alive = (id: number) => { const s = this.stars.find(x => x.id === id); return !!s && !s.isDead; };
+    for (const n of stepColonies(this.colonies, alive)) {
+      const c = n.colony;
+      const where = `${c.name}`;
+      const founder = c.byPlayer ? 'your people' : (this.stars.find(s => s.id === c.founderStarId)?.civName ?? 'a vanished people');
+      const line = n.kind === 'grew'
+        ? `The outpost on ${where} has become a colony of ${founder}.`
+        : `The colony of ${founder} on ${where} is gone.`;
+      this.colonyNews(c.byPlayer, c.starId, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
+    }
+  }
+
+  /** Planets an ark could settle: not gas, not dead, not a forming world, not another people's living world. */
+  private colonyCandidates(): Candidate[] {
+    const out: Candidate[] = [];
+    for (const s of this.stars) {
+      if (s.isDead || s.formationStage) continue;
+      s.planets.forEach((p, i) => {
+        if (p.type === 'gas' || p.isDead) return;
+        const suitability = planetHabitability({ planetType: p.type as PlanetKind, orbitalRadius: p.orbitalRadius, starTemperature: s.temperature });
+        if (suitability < MIN_SUITABILITY) return;
+        out.push({ starId: s.id, planetIndex: i, name: `${s.civName} ${p.name}`, x: s.x, y: s.y, suitability });
+      });
+    }
+    return out;
+  }
+
+  /** P1: arks settle empty worlds; another civilisation's world waits for conquest (P3). */
+  private canSettle(launcherStarId: number, c: Candidate): boolean {
+    const s = this.stars.find(x => x.id === c.starId);
+    if (!s) return false;
+    const p = s.planets[c.planetIndex];
+    if (s.id === launcherStarId) {
+      // Its own system: any world but the one it lives on.
+      return c.planetIndex !== (s.isPlayerStar ? this.homeIndexOf(s) : s.planets.findIndex(q => q.hasLife));
+    }
+    if (s.isPlayerStar) return false;
+    return !(s.biologyPhase === 'intelligent' && p?.hasLife);
+  }
+
+  private launchArk(l: Launcher, site: Candidate): void {
+    const from = this.stars.find(s => s.id === l.starId);
+    if (!from) return;
+    this.colonies.lastLaunch[l.starId] = this.tick;
+    this.fleets.push({
+      id: this.fleetIdCounter++,
+      fromStarId: l.starId, toStarId: site.starId,
+      x: from.x, y: from.y, progress: 0,
+      hostile: false, isPlayerFleet: l.isPlayer,
+      ark: { planetIndex: site.planetIndex, name: site.name, suitability: site.suitability, byPlayer: l.isPlayer },
+    });
+    const who = l.isPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
+    this.colonyNews(l.isPlayer, site.starId,
+      `${who} launched a colony ark toward ${site.name}.`,
+      'a crowded world with the means to leave it', l.starId);
+  }
+
+  private arkArrives(fleet: Fleet, from: StarBody, to: StarBody): void {
+    const ark = fleet.ark!;
+    const rng = this.rng.fork(`landfall_${fleet.id}_${this.tick}`);
+    const planet = to.planets[ark.planetIndex];
+    const taken = !!colonyAt(this.colonies, to.id, ark.planetIndex);
+    const ok = !!planet && !planet.isDead && !to.isDead && !taken && landfallSucceeds(ark.suitability, rng.next());
+    const who = ark.byPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
+    if (!ok) {
+      this.colonyNews(ark.byPlayer, to.id, `The colony ark of ${who} bound for ${ark.name} was lost.`, 'a world that would not have them');
+      return;
+    }
+    foundColony(this.colonies, { starId: to.id, planetIndex: ark.planetIndex, name: ark.name, x: to.x, y: to.y, suitability: ark.suitability },
+      { starId: from.id, isPlayer: ark.byPlayer, lineage: ark.byPlayer ? this.playerLineage() : null }, this.tick);
+    if (ark.byPlayer && planet.discovery !== 'landing') planet.discovery = 'landing';
+    this.colonyNews(ark.byPlayer, to.id, `${who} made landfall on ${ark.name}: an outpost is founded.`, 'the colony ark reached its world');
+  }
+
+  /** The player's founding species for a colony: the signature lineage, else the most numerous living one. */
+  private playerLineage(): SpeciesGenome | null {
+    const living = gameState.playerSpecies.filter(s => !s.isExtinct);
+    return living.find(s => s.id === gameState.signatureSpeciesId)
+      ?? living.reduce<SpeciesGenome | null>((a, s) => (!a || s.population > a.population ? s : a), null);
+  }
+
+  /** Colony events reach the feed when the player can know of them, and the home chronicle when they are the player's. */
+  private colonyNews(byPlayer: boolean, starId: number, line: string, cause: string, alsoStarId?: number): void {
+    const known = (id: number | undefined) => { const s = id == null ? null : this.stars.find(x => x.id === id); return !!s && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
+    if (byPlayer || known(starId) || known(alsoStarId)) this.onCivEvent?.(line);
+    const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+    if (byPlayer && ns) ns.worldEvent(this.tick, line, [cause]);
+  }
+
+  /** The colony on a planet, if any (for the views). */
+  colonyAt(starId: number, planetIndex: number) {
+    return colonyAt(this.colonies, starId, planetIndex);
+  }
+
+  /** Who founded a colony, as the views name them. */
+  colonyFounderName(c: { byPlayer: boolean; founderStarId: number }): string {
+    if (c.byPlayer) return gameState.playerSpeciesName || 'Your people';
+    return this.stars.find(x => x.id === c.founderStarId)?.civName ?? 'A distant people';
   }
 
   /** Trade routes the player can see (both ends known), for the galaxy view. */
@@ -3716,6 +3863,12 @@ export class BigBangEngine {
 
       fleet.x = from.x + (to.x - from.x) * fleet.progress;
       fleet.y = from.y + (to.y - from.y) * fleet.progress;
+
+      if (fleet.progress >= 1 && fleet.ark) {
+        this.arkArrives(fleet, from, to);
+        this.fleets.splice(i, 1);
+        continue;
+      }
 
       if (fleet.progress >= 1) {
         // Arrival
@@ -6671,6 +6824,7 @@ export class BigBangEngine {
       playerBiosphere: { ...gameState.playerBiosphere },
       civilizations: gameState.civilizations,
       interstellar: this.interstellar,
+      colonies: this.colonies,
     };
   }
 
@@ -6703,6 +6857,7 @@ export class BigBangEngine {
     this.cosmicEvents = snap.cosmicEvents;
     this.activeWars = snap.activeWars;
     this.interstellar = snap.interstellar ?? emptyInterstellar();
+    this.colonies = snap.colonies ?? emptyColonies();
     this.interstellar.home ??= { attitude: {}, grievance: {} };
     this.lastPolityTick = snap.tick;
     this.exploredAreas = snap.exploredAreas;
