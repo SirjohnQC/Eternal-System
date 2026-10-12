@@ -31,21 +31,26 @@ if not exist "node_modules" (
 
 :menu
 cls
+set "BRANCH=(not a git checkout)"
+for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD 2^>nul') do set "BRANCH=%%b"
 echo ============================================
 echo    ETERNAL SYSTEM: GENESIS
 echo ============================================
+echo    Version: %BRANCH%
 echo.
 echo    [1]  Play       - opens the game in your browser
 echo    [2]  Run tests  - the full test suite
 echo    [3]  Build      - production bundle into dist
-echo    [4]  Quit
+echo    [4]  Update     - switch version: stable, test build, newest Claude
+echo    [5]  Quit
 echo.
-set /p "choice=  Choose an option [1-4]: "
+set /p "choice=  Choose an option [1-5]: "
 
 if "%choice%"=="1" goto play
 if "%choice%"=="2" goto test
 if "%choice%"=="3" goto build
-if "%choice%"=="4" exit /b 0
+if "%choice%"=="4" goto update
+if "%choice%"=="5" exit /b 0
 goto menu
 
 :play
@@ -74,6 +79,19 @@ cls
 echo  Building the production bundle...
 echo.
 call npm run build
+echo.
+pause
+goto menu
+
+:update
+cls
+where git >nul 2>nul
+if errorlevel 1 (
+  echo  Git was not found on your PATH. Install it from https://git-scm.com/ first.
+  pause
+  goto menu
+)
+call "%~dp0pull-claude.bat"
 echo.
 pause
 goto menu

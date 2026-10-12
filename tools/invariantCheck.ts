@@ -704,6 +704,56 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenarios: drive rare transitions directly ──────────────────────────────
+// Some transitions happen too rarely for the seeded runs to hit reliably
+// (a catastrophe on an intelligent world, ~88k ticks on one seed). Force them.
+{
+  const scenario = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+
+  resetGameState('Inv_scenarios');
+  const e = new BigBangEngine(makeCanvas()) as any;
+  e.init(SEEDS[0].stats, 'inv_scenarios');
+  for (let i = 0; i < 2_000; i++) e.update();
+
+  // Intelligent NPC worlds are rare early on, so build the subject: promote a
+  // fresh NPC world and give it a culture through the engine's own path.
+  const used = new Set<number>();
+  const makeCivilisation = (): Star | null => {
+    const s = (e.stars as Star[]).find(x => !x.isDead && !x.isPlayerStar && !used.has(x.id) && x.planets.length);
+    if (!s) return null;
+    used.add(s.id);
+    s.hasLife = true;
+    s.biologyPhase = 'intelligent';
+    s.civLevel = 3;
+    e.ensureCivilization(s);
+    return gameState.civilizations[s.id] ? s : null;
+  };
+
+  // Ending a civilisation must drop its culture in the same step (#20).
+  const demoted = (how: string, act: (s: Star) => void) => scenario(
+    `${how} drops culture and tech level`, () => {
+      const s = makeCivilisation();
+      if (!s) return 'could not set up an NPC civilisation with a culture';
+      act(s);
+      const left = [
+        gameState.civilizations[s.id] ? 'culture record kept' : '',
+        s.civLevel !== 0 ? `civLevel=${s.civLevel}` : '',
+      ].filter(Boolean);
+      return left.length ? `star #${s.id} → ${s.biologyPhase}: ${left.join(', ')}` : null;
+    });
+  demoted('regression below intelligent', s => e.regressPhases(s, 1));
+  demoted('regression past the microbial floor', s => e.regressPhases(s, 99));
+  demoted('sterilisation', s => e.sterilise(s));
+  demoted('star death', s => e.makeRemnant(s, 'supernova'));
+}
+
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
 let blocking = crashes.length;

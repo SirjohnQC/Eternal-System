@@ -43,6 +43,7 @@ npx tsc --noEmit          # typecheck only
 npm test                  # typecheck + seeded invariants (~1 min) — run before every commit; CI enforces it
 npm run test:invariants -- --seeds=8 --ticks=200000   # longer local run
 npm run test:smoke        # 400k-tick smoke test (~4 min)
+npm run test:visual       # diorama screenshots vs goldens (~2 min; see docs/VISUAL_TESTS.md)
 ```
 
 `tools/invariantCheck.ts` checks per-star rules on every sampled tick across fixed seeds.
@@ -69,3 +70,56 @@ npx esbuild tools/smokeTest.ts --bundle --platform=node --format=esm \
 ## Agents
 
 `.claude/agents/game-designer-artist.md` owns pixel art, procedural bakers and game-design docs.
+
+## Where the docs disagree
+
+Trust order: **code → `ROADMAP.md` (CURRENT STATUS) → `cursor.md` → design docs.**
+`ARCHITECTURE.md` is the original plan (Three.js, Web Workers, `src/core/`, …) and does
+not describe the built game.
+
+## Architecture rules
+
+Most playtest bugs trace back to one of these being broken. Follow them in new code.
+
+1. **Views render from simulation state; they never own it.** A view may cache a bake,
+   but the cache must be keyed on the state it was built from and rebuilt when that
+   state changes — never "built once on view entry". Things that only appear after
+   leaving and re-entering a view are this rule broken (#8).
+2. **Progression is derived in one place.** Phase, era, tech label, culture unlocks and
+   card gates come from a single function over simulation state (#9). Don't add new
+   `TECH_LEVELS[...]`, `BIO_PHASE_LABELS[...]`, `CIV_PHASE_LABELS[...]` or
+   `civLevelToPhase(...)` lookups outside `src/simulation/` — there are ~20 already and
+   they drift apart.
+3. **Never assume the active planet is the homeworld.** Pass the star id and planet
+   index explicitly. `isPlayerStar` means "owned by the player", not "being viewed"
+   (#16, #17).
+4. **The simulation stays deterministic.** All randomness goes through the engine's
+   `SeedRNG` (`this.rng.fork(...)`). No `Math.random()`, `Date.now()` or
+   `performance.now()` in anything that changes simulation state — frame pacing and
+   input timing are fine.
+5. **The simulation stays headless-runnable.** No new imports from `src/rendering`,
+   `src/ui` or `main.ts` into `src/simulation`, and no new DOM access there.
+6. **Creative mode (`gameState.playMode === 'creative'`) uses the same code paths.** It
+   may override costs, limits and pace, never skip state updates or gates (#21, #23,
+   #24).
+7. **State changes keep every related record consistent in the same step.** E.g. a
+   world demoted below `intelligent` loses its culture record and tech level together
+   (#20). If you change a phase, check what else is keyed on it.
+8. **Saves stay loadable.** New `gameState` / `StarBody` fields are optional or
+   defaulted on load. Never rename or repurpose a saved field.
+9. **Every fix and every new mechanic adds a guard** — preferably a rule in
+   `tools/invariantCheck.ts`, otherwise a `tools/*Check.ts`.
+10. **Keep `npm test` green.** No `@ts-ignore` / `@ts-expect-error` / `any` to silence
+    the compiler. Small PRs, one concern each, issue number in the description.
+11. **Performance is per-view.** A view does work proportional to what it shows;
+    iterating every star, route or galaxy per frame for one planet's view is a bug (#30).
+
+## Known debt — don't copy these patterns
+
+- `BigBangEngine` imports `rendering/CosmicPixelSprites` and touches the DOM;
+  `simulation/PlanetRenderer.ts` (imports `rendering/GasLook`), `BiosphereRenderer.ts`
+  and `FactionFlag.ts` draw to canvas. They belong in `src/rendering/`.
+- `main.ts` (~6k lines) writes `gameState` directly in ~48 places. New player actions
+  go through an engine method, not a field write.
+- `BigBangEngine.ts` (~6.7k lines) also handles input and camera. Don't add more
+  non-simulation concerns to it.

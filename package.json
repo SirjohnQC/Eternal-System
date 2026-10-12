@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test:invariants": "esbuild tools/invariantCheck.ts --bundle --platform=node --format=esm --outfile=.cache/invariants.mjs --log-level=warning && node .cache/invariants.mjs",
     "test:smoke": "esbuild tools/smokeTest.ts --bundle --platform=node --format=esm --outfile=.cache/smoke.mjs --log-level=warning && node .cache/smoke.mjs",
-    "test": "npm run typecheck && npm run test:invariants"
+    "test": "npm run typecheck && npm run test:invariants && npm run test:saves",
+    "test:saves": "esbuild tools/saveCheck.ts --bundle --platform=node --format=esm --outfile=.cache/saves.mjs --log-level=warning && node .cache/saves.mjs",
+    "test:visual": "node tools/visual/visualCheck.mjs"
   },
   "dependencies": {
     "pako": "^2.1.0",
@@ -19,6 +21,8 @@
   "devDependencies": {
     "@types/pako": "^2.0.3",
     "esbuild": "^0.27.3",
+    "playwright": "1.56.0",
+    "pngjs": "7.0.0",
     "typescript": "^5.3.3",
     "vite": "^7.3.1"
   }

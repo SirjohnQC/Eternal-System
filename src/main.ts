@@ -53,8 +53,13 @@ import {
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { colonyLook } from './simulation/Colonies';
+import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
-import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
+import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
+import {
+  SAVE_VERSION, migrateSave, gameStateFromSave,
+  type EternalSaveFile as SaveFile, type ParsedSave,
+} from './simulation/SaveFormat';
 import { symptomsOf } from './simulation/Nations';
 import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
@@ -3126,14 +3131,20 @@ function smiteAsteroid(): void {
 }
 
 function setSpeed(speed: number): void {
-  // Normal mode has one fixed pace: anything that is not a pause runs at it.
+  // Normal mode: ▶ (the 1 button) runs at NORMAL_PACE. Faster speeds pass
+  // through only while NORMAL_FAST_FORWARD is on; otherwise every non-pause
+  // speed is clamped to the fixed pace.
   const normal = gameState.playMode === 'normal';
-  if (normal && speed > 0) speed = NORMAL_PACE;
+  if (normal && speed > 0 && (speed <= NORMAL_PACE || !NORMAL_FAST_FORWARD)) speed = NORMAL_PACE;
   gameState.speed = speed;
   (window as unknown as Record<string, unknown>)['eternalSpeed'] = speed;
   document.querySelectorAll('.speed-btn').forEach(btn => {
     const b = Number((btn as HTMLElement).dataset['speed']);
-    btn.classList.toggle('active', normal ? (b > 0) === (speed > 0) : b === speed);
+    const active = !normal ? b === speed
+      : b === 1 ? speed === NORMAL_PACE
+      : b === 0 ? speed === 0
+      : b === speed;
+    btn.classList.toggle('active', active);
   });
 }
 
@@ -3141,14 +3152,15 @@ function setSpeed(speed: number): void {
 const CREATIVE_DP = 9999;
 
 /**
- * Normal: pause and play only (fixed pace), no Place Life. Creative: the full
- * speed row, unlimited divine points, Place Life.
+ * Normal: pause, play at the fixed pace, and (while NORMAL_FAST_FORWARD is on)
+ * the fast-forward speeds; no Place Life. Creative: the full speed row,
+ * unlimited divine points, Place Life.
  */
 function applyPlayModeControls(): void {
   const creative = gameState.playMode === 'creative';
   document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
     const b = Number(btn.dataset['speed']);
-    if (b > 1) btn.style.display = creative ? '' : 'none';
+    if (b > 1) btn.style.display = creative || NORMAL_FAST_FORWARD ? '' : 'none';
     if (b === 1) {
       btn.textContent = creative ? '1×' : '▶';
       btn.title = creative ? '' : 'Play (normal pace)';
@@ -3954,20 +3966,16 @@ function randomizeSpeciationName(): void {
 
 // ─── Save / Load ──────────────────────────────────────────────────────────────
 
+// The key name predates save versioning; the format version lives inside the
+// save (`SAVE_VERSION`). Don't rename it — existing saves would be orphaned.
 const SAVE_KEY = 'eternal_save_v1';
 
-interface EternalSaveFile {
-  version: 1;
-  savedAt: number;
-  gameState: GameStateData;
-  engine: EngineSnapshot;
-  eventLog: EventLogEntry[];
-}
+type EternalSaveFile = SaveFile<EventLogEntry>;
 
 function buildSaveFile(): EternalSaveFile | null {
   if (!engine) return null;
   return {
-    version: 1,
+    version: SAVE_VERSION,
     savedAt: Date.now(),
     gameState: { ...gameState },
     engine: engine.serialize(),
@@ -4015,20 +4023,33 @@ function showSaveIndicator(label = 'SAVED'): void {
   setTimeout(() => el.classList.remove('visible'), 2000);
 }
 
-async function restoreFromBytes(bytes: Uint8Array): Promise<boolean> {
+/** Decode a gzipped save and bring it to the current format. */
+function parseSaveBytes(bytes: Uint8Array): ParsedSave {
+  let raw: unknown;
   try {
-    const json = ungzip(bytes, { to: 'string' });
-    const save = JSON.parse(json) as EternalSaveFile;
-    if (!save.gameState || !save.engine || save.version !== 1) return false;
-    return applyLoadedSave(save);
+    raw = JSON.parse(ungzip(bytes, { to: 'string' }));
+  } catch {
+    return { ok: false, reason: 'This file could not be read as an Eternal save — it may be corrupt.' };
+  }
+  return migrateSave(raw);
+}
+
+/** Load a save file; on failure returns the reason to show the player. */
+async function restoreFromBytes(bytes: Uint8Array): Promise<{ ok: boolean; reason?: string }> {
+  const parsed = parseSaveBytes(bytes);
+  if (!parsed.ok) return parsed;
+  try {
+    return { ok: applyLoadedSave(parsed.save as EternalSaveFile) };
   } catch (e) {
     logger.error('Save restore failed:', e);
-    return false;
+    return { ok: false, reason: 'The save was read but could not be restored.' };
   }
 }
 
 function applyLoadedSave(save: EternalSaveFile): boolean {
-  Object.assign(gameState, save.gameState);
+  // Defaults first, then the saved fields: a field newer than the save must
+  // not keep the current session's value.
+  Object.assign(gameState, gameStateFromSave(save.gameState));
   gameState.screen = 'game';
 
   // Branch definitions are rebuilt from saved ids by `engine.init()` below, so
@@ -4113,11 +4134,12 @@ function loadFromLocalStorage(): boolean {
   if (!b64) return false;
   try {
     const raw = atob(b64);
-    const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
-    const json = ungzip(bytes, { to: 'string' });
-    const save = JSON.parse(json) as EternalSaveFile;
-    if (!save.gameState || !save.engine || save.version !== 1) return false;
-    return applyLoadedSave(save);
+    const parsed = parseSaveBytes(Uint8Array.from(raw, c => c.charCodeAt(0)));
+    if (!parsed.ok) {
+      logger.warn('Auto-save not loaded:', parsed.reason);
+      return false;
+    }
+    return applyLoadedSave(parsed.save as EternalSaveFile);
   } catch {
     return false;
   }
@@ -4289,7 +4311,11 @@ function initHudShell(): void {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  logger.info('Eternal Systems initializing');
+  logger.info(`Eternal Systems initializing — ${BUILD_LABEL}`);
+  const menuVersion = document.getElementById('menu-version');
+  if (menuVersion) menuVersion.textContent = `ETERNAL SYSTEMS ${BUILD_LABEL} · PROCEDURAL AI SIMULATION`;
+  const settingsBuild = document.getElementById('settings-build');
+  if (settingsBuild) settingsBuild.textContent = BUILD_LABEL;
   initHudShell();
 
   // Auto-validate stored Gemini key silently on startup
@@ -4709,8 +4735,8 @@ window.addEventListener('DOMContentLoaded', () => {
     const file = (e.target as HTMLInputElement).files?.[0];
     if (!file) return;
     file.arrayBuffer().then(buf => {
-      void restoreFromBytes(new Uint8Array(buf)).then(ok => {
-        if (!ok) addChatMessage('[ Failed to load save file — it may be corrupt or from an incompatible version. ]', 'system');
+      void restoreFromBytes(new Uint8Array(buf)).then(res => {
+        if (!res.ok) addChatMessage(`[ Failed to load save file — ${res.reason ?? 'it may be corrupt.'} ]`, 'system');
       });
     });
     (e.target as HTMLInputElement).value = '';

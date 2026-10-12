@@ -228,7 +228,15 @@ export const runtimeState = {
   playerNations: null as import('./Nations').NationSystem | null,
 };
 
-export const gameState: GameStateData = {
+/**
+ * A fresh game state with every field at its default.
+ *
+ * Loading a save starts from this and overlays the saved fields, so a field
+ * added after the save was written gets its default rather than whatever the
+ * current session happened to hold (see `SaveFormat.gameStateFromSave`).
+ */
+export function createDefaultGameState(): GameStateData {
+  return {
   screen: 'menu',
   stats: null,
   tick: 0,
@@ -275,7 +283,10 @@ export const gameState: GameStateData = {
   playerSpecies:   [],
   playerBiosphere: { ...DEFAULT_BIOSPHERE },
   civilizations: {},
-};
+  };
+}
+
+export const gameState: GameStateData = createDefaultGameState();
 
 // Tech level names
 export const TECH_LEVELS = [
