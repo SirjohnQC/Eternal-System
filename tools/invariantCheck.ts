@@ -22,6 +22,9 @@ const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
 const { gameState, BIO_PHASE_SEQUENCE, TECH_LEVELS } = await import('../src/simulation/GameState');
 const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
 const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
+const { runtimeState } = await import('../src/simulation/GameState');
+const { generatePlanetGrid } = await import('../src/simulation/PlanetGrid');
+const { assignDominantSpecies } = await import('../src/simulation/SpeciesDistribution');
 
 type Engine = InstanceType<typeof BigBangEngine>;
 type Star = ReturnType<Engine['getPlayerStar']> & {};
@@ -123,6 +126,24 @@ rule({
 });
 
 rule({
+  // Re-entering the planet view re-stamps the map; it must never change it,
+  // or the view shows a stale world until the player leaves and comes back (#11).
+  name: 'player map matches a fresh species stamp',
+  check: () => {
+    const g = runtimeState.playerPlanetGrid;
+    if (!g || !gameState.playerSpecies.length) return null;
+    const before = g.map(row => row.map(c => c.dominantSpeciesId));
+    assignDominantSpecies(g, gameState.playerSpecies);
+    let diff = 0;
+    for (let r = 0; r < g.length; r++) for (let c = 0; c < g[r].length; c++) {
+      if (g[r][c].dominantSpeciesId !== before[r][c]) diff++;
+      g[r][c].dominantSpeciesId = before[r][c];     // restore: checking must not change the run
+    }
+    return diff ? `${diff} cells would change on re-stamp` : null;
+  },
+});
+
+rule({
   name: 'player always has a living home star',
   check: ({ engine }) => {
     const ps = engine.getPlayerStar();
@@ -151,6 +172,21 @@ function resetGameState(name: string): void {
   gameState.dnaPoints = 0;
   gameState.techPoints = 0;
   gameState.firstContactFired = false;
+  runtimeState.playerPlanetGrid = null;
+}
+
+/**
+ * The player's surface grid, created the way openPlanetView() does. The game
+ * builds it lazily on the first planet view, so without this the headless
+ * engine never spreads life or places species on the home world.
+ */
+function ensurePlayerGrid(engine: Engine): void {
+  if (runtimeState.playerPlanetGrid) return;
+  const ps = engine.getPlayerStar();
+  const idx = ps ? ps.planets.findIndex(p => p.discovery === 'landing') : -1;
+  if (!ps || idx < 0) return;
+  runtimeState.playerPlanetGrid = generatePlanetGrid(
+    (ps.planets[idx].type ?? 'rocky') as any, ps.id * 7777 + idx * 131, gameState.playerPlanetDNA);
 }
 
 interface Failure { seed: string; tick: number; detail: string; }
@@ -179,6 +215,7 @@ for (const { seed, stats } of SEEDS) {
           }
         }
       }
+      ensurePlayerGrid(engine);
       engine.update();
     }
   } catch (err) {
@@ -209,6 +246,55 @@ for (const { seed, stats } of SEEDS) {
   }
 }
 
+// ── Scenarios: drive rare transitions directly ──────────────────────────────
+// Some transitions happen too rarely for the seeded runs to hit reliably
+// (a catastrophe on an intelligent world, ~88k ticks on one seed). Force them.
+{
+  const scenario = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+
+  resetGameState('Inv_scenarios');
+  const e = new BigBangEngine(makeCanvas()) as any;
+  e.init(SEEDS[0].stats, 'inv_scenarios');
+  for (let i = 0; i < 2_000; i++) e.update();
+
+  // Intelligent NPC worlds are rare early on, so build the subject: promote a
+  // fresh NPC world and give it a culture through the engine's own path.
+  const used = new Set<number>();
+  const makeCivilisation = (): Star | null => {
+    const s = (e.stars as Star[]).find(x => !x.isDead && !x.isPlayerStar && !used.has(x.id) && x.planets.length);
+    if (!s) return null;
+    used.add(s.id);
+    s.hasLife = true;
+    s.biologyPhase = 'intelligent';
+    s.civLevel = 3;
+    e.ensureCivilization(s);
+    return gameState.civilizations[s.id] ? s : null;
+  };
+
+  // Ending a civilisation must drop its culture in the same step (#20).
+  const demoted = (how: string, act: (s: Star) => void) => scenario(
+    `${how} drops culture and tech level`, () => {
+      const s = makeCivilisation();
+      if (!s) return 'could not set up an NPC civilisation with a culture';
+      act(s);
+      const left = [
+        gameState.civilizations[s.id] ? 'culture record kept' : '',
+        s.civLevel !== 0 ? `civLevel=${s.civLevel}` : '',
+      ].filter(Boolean);
+      return left.length ? `star #${s.id} → ${s.biologyPhase}: ${left.join(', ')}` : null;
+    });
+  demoted('regression below intelligent', s => e.regressPhases(s, 1));
+  demoted('regression past the microbial floor', s => e.regressPhases(s, 99));
+  demoted('sterilisation', s => e.sterilise(s));
+  demoted('star death', s => e.makeRemnant(s, 'supernova'));
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
 let blocking = crashes.length;
@@ -224,7 +310,9 @@ for (const r of rules) {
   const label = r.knownIssue ? 'KNOWN' : 'FAIL ';
   if (!r.knownIssue) blocking++;
   console.log(`  ${label} ${r.name}${tag}`);
-  console.log(`        ${failCount.get(r)}/${samples} samples; first at seed=${f.seed} tick=${f.tick}: ${f.detail}`);
+  console.log(f.seed === 'scenario'
+    ? `        ${f.detail}`
+    : `        ${failCount.get(r)}/${samples} samples; first at seed=${f.seed} tick=${f.tick}: ${f.detail}`);
 }
 for (const c of crashes) console.log(`  CRASH ${c}`);
 

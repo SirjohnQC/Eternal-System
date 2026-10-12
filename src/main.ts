@@ -52,8 +52,9 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
+import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
-import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
+import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
 import {
   SAVE_VERSION, migrateSave, gameStateFromSave,
   type EternalSaveFile as SaveFile, type ParsedSave,
@@ -1064,6 +1065,15 @@ function wireEngineEvents(eng: BigBangEngine): void {
     );
     addCodexEntry(`${planetName} Terraformed`, 'divine');
     updateDivineActions();
+  };
+  // The engine changed the player's world (species, map, territory): refresh
+  // the planet view now instead of at the next 250-tick sweep, which at Normal
+  // pace is ~2 minutes and always lands just BEFORE the evolution step it
+  // should follow (both fire on multiples of 250) (#10, #11). The renderer
+  // throttles the actual repaint (SURFACE_REBAKE_INTERVAL).
+  eng.onPlayerWorldChanged = () => {
+    _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+    _dioramaRenderer?.markSurfaceDirty();
   };
   eng.onTickUpdate = (tick) => {
     gameState.tick = tick;
@@ -3124,14 +3134,20 @@ function smiteAsteroid(): void {
 }
 
 function setSpeed(speed: number): void {
-  // Normal mode has one fixed pace: anything that is not a pause runs at it.
+  // Normal mode: ▶ (the 1 button) runs at NORMAL_PACE. Faster speeds pass
+  // through only while NORMAL_FAST_FORWARD is on; otherwise every non-pause
+  // speed is clamped to the fixed pace.
   const normal = gameState.playMode === 'normal';
-  if (normal && speed > 0) speed = NORMAL_PACE;
+  if (normal && speed > 0 && (speed <= NORMAL_PACE || !NORMAL_FAST_FORWARD)) speed = NORMAL_PACE;
   gameState.speed = speed;
   (window as unknown as Record<string, unknown>)['eternalSpeed'] = speed;
   document.querySelectorAll('.speed-btn').forEach(btn => {
     const b = Number((btn as HTMLElement).dataset['speed']);
-    btn.classList.toggle('active', normal ? (b > 0) === (speed > 0) : b === speed);
+    const active = !normal ? b === speed
+      : b === 1 ? speed === NORMAL_PACE
+      : b === 0 ? speed === 0
+      : b === speed;
+    btn.classList.toggle('active', active);
   });
 }
 
@@ -3139,14 +3155,15 @@ function setSpeed(speed: number): void {
 const CREATIVE_DP = 9999;
 
 /**
- * Normal: pause and play only (fixed pace), no Place Life. Creative: the full
- * speed row, unlimited divine points, Place Life.
+ * Normal: pause, play at the fixed pace, and (while NORMAL_FAST_FORWARD is on)
+ * the fast-forward speeds; no Place Life. Creative: the full speed row,
+ * unlimited divine points, Place Life.
  */
 function applyPlayModeControls(): void {
   const creative = gameState.playMode === 'creative';
   document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
     const b = Number(btn.dataset['speed']);
-    if (b > 1) btn.style.display = creative ? '' : 'none';
+    if (b > 1) btn.style.display = creative || NORMAL_FAST_FORWARD ? '' : 'none';
     if (b === 1) {
       btn.textContent = creative ? '1×' : '▶';
       btn.title = creative ? '' : 'Play (normal pace)';
@@ -4297,7 +4314,11 @@ function initHudShell(): void {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  logger.info('Eternal Systems initializing');
+  logger.info(`Eternal Systems initializing — ${BUILD_LABEL}`);
+  const menuVersion = document.getElementById('menu-version');
+  if (menuVersion) menuVersion.textContent = `ETERNAL SYSTEMS ${BUILD_LABEL} · PROCEDURAL AI SIMULATION`;
+  const settingsBuild = document.getElementById('settings-build');
+  if (settingsBuild) settingsBuild.textContent = BUILD_LABEL;
   initHudShell();
 
   // Auto-validate stored Gemini key silently on startup
