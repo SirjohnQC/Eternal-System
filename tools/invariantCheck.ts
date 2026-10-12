@@ -23,7 +23,7 @@ const { gameState, BIO_PHASE_SEQUENCE, TECH_LEVELS } = await import('../src/simu
 const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
 const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
 const { runtimeState } = await import('../src/simulation/GameState');
-const { generatePlanetGrid } = await import('../src/simulation/PlanetGrid');
+const { EVOLUTION_TICK_RATE } = await import('../src/simulation/EvolutionEngine');
 const { assignDominantSpecies } = await import('../src/simulation/SpeciesDistribution');
 
 type Engine = InstanceType<typeof BigBangEngine>;
@@ -126,6 +126,18 @@ rule({
 });
 
 rule({
+  // The engine owns the home-world surface: it must exist without anyone
+  // having opened the planet view (#76).
+  name: 'a living home world has a surface grid (no view needed)',
+  check: ({ engine, tick }) => {
+    const ps = engine.getPlayerStar();
+    if (!ps?.hasLife || ps.formationDestiny) return null;
+    if (tick < (ps.lifeFirstTick ?? 0) + EVOLUTION_TICK_RATE + 1) return null;
+    return runtimeState.playerPlanetGrid ? null : `tick ${tick}: no grid ${tick - (ps.lifeFirstTick ?? 0)} ticks after life`;
+  },
+});
+
+rule({
   // Re-entering the planet view re-stamps the map; it must never change it,
   // or the view shows a stale world until the player leaves and comes back (#11).
   name: 'player map matches a fresh species stamp',
@@ -175,19 +187,6 @@ function resetGameState(name: string): void {
   runtimeState.playerPlanetGrid = null;
 }
 
-/**
- * The player's surface grid, created the way openPlanetView() does. The game
- * builds it lazily on the first planet view, so without this the headless
- * engine never spreads life or places species on the home world.
- */
-function ensurePlayerGrid(engine: Engine): void {
-  if (runtimeState.playerPlanetGrid) return;
-  const ps = engine.getPlayerStar();
-  const idx = ps ? ps.planets.findIndex(p => p.discovery === 'landing') : -1;
-  if (!ps || idx < 0) return;
-  runtimeState.playerPlanetGrid = generatePlanetGrid(
-    (ps.planets[idx].type ?? 'rocky') as any, ps.id * 7777 + idx * 131, gameState.playerPlanetDNA);
-}
 
 interface Failure { seed: string; tick: number; detail: string; }
 const failures = new Map<Rule, Failure>();   // first failure per rule
@@ -215,7 +214,6 @@ for (const { seed, stats } of SEEDS) {
           }
         }
       }
-      ensurePlayerGrid(engine);
       engine.update();
     }
   } catch (err) {

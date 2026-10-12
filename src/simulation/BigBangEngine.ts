@@ -34,7 +34,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation,
   type EvolutionEvent,
 } from './EvolutionEngine';
-import { stepLifeSpread, type PlanetGrid } from './PlanetGrid';
+import { stepLifeSpread, generatePlanetGrid, type PlanetGrid } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
@@ -1122,6 +1122,7 @@ export class BigBangEngine {
     this.rng = new SeedRNG(seed);
     this.tick0Seed = SeedRNG.hashString(seed);
     runtimeState.playerNations = null;
+    this.invalidatePlayerGrid();   // a new universe (or a load) has a new home world
     this.nationEra = 0;
     this.announcedTechs.clear();
     this.tick = 0;
@@ -1786,6 +1787,57 @@ export class BigBangEngine {
     this.camera.x = this.camera.tx = x;
     this.camera.y = this.camera.ty = y;
     this.camera.scale = this.camera.ts = sc;
+  }
+
+  /** Which star/planet the current player grid was generated for. */
+  private playerGridFor: { starId: number; planetIndex: number } | null = null;
+
+  /**
+   * Index of the planet the player lives on — the rule the planet view has
+   * always used (the landing world, else the first living one, else orbit 0).
+   */
+  homeIndexOf(star: StarBody): number {
+    const i = star.planets.findIndex(p => p.discovery === 'landing' || p.hasLife);
+    return i >= 0 ? i : 0;
+  }
+
+  /**
+   * The player's home-world surface grid, generated here when first needed
+   * and again whenever the home world changes (exodus, a new formation face).
+   *
+   * The engine owns this grid. It used to be created by the UI the first time
+   * the planet view opened, so until the player looked, the surface pass
+   * (life spread, species ranges, territory, nations) skipped the home world
+   * entirely (#76).
+   */
+  ensurePlayerGrid(): PlanetGrid | null {
+    const ps = this.getPlayerStar();
+    if (!ps || ps.planets.length === 0) return null;
+    const planetIndex = this.homeIndexOf(ps);
+    const g = runtimeState.playerPlanetGrid;
+    const f = this.playerGridFor;
+    if (g && f && f.starId === ps.id && f.planetIndex === planetIndex) return g;
+
+    const planet = ps.planets[planetIndex];
+    // `planet.type` is the face of the current formation stage while the world
+    // forms, then its destiny. The setup DNA's ocean answer only shapes the
+    // ground in lab runs; a normal run's water comes from its destiny, and a
+    // forged world's water comes from its forging, so its DNA counts in full.
+    const dna = gameState.playerPlanetDNA;
+    const labDna = gameState.destinyOverride !== null || gameState.skipFormation || !!gameState.forge;
+    runtimeState.playerPlanetGrid = generatePlanetGrid(
+      planet?.type ?? 'rocky',
+      ps.id * 7777 + planetIndex * 131,
+      dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
+    );
+    this.playerGridFor = { starId: ps.id, planetIndex };
+    return runtimeState.playerPlanetGrid;
+  }
+
+  /** The home world's face changed: regenerate its grid on next use. */
+  invalidatePlayerGrid(): void {
+    runtimeState.playerPlanetGrid = null;
+    this.playerGridFor = null;
   }
 
   /**
@@ -2462,13 +2514,14 @@ export class BigBangEngine {
       // territory (`civId` was never stamped, so no settlements or city lights),
       // and species ranges stopped updating — exactly when the player finally
       // had a civilisation worth looking at.
-      if (star.isPlayerStar && runtimeState.playerPlanetGrid && shouldStepEvolution(this.tick)) {
+      const homeGrid = star.isPlayerStar && shouldStepEvolution(this.tick) ? this.ensurePlayerGrid() : null;
+      if (homeGrid) {
         const spreadRate = Math.max(0.1, this.playerEffect('bioResilience'));
         const civIdToStamp = star.civLevel >= 1 ? String(star.id) : null;
-        stepLifeSpread(runtimeState.playerPlanetGrid, star.biologyPhase, spreadRate, civIdToStamp);
+        stepLifeSpread(homeGrid, star.biologyPhase, spreadRate, civIdToStamp);
         // Record WHERE each species lives. Without this, `dominantSpeciesId`
         // stays null forever and nothing can render or inspect the biosphere.
-        assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
+        assignDominantSpecies(homeGrid, gameState.playerSpecies);
         // Life spread and territory just changed the surface the player may be
         // watching (trees, rocks, settlements are planned from it) (#10).
         this.onPlayerWorldChanged?.();
@@ -2481,7 +2534,7 @@ export class BigBangEngine {
           this.nationEra = 0;
           this.onCivEvent?.(`The nations have fallen silent: ${names.join(', ')}.`);
         } else if (star.civLevel >= 1 || runtimeState.playerNations?.isFounded) {
-          this.stepNations(star, runtimeState.playerPlanetGrid);
+          this.stepNations(star, homeGrid);
         }
       }
 
@@ -3130,7 +3183,7 @@ export class BigBangEngine {
    */
   leapToEra(target: number): string | null {
     const ps = this.getPlayerStar();
-    const grid = runtimeState.playerPlanetGrid;
+    const grid = this.ensurePlayerGrid();
     if (!ps || !grid || !ps.hasLife || ps.formationDestiny) return null;
     target = Math.max(1, Math.min(TECH_LEVELS.length - 1, Math.round(target)));
     if (ps.biologyPhase !== 'intelligent') {
@@ -5358,7 +5411,7 @@ export class BigBangEngine {
       if (next) {
         star.formationStage = next;
         star.formationTick = this.tick;
-        if (star.isPlayerStar) this.onPlanetFormationProgress?.(next);
+        if (star.isPlayerStar) { this.invalidatePlayerGrid(); this.onPlanetFormationProgress?.(next); }
         continue;
       }
 
@@ -5467,7 +5520,7 @@ export class BigBangEngine {
       // Carry the overshoot so stage boundaries do not add up past the budget.
       star.formationProgress -= dur;
       if (planet) this.applyFormationFace(star, planet);
-      if (star.isPlayerStar) this.onPlanetFormationProgress?.(next);
+      if (star.isPlayerStar) { this.invalidatePlayerGrid(); this.onPlanetFormationProgress?.(next); }
       return;
     }
 
@@ -5500,6 +5553,7 @@ export class BigBangEngine {
     star.lifeFirstTick = this.tick;
     if (planet) { planet.hasLife = true; planet.biosphere = Math.max(planet.biosphere, 0.3); }
     if (star.isPlayerStar) {
+      this.invalidatePlayerGrid();
       this.onPlanetFormationComplete?.(destiny);
       // Life climbs from here, whether it woke now or slept through the
       // forming: either way this is when the player meets it.
@@ -5533,6 +5587,7 @@ export class BigBangEngine {
       this.applyFormationFace(ps, planet);
     }
     gameState.playerPlanetDNA = { ...dna };
+    this.invalidatePlayerGrid();
   }
 
   /**
