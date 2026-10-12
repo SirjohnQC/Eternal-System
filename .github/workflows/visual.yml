@@ -1,0 +1,60 @@
+name: Visual
+
+# Compares seeded diorama renders with tools/visual/goldens/ (see
+# docs/VISUAL_TESTS.md). Run manually ("Run workflow") on a branch to
+# re-capture the goldens there after an intentional visual change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      update:
+        description: Re-capture the goldens and commit them to this branch
+        type: boolean
+        default: true
+
+concurrency:
+  group: visual-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  visual:
+    name: Visual regression (diorama)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Compare with goldens
+        if: github.event_name != 'workflow_dispatch' || !inputs.update
+        run: npm run test:visual
+
+      - name: Upload actual and diff images
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-diffs
+          path: .cache/visual/
+          retention-days: 14
+
+      - name: Re-capture goldens and commit
+        if: github.event_name == 'workflow_dispatch' && inputs.update
+        run: |
+          npm run test:visual -- --update
+          if git diff --quiet -- tools/visual/goldens; then
+            echo "Goldens unchanged."; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tools/visual/goldens
+          git commit -m "test(visual): re-capture goldens"
+          git push

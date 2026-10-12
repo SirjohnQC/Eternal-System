@@ -43,6 +43,7 @@ npx tsc --noEmit          # typecheck only
 npm test                  # typecheck + seeded invariants (~1 min) — run before every commit; CI enforces it
 npm run test:invariants -- --seeds=8 --ticks=200000   # longer local run
 npm run test:smoke        # 400k-tick smoke test (~4 min)
+npm run test:visual       # diorama screenshots vs goldens (~2 min; see docs/VISUAL_TESTS.md)
 ```
 
 `tools/invariantCheck.ts` checks per-star rules on every sampled tick across fixed seeds.
