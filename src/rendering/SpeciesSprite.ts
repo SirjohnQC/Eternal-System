@@ -760,6 +760,8 @@ function creatureKey(g: SpeciesGenome, n: number, upscale: number): string {
   return [
     g.id, n, upscale, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression >= 5 ? d.aggression : 0,
     d.intelligence, p.size, p.sensorySystem, p.bodyStructure, p.mobilityType,
+    // A colony's own copy shares its home species' id but is drawn changed (Divergence.ts).
+    g.adaptations ? ['size', 'pigment', 'eyes', 'insulation'].map(k => Math.round((g.adaptations as Record<string, number>)[k] * 20)).join(',') : '',
   ].join('|');
 }
 

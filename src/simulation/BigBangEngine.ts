@@ -7,7 +7,7 @@ import {
   type ColonyState, type Candidate, type Launcher, emptyColonies, launchDrive, pickTarget,
   takenSites, siteKey, coloniesOf, landfallSucceeds, foundColony, stepColonies, colonyAt,
   LAUNCH_COOLDOWN, MAX_TOTAL, MIN_SUITABILITY, capabilityOf, capabilityOfTier, type CapabilityTier,
-  liveGeneration, type Colony,
+  liveGeneration, type Colony, offshootsOf,
 } from './Colonies';
 import { worldEnv, type WorldFacts } from './Divergence';
 import { type WorldHistoryState, type WorldEvent, recordWorldEvent, worldEvents } from './WorldHistory';
@@ -3827,6 +3827,11 @@ export class BigBangEngine {
     if (byPlayer || known(starId) || known(alsoStarId)) this.onCivEvent?.(line);
     const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
     if (byPlayer && ns) ns.worldEvent(this.tick, line, [cause]);
+  }
+
+  /** The player's peoples on other worlds descended from a home species (Codex lineage, P4). */
+  colonyOffshoots(homeLineageId: string): Colony[] {
+    return offshootsOf(this.colonies, homeLineageId);
   }
 
   /** A world's own history, oldest first (for the views; #17). */

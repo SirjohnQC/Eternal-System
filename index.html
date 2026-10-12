@@ -3291,6 +3291,18 @@ input[type="range"], select, label[for],
           </div>
         </div>
 
+        <!-- Lineage: a species' peoples on other worlds (Divergence.ts, expansion P4) -->
+        <div class="pi-section" id="pi-lineage-section" style="display:none">
+          <div class="pi-accordion-hdr open" data-acc="lineage">
+            <div class="pi-section-title" style="margin:0" id="pi-lineage-title">Lineage</div>
+            <span class="pi-accordion-arrow">▶</span>
+          </div>
+          <div class="pi-accordion-body open" id="pi-acc-lineage">
+            <div style="height:8px"></div>
+            <div id="pi-lineage"></div>
+          </div>
+        </div>
+
         <!-- Evolution Timeline -->
         <div class="pi-section">
           <div class="pi-accordion-hdr open" data-acc="evo">
@@ -4420,6 +4432,12 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .pi-chron-link{margin-top:6px;background:none;border:1px solid rgba(200,169,110,.4);color:var(--gold);font-family:var(--font-pixel);
   font-size:9.5px;letter-spacing:1.5px;padding:4px 9px;cursor:pointer}
 .pi-chron-link:hover{background:rgba(200,169,110,.1)}
+.pi-lineage-root,.pi-lineage-row{display:flex;align-items:center;gap:10px;padding:4px 0}
+.pi-lineage-row{margin-left:14px;padding-left:10px;border-left:1px solid rgba(200,169,110,.35)}
+.pi-lineage-art{width:44px;height:44px;display:flex;align-items:center;justify-content:center;flex:none}
+.pi-lineage-art canvas{max-width:44px;max-height:44px;image-rendering:pixelated}
+.pi-lineage-name{color:var(--gold);font-size:11px}
+.pi-lineage-desc{color:#8a80a0;font-size:10px;line-height:1.45}
 .pi-world-history{list-style:none;margin:4px 0 0;padding:0;max-height:220px;overflow-y:auto}
 .pi-world-history li{padding:4px 0;border-top:1px solid rgba(200,169,110,.12);font-size:11px;line-height:1.45;color:var(--text,#d8d0e8)}
 .pi-world-history .wh-when{display:block;color:#8a80a0;font-size:10px}

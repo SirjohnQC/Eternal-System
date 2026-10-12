@@ -721,6 +721,8 @@ for (const { seed, stats } of SEEDS) {
     if (JSON.stringify(col.lineage?.adaptations) !== JSON.stringify(col.adaptations)) throw new Error('lineage copy not updated');
     const home = gameState.playerSpecies.find((sp: any) => sp.id === col.homeLineageId);
     if (home?.adaptations) throw new Error('the HOME species changed — colony adaptations leaked into it');
+    // The Codex lineage lists it under its home species (P4).
+    if (!e.colonyOffshoots(col.homeLineageId).includes(col)) throw new Error('colony missing from its species\' offshoots');
     const e2 = new BigBangEngine(makeCanvas()) as any;
     e2.init(SEEDS[0].stats, 'inv_diverge');
     e2.loadState(JSON.parse(JSON.stringify(e.serialize())));

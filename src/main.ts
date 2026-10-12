@@ -52,7 +52,7 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
-import { colonyLook } from './simulation/Colonies';
+import { colonyLook, type Colony } from './simulation/Colonies';
 import { generationsAgo } from './simulation/WorldHistory';
 import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
@@ -1733,6 +1733,55 @@ function buildWorldSection(star: StarBody, planetIndex: number, isHome: boolean)
     `<li><span class="wh-when">${esc(generationsAgo(e.tick, now))}</span>${esc(e.text)}${e.cause ? ` <span class="wh-cause">— ${esc(e.cause)}</span>` : ''}</li>`).join('');
 }
 
+/**
+ * The Codex lineage (expansion P4): on the home world, the player's species
+ * and the peoples it has become on other worlds; on a colony world, the people
+ * here and the species it came from. Portraits come from the same creature
+ * forge, so what divergence did shows (owner's idea: smaller / bigger / a
+ * different colour).
+ */
+function buildLineageSection(star: StarBody, planetIndex: number, isHome: boolean): void {
+  const section = document.getElementById('pi-lineage-section');
+  const box = document.getElementById('pi-lineage');
+  if (!section || !box || !engine) return;
+  const esc = (t: string) => t.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
+  const entry = (g: SpeciesGenome | null, name: string, desc: string, child: boolean) => {
+    const row = document.createElement('div');
+    row.className = child ? 'pi-lineage-row' : 'pi-lineage-root';
+    row.innerHTML = `<div class="pi-lineage-art"></div><div><div class="pi-lineage-name">${esc(name)}</div><div class="pi-lineage-desc">${esc(desc)}</div></div>`;
+    if (g) { try { row.firstElementChild!.appendChild(bakeCreaturePortrait(g, 40)); } catch { /* portrait is decoration */ } }
+    return row;
+  };
+  const stageWords = (c: Colony) => {
+    const stage = c.stage ?? 'same';
+    const look = colonyLook(c);
+    const what = stage === 'same' ? 'the same people' : stage === 'species' ? 'a new species' : stage;
+    const rule = c.status === 'independent' ? 'independent' : c.occupation ? `held by ${engine!.colonyRulerName(c)}` : c.status;
+    return `${look ? look + ' · ' : ''}${what} · ${rule} · ${c.generations} generations`;
+  };
+  const rows: HTMLElement[] = [];
+  if (isHome) {
+    const living = gameState.playerSpecies.filter(sp => !sp.isExtinct);
+    for (const sp of living) {
+      const kids = engine.colonyOffshoots(sp.id);
+      if (!kids.length) continue;
+      rows.push(entry(sp, sp.name, 'at home', false));
+      for (const c of kids) rows.push(entry(c.lineage, `on ${c.name}`, stageWords(c), true));
+    }
+    setText('pi-lineage-title', 'Lineage — peoples on other worlds');
+  } else {
+    const c = engine.colonyAt(star.id, planetIndex);
+    if (c?.byPlayer && c.lineage) {
+      const root = gameState.playerSpecies.find(sp => sp.id === c.homeLineageId) ?? null;
+      rows.push(entry(root, root?.name ?? c.lineage.name, root ? 'at home' : 'their ancestors', false));
+      rows.push(entry(c.lineage, `on ${c.name}`, stageWords(c), true));
+    }
+    setText('pi-lineage-title', 'Lineage — descended from');
+  }
+  section.style.display = rows.length ? '' : 'none';
+  box.replaceChildren(...rows);
+}
+
 function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   _panelStarId = star.id;
   const planet = star.planets[planetIndex] ?? star.planets[0];
@@ -1751,6 +1800,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   const colony = isHome ? null : engine?.colonyAt(star.id, planetIndex) ?? null;
   setText('pi-planet-name', colony?.name ?? displayName);
   buildWorldSection(star, planetIndex, isHome);
+  buildLineageSection(star, planetIndex, isHome);
   // Views render from simulation state (CLAUDE.md rule 1): keep "This World"
   // current while the panel is open, not only as it was on entry.
   if (_worldSectionTimer) clearInterval(_worldSectionTimer);
@@ -1762,6 +1812,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
       return;
     }
     buildWorldSection(star, planetIndex, false);
+    buildLineageSection(star, planetIndex, false);
   }, 1000);
   setText('pi-type-badge', (planet?.type ?? 'unknown').toUpperCase());
   setText('pi-star-system', star.civName + ' System');
