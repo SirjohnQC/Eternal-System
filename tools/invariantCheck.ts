@@ -723,6 +723,33 @@ for (const { seed, stats } of SEEDS) {
     if (home?.adaptations) throw new Error('the HOME species changed — colony adaptations leaked into it');
     // The Codex lineage lists it under its home species (P4).
     if (!e.colonyOffshoots(col.homeLineageId).includes(col)) throw new Error('colony missing from its species\' offshoots');
+    // Its surface (P4, ColonyWorld.ts): territory sized by population, its own
+    // people on it, derived the same way every time, re-stamped as it grows.
+    const { territorySize } = await import('../src/simulation/ColonyWorld');
+    const { SEA_LEVEL } = await import('../src/simulation/PlanetGrid');
+    const count = (g: any[][]) => { let land = 0, civ = 0, ours = 0;
+      for (const row of g) for (const c of row) { if (c.elevation > SEA_LEVEL) land++; if (c.civId === col.id) civ++; if (c.dominantSpeciesId === col.lineage.id) ours++; }
+      return { land, civ, ours }; };
+    // (A land people, so it can live on the settled ground whatever this world is.)
+    const env0 = col.lineage.dna.environment;
+    col.lineage.dna.environment = 'land';
+    const v1 = e.colonyWorldView(col.starId, col.planetIndex);
+    if (!v1) throw new Error('no surface view for a colony world');
+    if (v1.grid === runtimeState.playerPlanetGrid) throw new Error('colony view shares the home grid');
+    const k1 = count(v1.grid);
+    if (k1.civ !== territorySize(k1.land, col.population)) throw new Error(`territory ${k1.civ} cells, expected ${territorySize(k1.land, col.population)} of ${k1.land} land`);
+    if (!k1.ours) throw new Error(`the colony people are not on their world (${col.lineage.dna.environment}, population ${col.lineage.population})`);
+    const snap1 = JSON.stringify(v1.grid.map((r: any[]) => r.map(c => c.civId ? 1 : 0).join('')));
+    (e as any).colonyGrids.clear();
+    const again = JSON.stringify(e.colonyWorldView(col.starId, col.planetIndex).grid.map((r: any[]) => r.map((c: any) => c.civId ? 1 : 0).join('')));
+    if (again !== snap1) throw new Error('the colony surface is not derived deterministically');
+    const p0 = col.population;
+    col.population = Math.min(1, p0 + 0.3);
+    const v2 = e.colonyWorldView(col.starId, col.planetIndex);
+    if (v2.sig === v1.sig || !(count(v2.grid).civ > k1.civ)) throw new Error('the surface did not grow with the colony');
+    col.population = p0;
+    col.lineage.dna.environment = env0;
+    if (e.colonyWorldView(ps.id, e.homeIndexOf(ps))) throw new Error('the home world was given a colony view');
     const e2 = new BigBangEngine(makeCanvas()) as any;
     e2.init(SEEDS[0].stats, 'inv_diverge');
     e2.loadState(JSON.parse(JSON.stringify(e.serialize())));

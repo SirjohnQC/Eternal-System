@@ -39,6 +39,7 @@ import {
 } from './simulation/PlanetGrid';
 import { ARCHETYPES } from './simulation/LifeSystem';
 import type { SpeciesGenome } from './simulation/SpeciesGenome';
+import { DEFAULT_BIOSPHERE } from './simulation/SpeciesGenome';
 import type { GenomeSummary } from './simulation/Civilization';
 import { sapientFormOf } from './rendering/CreatureForge';
 import { speciesRGB, clearSpeciesPalette } from './ui/speciesPalette';
@@ -857,7 +858,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
     addFeedEntry(`Evolution: ${label} on ${gameState.playerPlanetName}`, 'milestone');
     updatePhaseBar();
     eng.clearPlanetTextureCache();
-    _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+    homeDioramaLiveData();
     // A phase advance is the moment creatures first appear (buildInhabitants
     // early-returns before 'multicellular'/'complex' etc.) and settlements can
     // change too — surfaceDirty drives those, not just decals, and
@@ -1073,7 +1074,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
   // should follow (both fire on multiples of 250) (#10, #11). The renderer
   // throttles the actual repaint (SURFACE_REBAKE_INTERVAL).
   eng.onPlayerWorldChanged = () => {
-    _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+    homeDioramaLiveData();
     _dioramaRenderer?.markSurfaceDirty();
   };
   eng.onTickUpdate = (tick) => {
@@ -1096,7 +1097,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
     if (tick % 250 === 0) {
       // playerSpecies is reassigned by each evolution step, so the renderer's
       // captured array must be refreshed or every species lookup goes stale.
-      _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+      homeDioramaLiveData();
       _dioramaRenderer?.markSurfaceDirty();
     }
   };
@@ -1254,6 +1255,29 @@ function enterUniverse(): void {
  *   — defaulting to orbit 0 showed whatever happened to be innermost, which for
  *   the player's own star is often not the world they actually live on.
  */
+/**
+ * The world the diorama is showing when it is not the home world (a colony
+ * world, P4), else null. The home world's live data and tile actions apply
+ * only while it shows home (CLAUDE.md rule 3).
+ */
+let _dioramaSite: { starId: number; planetIndex: number; sig: string } | null = null;
+
+/** Push the home world's live species into the diorama — only while it shows home. */
+function homeDioramaLiveData(): void {
+  if (!_dioramaSite) _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+}
+
+/** A colony world in view changed (grew, its people changed): redraw from the engine's re-stamped surface. */
+function refreshColonyDiorama(): void {
+  const site = _dioramaSite;
+  if (!site || !engine || !_dioramaRenderer) return;
+  const v = engine.colonyWorldView(site.starId, site.planetIndex);
+  if (!v || v.sig === site.sig) return;
+  site.sig = v.sig;
+  _dioramaRenderer.setLiveData(v.species, { ...DEFAULT_BIOSPHERE });
+  _dioramaRenderer.markSurfaceDirty();
+}
+
 async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<void> {
   const target = star ?? engine?.getPlayerStar();
   if (!target) return;
@@ -1272,6 +1296,9 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   // under another planet's type and a double-click opened the homeworld's
   // surface map (#16).
   const isHomeView = target.isPlayerStar && planetIndex === homeIndex;
+  // A colony world is drawn as a diorama too, from its own derived surface (P4).
+  const colonyView = !isHomeView && engine ? engine.colonyWorldView(target.id, planetIndex) : null;
+  _dioramaSite = colonyView ? { starId: target.id, planetIndex, sig: colonyView.sig } : null;
 
   const overlay = document.getElementById('planet-overlay')!;
   overlay.style.display = 'flex';
@@ -1297,8 +1324,8 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   const diMount = document.getElementById('diorama-mount') as HTMLDivElement;
   const canvas  = document.getElementById('planet-canvas') as HTMLCanvasElement;
 
-  if (isHomeView) {
-    // Player's home planet → diorama renderer
+  if (isHomeView || colonyView) {
+    // Player's home planet, or a colony world → diorama renderer
     diMount.style.display = 'block';
     canvas.style.display  = 'none';
     planetRenderer?.stop();
@@ -1311,7 +1338,10 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       _dioramaRenderer.setNationSource(() => runtimeState.playerNations);
     }
 
-    if (runtimeState.playerPlanetGrid && planet) {
+    if (colonyView && planet) {
+      _dioramaRenderer.refreshData(colonyView.grid, { ...DEFAULT_BIOSPHERE }, colonyView.species, planet, target, planetIndex,
+        { civLevel: colonyView.civLevel, phase: 'intelligent' });
+    } else if (runtimeState.playerPlanetGrid && planet) {
       _dioramaRenderer.refreshData(
         runtimeState.playerPlanetGrid,
         gameState.playerBiosphere,
@@ -1504,7 +1534,7 @@ function buildTileActionButtons(cell: GridCell, target: TileRef): void {
       applyTileAction(action, target);
       _dioramaRenderer?.playDivineEffect(action.effect, target);
 
-      _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+      homeDioramaLiveData();
       _dioramaRenderer?.markSurfaceDirty(true);   // the player must see it land
       updateDivineActions();
       addFeedEntry('-' + action.cost + ' Divine Power — ' + action.label, 'milestone');
@@ -1637,7 +1667,7 @@ function attachTileInteraction(mount: HTMLElement): void {
   mount.addEventListener('mouseleave', () => _dioramaRenderer?.setHighlight(null));
 
   mount.addEventListener('click', (e) => {
-    if (!_dioramaRenderer) return;
+    if (!_dioramaRenderer || _dioramaSite) return;   // tile actions edit the HOME grid: home only
     const hit = _dioramaRenderer.pickTile(e.clientX, e.clientY);
     if (!hit) return;
     AudioManager.playSfx('ui_click');
@@ -1648,6 +1678,7 @@ function attachTileInteraction(mount: HTMLElement): void {
   // diorama only ever shows one hemisphere; this is the way to the other half.
   mount.addEventListener('dblclick', (e) => {
     e.preventDefault();
+    if (_dioramaSite) return;   // the surface map is the home world's
     AudioManager.playSfx('ui_click');
     openPlanetMap(_dioramaRenderer?.pickTile(e.clientX, e.clientY) ?? null);
   });
@@ -1813,6 +1844,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     }
     buildWorldSection(star, planetIndex, false);
     buildLineageSection(star, planetIndex, false);
+    refreshColonyDiorama();
   }, 1000);
   setText('pi-type-badge', (planet?.type ?? 'unknown').toUpperCase());
   setText('pi-star-system', star.civName + ' System');
@@ -5171,7 +5203,7 @@ function buildSpeciesActs(sp: SpeciesGenome): void {
       addChatMessage(report, 'god');
       addFeedEntry(`Divine act on ${sp.name} — ${act.label}`, 'milestone');
       updateDivineActions();
-      _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+      homeDioramaLiveData();
       _dioramaRenderer?.markSurfaceDirty(true);
       buildSpeciesActs(sp);
       drawPlanetMap();
@@ -6134,7 +6166,7 @@ function faithHost(): DivineHost | null {
       }
     },
     surfaceChanged: () => {
-      _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+      homeDioramaLiveData();
       _dioramaRenderer?.markSurfaceDirty(true);
     },
   };
