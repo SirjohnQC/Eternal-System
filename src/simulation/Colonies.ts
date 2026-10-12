@@ -25,6 +25,10 @@ import type { SpeciesGenome } from './SpeciesGenome';
 import type { CultureValues } from './Civilization';
 import type { PolityPressures } from './StarPolities';
 import { reachOf } from './StarPolities';
+import {
+  type Adaptations, type DivergenceStage, type WorldEnv,
+  NO_ADAPTATION, optimumFor, generationStep, distanceFromHome, stageOf, describe,
+} from './Divergence';
 
 export type ColonyStatus = 'outpost' | 'colony';
 
@@ -53,6 +57,12 @@ export interface Colony {
   /** 0..1 traffic with the founder: gene flow and loyalty (P2/P3). */
   contact: number;
   loyalty: number;
+  /** P2 divergence: heritable adaptations to this world (absent in older saves = none). */
+  adaptations?: Adaptations;
+  /** Tick of the last generation lived here. */
+  lastGenTick?: number;
+  /** How far the people here have become their own (Divergence.ts). */
+  stage?: DivergenceStage;
 }
 
 export interface ColonyState {
@@ -256,4 +266,36 @@ export function stepColonies(
 /** The colony on a planet, if any. */
 export function colonyAt(state: ColonyState, starId: number, planetIndex: number): Colony | null {
   return state.colonies.find(c => c.starId === starId && c.planetIndex === planetIndex) ?? null;
+}
+
+// ── Divergence (P2) ─────────────────────────────────────────────────────────
+
+export interface StageNews { colony: Colony; from: DivergenceStage; to: DivergenceStage; words: string[] }
+
+/**
+ * Live one generation on the colony world: adaptations step toward what the
+ * world selects for, slowed and pulled home by contact. Mirrors the result onto
+ * the colony's own species copy (so its creatures are drawn changed). Returns a
+ * stage change, if one happened.
+ */
+export function liveGeneration(c: Colony, env: WorldEnv, contact: number, tick: number, rand: () => number): StageNews | null {
+  c.contact = Math.max(0, Math.min(1, contact));
+  c.adaptations = generationStep(c.adaptations ?? { ...NO_ADAPTATION }, optimumFor(env), c.contact, rand);
+  c.generations++;
+  c.lastGenTick = tick;
+  if (c.lineage) c.lineage.adaptations = { ...c.adaptations };
+  const from = c.stage ?? 'same';
+  const to = stageOf(distanceFromHome(c.adaptations), c.contact);
+  if (to === from) return null;
+  // Stages only move forward: a people that has become its own does not
+  // un-become it when contact resumes (it can still drift back in its traits).
+  const order: DivergenceStage[] = ['same', 'variant', 'subspecies', 'species'];
+  if (order.indexOf(to) < order.indexOf(from)) return null;
+  c.stage = to;
+  return { colony: c, from, to, words: describe(c.adaptations) };
+}
+
+/** "pale, great" — the visible changes of a colony people, for the views. */
+export function colonyLook(c: Colony): string {
+  return describe(c.adaptations).slice(0, 2).join(', ');
 }

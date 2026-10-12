@@ -45,7 +45,11 @@ export interface SpeciesGenome {
     landTransition:     number;  // 0–1
     intelligenceGrowth: number;  // 0–1
     toolUse:            number;  // 0–1
-  };
+  };  /**
+   * Heritable adaptations to a colony world, each -1..1 (Divergence.ts).
+   * Absent (= all 0) for the home population and in older saves.
+   */
+  adaptations?: { size: number; pigment: number; eyes: number; insulation: number };
 }
 
 export interface PlanetBiosphere {

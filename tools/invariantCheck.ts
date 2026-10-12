@@ -199,6 +199,23 @@ rule({
   },
 });
 
+rule({
+  // Divergence (P2): adaptations stay in range; a player colony's own species
+  // copy carries exactly the colony's adaptations (that is what is drawn).
+  name: 'colony adaptations are in range and mirrored',
+  check: ({ engine }) => {
+    for (const c of (engine as any).colonies.colonies as any[]) {
+      const a = c.adaptations;
+      if (!a) continue;
+      for (const k of ['size', 'pigment', 'eyes', 'insulation']) {
+        if (!(a[k] >= -1 && a[k] <= 1)) return `${c.id} ${k}=${a[k]}`;
+      }
+      if (c.lineage && JSON.stringify(c.lineage.adaptations) !== JSON.stringify(a)) return `${c.id} lineage not mirrored`;
+    }
+    return null;
+  },
+});
+
 const lastHome = new Map<string, string>();   // seed -> "starId:index"
 rule({
   // Home is chosen once (start, exodus). Discovery landings at Space Age /
@@ -406,6 +423,105 @@ for (const { seed, stats } of SEEDS) {
     if (c.status !== 'outpost') throw new Error('a tier-1 outpost became a colony');
     for (let i = 0; i < 200; i++) stepColonies(st, () => true, () => 3);
     if (!(c.population > 0.25) || c.status !== 'colony') throw new Error(`after the colony ark the outpost stayed at ${c.population.toFixed(2)} (${c.status})`);
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenarios: divergence (Divergence.ts, P2) ───────────────────────────────
+{
+  const D = await import('../src/simulation/Divergence');
+  const { forgeCreature } = await import('../src/rendering/CreatureForge');
+  const { createPrimordialSpecies } = await import('../src/simulation/SpeciesGenome');
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const scen = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const live = (env: any, contact: number, gens: number, seed: string) => {
+    const rng = new SeedRNG(seed), opt = D.optimumFor(env);
+    let a = { ...D.NO_ADAPTATION };
+    for (let g = 0; g < gens; g++) a = D.generationStep(a, opt, contact, () => rng.next());
+    return a;
+  };
+
+  scen('a cold heavy world breeds smaller shaggy people, a hot light one larger sleek ones', () => {
+    const home = { radius: 4, orbitalRadius: 30, type: 'rocky', starTemperature: 5800 };
+    const cold = D.worldEnv({ radius: 6, orbitalRadius: 48, type: 'ice', starTemperature: 5800 }, home);
+    const hot = D.worldEnv({ radius: 2.6, orbitalRadius: 20, type: 'desert', starTemperature: 5800 }, home);
+    const a = live(cold, 0.3, 80, 'cold'), b = live(hot, 0.3, 80, 'hot');
+    if (!(a.size < -0.05 && b.size > 0.05)) return `size: cold ${a.size.toFixed(2)}, hot ${b.size.toFixed(2)}`;
+    if (!(a.insulation > 0.05 && b.insulation < -0.05)) return `insulation: cold ${a.insulation.toFixed(2)}, hot ${b.insulation.toFixed(2)}`;
+    if (!(a.pigment < b.pigment)) return `pigment: cold ${a.pigment.toFixed(2)} not paler than hot ${b.pigment.toFixed(2)}`;
+    const twin = live(D.worldEnv(home, home), 0.3, 80, 'twin');
+    if (D.distanceFromHome(twin) > D.STAGE_AT.variant) return `a world like home diverged to ${D.distanceFromHome(twin).toFixed(2)}`;
+    const iso = D.distanceFromHome(live(cold, 0, 40, 'iso')), conn = D.distanceFromHome(live(cold, 1, 40, 'conn'));
+    if (!(iso > conn)) return `contact did not slow divergence (isolated ${iso.toFixed(2)} vs connected ${conn.toFixed(2)})`;
+    if (D.stageOf(D.distanceFromHome(live(cold, 0, 9, 'fast')), 0) !== 'same') return 'a visible variant in under 10 generations — owner wants it slow';
+    return null;
+  });
+
+  scen('adapted creatures are drawn darker and stouter', () => {
+    const base = createPrimordialSpecies(0);
+    base.dna.locomotion = 'walking'; base.dna.environment = 'land'; base.physicalTraits.size = 'medium'; base.physicalTraits.bodyStructure = 'endoskeletal';
+    const dark = { ...base, adaptations: { size: 0.6, pigment: 0.7, eyes: 0, insulation: 0 } };
+    const f0 = forgeCreature(base as any, 32) as any, f1 = forgeCreature(dark as any, 32) as any;
+    const stats = (f: any) => {
+      const d: Uint8ClampedArray | number[] = f.data ?? f.pixels ?? f.rgba;
+      let n = 0, lum = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 0) { n++; lum += d[i] + d[i + 1] + d[i + 2]; }
+      return { n, lum: n ? lum / n : 0 };
+    };
+    const s0 = stats(f0), s1 = stats(f1);
+    if (!s0.n) return `no pixels in the forged sprite (keys: ${Object.keys(f0).join(',')})`;
+    if (!(s1.lum < s0.lum - 5)) return `not darker: mean ${s0.lum.toFixed(0)} → ${s1.lum.toFixed(0)}`;
+    // Sprites are framed to their length, so size shows as girth (more covered pixels).
+    if (!(s1.n > s0.n)) return `not stouter: ${s0.n} → ${s1.n} px`;
+    return null;
+  });
+}
+
+{
+  const r: Rule = { name: 'scenario: a colony lives 30 generations, diverges, and keeps it through a save', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_diverge');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_diverge');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    const L = { starId: ps.id, x: ps.x, y: ps.y, era: 6, techs: ['colony_ark'],
+      pressures: { hunger: 0, crowding: 1, scarcity: 0, unrest: 0, pollution: 0 },
+      values: { militarism: 0.5, piety: 0.5, curiosity: 0.8, collectivism: 0.5, xenophobia: 0.2 }, isPlayer: true };
+    // The world LEAST like home that can still be settled: most to adapt to.
+    const sites = (e.colonyCandidates() as any[]).filter(c => e.canSettle(ps.id, c));
+    const envDist = (c: any) => { const g = e.colonyGenerationInputs({ starId: c.starId, planetIndex: c.planetIndex, founderStarId: ps.id, byPlayer: true });
+      return g ? Math.hypot(g.env.gravity, g.env.light, g.env.heat) : 0; };
+    sites.sort((a, b) => envDist(b) - envDist(a));
+    let col: any = null;
+    for (const site of sites.slice(0, 6)) {
+      for (let k = 0; k < 12 && !col; k++) { e.launchArk(L, site); for (let i = 0; i < 1_000 && e.fleets.some((f: any) => f.ark); i++) e.updateFleets(); col = e.colonyAt(site.starId, site.planetIndex); }
+      if (col) break;
+    }
+    if (!col) throw new Error('could not found a colony');
+    e.colonies.lastLaunch[ps.id] = Infinity;   // no further launches during the test
+    for (let g = 0; g < 30; g++) { e.tick += 2_000; e.stepColonyWorlds([], null); }
+    if (col.generations !== 30) throw new Error(`expected 30 generations, got ${col.generations}`);
+    const D = await import('../src/simulation/Divergence');
+    const dist = D.distanceFromHome(col.adaptations);
+    if (!(dist > 0.01)) throw new Error(`no divergence after 30 generations (distance ${dist.toFixed(3)}, env ${JSON.stringify(e.colonyGenerationInputs(col).env)})`);
+    if (JSON.stringify(col.lineage?.adaptations) !== JSON.stringify(col.adaptations)) throw new Error('lineage copy not updated');
+    const home = gameState.playerSpecies.find((sp: any) => sp.id === col.homeLineageId);
+    if (home?.adaptations) throw new Error('the HOME species changed — colony adaptations leaked into it');
+    const e2 = new BigBangEngine(makeCanvas()) as any;
+    e2.init(SEEDS[0].stats, 'inv_diverge');
+    e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
+    const c2 = e2.colonyAt(col.starId, col.planetIndex);
+    if (!c2 || JSON.stringify(c2.adaptations) !== JSON.stringify(col.adaptations) || c2.generations !== 30) throw new Error('divergence did not survive save/load');
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }

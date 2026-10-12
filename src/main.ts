@@ -52,6 +52,7 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
+import { colonyLook } from './simulation/Colonies';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
 import { symptomsOf } from './simulation/Nations';
@@ -5841,6 +5842,12 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     if (colony) {
       const founder = engine!.colonyFounderName(colony);
       rows.push(['Colony', `${founder} · ${colony.status === 'outpost' ? 'outpost' : 'colony'} · ${Math.round(colony.population * 100)}%`]);
+      // What generations under this sky have made of them (Divergence.ts).
+      const stage = colony.stage ?? 'same';
+      if (stage !== 'same') {
+        const look = colonyLook(colony) || 'changed';
+        rows.push(['People', `${look} · ${stage === 'species' ? 'a new species' : stage}`]);
+      }
     }
     rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }

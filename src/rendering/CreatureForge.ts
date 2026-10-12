@@ -87,6 +87,11 @@ function buildPalette(g: SpeciesGenome, seed: number): Ramp[] {
   const H = (META_HUE[g.dna.metabolism] ?? 30) + env.dh + jit;
   let S = env.s, L = env.l + (hash3(seed, 4, 5, 6) - 0.5) * 0.06;
   if (g.dna.diet === 'decomposer') S *= 0.7;
+  // A colony people's skin follows its world's light (Divergence.ts):
+  // harsher light darker, dim light paler and a little washed out.
+  const pig = g.adaptations?.pigment ?? 0;
+  L = Math.max(0.12, Math.min(0.82, L - pig * 0.22));
+  if (pig < 0) S *= 1 + pig * 0.35;
   const jelly = g.physicalTraits.bodyStructure === 'gelatinous';
   const a = jelly ? 190 : 255;
   const r: Ramp[] = new Array(MATS);
@@ -284,7 +289,9 @@ interface Traits {
 function traitsOf(g: SpeciesGenome): Traits {
   const SIZE_BULK: Record<string, number> = { microscopic: 0.85, tiny: 0.9, small: 0.95, medium: 1, large: 1.12, massive: 1.25 };
   return {
-    bulk: SIZE_BULK[g.physicalTraits.size] ?? 1,
+    // Colony adaptations (Divergence.ts): gravity sets size, cold adds bulk.
+    bulk: (SIZE_BULK[g.physicalTraits.size] ?? 1)
+      * (1 + 0.3 * (g.adaptations?.size ?? 0) + 0.08 * (g.adaptations?.insulation ?? 0)),
     seed: hashStr(g.id),
     carn: g.dna.diet === 'carnivore', herb: g.dna.diet === 'herbivore',
     producer: g.dna.diet === 'producer' || g.dna.metabolism === 'photosynthetic',

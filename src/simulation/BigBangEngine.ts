@@ -7,7 +7,9 @@ import {
   type ColonyState, type Candidate, type Launcher, emptyColonies, launchDrive, pickTarget,
   takenSites, siteKey, coloniesOf, landfallSucceeds, foundColony, stepColonies, colonyAt,
   LAUNCH_COOLDOWN, MAX_TOTAL, MIN_SUITABILITY, capabilityOf, capabilityOfTier, type CapabilityTier,
+  liveGeneration, type Colony,
 } from './Colonies';
+import { worldEnv, type WorldFacts } from './Divergence';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
@@ -36,7 +38,7 @@ import {
   type MoonKind as CosmicMoonKind,
 } from '../rendering/CosmicPixelSprites';
 import {
-  stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation,
+  stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
   type EvolutionEvent,
 } from './EvolutionEngine';
 import { stepLifeSpread, generatePlanetGrid, type PlanetGrid } from './PlanetGrid';
@@ -3529,6 +3531,52 @@ export class BigBangEngine {
         : `The colony of ${founder} on ${where} is gone.`;
       this.colonyNews(c.byPlayer, c.starId, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
     }
+
+    // Divergence (P2): every colony lives a generation per EVOLUTION_TICK_RATE.
+    for (const c of this.colonies.colonies) {
+      if (this.tick - (c.lastGenTick ?? c.foundedTick) < EVOLUTION_TICK_RATE) continue;
+      const g = this.colonyGenerationInputs(c);
+      if (!g) continue;
+      const change = liveGeneration(c, g.env, g.contact, this.tick, () => rng.next());
+      if (!change) continue;
+      const people = c.byPlayer ? (gameState.playerSpeciesName || c.lineage?.name || 'your people')
+        : (this.stars.find(s => s.id === c.founderStarId)?.civName ?? 'a vanished people');
+      const look = change.words.slice(0, 2).join(', ') || 'changed';
+      const line = change.to === 'variant'
+        ? `The colonists on ${c.name} are becoming a ${look} people, unlike ${people} at home.`
+        : change.to === 'subspecies'
+          ? `The ${look} folk of ${c.name} are a people of their own now: a subspecies of ${people}.`
+          : `A new species has arisen on ${c.name}: the ${look} descendants of ${people} can no longer be counted among them.`;
+      this.colonyNews(c.byPlayer, c.starId, line, `generations under a different sky (${c.generations})`);
+    }
+  }
+
+  /**
+   * What a colony's world selects for, relative to its people's home world, and
+   * how much contact (gene flow) it still has with home: 0.8 in the home
+   * system, falling with distance between stars, none once home is gone.
+   */
+  private colonyGenerationInputs(c: Colony): { env: ReturnType<typeof worldEnv>; contact: number } | null {
+    const star = this.stars.find(s => s.id === c.starId);
+    const planet = star?.planets[c.planetIndex];
+    if (!star || !planet) return null;
+    const facts = (s: StarBody, p: Planet): WorldFacts =>
+      ({ radius: p.radius, orbitalRadius: p.orbitalRadius, type: p.type, starTemperature: s.temperature });
+    const founder = this.stars.find(s => s.id === c.founderStarId && !s.isDead);
+    const homeStar = c.byPlayer ? this.getPlayerStar() : founder;
+    const homePlanet = homeStar
+      ? (c.byPlayer ? this.homeWorld(homeStar) : (homeStar.planets.find(p => p.hasLife) ?? homeStar.planets[0]))
+      : undefined;
+    // With no home left to compare against, measure against a temperate rocky
+    // world of the colony's own size at its star's goldilocks orbit.
+    const home: WorldFacts = homeStar && homePlanet ? facts(homeStar, homePlanet)
+      : { radius: planet.radius, orbitalRadius: idealOrbitRadius(star.temperature), type: 'rocky', starTemperature: star.temperature };
+    let contact = 0;
+    if (founder) {
+      const d = Math.hypot(star.x - founder.x, star.y - founder.y);
+      contact = star.id === founder.id ? 0.8 : Math.max(0.1, Math.min(0.55, 0.55 - d / 5000));
+    }
+    return { env: worldEnv(facts(star, planet), home), contact };
   }
 
   /** Planets an ark could settle: not gas, not dead, not a forming world, not another people's living world. */
