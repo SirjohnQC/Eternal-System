@@ -953,6 +953,7 @@ export class BigBangEngine {
     star.hasLife = false;
     star.civLevel = 0;
     star.biologyPhase = 'microbial';
+    this.dropCulture(star);
     star.bioPhaseProgress = 0;
     star.religionName = '';
     star.religionDevotion = 0;
@@ -2171,6 +2172,7 @@ export class BigBangEngine {
       bigger.hasLife = false;
       bigger.civLevel = 0;
       bigger.biologyPhase = 'microbial';
+      this.dropCulture(bigger);
       bigger.bioPhaseProgress = 0;
       bigger.formationStage = 'magma';
       bigger.formationTick = this.tick;
@@ -2868,6 +2870,7 @@ export class BigBangEngine {
     star.hasLife = false;
     star.civLevel = 0;
     star.biologyPhase = 'microbial';
+    this.dropCulture(star);
     star.bioPhaseProgress = 0;
     star.bioStalls = 0;
     star.lifeArchetype = undefined;
@@ -2891,6 +2894,8 @@ export class BigBangEngine {
       const rng = this.rng.fork(`floor_${star.id}_${this.tick}`);
       if (star.isPlayerStar || survivesFloorCollapse(rng, this.archetypeOf(star))) {
         star.biologyPhase = 'microbial';
+        star.civLevel = 0;
+        this.dropCulture(star);
         star.bioPhaseProgress = 0;
         star.bioStalls = (star.bioStalls ?? 0) + 1;
         return;
@@ -2903,6 +2908,7 @@ export class BigBangEngine {
     star.bioPhaseProgress = 0;
     if (next < BIO_PHASE_SEQUENCE.indexOf('intelligent')) {
       star.civLevel = 0;
+      this.dropCulture(star);
     }
   }
 
@@ -3000,6 +3006,9 @@ export class BigBangEngine {
       // This branch fires both on a star's FIRST-EVER arrival at intelligence
       // and on a star RE-reaching it after a regression (a mass extinction
       // knocked biologyPhase back down via `regressPhases`, and it re-climbed).
+      // NOTE: demotion now drops the record at once (`dropCulture`, #20), so
+      // the stale-record case below is defensive — e.g. an old save written
+      // before that fix.
       // `invalidateCulture` no-ops when there is nothing to clear, so on a
       // first-ever arrival no record exists yet and this is free; it only does
       // real work — dropping a stale record so `ensureCivilization` rebuilds
@@ -3438,6 +3447,19 @@ export class BigBangEngine {
           this.onCultureGenerated?.(star.id, result);
         }
       });
+  }
+
+  /**
+   * Remove a star's culture record because it no longer has a civilisation.
+   *
+   * Call this in the SAME step as any change that leaves a star not
+   * intelligent (regression, sterilisation, death, reforming from magma).
+   * Keeping the record "until it re-emerges" left a filled Culture panel on
+   * primitive worlds (#20); re-emergence rebuilds culture regardless, via
+   * `ensureCivilization`, so nothing is lost by dropping it here.
+   */
+  private dropCulture(star: StarBody): void {
+    delete gameState.civilizations[star.id];
   }
 
   /**
@@ -5379,6 +5401,7 @@ export class BigBangEngine {
     star.hasLife = false;
     star.civLevel = 0;
     star.biologyPhase = 'microbial';
+    this.dropCulture(star);
     star.bioPhaseProgress = 0;
     star.formationStage = 'magma';
     star.formationTick = this.tick;
