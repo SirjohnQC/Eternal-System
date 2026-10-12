@@ -52,6 +52,7 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
+import { colonyLook } from './simulation/Colonies';
 import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
@@ -1258,10 +1259,18 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   // Opening the home world while the Forge waits on the system view: descend.
   if (target.isPlayerStar && forgeAwaitingDescent()) forgeDescend(false);
 
+  const homeIndex = engine?.homeIndexOf(target) ?? 0;
   if (planetIndex == null) {
-    const home = target.planets.findIndex(p => p.discovery === 'landing' || p.hasLife);
-    planetIndex = home >= 0 ? home : 0;
+    planetIndex = target.isPlayerStar ? homeIndex
+      : Math.max(0, target.planets.findIndex(p => p.discovery === 'landing' || p.hasLife));
   }
+  // Only the player's HOME world is the diorama with the home-world grid. Any
+  // other planet — another world in the player's own system included — goes
+  // through PlanetRenderer like every other civilisation's worlds. It used to
+  // get the diorama fed the HOME grid, so it showed the homeworld's terrain
+  // under another planet's type and a double-click opened the homeworld's
+  // surface map (#16).
+  const isHomeView = target.isPlayerStar && planetIndex === homeIndex;
 
   const overlay = document.getElementById('planet-overlay')!;
   overlay.style.display = 'flex';
@@ -1272,22 +1281,22 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   const planet = target.planets[planetIndex] ?? target.planets[0];
   const titleEl = document.getElementById('planet-overlay-title');
   if (titleEl) {
-    titleEl.textContent = target.isPlayerStar
+    titleEl.textContent = isHomeView
       ? (gameState.playerPlanetName || planet?.name || target.civName)
       : `${target.civName} — ${planet?.name ?? 'Planet'}`;
   }
 
   // The engine owns the home-world grid (#76); make sure it exists for the view.
-  if (target.isPlayerStar) engine?.ensurePlayerGrid();
+  if (isHomeView) engine?.ensurePlayerGrid();
 
-  if (target.isPlayerStar && runtimeState.playerPlanetGrid) {
+  if (isHomeView && runtimeState.playerPlanetGrid) {
     assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
   }
 
   const diMount = document.getElementById('diorama-mount') as HTMLDivElement;
   const canvas  = document.getElementById('planet-canvas') as HTMLCanvasElement;
 
-  if (target.isPlayerStar) {
+  if (isHomeView) {
     // Player's home planet → diorama renderer
     diMount.style.display = 'block';
     canvas.style.display  = 'none';
@@ -1439,8 +1448,8 @@ function applyTileAction(action: TileAction, target: TileRef): void {
   const grid = runtimeState.playerPlanetGrid;
   if (!grid) return;
 
-  const planet = engine?.getPlayerStar()?.planets
-    .find(p => p.discovery === 'landing' || p.hasLife);
+  const ps0 = engine?.getPlayerStar();
+  const planet = ps0 ? engine!.homeWorld(ps0) : undefined;
   const planetType = planet?.type ?? 'rocky';
   const r = action.radius;
 
@@ -1680,11 +1689,14 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   _panelStarId = star.id;
   const planet = star.planets[planetIndex] ?? star.planets[0];
   const isPlayer = star.isPlayerStar;
-  const dna = isPlayer ? gameState.playerPlanetDNA : null;
+  // The player's people live in this system, but only ONE planet is home: the
+  // home world's name and DNA must not be pinned on its neighbours (#16).
+  const isHome = isPlayer && planetIndex === (engine?.homeIndexOf(star) ?? planetIndex);
+  const dna = isHome ? gameState.playerPlanetDNA : null;
   const civLevel = star.civLevel;
 
   // ── OVERVIEW ──────────────────────────────────────────────
-  const displayName = isPlayer && gameState.playerPlanetName !== '—'
+  const displayName = isHome && gameState.playerPlanetName !== '—'
     ? gameState.playerPlanetName
     : (planet?.name ?? star.civName + ' Prime');
 
@@ -5852,6 +5864,27 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     if (isHome && engine?.isHomeForming() && star.formationStage) rows.push(['Forming', cap(String(star.formationStage).replace(/_/g, ' '))]);
     if (isHome && star.civLevel > 0) rows.push(['Civilisation', eraName(star)]);
     rows.push(['Moons', String(planet.moons.length)]);
+    const colony = engine?.colonyAt(star.id, planetIndex);
+    if (colony) {
+      const founder = engine!.colonyFounderName(colony);
+      const ruler = engine!.colonyRulerName(colony);
+      if (colony.occupation?.homeWorld) {
+        // Another people's home world, held by a conqueror (Sovereignty.ts).
+        rows.push(['Occupied', `by ${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+      } else {
+        rows.push(['Colony', `${founder} · ${colony.status === 'outpost' ? 'outpost' : 'colony'} · ${Math.round(colony.population * 100)}%`]);
+        if (colony.status === 'independent') rows.push(['Rule', 'Independent']);
+        else if (colony.occupation) rows.push(['Rule', `Occupied by ${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+        else if (ruler !== founder) rows.push(['Rule', ruler]);
+        else if (colony.status === 'colony') rows.push(['Loyalty', `${Math.round(colony.loyalty * 100)}%`]);
+      }
+      // What generations under this sky have made of them (Divergence.ts).
+      const stage = colony.stage ?? 'same';
+      if (stage !== 'same') {
+        const look = colonyLook(colony) || 'changed';
+        rows.push(['People', `${look} · ${stage === 'species' ? 'a new species' : stage}`]);
+      }
+    }
     rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
   const card = document.createElement('div');
@@ -5930,7 +5963,7 @@ function faithHost(): DivineHost | null {
   if (!engine) return null;
   const eng = engine;
   const ps = eng.getPlayerStar();
-  const planet = ps?.planets.find(p => p.discovery === 'landing' || p.hasLife);
+  const planet = ps ? eng.homeWorld(ps) : undefined;
   return {
     grid: runtimeState.playerPlanetGrid,
     planetType: planet?.type ?? 'rocky',
