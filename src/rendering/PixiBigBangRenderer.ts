@@ -434,7 +434,7 @@ export class PixiBigBangRenderer {
     this.drawFleets(known ? engine.fleets.filter(f => seenFleet(f.fromStarId, f.toStarId)) : engine.fleets, starMap, camera);
     this.drawOrbitalFleets(engine.orbitalFleets, starMap, animTick, camera);
     this.drawWars(known ? engine.activeWars.filter(w => seenFleet(w.attackerStarId, w.defenderStarId)) : engine.activeWars, starMap, animTick, camera);
-    this.drawPlanets(shown, engine.currentPlayerStarId, animTick, camera);
+    this.drawPlanets(shown, engine.currentPlayerStarId, animTick, camera, engine);
     this.drawCosmicEffects(engine.currentSupernovaFlashes, animTick, camera, W, H);
     this.drawGalaxyMarkers(engine, shown, camera, W, H, animTick);
     // Haze last among world visuals so color sits over the solar system.
@@ -2047,6 +2047,7 @@ export class PixiBigBangRenderer {
 
   private drawPlanets(
     stars: StarBody[], playerStarId: number, animTick: number, camera: Camera,
+    engine: BigBangEngine,
   ): void {
     this.planetLayer.clear();
     for (const sprite of this.planetSprites.values()) sprite.visible = false;
@@ -2096,8 +2097,7 @@ export class PixiBigBangRenderer {
         const kind = (planet.type as PlanetKind) || 'rocky';
         const withRings = kind === 'gas' && !planet.isDead;
         const seed = (star.id * 17 + i * 31) | 0;
-        const landedIdx = star.planets.findIndex(p => p.discovery === 'landing');
-        const homeIdx = star.isPlayerStar ? (landedIdx >= 0 ? landedIdx : (star.bestPlanetIndex ?? 0)) : -1;
+        const homeIdx = star.isPlayerStar ? engine.homeIndexOf(star) : -1;
         const isHome = star.isPlayerStar && i === homeIdx && !planet.isDead;
         const dna = isHome
           ? (gameState.playerPlanetDNA ?? planet.dna ?? DEFAULT_PLANET_DNA)

@@ -53,7 +53,7 @@ const SEEDS: { seed: string; stats: { life: number; evolution: number; hostility
 ].slice(0, SEED_COUNT);
 
 // ── Rules ────────────────────────────────────────────────────────────────────
-interface Ctx { engine: Engine; stars: Star[]; tick: number; }
+interface Ctx { engine: Engine; stars: Star[]; tick: number; seedName: string; }
 interface Rule {
   name: string;
   knownIssue?: number;
@@ -173,6 +173,21 @@ rule({
   },
 });
 
+const lastHome = new Map<string, string>();   // seed -> "starId:index"
+rule({
+  // Home is chosen once (start, exodus). Discovery landings at Space Age /
+  // Interstellar must not move it to another planet (#16, #17).
+  name: 'the home planet never changes while the home star does not',
+  check: ({ engine, seedName }) => {
+    const ps = engine.getPlayerStar();
+    if (!ps) return null;
+    const now = `${ps.id}:${engine.homeIndexOf(ps)}`, prev = lastHome.get(seedName);
+    lastHome.set(seedName, now);
+    if (!prev || prev.split(':')[0] !== String(ps.id)) return null;
+    return prev === now ? null : `home moved from orbit ${+prev.split(':')[1] + 1} to ${engine.homeIndexOf(ps) + 1}`;
+  },
+});
+
 rule({
   name: 'player always has a living home star',
   check: ({ engine }) => {
@@ -223,7 +238,7 @@ for (const { seed, stats } of SEEDS) {
   try {
     for (; tick <= TICKS; tick++) {
       if (tick % SAMPLE_EVERY === 0) {
-        const ctx: Ctx = { engine, stars: (engine as any).stars as Star[], tick };
+        const ctx: Ctx = { engine, stars: (engine as any).stars as Star[], tick, seedName: seed };
         for (const r of rules) {
           const detail = r.check(ctx);
           if (detail) {
@@ -260,6 +275,37 @@ for (const { seed, stats } of SEEDS) {
     failures.set(detRule, { seed, tick: 5_000, detail: 'star fingerprints differ between two runs' });
     failCount.set(detRule, 1);
   }
+}
+
+// ── Scenario: home stays home through discovery landings (#16, #17) ─────────
+// Space Age lands on orbit 1 and Interstellar on every orbit. A home world
+// further out must stay home, with the same surface grid.
+{
+  const r: Rule = { name: 'scenario: home stays home through Space Age and Interstellar landings', check: () => null };
+  rules.push(r);
+  let detail: string | null = 'no seed with the home world beyond orbit 2 in 40 tries';
+  for (let k = 0; k < 40; k++) {
+    resetGameState('Inv_home');
+    const h = new BigBangEngine(makeCanvas()) as any;
+    h.init(SEEDS[0].stats, `inv_home_${k}`);
+    const ps = h.getPlayerStar();
+    if (!ps) continue;
+    const home = h.homeIndexOf(ps);
+    if (home < 2) continue;                       // need planets inside the home orbit
+    const homePlanet = ps.planets[home];
+    const grid = h.ensurePlayerGrid();
+    for (const lvl of [5, 6]) {
+      ps.civLevel = lvl;
+      for (let i = 0; i < 3; i++) h.advancePlayerPlanetDiscovery(ps);
+    }
+    const after = h.homeIndexOf(ps);
+    detail = after !== home ? `seed inv_home_${k}: home moved from orbit ${home + 1} to ${after + 1}`
+      : h.homeWorld(ps) !== homePlanet || h.homePlanetOf(ps) !== homePlanet ? 'homeWorld/homePlanetOf disagree with homeIndexOf'
+      : h.ensurePlayerGrid() !== grid ? 'home grid was rebuilt after the landings'
+      : null;
+    break;
+  }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

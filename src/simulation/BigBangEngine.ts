@@ -387,6 +387,12 @@ export interface StarBody {
   bioStalls?:      number;         // times this world has failed to leave its phase
   extinctions?:    number;         // biospheres this system has lost outright
   lifeFirstTick?:  number;         // tick abiogenesis last happened here
+  /**
+   * The player's home planet, as an index into `planets`. Set when the home is
+   * chosen (game start, exodus) and saved, so nothing else can move it. Every
+   * "which planet is home" question goes through `homeIndexOf`.
+   */
+  homePlanetIndex?: number;
 }
 
 export interface NebulaCloud {
@@ -1396,6 +1402,7 @@ export class BigBangEngine {
       playerPlanet.destinyType = destiny;
       ps0.habitability = undefined;
       ps0.bestPlanetIndex = playerIdx;
+      ps0.homePlanetIndex = playerIdx;
       playerPlanet.discovery = 'landing'; // Home world — fully surveyed
       if (gameState.skipFormation) {
         // Lab / test path: the world starts finished and alive (old behaviour).
@@ -1793,12 +1800,29 @@ export class BigBangEngine {
   private playerGridFor: { starId: number; planetIndex: number } | null = null;
 
   /**
-   * Index of the planet the player lives on — the rule the planet view has
-   * always used (the landing world, else the first living one, else orbit 0).
+   * Index of the planet the player lives on. THE home rule: the planet view,
+   * system map, body card, camera and the surface grid all ask this.
+   *
+   * It used to be "the first planet with discovery 'landing' (or life)". At
+   * Space Age the civilisation lands on orbit 1 and at Interstellar on every
+   * orbit, so a home world further out than orbit 1 silently stopped being
+   * "home": views showed another planet as home, and the home grid was
+   * rebuilt for it (#16, #17). Now it is recorded once (`homePlanetIndex`).
+   * Older saves resolve it once from the formation home / landing, then keep it.
    */
   homeIndexOf(star: StarBody): number {
-    const i = star.planets.findIndex(p => p.discovery === 'landing' || p.hasLife);
-    return i >= 0 ? i : 0;
+    const n = star.planets.length;
+    if (star.homePlanetIndex != null && star.homePlanetIndex >= 0 && star.homePlanetIndex < n) {
+      return star.homePlanetIndex;
+    }
+    let i = star.planets.findIndex(p => !!p.destinyType && p.discovery === 'landing');
+    if (i < 0) {
+      const landed = star.planets.filter(p => p.discovery === 'landing');
+      i = landed.length === 1 ? star.planets.indexOf(landed[0]) : star.planets.findIndex(p => p.hasLife);
+    }
+    if (i < 0) i = Math.min(Math.max(0, star.bestPlanetIndex ?? 0), Math.max(0, n - 1));
+    if (star.isPlayerStar && n > 0) star.homePlanetIndex = i;   // resolve once, then stable
+    return i;
   }
 
   /**
@@ -2368,7 +2392,10 @@ export class BigBangEngine {
     // Give the refuge a world worth landing on.
     const landing = best.planets.find(p => p.type === 'ocean' || p.type === 'rocky')
                  ?? best.planets[0];
-    if (landing) { landing.hasLife = true; landing.biosphere = 0.4; landing.discovery = 'landing'; }
+    if (landing) {
+      landing.hasLife = true; landing.biosphere = 0.4; landing.discovery = 'landing';
+      best.homePlanetIndex = best.planets.indexOf(landing);
+    }
 
     if (star.isPlayerStar) {
       // The player follows their people. Their world IS wherever they are.
@@ -4870,7 +4897,7 @@ export class BigBangEngine {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
 
-        const homeIdx = star.isPlayerStar ? (star.bestPlanetIndex ?? 0) : -1;
+        const homeIdx = star.isPlayerStar ? this.homeIndexOf(star) : -1;
         const isHome = star.isPlayerStar && i === homeIdx;
         const dna = isHome
           ? (gameState.playerPlanetDNA ?? p.dna ?? DEFAULT_PLANET_DNA)
@@ -5339,7 +5366,7 @@ export class BigBangEngine {
 
   /** The player's world in a system: the landed one, else the formation home, else the best orbit. */
   homeWorld(star: StarBody): Planet | undefined {
-    return star.planets.find(p => p.discovery === 'landing') ?? this.homePlanetOf(star) ?? star.planets[star.bestPlanetIndex ?? 0];
+    return star.planets[this.homeIndexOf(star)];
   }
 
   focusPlayerStar(deep = false): void {
@@ -5476,8 +5503,7 @@ export class BigBangEngine {
 
   /** The home planet of a star walking a destiny ladder. */
   homePlanetOf(star: StarBody): Planet | undefined {
-    return star.planets.find(p => p.destinyType && p.discovery === 'landing')
-      ?? star.planets[star.bestPlanetIndex ?? 0];
+    return star.planets[this.homeIndexOf(star)];
   }
 
   /** Paint the planet as its current stage (lava while molten, bare rock, ...). */
@@ -5686,7 +5712,7 @@ export class BigBangEngine {
     if (elapsed < TERRAFORM_DURATIONS[ps.terraformStage]) return;
 
     // Find which sequence we're in by matching targetType
-    const seqList = TERRAFORM_SEQUENCES[ps.planets.find(p => p.hasLife || p.discovery === 'landing')?.type ?? ''] ?? [];
+    const seqList = TERRAFORM_SEQUENCES[this.homeWorld(ps)?.type ?? ''] ?? [];
     const seq = seqList.find(s => s.result === ps.terraformTargetType);
     if (!seq) { ps.terraformStage = null; return; }
 
@@ -5695,7 +5721,7 @@ export class BigBangEngine {
 
     if (!next) {
       // All stages complete — transform the home planet
-      const homePlanet = ps.planets.find(p => p.discovery === 'landing') ?? ps.planets[0];
+      const homePlanet = this.homeWorld(ps) ?? ps.planets[0];
       const fromType = homePlanet.type;
       homePlanet.type = ps.terraformTargetType!;
       if (ps.terraformTargetType === 'ocean' || ps.terraformTargetType === 'rocky') {
@@ -5724,7 +5750,7 @@ export class BigBangEngine {
     if (!ps || ps.terraformStage) return null;
     // Terraforming reshapes a FINISHED world; one still forming has no type yet.
     if (ps.formationDestiny) return null;
-    const homePlanet = ps.planets.find(p => p.discovery === 'landing') ?? null;
+    const homePlanet = this.homeWorld(ps) ?? null;
     if (!homePlanet) return null;
     const seqList = TERRAFORM_SEQUENCES[homePlanet.type];
     if (!seqList || seqList.length === 0) return null;
@@ -5741,7 +5767,7 @@ export class BigBangEngine {
   startTerraform(targetType: Planet['type']): boolean {
     const ps = this.getPlayerStar();
     if (!ps || ps.terraformStage) return false;
-    const homePlanet = ps.planets.find(p => p.discovery === 'landing') ?? null;
+    const homePlanet = this.homeWorld(ps) ?? null;
     if (!homePlanet) return false;
     const seqList = TERRAFORM_SEQUENCES[homePlanet.type];
     const seq = seqList?.find(s => s.result === targetType);
