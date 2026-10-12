@@ -29,13 +29,11 @@ jobs:
       - name: Seeded simulation invariants
         run: npm run test:invariants
 
-  # Informational: the long smoke run has pre-existing failures on main.
-  # Make it blocking (remove continue-on-error) once it is green.
+  # Full-system 400k-tick run (~4 min). Blocking.
   smoke:
-    name: Smoke test (400k ticks, non-blocking)
+    name: Smoke test (400k ticks)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
