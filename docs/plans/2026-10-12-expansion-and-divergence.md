@@ -1,6 +1,6 @@
 # Expansion, conquest and divergence — design
 
-*Draft 2026-10-12. Judged against `docs/CORE_LOOP_VISION.md` (§1, §4–§7, §15).*
+*2026-10-12 — decisions recorded below. Judged against `docs/CORE_LOOP_VISION.md` (§1, §4–§7, §15).*
 
 ## The idea (owner, 2026-10-12)
 
@@ -137,12 +137,15 @@ Each has side effects (e.g. faster divergence → more failed colonies).
 
 P1 + P2 deliver the owner's idea end to end; P3/P4 can follow.
 
-## Open questions
+## Decisions (owner, 2026-10-12)
 
-1. Do the player's colonies stay the player's (DP, Faith Cards and the diorama
-   reach them) until they break away, or are they semi-independent from the
-   start?
-2. How fast should divergence show? At Normal pace one generation ≈ 17 minutes
-   (2000 ticks at 2 ticks/s): a visible variant after ~3 generations is about
-   an hour of play.
-3. Can other civilisations colonise and conquer the player's worlds?
+1. **The player's colonies are the player's until they break away.** DP, Faith
+   Cards and the planet view reach them; falling loyalty can make one
+   independent, and from then on it is another polity.
+2. **Divergence is slow, across sessions.** A visible variant takes many
+   generations, a new species is rare and meaningful. Tuning target at Normal
+   pace (one generation ≈ 17 min): a **variant after ~10 generations (~3 h of
+   play)**, a **subspecies after ~30 (~9 h)**, a **new species** only for an
+   isolated colony over ~60+ generations. Contact stretches all of these.
+3. **Other civilisations colonise and conquer too — including the player's
+   worlds.** The universe doesn't wait for the player.
