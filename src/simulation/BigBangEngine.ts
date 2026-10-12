@@ -10,6 +10,7 @@ import {
   liveGeneration, type Colony,
 } from './Colonies';
 import { worldEnv, type WorldFacts } from './Divergence';
+import { type WorldHistoryState, type WorldEvent, recordWorldEvent, worldEvents } from './WorldHistory';
 import {
   rulerOf, ruledByPlayer, concernsPlayer, stepLoyalty, occupyColony, stepOccupation,
   endOccupation, conquestChance, HOLD_START,
@@ -523,6 +524,7 @@ export interface EngineSnapshot {
   interstellar?: InterstellarState;
   /** Colonies on other worlds (Colonies.ts). Optional: older saves have none. */
   colonies?: ColonyState;
+  worldHistory?: WorldHistoryState;
 }
 
 export interface Camera {
@@ -721,6 +723,8 @@ export class BigBangEngine {
   /** Other stars' civilisations as agents, and the trade routes between stars (StarPolities.ts). */
   interstellar: InterstellarState = emptyInterstellar();
   colonies: ColonyState = emptyColonies();
+  /** What happened on each world other than home (WorldHistory.ts, #17). */
+  worldHistory: WorldHistoryState = {};
   private lastPolityTick = 0;
   private supernovaFlashes: SupernovaFlash[] = [];
   private galaxies: Galaxy[] = [];
@@ -3542,7 +3546,7 @@ export class BigBangEngine {
       const line = n.kind === 'grew'
         ? `The outpost on ${where} has become a colony of ${founder}.`
         : `The colony of ${founder} on ${where} is gone.`;
-      this.colonyNews(concernsPlayer(c), c.starId, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
+      this.colonyNews(concernsPlayer(c), c, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
     }
 
     // Divergence (P2): every colony lives a generation per EVOLUTION_TICK_RATE.
@@ -3569,7 +3573,7 @@ export class BigBangEngine {
         : change.to === 'subspecies'
           ? `The ${look} folk of ${c.name} are a people of their own now: a subspecies of ${people}.`
           : `A new species has arisen on ${c.name}: the ${look} descendants of ${people} can no longer be counted among them.`;
-      this.colonyNews(concernsPlayer(c), c.starId, line, `generations under a different sky (${c.generations})`);
+      this.colonyNews(concernsPlayer(c), c, line, `generations under a different sky (${c.generations})`);
     }
   }
 
@@ -3611,7 +3615,7 @@ export class BigBangEngine {
       // The natives are gone (a catastrophe, a lost age): only the occupiers remain, as a colony.
       endOccupation(c, 'absorbed', false, this.tick);
       c.population = Math.min(c.population, 0.3);
-      this.colonyNews(wasPlayers, c.starId, `No people of ${star.civName} remain on ${c.name}; it is a colony of ${was} now.`, 'a world emptied of its people');
+      this.colonyNews(wasPlayers, c, `No people of ${star.civName} remain on ${c.name}; it is a colony of ${was} now.`, 'a world emptied of its people');
       return;
     }
     if (c.occupation) {
@@ -3628,7 +3632,7 @@ export class BigBangEngine {
       const natives = o.homeWorld ? star.civName : (prev ? this.colonyNameOfStar(prev, o.prevByPlayer) : `the people of ${c.name}`);
       if (how === 'liberated' && o.homeWorld) {
         this.colonies.colonies = this.colonies.colonies.filter(x => x !== c);
-        this.colonyNews(wasPlayers, c.starId, `${star.civName} threw off the rule of ${was}: their world is free again.`, 'a people that would not be ruled');
+        this.colonyNews(wasPlayers, c, `${star.civName} threw off the rule of ${was}: their world is free again.`, 'a people that would not be ruled');
         return;
       }
       endOccupation(c, how, !!prev && !prev.isDead, this.tick);
@@ -3637,7 +3641,7 @@ export class BigBangEngine {
         : c.status === 'independent'
           ? `${c.name} rose against ${was} and rules itself now.`
           : `${c.name} rose against ${was} and returned to ${natives}.`;
-      this.colonyNews(wasPlayers || concernsPlayer(c), c.starId, line, how === 'absorbed' ? 'generations under a conqueror' : 'a people that would not be ruled');
+      this.colonyNews(wasPlayers || concernsPlayer(c), c, line, how === 'absorbed' ? 'generations under a conqueror' : 'a people that would not be ruled');
       return;
     }
     if (c.status === 'independent') return;
@@ -3646,7 +3650,7 @@ export class BigBangEngine {
     const people = c.lineage?.name ? `the ${c.lineage.name}` : 'its people';
     const why = !ruler ? `with ${was} gone, ${people} of ${c.name} govern themselves`
       : `${c.name} has broken away from ${was}: ${people} there answer to no one now`;
-    this.colonyNews(wasPlayers, c.starId, why.charAt(0).toUpperCase() + why.slice(1) + '.',
+    this.colonyNews(wasPlayers, c, why.charAt(0).toUpperCase() + why.slice(1) + '.',
       !ruler ? 'rulers that are no more' : (c.stage && c.stage !== 'same' ? `a people grown apart (${c.stage})` : 'too far from home'));
   }
 
@@ -3709,7 +3713,7 @@ export class BigBangEngine {
     const line = c.occupation?.homeWorld
       ? `${victor} occupied the home world of ${loser}. Its people remain, under foreign rule.`
       : `${victor} seized ${c.name} from ${loser}. Its people remain, under foreign rule.`;
-    this.colonyNews(attacker.isPlayerStar || defender.isPlayerStar || concernsPlayer(c), c.starId, line, `a war won by ${victor}`, attacker.id);
+    this.colonyNews(attacker.isPlayerStar || defender.isPlayerStar || concernsPlayer(c), c, line, `a war won by ${victor}`, attacker.id);
   }
 
   /**
@@ -3784,7 +3788,7 @@ export class BigBangEngine {
       ark: { planetIndex: site.planetIndex, name: site.name, suitability: site.suitability, byPlayer: l.isPlayer, tier: capabilityOf(l.techs).tier },
     });
     const who = l.isPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
-    this.colonyNews(l.isPlayer, site.starId,
+    this.colonyNews(l.isPlayer, site,
       `${who} launched ${aOrAn(capabilityOf(l.techs).ship)} toward ${site.name}.`,
       'a crowded world with the means to leave it', l.starId);
   }
@@ -3798,13 +3802,13 @@ export class BigBangEngine {
     const ok = !!planet && !planet.isDead && !to.isDead && !taken && landfallSucceeds(ark.suitability, rng.next(), cap);
     const who = ark.byPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
     if (!ok) {
-      this.colonyNews(ark.byPlayer, to.id, `The ${cap.ship} of ${who} bound for ${ark.name} was lost.`, 'a world that would not have them');
+      this.colonyNews(ark.byPlayer, { starId: to.id, planetIndex: ark.planetIndex }, `The ${cap.ship} of ${who} bound for ${ark.name} was lost.`, 'a world that would not have them');
       return;
     }
     foundColony(this.colonies, { starId: to.id, planetIndex: ark.planetIndex, name: ark.name, x: to.x, y: to.y, suitability: ark.suitability },
       { starId: from.id, isPlayer: ark.byPlayer, lineage: ark.byPlayer ? this.playerLineage() : null, tier: ark.tier ?? 3 }, this.tick);
     if (ark.byPlayer && planet.discovery !== 'landing') planet.discovery = 'landing';
-    this.colonyNews(ark.byPlayer, to.id, `${who} made landfall on ${ark.name}: an outpost is founded.`, `the ${cap.ship} reached its world`);
+    this.colonyNews(ark.byPlayer, { starId: to.id, planetIndex: ark.planetIndex }, `${who} made landfall on ${ark.name}: an outpost is founded.`, `the ${cap.ship} reached its world`);
   }
 
   /** The player's founding species for a colony: the signature lineage, else the most numerous living one. */
@@ -3815,11 +3819,19 @@ export class BigBangEngine {
   }
 
   /** Colony events reach the feed when the player can know of them, and the home chronicle when they are the player's. */
-  private colonyNews(byPlayer: boolean, starId: number, line: string, cause: string, alsoStarId?: number): void {
+  private colonyNews(byPlayer: boolean, site: { starId: number; planetIndex: number }, line: string, cause: string, alsoStarId?: number): void {
+    // Every world keeps its own history, known to the player or not (#17).
+    recordWorldEvent(this.worldHistory, site.starId, site.planetIndex, { tick: this.tick, text: line, cause });
+    const starId = site.starId;
     const known = (id: number | undefined) => { const s = id == null ? null : this.stars.find(x => x.id === id); return !!s && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
     if (byPlayer || known(starId) || known(alsoStarId)) this.onCivEvent?.(line);
     const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
     if (byPlayer && ns) ns.worldEvent(this.tick, line, [cause]);
+  }
+
+  /** A world's own history, oldest first (for the views; #17). */
+  worldHistoryAt(starId: number, planetIndex: number): readonly WorldEvent[] {
+    return worldEvents(this.worldHistory, starId, planetIndex);
   }
 
   /** The colony on a planet, if any (for the views). */
@@ -7066,6 +7078,7 @@ export class BigBangEngine {
       civilizations: gameState.civilizations,
       interstellar: this.interstellar,
       colonies: this.colonies,
+      worldHistory: this.worldHistory,
     };
   }
 
@@ -7099,6 +7112,7 @@ export class BigBangEngine {
     this.activeWars = snap.activeWars;
     this.interstellar = snap.interstellar ?? emptyInterstellar();
     this.colonies = snap.colonies ?? emptyColonies();
+    this.worldHistory = snap.worldHistory ?? {};
     this.interstellar.home ??= { attitude: {}, grievance: {} };
     this.lastPolityTick = snap.tick;
     this.exploredAreas = snap.exploredAreas;

@@ -217,6 +217,22 @@ rule({
 });
 
 rule({
+  // World history (#17): bounded, in order, never from the future.
+  name: 'world histories are bounded and in order',
+  check: ({ engine }) => {
+    const e = engine as any;
+    for (const [k, log] of Object.entries(e.worldHistory as Record<string, any[]>)) {
+      if (log.length > 60) return `${k}: ${log.length} entries`;
+      for (let i = 0; i < log.length; i++) {
+        if (log[i].tick > e.tick) return `${k}: entry from the future (${log[i].tick} > ${e.tick})`;
+        if (i && log[i].tick < log[i - 1].tick) return `${k}: out of order at ${i}`;
+      }
+    }
+    return null;
+  },
+});
+
+rule({
   // Sovereignty (P3): status, ruler and occupation agree; an occupied home
   // world is another civilisation's (never the player's), seized not settled.
   name: 'colony rule is consistent',
@@ -562,11 +578,21 @@ for (const { seed, stats } of SEEDS) {
     e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
     const c2 = e2.colonyAt(col.starId, col.planetIndex);
     if (c2?.status !== 'occupied' || c2.occupation?.byStarId !== foe.id) throw new Error('occupation did not survive save/load');
+    // The world remembers it (#17), through a save too.
+    const hist = (x: any) => (x.worldHistoryAt(col.starId, col.planetIndex) as any[]).map(h => h.text).join(' | ');
+    if (!/made landfall/.test(hist(e)) || !/seized/.test(hist(e))) throw new Error(`world history lacks landfall/seizure: ${hist(e)}`);
+    if (hist(e2) !== hist(e)) throw new Error('world history did not survive save/load');
     // The occupier falls: the colony rises and returns to the player.
     foe.isDead = true;
     for (let g = 0; g < 6 && col.occupation; g++) { e.tick += 2_000; e.stepColonyWorlds([], null); }
     const now = e.colonyAt(col.starId, col.planetIndex);
     if (!now || now.occupation || !S.ruledByPlayer(now)) throw new Error(`not freed back to the player (${now?.status}, hold ${now?.occupation?.hold})`);
+    if (!/rose against/.test(hist(e))) throw new Error(`liberation not in the world's history: ${hist(e)}`);
+    // A lost colony's world still remembers who lived there.
+    now.population = 0.001; now.suitability = 0;
+    e.stepColonyWorlds([], null);
+    if (e.colonyAt(col.starId, col.planetIndex)) throw new Error('the dying colony did not die out');
+    if (!/is gone/.test(hist(e)) || !/made landfall/.test(hist(e))) throw new Error(`history forgot the lost colony: ${hist(e)}`);
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
