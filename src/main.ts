@@ -55,6 +55,7 @@ import {
 import { runtimeState } from './simulation/GameState';
 import { colonyLook, type Colony } from './simulation/Colonies';
 import { generationsAgo } from './simulation/WorldHistory';
+import { orreryColor } from './rendering/OrreryPalette';
 import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
@@ -2242,9 +2243,10 @@ function openSystemPanel(star: StarBody): void {
   const leaderInfo = starLeader ? ` | ${starLeader.ideology} — ${starLeader.name}` : '';
   techEl.textContent = `${civInfo}${leaderInfo}  ·  ${knownCount}/${star.planets.length} planets charted`;
 
-  drawSystemOrrery(star);
-  buildStarPlanetList(star);
+  // Show the panel first: a drawing error in one part must not keep it shut.
   panel.style.display = 'block';
+  try { drawSystemOrrery(star); } catch (err) { console.error('system orrery', err); }
+  buildStarPlanetList(star);
 }
 
 function drawSystemOrrery(star: StarBody): void {
@@ -2281,17 +2283,13 @@ function drawSystemOrrery(star: StarBody): void {
 
   if (star.planets.length === 0) return;
 
-  const PCOLORS: Record<string, string> = {
-    rocky: '#c8a96e', ocean: '#44aaff', gas: '#bb88ff', ice: '#aaddff', lava: '#ff4422',
-  };
-
   const maxOrb = Math.max(...star.planets.map(p => p.orbitalRadius));
   const orrW = W - starX - 16;
 
   star.planets.forEach((planet, i) => {
     const px = starX + 16 + (planet.orbitalRadius / maxOrb) * (orrW - 8);
     const unknown = planet.discovery === 'none';
-    const col = unknown ? '#1e1e2e' : (PCOLORS[planet.type] ?? '#888');
+    const col = unknown ? '#1e1e2e' : orreryColor(planet.type);
     const pr = Math.max(3, Math.min(7, planet.radius * 1.1));
 
     // Orbit dash line

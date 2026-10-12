@@ -255,6 +255,19 @@ rule({
   },
 });
 
+const { orreryColor } = await import('../src/rendering/OrreryPalette');
+rule({
+  // The system panel's orrery appends alpha digits to each planet's colour; a
+  // short '#888' fallback threw and kept the panel shut (clicking a sun did nothing).
+  name: 'every planet type has a six-digit orrery colour',
+  check: ({ engine }) => {
+    for (const s of (engine as any).stars as any[]) for (const p of s.planets) {
+      if (!/^#[0-9a-f]{6}$/i.test(orreryColor(p.type))) return `star #${s.id} planet type '${p.type}' → ${orreryColor(p.type)}`;
+    }
+    return null;
+  },
+});
+
 const lastHome = new Map<string, string>();   // seed -> "starId:index"
 rule({
   // Home is chosen once (start, exodus). Discovery landings at Space Age /
