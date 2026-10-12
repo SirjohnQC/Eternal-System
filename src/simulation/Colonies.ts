@@ -2,11 +2,17 @@
  * Colonies — civilisations that leave their world (design:
  * docs/plans/2026-10-12-expansion-and-divergence.md, phase P1).
  *
- * Nobody orders a colony. A people that knows how to build a colony ark
- * launches one when its pressures push it (crowding, scarcity) and its culture
- * lets it (curiosity), toward the best world it can reach. The ark is an
- * engine fleet; at landfall the colony takes hold or fails on a poor world,
- * then grows or dies out by how well the world suits it.
+ * Nobody orders a colony. A people that can reach space launches a ship when
+ * its pressures push it (crowding, scarcity) and its culture lets it
+ * (curiosity), toward the best world it can reach. The ship is an engine
+ * fleet; at landfall the settlement takes hold or fails on a poor world, then
+ * grows or dies out by how well the world suits it.
+ *
+ * What a people can do grows with what it knows (`capabilityOf`): Space Age
+ * rocketry reaches only its own system and plants small outposts; orbital
+ * stations reach other stars; the colony ark founds full colonies. A
+ * settlement grows to what its founder can CURRENTLY sustain, so an old
+ * outpost fills out once its people learn more.
  *
  * A player colony carries its own copy of the founding species (`lineage`).
  * Phase P2 evolves that copy under the colony world's conditions, so a people
@@ -40,6 +46,8 @@ export interface Colony {
   /** The colonists' own copy of the founding species (player colonies; P2 evolves it). */
   lineage: SpeciesGenome | null;
   homeLineageId: string | null;
+  /** The founder's capability tier last seen (1 outposts … 3 full colonies). */
+  tier: CapabilityTier;
   /** Evolution steps lived on the colony world (P2). */
   generations: number;
   /** 0..1 traffic with the founder: gene flow and loyalty (P2/P3). */
@@ -77,12 +85,43 @@ export interface Candidate {
   suitability: number;
 }
 
+// ── Capability: what a people's knowledge lets it do off-world ──────────────
+export type CapabilityTier = 0 | 1 | 2 | 3;
+export interface Capability {
+  tier: CapabilityTier;
+  /** Only its own star system (no interstellar travel yet). */
+  ownSystemOnly: boolean;
+  landfallMult: number;
+  growthMult: number;
+  /** Population a settlement can reach, 0..1 of its world's capacity. */
+  popCap: number;
+  /** Settlements (and ships in flight) it keeps at most. */
+  maxSettlements: number;
+  /** What its ships are called in the news. */
+  ship: string;
+}
+const NONE: Capability = { tier: 0, ownSystemOnly: true, landfallMult: 0, growthMult: 0, popCap: 0, maxSettlements: 0, ship: '' };
+const CAPABILITIES: Array<{ tech: string; cap: Capability }> = [
+  { tech: 'colony_ark', cap: { tier: 3, ownSystemOnly: false, landfallMult: 1,    growthMult: 1,   popCap: 1,   maxSettlements: 4, ship: 'colony ark' } },
+  { tech: 'orbital',    cap: { tier: 2, ownSystemOnly: false, landfallMult: 0.85, growthMult: 0.7, popCap: 0.6, maxSettlements: 3, ship: 'settler ship' } },
+  { tech: 'rocketry',   cap: { tier: 1, ownSystemOnly: true,  landfallMult: 0.7,  growthMult: 0.4, popCap: 0.2, maxSettlements: 2, ship: 'outpost ship' } },
+];
+
+/** The best off-world capability a set of technologies gives. */
+export function capabilityOf(techs: readonly string[]): Capability {
+  for (const c of CAPABILITIES) if (techs.includes(c.tech)) return c.cap;
+  return NONE;
+}
+export function capabilityOfTier(tier: CapabilityTier): Capability {
+  return CAPABILITIES.find(c => c.cap.tier === tier)?.cap ?? NONE;
+}
+
 // ── Tuning ──────────────────────────────────────────────────────────────────
-/** The technology that launches arks. */
+/** The technology that founds full colonies. */
 export const ARK_TECH = 'colony_ark';
 /** Ticks between one civilisation's launches. */
 export const LAUNCH_COOLDOWN = 12_000;
-/** Colonies (and arks in flight) one civilisation keeps at most. */
+/** Settlements (and ships in flight) one civilisation keeps at most, at its best tier. */
 export const MAX_PER_CIV = 4;
 /** Colonies in the whole universe at most — keeps the simulation bounded. */
 export const MAX_TOTAL = 60;
@@ -104,7 +143,7 @@ const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
  * (an empty world is still attractive to a people that dislikes neighbours).
  */
 export function launchDrive(l: Launcher): number {
-  if (!l.techs.includes(ARK_TECH)) return 0;
+  if (capabilityOf(l.techs).tier === 0) return 0;
   const p = l.pressures;
   const push = 0.55 * p.crowding + 0.25 * p.scarcity + 0.1 * p.hunger;
   const pull = 0.35 * l.values.curiosity - 0.1 * l.values.xenophobia;
@@ -112,14 +151,17 @@ export function launchDrive(l: Launcher): number {
 }
 
 /**
- * The world an ark from `l` heads for: the best suitability, discounted by
- * distance; within the civilisation's ship reach; never a world that already
- * holds a colony or an ark bound for it.
+ * The world a ship from `l` heads for: the best suitability, discounted by
+ * distance; within the civilisation's reach (its own system only before
+ * interstellar travel); never a world that already holds a settlement or a
+ * ship bound for it.
  */
 export function pickTarget(
   l: Launcher, candidates: readonly Candidate[], taken: ReadonlySet<string>,
 ): Candidate | null {
-  const reach = reachOf(l.era);
+  const cap = capabilityOf(l.techs);
+  if (cap.tier === 0) return null;
+  const reach = cap.ownSystemOnly ? 0 : reachOf(l.era);
   let best: Candidate | null = null, bestScore = 0;
   for (const c of candidates) {
     if (c.suitability < MIN_SUITABILITY || taken.has(siteKey(c.starId, c.planetIndex))) continue;
@@ -144,16 +186,16 @@ export function coloniesOf(state: ColonyState, founderStarId: number): number {
   return state.colonies.filter(c => c.founderStarId === founderStarId).length;
 }
 
-/** Does the ark take hold? A poor world often fails. `roll` is 0..1. */
-export function landfallSucceeds(suitability: number, roll: number): boolean {
-  return roll < clamp01(0.25 + suitability);
+/** Does the ship take hold? A poor world often fails, and early ships more often. `roll` is 0..1. */
+export function landfallSucceeds(suitability: number, roll: number, cap: Capability = capabilityOfTier(3)): boolean {
+  return roll < clamp01((0.25 + suitability) * cap.landfallMult);
 }
 
 /** Found a colony at landfall. */
 export function foundColony(
   state: ColonyState,
   site: Candidate,
-  founder: { starId: number; isPlayer: boolean; lineage: SpeciesGenome | null },
+  founder: { starId: number; isPlayer: boolean; lineage: SpeciesGenome | null; tier?: CapabilityTier },
   tick: number,
 ): Colony {
   const lineage = founder.lineage ? JSON.parse(JSON.stringify(founder.lineage)) as SpeciesGenome : null;
@@ -165,6 +207,7 @@ export function foundColony(
     population: FOUNDING_POP,
     suitability: clamp01(site.suitability),
     status: 'outpost',
+    tier: founder.tier ?? 3,
     lineage,
     homeLineageId: founder.lineage?.id ?? null,
     generations: 0,
@@ -180,17 +223,30 @@ export type ColonyNews =
   | { kind: 'died-out'; colony: Colony };
 
 /**
- * One polity step for every colony: growth toward the world's capacity at a
- * rate set by suitability; a world that cannot hold them (suitability under
- * MIN_SUITABILITY) shrinks them. `alive(starId)` is false for a dead star.
+ * One polity step for every settlement: growth toward what its founder can
+ * sustain (the founder's CURRENT capability, else the tier it last had), at a
+ * rate set by suitability; a world that cannot hold them shrinks them.
+ * `alive(starId)` is false for a dead star; `founderTier` is null when the
+ * founder is not an active civilisation this step.
  */
-export function stepColonies(state: ColonyState, alive: (starId: number) => boolean): ColonyNews[] {
+export function stepColonies(
+  state: ColonyState,
+  alive: (starId: number) => boolean,
+  founderTier: (founderStarId: number) => CapabilityTier | null = () => null,
+): ColonyNews[] {
   const news: ColonyNews[] = [];
   for (let i = state.colonies.length - 1; i >= 0; i--) {
     const c = state.colonies[i];
     if (!alive(c.starId)) { state.colonies.splice(i, 1); news.push({ kind: 'died-out', colony: c }); continue; }
-    const net = GROWTH * (c.suitability - MIN_SUITABILITY) / (1 - MIN_SUITABILITY);
-    c.population = clamp01(c.population + (net >= 0 ? net * (1 - c.population) : net * c.population * 2));
+    const t = founderTier(c.founderStarId);
+    if (t != null && t > 0) c.tier = t;
+    const cap = capabilityOfTier(c.tier ?? 3);
+    const net = GROWTH * cap.growthMult * (c.suitability - MIN_SUITABILITY) / (1 - MIN_SUITABILITY);
+    const room = cap.popCap - c.population;
+    c.population = clamp01(net >= 0
+      ? c.population + Math.max(0, net * room / Math.max(0.01, cap.popCap))
+      : c.population + net * c.population * 2);
+    if (c.population > cap.popCap) c.population = Math.max(cap.popCap, c.population - GROWTH * 0.5);
     if (c.status === 'outpost' && c.population >= COLONY_AT) { c.status = 'colony'; news.push({ kind: 'grew', colony: c }); }
     if (c.population < 0.01) { state.colonies.splice(i, 1); news.push({ kind: 'died-out', colony: c }); }
   }

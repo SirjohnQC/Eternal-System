@@ -6,7 +6,7 @@ import {
 import {
   type ColonyState, type Candidate, type Launcher, emptyColonies, launchDrive, pickTarget,
   takenSites, siteKey, coloniesOf, landfallSucceeds, foundColony, stepColonies, colonyAt,
-  LAUNCH_COOLDOWN, MAX_PER_CIV, MAX_TOTAL, MIN_SUITABILITY,
+  LAUNCH_COOLDOWN, MAX_TOTAL, MIN_SUITABILITY, capabilityOf, capabilityOfTier, type CapabilityTier,
 } from './Colonies';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
@@ -418,7 +418,7 @@ export interface Fleet {
   hostile: boolean;
   isPlayerFleet: boolean;
   /** A colony ark: where it will land, and what the world is worth to its people (Colonies.ts). */
-  ark?: { planetIndex: number; name: string; suitability: number; byPlayer: boolean };
+  ark?: { planetIndex: number; name: string; suitability: number; byPlayer: boolean; tier?: CapabilityTier };
 }
 
 export interface OrbitalFleet {
@@ -536,6 +536,7 @@ import {
 
 /** Ticks between steps of the other stars' civilisations (StarPolities). */
 const POLITY_STEP = 500;
+const aOrAn = (w: string) => `${/^[aeiou]/i.test(w) ? 'an' : 'a'} ${w}`;
 
 // M25 cosmology: stars ORBIT their galaxy — they do not fall into neighbours.
 // Pairwise N-body gravity + heavy damping was the old model; everything drifted
@@ -3507,7 +3508,7 @@ export class BigBangEngine {
       const drive = launchDrive(l);
       if (drive <= 0) continue;
       if (this.tick - (this.colonies.lastLaunch[l.starId] ?? -Infinity) < LAUNCH_COOLDOWN) continue;
-      if (coloniesOf(this.colonies, l.starId) + arksFrom(l.starId) >= MAX_PER_CIV) continue;
+      if (coloniesOf(this.colonies, l.starId) + arksFrom(l.starId) >= capabilityOf(l.techs).maxSettlements) continue;
       if (this.colonies.colonies.length + this.fleets.filter(f => f.ark).length >= MAX_TOTAL) break;
       if (!rng.chance(drive * 0.15)) continue;
       candidates ??= this.colonyCandidates();
@@ -3518,7 +3519,8 @@ export class BigBangEngine {
     }
 
     const alive = (id: number) => { const s = this.stars.find(x => x.id === id); return !!s && !s.isDead; };
-    for (const n of stepColonies(this.colonies, alive)) {
+    const tiers = new Map(launchers.map(l => [l.starId, capabilityOf(l.techs).tier]));
+    for (const n of stepColonies(this.colonies, alive, id => tiers.get(id) ?? null)) {
       const c = n.colony;
       const where = `${c.name}`;
       const founder = c.byPlayer ? 'your people' : (this.stars.find(s => s.id === c.founderStarId)?.civName ?? 'a vanished people');
@@ -3566,11 +3568,11 @@ export class BigBangEngine {
       fromStarId: l.starId, toStarId: site.starId,
       x: from.x, y: from.y, progress: 0,
       hostile: false, isPlayerFleet: l.isPlayer,
-      ark: { planetIndex: site.planetIndex, name: site.name, suitability: site.suitability, byPlayer: l.isPlayer },
+      ark: { planetIndex: site.planetIndex, name: site.name, suitability: site.suitability, byPlayer: l.isPlayer, tier: capabilityOf(l.techs).tier },
     });
     const who = l.isPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
     this.colonyNews(l.isPlayer, site.starId,
-      `${who} launched a colony ark toward ${site.name}.`,
+      `${who} launched ${aOrAn(capabilityOf(l.techs).ship)} toward ${site.name}.`,
       'a crowded world with the means to leave it', l.starId);
   }
 
@@ -3579,16 +3581,17 @@ export class BigBangEngine {
     const rng = this.rng.fork(`landfall_${fleet.id}_${this.tick}`);
     const planet = to.planets[ark.planetIndex];
     const taken = !!colonyAt(this.colonies, to.id, ark.planetIndex);
-    const ok = !!planet && !planet.isDead && !to.isDead && !taken && landfallSucceeds(ark.suitability, rng.next());
+    const cap = capabilityOfTier(ark.tier ?? 3);
+    const ok = !!planet && !planet.isDead && !to.isDead && !taken && landfallSucceeds(ark.suitability, rng.next(), cap);
     const who = ark.byPlayer ? (gameState.playerSpeciesName || 'Your people') : from.civName;
     if (!ok) {
-      this.colonyNews(ark.byPlayer, to.id, `The colony ark of ${who} bound for ${ark.name} was lost.`, 'a world that would not have them');
+      this.colonyNews(ark.byPlayer, to.id, `The ${cap.ship} of ${who} bound for ${ark.name} was lost.`, 'a world that would not have them');
       return;
     }
     foundColony(this.colonies, { starId: to.id, planetIndex: ark.planetIndex, name: ark.name, x: to.x, y: to.y, suitability: ark.suitability },
-      { starId: from.id, isPlayer: ark.byPlayer, lineage: ark.byPlayer ? this.playerLineage() : null }, this.tick);
+      { starId: from.id, isPlayer: ark.byPlayer, lineage: ark.byPlayer ? this.playerLineage() : null, tier: ark.tier ?? 3 }, this.tick);
     if (ark.byPlayer && planet.discovery !== 'landing') planet.discovery = 'landing';
-    this.colonyNews(ark.byPlayer, to.id, `${who} made landfall on ${ark.name}: an outpost is founded.`, 'the colony ark reached its world');
+    this.colonyNews(ark.byPlayer, to.id, `${who} made landfall on ${ark.name}: an outpost is founded.`, `the ${cap.ship} reached its world`);
   }
 
   /** The player's founding species for a colony: the signature lineage, else the most numerous living one. */

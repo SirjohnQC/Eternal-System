@@ -380,6 +380,36 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: early expansion is limited until interstellar (Colonies.ts tiers) ─
+{
+  const r: Rule = { name: 'scenario: Space Age outposts stay home and small until the colony ark', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const { capabilityOf, pickTarget, emptyColonies, foundColony, stepColonies } = await import('../src/simulation/Colonies');
+    const values = { militarism: 0.5, piety: 0.5, curiosity: 0.9, collectivism: 0.5, xenophobia: 0.1 };
+    const pressures = { hunger: 0, crowding: 1, scarcity: 0, unrest: 0, pollution: 0 };
+    const early = { starId: 1, x: 0, y: 0, era: 5, techs: ['rocketry'], pressures, values, isPlayer: false };
+    const cands = [
+      { starId: 1, planetIndex: 2, name: 'home system world', x: 0, y: 0, suitability: 0.4 },
+      { starId: 2, planetIndex: 0, name: 'better world next door', x: 50, y: 0, suitability: 0.95 },
+    ];
+    if (capabilityOf(early.techs).tier !== 1) throw new Error('rocketry is not tier 1');
+    const t1 = pickTarget(early, cands, new Set());
+    if (t1?.starId !== 1) throw new Error(`a Space Age people targeted star #${t1?.starId} outside its system`);
+    const t3 = pickTarget({ ...early, era: 6, techs: ['rocketry', 'orbital', 'colony_ark'] }, cands, new Set());
+    if (t3?.starId !== 2) throw new Error('a colony-ark people did not reach the better world next door');
+    const st = emptyColonies();
+    const c = foundColony(st, cands[0], { starId: 1, isPlayer: false, lineage: null, tier: 1 }, 0);
+    for (let i = 0; i < 200; i++) stepColonies(st, () => true, () => 1);
+    if (c.population > 0.2 + 1e-9) throw new Error(`a tier-1 outpost grew to ${c.population.toFixed(2)} (> 0.20)`);
+    if (c.status !== 'outpost') throw new Error('a tier-1 outpost became a colony');
+    for (let i = 0; i < 200; i++) stepColonies(st, () => true, () => 3);
+    if (!(c.population > 0.25) || c.status !== 'colony') throw new Error(`after the colony ark the outpost stayed at ${c.population.toFixed(2)} (${c.status})`);
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
 let blocking = crashes.length;
