@@ -1789,6 +1789,22 @@ export class BigBangEngine {
     this.camera.scale = this.camera.ts = sc;
   }
 
+  /**
+   * Keep the map in step with a new species list, then tell the view.
+   *
+   * The surface pass stamps `dominantSpeciesId` BEFORE evolution runs in the
+   * same tick, so a species born (or lost) in an evolution step used to stay
+   * off (or on) the map for a whole EVOLUTION_TICK_RATE — ~17 minutes at
+   * Normal pace — unless the player re-entered the planet view, which
+   * re-stamps on entry (#11).
+   */
+  private playerSpeciesChanged(): void {
+    if (runtimeState.playerPlanetGrid) {
+      assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
+    }
+    this.onPlayerWorldChanged?.();
+  }
+
   /** One simulation tick: Big Bang phases, then the living universe. */
   private stepTick(): void {
     this.tick++;
@@ -2455,6 +2471,9 @@ export class BigBangEngine {
         // Record WHERE each species lives. Without this, `dominantSpeciesId`
         // stays null forever and nothing can render or inspect the biosphere.
         assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
+        // Life spread and territory just changed the surface the player may be
+        // watching (trees, rocks, settlements are planned from it) (#10).
+        this.onPlayerWorldChanged?.();
         if (star.biologyPhase !== 'intelligent' && runtimeState.playerNations?.isFounded) {
           // The people who made the nations are gone (a collapse knocked life
           // back down the ladder): the nations go with them. A people that
@@ -2499,6 +2518,7 @@ export class BigBangEngine {
             );
             gameState.playerSpecies   = result.updatedSpecies;
             gameState.playerBiosphere = result.updatedBiosphere;
+            this.playerSpeciesChanged();
             for (const evt of result.events) {
               if (evt.type === 'mutation')    this.onMutationEvent?.(evt);
               if (evt.type === 'speciation')  this.onSpeciationEvent?.(evt);
@@ -5246,6 +5266,12 @@ export class BigBangEngine {
    * Called when a planet or moon is clicked in the system view. `moonIndex`
    * null means the planet itself.
    */
+  /**
+   * The player's world changed in a way the planet view must show now: the
+   * species list was replaced and the map re-stamped. Fired in the same tick
+   * as the change (#11).
+   */
+  onPlayerWorldChanged?: () => void;
   onBodySelected?: (hit: { star: StarBody; planetIndex: number; moonIndex: number | null; screenX: number; screenY: number }) => void;
 
   /**
@@ -5718,6 +5744,7 @@ export class BigBangEngine {
         );
         gameState.playerSpecies   = result.updatedSpecies;
         gameState.playerBiosphere = result.updatedBiosphere;
+        this.playerSpeciesChanged();
         for (const evt of result.events) {
           this.onMutationEvent?.(evt);
           mutationDesc = evt.description;
