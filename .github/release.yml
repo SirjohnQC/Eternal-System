@@ -1,0 +1,13 @@
+# Groups auto-generated release notes by PR label.
+changelog:
+  exclude:
+    labels: [duplicate, invalid, wontfix]
+  categories:
+    - title: New in the game
+      labels: [enhancement]
+    - title: Fixes
+      labels: [bug]
+    - title: Tooling, tests & docs
+      labels: [area:infra, documentation]
+    - title: Other changes
+      labels: ["*"]
