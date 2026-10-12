@@ -4900,8 +4900,11 @@ export class BigBangEngine {
         const bioPhase = (isHome && p.hasLife)
           ? (star.biologyPhase ?? null) : null;
         const grid = isHome ? runtimeState.playerPlanetGrid : null;
-        const formingHome = !!grid && !!star.formationDestiny && !!star.formationStage;
-        const kind = (formingHome ? 'lava' : p.type) as CosmicPlanetKind;
+        // While the home world forms, `p.type` is already the current stage's
+        // face (applyFormationFace: lava → rocky → ice → the destiny's sea).
+        // Forcing 'lava' for the whole formation showed magma here while the
+        // planet view showed a primordial sea (#12).
+        const kind = p.type as CosmicPlanetKind;
         const withRings = kind === 'gas';
         const seed = (star.id * 17 + i * 31) | 0;
 

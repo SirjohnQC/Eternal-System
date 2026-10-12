@@ -24,6 +24,8 @@ const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
 const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
 const { runtimeState } = await import('../src/simulation/GameState');
 const { EVOLUTION_TICK_RATE } = await import('../src/simulation/EvolutionEngine');
+const { formationFaceType } = await import('../src/simulation/Formation');
+let formingSamples = 0;   // how often the formation rule actually had a forming world to check
 const { assignDominantSpecies } = await import('../src/simulation/SpeciesDistribution');
 
 type Engine = InstanceType<typeof BigBangEngine>;
@@ -122,6 +124,22 @@ rule({
     const s = byId.get(bad[0]);
     return `${bad.length} record(s), e.g. star #${bad[0]}: ` +
       (s ? `phase=${s.biologyPhase}, hasLife=${s.hasLife}, dead=${s.isDead}` : 'star no longer exists');
+  },
+});
+
+rule({
+  // The system view's globe and the body card draw the home world as
+  // `planet.type`; the planet view draws the formation stage. They must agree
+  // at every stage — previews used to force magma for the whole formation (#12).
+  name: 'a forming home world shows its current stage face',
+  check: ({ engine }) => {
+    const ps = engine.getPlayerStar();
+    if (!ps?.formationDestiny || !ps.formationStage) return null;
+    formingSamples++;
+    const planet = ps.planets[engine.homeIndexOf(ps)];
+    const want = formationFaceType(ps.formationStage, ps.formationDestiny);
+    return planet?.type === want ? null
+      : `stage ${ps.formationStage} of a ${ps.formationDestiny} world: face is ${planet?.type}, expected ${want}`;
   },
 });
 
@@ -314,5 +332,6 @@ for (const r of rules) {
 }
 for (const c of crashes) console.log(`  CRASH ${c}`);
 
+console.log(`\n  (formation rule checked ${formingSamples} forming samples)`);
 console.log(`\n═══ ${blocking === 0 ? 'OK' : `${blocking} BLOCKING FAILURE(S)`} in ${((Date.now() - t0) / 1000).toFixed(1)}s ═══`);
 process.exit(blocking === 0 ? 0 : 1);
