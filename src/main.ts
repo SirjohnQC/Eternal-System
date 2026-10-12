@@ -506,8 +506,7 @@ async function launchBigBangAsync(): Promise<void> {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
-  runtimeState.playerPlanetGrid = null; // reset on new game
-  engine = new BigBangEngine(canvas);
+  engine = new BigBangEngine(canvas);   // init() resets the home-world grid
   // Must be set BEFORE init(): init()'s pre-seed loop can roll a star straight
   // to 'intelligent' at tick 0 and calls ensureCivilization() synchronously —
   // if geminiService were assigned after init(), that civilisation would be
@@ -963,10 +962,10 @@ function wireEngineEvents(eng: BigBangEngine): void {
     );
 
     // The player's home is a DIFFERENT star now, so everything derived from the
-    // old one is stale. The surface grid in particular describes a planet that
-    // no longer exists — leaving it in place is exactly the class of bug this
-    // codebase keeps producing (ROADMAP M20b).
-    runtimeState.playerPlanetGrid = null;
+    // old one is stale. The engine regenerates the surface grid for the new
+    // home on its own (ensurePlayerGrid keys it on star + planet); dropping it
+    // here as well just makes that immediate (ROADMAP M20b).
+    engine?.invalidatePlayerGrid();
     _pmSelected = null;
     clearSpeciesPalette();
     _dioramaRenderer?.pause();
@@ -1278,22 +1277,8 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       : `${target.civName} — ${planet?.name ?? 'Planet'}`;
   }
 
-  // Lazy-generate the planet grid for the player's home world.
-  // Uses the same numeric seed as bakePlanetTexture so terrain is consistent.
-  if (target.isPlayerStar && !runtimeState.playerPlanetGrid) {
-    const gridSeed = target.id * 7777 + planetIndex * 131;
-    // `planet.type` is the face of the current formation stage while the world
-    // forms, then its destiny. The setup DNA's ocean answer only shapes the
-    // ground in lab runs; a normal run's water comes from its destiny.
-    const dna = gameState.playerPlanetDNA;
-    // A forged world's water comes from its forging, so its DNA counts in full.
-    const labDna = gameState.destinyOverride !== null || gameState.skipFormation || !!gameState.forge;
-    runtimeState.playerPlanetGrid = generatePlanetGrid(
-      planet?.type ?? 'rocky',
-      gridSeed,
-      dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
-    );
-  }
+  // The engine owns the home-world grid (#76); make sure it exists for the view.
+  if (target.isPlayerStar) engine?.ensurePlayerGrid();
 
   if (target.isPlayerStar && runtimeState.playerPlanetGrid) {
     assignDominantSpecies(runtimeState.playerPlanetGrid, gameState.playerSpecies);
@@ -3199,7 +3184,7 @@ const FORMATION_STAGE_LINES: Record<string, string> = {
  * regenerate its surface grid as that face and repaint the diorama if open.
  */
 function refreshHomeWorldSurface(): void {
-  runtimeState.playerPlanetGrid = null;
+  engine?.invalidatePlayerGrid();   // the engine also does this on its own events
   const overlay = document.getElementById('planet-overlay');
   const ps = engine?.getPlayerStar();
   if (!ps || !overlay || overlay.style.display === 'none' || !_dioramaRenderer) return;
@@ -4397,7 +4382,9 @@ window.addEventListener('DOMContentLoaded', () => {
     const launched = launchBigBangAsync();
     // Expose internals for console poking. Dev flag only.
     const dbg = window as unknown as Record<string, unknown>;
-    dbg['__engine'] = engine;
+    // A getter: launchBigBangAsync() replaces `engine`, so a captured value
+    // would point at the discarded pre-launch engine.
+    Object.defineProperty(dbg, '__engine', { get: () => engine, configurable: true });
     dbg['__gameState'] = gameState;
     dbg['__runtimeState'] = runtimeState;
     dbg['__diorama'] = () => _dioramaRenderer;
