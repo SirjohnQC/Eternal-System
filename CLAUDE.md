@@ -39,7 +39,17 @@ npx tsc --noEmit          # typecheck only
 
 ## Test scripts (`tools/`)
 
-There is no `npm test`. Each `tools/*Check.ts` / `*Render.ts` is a standalone script,
+```sh
+npm test                  # typecheck + seeded invariants (~1 min) — run before every commit; CI enforces it
+npm run test:invariants -- --seeds=8 --ticks=200000   # longer local run
+npm run test:smoke        # 400k-tick smoke test (~4 min)
+```
+
+`tools/invariantCheck.ts` checks per-star rules on every sampled tick across fixed seeds.
+Add a rule there for every bug fix or new mechanic; if it reproduces an open issue, flag it
+`knownIssue: <n>` so it is reported without blocking CI, and remove the flag once fixed.
+
+Each other `tools/*Check.ts` / `*Render.ts` is a standalone script,
 bundled with esbuild and run under Node against a DOM stub. Its header comment gives the
 exact command and arguments. General form:
 
