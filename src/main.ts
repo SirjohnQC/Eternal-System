@@ -52,6 +52,7 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
+import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
 import { symptomsOf } from './simulation/Nations';
@@ -4290,7 +4291,11 @@ function initHudShell(): void {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  logger.info('Eternal Systems initializing');
+  logger.info(`Eternal Systems initializing — ${BUILD_LABEL}`);
+  const menuVersion = document.getElementById('menu-version');
+  if (menuVersion) menuVersion.textContent = `ETERNAL SYSTEMS ${BUILD_LABEL} · PROCEDURAL AI SIMULATION`;
+  const settingsBuild = document.getElementById('settings-build');
+  if (settingsBuild) settingsBuild.textContent = BUILD_LABEL;
   initHudShell();
 
   // Auto-validate stored Gemini key silently on startup
