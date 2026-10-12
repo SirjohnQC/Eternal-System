@@ -53,7 +53,7 @@ import {
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
-import { NORMAL_PACE, isDestinyType, type DestinyType } from './simulation/Formation';
+import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
 import { symptomsOf } from './simulation/Nations';
 import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
@@ -3120,14 +3120,20 @@ function smiteAsteroid(): void {
 }
 
 function setSpeed(speed: number): void {
-  // Normal mode has one fixed pace: anything that is not a pause runs at it.
+  // Normal mode: ▶ (the 1 button) runs at NORMAL_PACE. Faster speeds pass
+  // through only while NORMAL_FAST_FORWARD is on; otherwise every non-pause
+  // speed is clamped to the fixed pace.
   const normal = gameState.playMode === 'normal';
-  if (normal && speed > 0) speed = NORMAL_PACE;
+  if (normal && speed > 0 && (speed <= NORMAL_PACE || !NORMAL_FAST_FORWARD)) speed = NORMAL_PACE;
   gameState.speed = speed;
   (window as unknown as Record<string, unknown>)['eternalSpeed'] = speed;
   document.querySelectorAll('.speed-btn').forEach(btn => {
     const b = Number((btn as HTMLElement).dataset['speed']);
-    btn.classList.toggle('active', normal ? (b > 0) === (speed > 0) : b === speed);
+    const active = !normal ? b === speed
+      : b === 1 ? speed === NORMAL_PACE
+      : b === 0 ? speed === 0
+      : b === speed;
+    btn.classList.toggle('active', active);
   });
 }
 
@@ -3135,14 +3141,15 @@ function setSpeed(speed: number): void {
 const CREATIVE_DP = 9999;
 
 /**
- * Normal: pause and play only (fixed pace), no Place Life. Creative: the full
- * speed row, unlimited divine points, Place Life.
+ * Normal: pause, play at the fixed pace, and (while NORMAL_FAST_FORWARD is on)
+ * the fast-forward speeds; no Place Life. Creative: the full speed row,
+ * unlimited divine points, Place Life.
  */
 function applyPlayModeControls(): void {
   const creative = gameState.playMode === 'creative';
   document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
     const b = Number(btn.dataset['speed']);
-    if (b > 1) btn.style.display = creative ? '' : 'none';
+    if (b > 1) btn.style.display = creative || NORMAL_FAST_FORWARD ? '' : 'none';
     if (b === 1) {
       btn.textContent = creative ? '1×' : '▶';
       btn.title = creative ? '' : 'Play (normal pace)';

@@ -59,6 +59,13 @@ export const FORMATION_LADDERS: Record<DestinyType, ReadonlyArray<{ stage: Plane
 export const NORMAL_PACE = 2;
 
 /**
+ * Temporary (#7): Normal mode also offers the fast-forward speeds, for testing
+ * and pacing while the core loop is tuned. Set false to restore the single
+ * fixed pace; ▶ always runs at NORMAL_PACE either way.
+ */
+export const NORMAL_FAST_FORWARD = true;
+
+/**
  * One "player day" of the spec, in sim ticks at Normal pace.
  *
  * Decision 2026-10-04: a player day is one HOUR of play at Normal pace, not
