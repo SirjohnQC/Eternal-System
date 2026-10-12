@@ -1061,6 +1061,15 @@ function wireEngineEvents(eng: BigBangEngine): void {
     addCodexEntry(`${planetName} Terraformed`, 'divine');
     updateDivineActions();
   };
+  // The engine changed the player's world (species, map, territory): refresh
+  // the planet view now instead of at the next 250-tick sweep, which at Normal
+  // pace is ~2 minutes and always lands just BEFORE the evolution step it
+  // should follow (both fire on multiples of 250) (#10, #11). The renderer
+  // throttles the actual repaint (SURFACE_REBAKE_INTERVAL).
+  eng.onPlayerWorldChanged = () => {
+    _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+    _dioramaRenderer?.markSurfaceDirty();
+  };
   eng.onTickUpdate = (tick) => {
     gameState.tick = tick;
     if (tick % 10 === 0) {
