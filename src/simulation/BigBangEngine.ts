@@ -10,6 +10,10 @@ import {
   liveGeneration, type Colony,
 } from './Colonies';
 import { worldEnv, type WorldFacts } from './Divergence';
+import {
+  rulerOf, ruledByPlayer, concernsPlayer, stepLoyalty, occupyColony, stepOccupation,
+  endOccupation, conquestChance, HOLD_START,
+} from './Sovereignty';
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
@@ -3525,19 +3529,28 @@ export class BigBangEngine {
     for (const n of stepColonies(this.colonies, alive, id => tiers.get(id) ?? null)) {
       const c = n.colony;
       const where = `${c.name}`;
-      const founder = c.byPlayer ? 'your people' : (this.stars.find(s => s.id === c.founderStarId)?.civName ?? 'a vanished people');
+      const founder = this.colonyRulerName(c, 'your people');
       const line = n.kind === 'grew'
         ? `The outpost on ${where} has become a colony of ${founder}.`
         : `The colony of ${founder} on ${where} is gone.`;
-      this.colonyNews(c.byPlayer, c.starId, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
+      this.colonyNews(concernsPlayer(c), c.starId, line, n.kind === 'grew' ? 'the colonists took hold' : 'a world that could not hold them');
     }
 
     // Divergence (P2): every colony lives a generation per EVOLUTION_TICK_RATE.
-    for (const c of this.colonies.colonies) {
+    // Then (P3, Sovereignty.ts) its loyalty to its rulers, or an occupier's hold.
+    for (const c of [...this.colonies.colonies]) {
       if (this.tick - (c.lastGenTick ?? c.foundedTick) < EVOLUTION_TICK_RATE) continue;
+      if (c.occupation?.homeWorld) {
+        // The natives of an occupied home world are at home: no divergence, only the hold.
+        c.lastGenTick = this.tick;
+        c.generations++;
+        this.stepColonyRule(c, rng);
+        continue;
+      }
       const g = this.colonyGenerationInputs(c);
       if (!g) continue;
       const change = liveGeneration(c, g.env, g.contact, this.tick, () => rng.next());
+      this.stepColonyRule(c, rng);
       if (!change) continue;
       const people = c.byPlayer ? (gameState.playerSpeciesName || c.lineage?.name || 'your people')
         : (this.stars.find(s => s.id === c.founderStarId)?.civName ?? 'a vanished people');
@@ -3547,8 +3560,147 @@ export class BigBangEngine {
         : change.to === 'subspecies'
           ? `The ${look} folk of ${c.name} are a people of their own now: a subspecies of ${people}.`
           : `A new species has arisen on ${c.name}: the ${look} descendants of ${people} can no longer be counted among them.`;
-      this.colonyNews(c.byPlayer, c.starId, line, `generations under a different sky (${c.generations})`);
+      this.colonyNews(concernsPlayer(c), c.starId, line, `generations under a different sky (${c.generations})`);
     }
+  }
+
+  // ── Sovereignty (Sovereignty.ts, expansion P3) ────────────────────────────
+
+  /** The star whose people rule a colony now (the player's current star for the player's), or null. */
+  private colonyRulerStar(c: Colony): StarBody | null {
+    if (ruledByPlayer(c)) return this.getPlayerStar() ?? null;
+    const id = rulerOf(c);
+    return id == null ? null : this.stars.find(s => s.id === id && !s.isDead) ?? null;
+  }
+
+  /** Contact between a world and the people ruling it: by distance, none without ships. */
+  private contactWith(star: StarBody, ruler: StarBody | null): number {
+    if (!ruler || ruler.isDead || !ruler.hasLife) return 0;
+    if (ruler.id === star.id) return 0.8;
+    if (ruler.civLevel < 5) return 0.05;
+    const d = Math.hypot(star.x - ruler.x, star.y - ruler.y);
+    return Math.max(0.1, Math.min(0.55, 0.55 - d / 5000));
+  }
+
+  /** What a star's people know (the player's: all their nations know). */
+  private techsOfStar(star: StarBody): string[] {
+    if (star.isPlayerStar) {
+      const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+      return ns ? [...new Set(ns.nations.filter(n => !n.fallen).flatMap(n => n.techs))] : [];
+    }
+    return this.interstellar.polities[star.id]?.techs ?? [];
+  }
+
+  /** One generation of rule: loyalty (and breaking away) for a ruled colony, the hold for an occupied one. */
+  private stepColonyRule(c: Colony, rng: SeedRNG): void {
+    const star = this.stars.find(s => s.id === c.starId);
+    if (!star) return;
+    const ruler = this.colonyRulerStar(c);
+    const was = this.colonyRulerName(c, 'your people');
+    const wasPlayers = concernsPlayer(c);
+    if (c.occupation?.homeWorld && !(star.hasLife && star.biologyPhase === 'intelligent')) {
+      // The natives are gone (a catastrophe, a lost age): only the occupiers remain, as a colony.
+      endOccupation(c, 'absorbed', false, this.tick);
+      c.population = Math.min(c.population, 0.3);
+      this.colonyNews(wasPlayers, c.starId, `No people of ${star.civName} remain on ${c.name}; it is a colony of ${was} now.`, 'a world emptied of its people');
+      return;
+    }
+    if (c.occupation) {
+      const o = c.occupation;
+      const occupier = this.stars.find(s => s.id === o.byStarId && !s.isDead) ?? null;
+      const present = !!occupier && occupier.hasLife && occupier.civLevel >= 5
+        && Math.hypot(occupier.x - star.x, occupier.y - star.y) <= reachOf(occupier.civLevel);
+      const prev = o.prevRulerStarId == null ? null
+        : (o.prevByPlayer ? this.getPlayerStar() : this.stars.find(s => s.id === o.prevRulerStarId && !s.isDead)) ?? null;
+      const nativeEra = o.homeWorld ? star.civLevel : prev ? prev.civLevel : 3 + (c.tier ?? 3);
+      const advantage = occupier ? (occupier.civLevel - nativeEra) / 3 : -1;
+      const how = stepOccupation(c, { advantage, occupierPresent: present }, rng.next());
+      if (!how) return;
+      const natives = o.homeWorld ? star.civName : (prev ? this.colonyNameOfStar(prev, o.prevByPlayer) : `the people of ${c.name}`);
+      if (how === 'liberated' && o.homeWorld) {
+        this.colonies.colonies = this.colonies.colonies.filter(x => x !== c);
+        this.colonyNews(wasPlayers, c.starId, `${star.civName} threw off the rule of ${was}: their world is free again.`, 'a people that would not be ruled');
+        return;
+      }
+      endOccupation(c, how, !!prev && !prev.isDead, this.tick);
+      const line = how === 'absorbed'
+        ? `${c.name} is part of the realm of ${was} now; the people of ${natives} there have made their peace with it.`
+        : c.status === 'independent'
+          ? `${c.name} rose against ${was} and rules itself now.`
+          : `${c.name} rose against ${was} and returned to ${natives}.`;
+      this.colonyNews(wasPlayers || concernsPlayer(c), c.starId, line, how === 'absorbed' ? 'generations under a conqueror' : 'a people that would not be ruled');
+      return;
+    }
+    if (c.status === 'independent') return;
+    const contact = this.contactWith(star, ruler);
+    if (stepLoyalty(c, contact, !!ruler, this.tick, rng.next()) !== 'independent') return;
+    const people = c.lineage?.name ? `the ${c.lineage.name}` : 'its people';
+    const why = !ruler ? `with ${was} gone, ${people} of ${c.name} govern themselves`
+      : `${c.name} has broken away from ${was}: ${people} there answer to no one now`;
+    this.colonyNews(wasPlayers, c.starId, why.charAt(0).toUpperCase() + why.slice(1) + '.',
+      !ruler ? 'rulers that are no more' : (c.stage && c.stage !== 'same' ? `a people grown apart (${c.stage})` : 'too far from home'));
+  }
+
+  private colonyNameOfStar(s: StarBody, isPlayer: boolean): string {
+    return isPlayer ? (gameState.playerSpeciesName || 'your people') : s.civName;
+  }
+
+  /**
+   * A won war may take one of the loser's worlds (owner, 2026-10-12: others
+   * conquer too, the player's worlds included): one of its colonies within the
+   * victor's reach, or another civilisation's home world. The natives stay.
+   * The player's own home world is not taken here (its nations would need a
+   * conqueror model of their own).
+   */
+  private conquestAfterWar(war: War, attacker: StarBody, defender: StarBody): void {
+    const rng = this.rng.fork(`conquest_${war.id}`);
+    if (!rng.chance(conquestChance(war.attackerStrength - war.defenderStrength))) return;
+    if (!attacker.hasLife || attacker.civLevel < 5) return;
+    const techs = this.techsOfStar(attacker);
+    const cap = capabilityOf(techs);
+    if (cap.tier < 2) return;   // no interstellar ships yet: it cannot hold a world at another star
+    const reach = reachOf(attacker.civLevel);
+    const ruledByDefender = (c: Colony) => defender.isPlayerStar ? ruledByPlayer(c) : (!ruledByPlayer(c) && rulerOf(c) === defender.id);
+    const options: Array<{ score: number; take: () => Colony }> = [];
+    for (const c of this.colonies.colonies) {
+      if (c.occupation || !ruledByDefender(c)) continue;
+      const s = this.stars.find(x => x.id === c.starId);
+      if (!s || s.isDead) continue;
+      const d = Math.hypot(s.x - attacker.x, s.y - attacker.y);
+      if (d > reach) continue;
+      options.push({ score: c.suitability - d / 4000 + 0.2, take: () => { occupyColony(c, { starId: attacker.id, isPlayer: attacker.isPlayerStar }, this.tick); return c; } });
+    }
+    // The people's world: a star's life planet flag is not always set, so ask homeIndexOf.
+    const homeIdx = defender.planets.length ? this.homeIndexOf(defender) : -1;
+    if (!defender.isPlayerStar && defender.hasLife && defender.biologyPhase === 'intelligent' && homeIdx >= 0
+        && defender.planets[homeIdx].type !== 'gas' && !colonyAt(this.colonies, defender.id, homeIdx)
+        && this.colonies.colonies.length < MAX_TOTAL) {
+      const d = Math.hypot(defender.x - attacker.x, defender.y - attacker.y);
+      if (d <= reach) {
+        options.push({ score: 0.5 * this.habitabilityOf(defender) - d / 4000, take: () => {
+          const c = foundColony(this.colonies,
+            { starId: defender.id, planetIndex: homeIdx, name: `${defender.civName} ${defender.planets[homeIdx].name}`, x: defender.x, y: defender.y, suitability: this.habitabilityOf(defender) },
+            { starId: attacker.id, isPlayer: attacker.isPlayerStar, lineage: null, tier: cap.tier }, this.tick);
+          c.population = 1;
+          c.seizedTick = this.tick;
+          c.status = 'occupied';
+          c.rulerStarId = attacker.id;
+          c.rulerIsPlayer = attacker.isPlayerStar;
+          c.occupation = { byStarId: attacker.id, byPlayer: attacker.isPlayerStar, since: this.tick, hold: HOLD_START,
+            prevRulerStarId: defender.id, prevByPlayer: false, prevStatus: 'colony', homeWorld: true };
+          return c;
+        } });
+      }
+    }
+    if (!options.length) return;
+    options.sort((a, b) => b.score - a.score);
+    const victor = this.colonyNameOfStar(attacker, attacker.isPlayerStar);
+    const loser = this.colonyNameOfStar(defender, defender.isPlayerStar);
+    const c = options[0].take();
+    const line = c.occupation?.homeWorld
+      ? `${victor} occupied the home world of ${loser}. Its people remain, under foreign rule.`
+      : `${victor} seized ${c.name} from ${loser}. Its people remain, under foreign rule.`;
+    this.colonyNews(attacker.isPlayerStar || defender.isPlayerStar || concernsPlayer(c), c.starId, line, `a war won by ${victor}`, attacker.id);
   }
 
   /**
@@ -3575,6 +3727,8 @@ export class BigBangEngine {
     if (founder) {
       const d = Math.hypot(star.x - founder.x, star.y - founder.y);
       contact = star.id === founder.id ? 0.8 : Math.max(0.1, Math.min(0.55, 0.55 - d / 5000));
+      // Breaking away or falling to a conqueror cuts the traffic with home (P3).
+      if (c.status === 'independent' || c.occupation) contact *= 0.5;
     }
     return { env: worldEnv(facts(star, planet), home), contact };
   }
@@ -3604,6 +3758,8 @@ export class BigBangEngine {
       return c.planetIndex !== (s.isPlayerStar ? this.homeIndexOf(s) : s.planets.findIndex(q => q.hasLife));
     }
     if (s.isPlayerStar) return false;
+    // Another people's own world (its life flag may be unset: homeIndexOf) waits for conquest (P3).
+    if (s.hasLife && s.biologyPhase === 'intelligent' && c.planetIndex === this.homeIndexOf(s)) return false;
     return !(s.biologyPhase === 'intelligent' && p?.hasLife);
   }
 
@@ -3666,6 +3822,14 @@ export class BigBangEngine {
   colonyFounderName(c: { byPlayer: boolean; founderStarId: number }): string {
     if (c.byPlayer) return gameState.playerSpeciesName || 'Your people';
     return this.stars.find(x => x.id === c.founderStarId)?.civName ?? 'A distant people';
+  }
+
+  /** Who rules a colony now, as the views name them ("itself" for an independent one). */
+  colonyRulerName(c: Colony, playerWord = 'Your people'): string {
+    if (rulerOf(c) == null) return 'itself';
+    if (ruledByPlayer(c)) return gameState.playerSpeciesName || playerWord;
+    if (c.rulerStarId === undefined) return this.colonyFounderName(c);
+    return this.stars.find(x => x.id === c.rulerStarId)?.civName ?? 'a distant people';
   }
 
   /** Trade routes the player can see (both ends known), for the galaxy view. */
@@ -6206,6 +6370,9 @@ export class BigBangEngine {
           if (war.defenderStrength > 0.7 && this.rng.chance(0.3))
             defender.civLevel = Math.min(TECH_LEVELS.length - 1, defender.civLevel + 1);
         }
+
+        // P3: a clear victory may take one of the loser's worlds (Sovereignty.ts).
+        if (attackerWon) this.conquestAfterWar(war, attacker, defender);
 
         const known = this.isStarKnownToPlayer(attacker) || this.isStarKnownToPlayer(defender);
         if (known) this.onWarEnd?.(war, attacker, defender, attackerWon);

@@ -5841,7 +5841,17 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
     const colony = engine?.colonyAt(star.id, planetIndex);
     if (colony) {
       const founder = engine!.colonyFounderName(colony);
-      rows.push(['Colony', `${founder} · ${colony.status === 'outpost' ? 'outpost' : 'colony'} · ${Math.round(colony.population * 100)}%`]);
+      const ruler = engine!.colonyRulerName(colony);
+      if (colony.occupation?.homeWorld) {
+        // Another people's home world, held by a conqueror (Sovereignty.ts).
+        rows.push(['Occupied', `by ${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+      } else {
+        rows.push(['Colony', `${founder} · ${colony.status === 'outpost' ? 'outpost' : 'colony'} · ${Math.round(colony.population * 100)}%`]);
+        if (colony.status === 'independent') rows.push(['Rule', 'Independent']);
+        else if (colony.occupation) rows.push(['Rule', `Occupied by ${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+        else if (ruler !== founder) rows.push(['Rule', ruler]);
+        else if (colony.status === 'colony') rows.push(['Loyalty', `${Math.round(colony.loyalty * 100)}%`]);
+      }
       // What generations under this sky have made of them (Divergence.ts).
       const stage = colony.stage ?? 'same';
       if (stage !== 'same') {

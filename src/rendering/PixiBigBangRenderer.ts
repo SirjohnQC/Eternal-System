@@ -14,6 +14,7 @@
  *   engine.onPixiFrame = (eng) => pixi.renderFrame(eng);
  */
 
+import { ruledByPlayer } from '../simulation/Sovereignty';
 import {
   Application, Container, Graphics, Text, TextStyle,
   Color, Sprite, Texture, TilingSprite, Assets,
@@ -2184,15 +2185,19 @@ export class PixiBigBangRenderer {
         }
 
         // A colony: a small pennant above the world — gold for the player's
-        // people, violet for another civilisation's (Colonies.ts).
+        // people, violet for another civilisation's, pale teal for a world
+        // that rules itself (Colonies.ts, Sovereignty.ts). An occupied world
+        // flies its conqueror's colour over a red band: two peoples on it.
         const colony = engine.colonyAt(star.id, i);
         if (colony && camera.scale >= 1.6 && reveal >= 1) {
           const u = Math.max(0.3, 1 / camera.scale);
-          const color = colony.byPlayer ? 0xffcc44 : 0xb48cff;
+          const color = colony.status === 'independent' ? 0x8fe0d0
+            : ruledByPlayer(colony) ? 0xffcc44 : 0xb48cff;
           const alpha = colony.status === 'outpost' ? 0.65 : 0.95;
           const fx = px + body * 0.55, fy = py - body * 0.95;
           this.planetLayer.rect(fx, fy, u, body * 0.6).fill({ color: 0xd8d0e8, alpha });          // mast
           this.planetLayer.rect(fx + u, fy, body * 0.32, body * 0.2).fill({ color, alpha });        // pennant
+          if (colony.occupation) this.planetLayer.rect(fx + u, fy + body * 0.2, body * 0.32, body * 0.08).fill({ color: 0xd04030, alpha });
         }
 
         if (planet.moons.length > 0) {

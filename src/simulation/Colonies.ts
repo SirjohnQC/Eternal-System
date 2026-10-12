@@ -29,8 +29,10 @@ import {
   type Adaptations, type DivergenceStage, type WorldEnv,
   NO_ADAPTATION, optimumFor, generationStep, distanceFromHome, stageOf, describe,
 } from './Divergence';
+import { type Occupation, rulerOf } from './Sovereignty';
 
-export type ColonyStatus = 'outpost' | 'colony';
+/** 'independent' and 'occupied' are P3 (Sovereignty.ts). */
+export type ColonyStatus = 'outpost' | 'colony' | 'independent' | 'occupied';
 
 export interface Colony {
   id: string;
@@ -63,6 +65,17 @@ export interface Colony {
   lastGenTick?: number;
   /** How far the people here have become their own (Divergence.ts). */
   stage?: DivergenceStage;
+  /**
+   * P3 (Sovereignty.ts): who rules it when that is no longer its founder —
+   * another star's people, or SELF_RULED (-1). Absent = its founder.
+   */
+  rulerStarId?: number;
+  rulerIsPlayer?: boolean;
+  independentSince?: number;
+  /** Set when the record was made by conquest (another people's home world), not by an ark. */
+  seizedTick?: number;
+  /** A conqueror holds it; the natives remain (Sovereignty.ts). */
+  occupation?: Occupation;
 }
 
 export interface ColonyState {
@@ -192,8 +205,9 @@ export function takenSites(state: ColonyState): Set<string> {
 }
 
 /** How many colonies a civilisation has (by its star). */
+/** Settlements a civilisation founded by ship (not worlds it seized from another people). */
 export function coloniesOf(state: ColonyState, founderStarId: number): number {
-  return state.colonies.filter(c => c.founderStarId === founderStarId).length;
+  return state.colonies.filter(c => c.founderStarId === founderStarId && c.seizedTick == null).length;
 }
 
 /** Does the ship take hold? A poor world often fails, and early ships more often. `roll` is 0..1. */
@@ -248,7 +262,11 @@ export function stepColonies(
   for (let i = state.colonies.length - 1; i >= 0; i--) {
     const c = state.colonies[i];
     if (!alive(c.starId)) { state.colonies.splice(i, 1); news.push({ kind: 'died-out', colony: c }); continue; }
-    const t = founderTier(c.founderStarId);
+    // An occupied home world's record is the occupiers' hold, not a settlement that grows.
+    if (c.occupation?.homeWorld) continue;
+    // Grows to what its RULERS can sustain; one ruling itself keeps what it had.
+    const ruler = rulerOf(c);
+    const t = ruler == null ? null : founderTier(ruler);
     if (t != null && t > 0) c.tier = t;
     const cap = capabilityOfTier(c.tier ?? 3);
     const net = GROWTH * cap.growthMult * (c.suitability - MIN_SUITABILITY) / (1 - MIN_SUITABILITY);

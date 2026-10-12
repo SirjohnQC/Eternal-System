@@ -187,7 +187,7 @@ rule({
       if (!p || p.type === 'gas') return `${c.id} on planet ${c.planetIndex} (${p?.type ?? 'missing'})`;
       if (!(c.population >= 0 && c.population <= 1)) return `${c.id} population ${c.population}`;
       if (s.isPlayerStar && c.planetIndex === engine.homeIndexOf(s)) return `${c.id} on the player's home world`;
-      per.set(c.founderStarId, (per.get(c.founderStarId) ?? 0) + 1);
+      if (c.seizedTick == null) per.set(c.founderStarId, (per.get(c.founderStarId) ?? 0) + 1);
     }
     for (const [id, n] of per) if (n > MAX_PER_CIV) return `star #${id} has ${n} colonies > ${MAX_PER_CIV}`;
     for (const f of e.fleets as any[]) {
@@ -211,6 +211,29 @@ rule({
         if (!(a[k] >= -1 && a[k] <= 1)) return `${c.id} ${k}=${a[k]}`;
       }
       if (c.lineage && JSON.stringify(c.lineage.adaptations) !== JSON.stringify(a)) return `${c.id} lineage not mirrored`;
+    }
+    return null;
+  },
+});
+
+rule({
+  // Sovereignty (P3): status, ruler and occupation agree; an occupied home
+  // world is another civilisation's (never the player's), seized not settled.
+  name: 'colony rule is consistent',
+  check: ({ engine }) => {
+    for (const c of (engine as any).colonies.colonies as any[]) {
+      if (!(c.loyalty >= 0 && c.loyalty <= 1)) return `${c.id} loyalty ${c.loyalty}`;
+      if ((c.status === 'independent') !== (c.rulerStarId === -1)) return `${c.id} status ${c.status} with ruler ${c.rulerStarId}`;
+      if ((c.status === 'occupied') !== !!c.occupation) return `${c.id} status ${c.status}, occupation ${!!c.occupation}`;
+      const o = c.occupation;
+      if (!o) continue;
+      if (o.byStarId !== c.rulerStarId || !!o.byPlayer !== !!c.rulerIsPlayer) return `${c.id} occupier ${o.byStarId} is not its ruler ${c.rulerStarId}`;
+      if (!(o.hold >= 0 && o.hold <= 1)) return `${c.id} hold ${o.hold}`;
+      if (o.homeWorld) {
+        const s = (engine as any).stars.find((x: any) => x.id === c.starId);
+        if (c.seizedTick == null || c.lineage) return `${c.id} occupied home world not marked seized`;
+        if (s?.isPlayerStar) return `${c.id}: the player's home star occupied (not modelled)`;
+      }
     }
     return null;
   },
@@ -423,6 +446,159 @@ for (const { seed, stats } of SEEDS) {
     if (c.status !== 'outpost') throw new Error('a tier-1 outpost became a colony');
     for (let i = 0; i < 200; i++) stepColonies(st, () => true, () => 3);
     if (!(c.population > 0.25) || c.status !== 'colony') throw new Error(`after the colony ark the outpost stayed at ${c.population.toFixed(2)} (${c.status})`);
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenarios: sovereignty (Sovereignty.ts, P3) ─────────────────────────────
+{
+  const S = await import('../src/simulation/Sovereignty');
+  const C = await import('../src/simulation/Colonies');
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const scen = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const mk = (over: any = {}) => {
+    const st = C.emptyColonies();
+    const c = C.foundColony(st, { starId: 9, planetIndex: 1, name: 'Testworld', x: 0, y: 0, suitability: 0.7 },
+      { starId: 1, isPlayer: true, lineage: null, tier: 3 }, 0);
+    c.status = 'colony'; c.population = 0.5;
+    return Object.assign(c, over);
+  };
+
+  scen('near colonies stay loyal; far, changed ones break away; orphans govern themselves', () => {
+    const rng = new SeedRNG('loyal');
+    const near = mk();
+    for (let g = 0; g < 300; g++) if (S.stepLoyalty(near, 0.8, true, g, rng.next())) return `a same-system colony broke away at generation ${g}`;
+    const far = mk();
+    for (let g = 0; g < 300; g++) if (S.stepLoyalty(far, 0.3, true, g, rng.next())) return `a far colony of the SAME people broke away at generation ${g} (loyalty ${far.loyalty.toFixed(2)})`;
+    const apart = mk({ stage: 'species' });
+    let at = -1;
+    for (let g = 0; g < 80 && at < 0; g++) if (S.stepLoyalty(apart, 0.1, true, g, rng.next())) at = g;
+    if (at < 0) return `an isolated new species never broke away (loyalty ${apart.loyalty.toFixed(2)})`;
+    if (at < 8) return `broke away after only ${at} generations — owner wants it slow`;
+    if (apart.status !== 'independent' || S.rulerOf(apart) !== null || S.ruledByPlayer(apart) || !S.concernsPlayer(apart)) return 'independence did not take';
+    const outpost = mk({ status: 'outpost', stage: 'species' });
+    for (let g = 0; g < 200; g++) if (S.stepLoyalty(outpost, 0.1, true, g, rng.next())) return 'an outpost broke away while its rulers still stand';
+    const orphan = mk({ status: 'outpost' });
+    if (S.stepLoyalty(orphan, 0, false, 5, 0.99) !== 'independent') return 'a colony whose rulers are gone stayed theirs';
+    return null;
+  });
+
+  scen('an occupation ends in liberation or absorption, by numbers and edge', () => {
+    const run = (c: any, f: any, seed: string, n = 120) => {
+      const rng = new SeedRNG(seed);
+      for (let g = 0; g < n; g++) { const how = S.stepOccupation(c, f, rng.next()); if (how) return { how, g }; }
+      return null;
+    };
+    const big = mk(); S.occupyColony(big, { starId: 5, isPlayer: false }, 0);
+    if (big.status !== 'occupied' || S.ruledByPlayer(big) || big.occupation?.prevRulerStarId !== 1 || !big.occupation.prevByPlayer) return 'occupation did not record the former rulers';
+    const r1 = run(big, { advantage: 0, occupierPresent: true }, 'big');
+    if (r1?.how !== 'liberated') return `a large colony at an even match: ${JSON.stringify(r1)}`;
+    S.endOccupation(big, 'liberated', true, 1);
+    if (big.status !== 'colony' || !S.ruledByPlayer(big) || big.occupation) return `liberation did not return it to the player (${big.status})`;
+    const small = mk({ population: 0.2 }); S.occupyColony(small, { starId: 5, isPlayer: false }, 0);
+    const r2 = run(small, { advantage: 1 / 3, occupierPresent: true }, 'small');
+    if (r2?.how !== 'absorbed') return `a small colony against a stronger occupier: ${JSON.stringify(r2)}`;
+    S.endOccupation(small, 'absorbed', true, 1);
+    if (small.status !== 'colony' || S.rulerOf(small) !== 5) return 'absorption did not hand it to the conqueror';
+    const gone = mk({ population: 0.2 }); S.occupyColony(gone, { starId: 5, isPlayer: false }, 0);
+    const r3 = run(gone, { advantage: 1, occupierPresent: false }, 'gone');
+    if (r3?.how !== 'liberated' || r3.g > 3) return `an absent occupier kept its hold: ${JSON.stringify(r3)}`;
+    S.endOccupation(gone, 'liberated', false, 1);
+    if (gone.status !== 'independent') return 'liberated with its old rulers gone, yet not independent';
+    const home = mk({ population: 1 }); S.occupyColony(home, { starId: 5, isPlayer: false }, 0); home.occupation!.homeWorld = true;
+    const r4 = run(home, { advantage: 1, occupierPresent: true }, 'home', 400);
+    if (r4?.how === 'absorbed') return 'a home world was absorbed';
+    if (home.occupation!.hold > S.HOME_HOLD_MAX) return `home hold ${home.occupation!.hold}`;
+    return null;
+  });
+}
+
+{
+  const r: Rule = { name: 'scenario: a won war takes a player colony; it is freed when the occupier falls; saves keep it', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const S = await import('../src/simulation/Sovereignty');
+    resetGameState('Inv_conquest');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_conquest');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    const L = { starId: ps.id, x: ps.x, y: ps.y, era: 6, techs: ['colony_ark'],
+      pressures: { hunger: 0, crowding: 1, scarcity: 0, unrest: 0, pollution: 0 },
+      values: { militarism: 0.5, piety: 0.5, curiosity: 0.8, collectivism: 0.5, xenophobia: 0.2 }, isPlayer: true };
+    const sites = (e.colonyCandidates() as any[]).filter(c => e.canSettle(ps.id, c) && c.starId !== ps.id).sort((a, b) => b.suitability - a.suitability);
+    let col: any = null;
+    for (const site of sites.slice(0, 6)) {
+      for (let k = 0; k < 12 && !col; k++) { e.launchArk(L, site); for (let i = 0; i < 1_000 && e.fleets.some((f: any) => f.ark); i++) e.updateFleets(); col = e.colonyAt(site.starId, site.planetIndex); }
+      if (col) break;
+    }
+    if (!col) throw new Error('could not found a colony');
+    col.status = 'colony'; col.population = 0.5;
+    e.colonies.lastLaunch[ps.id] = Infinity;
+    // An interstellar people elsewhere, with the ships to hold a world.
+    const foe = e.stars.find((s: any) => !s.isPlayerStar && !s.isDead && !s.formationStage && s.id !== col.starId && s.planets.length);
+    Object.assign(foe, { hasLife: true, biologyPhase: 'intelligent', civLevel: 6 });
+    foe.planets[0].hasLife = true;
+    e.interstellar.polities[foe.id] = { ...(e.interstellar.polities[foe.id] ?? {}), techs: ['rocketry', 'orbital', 'colony_ark'] };
+    let taken = false;
+    for (let id = 9000; id < 9040 && !taken; id++) {
+      e.conquestAfterWar({ id, attackerStarId: foe.id, defenderStarId: ps.id, attackerStrength: 0.9, defenderStrength: 0.1 }, foe, ps);
+      taken = col.status === 'occupied';
+    }
+    if (!taken) throw new Error('forty clear victories took nothing');
+    if (S.ruledByPlayer(col) || !S.concernsPlayer(col) || S.rulerOf(col) !== foe.id) throw new Error('occupied colony still counted as the player\'s');
+    if (e.colonyAt(ps.id, e.homeIndexOf(ps))) throw new Error("the player's home world was taken");
+    // Saves keep the occupation.
+    const e2 = new BigBangEngine(makeCanvas()) as any;
+    e2.init(SEEDS[0].stats, 'inv_conquest');
+    e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
+    const c2 = e2.colonyAt(col.starId, col.planetIndex);
+    if (c2?.status !== 'occupied' || c2.occupation?.byStarId !== foe.id) throw new Error('occupation did not survive save/load');
+    // The occupier falls: the colony rises and returns to the player.
+    foe.isDead = true;
+    for (let g = 0; g < 6 && col.occupation; g++) { e.tick += 2_000; e.stepColonyWorlds([], null); }
+    const now = e.colonyAt(col.starId, col.planetIndex);
+    if (!now || now.occupation || !S.ruledByPlayer(now)) throw new Error(`not freed back to the player (${now?.status}, hold ${now?.occupation?.hold})`);
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+{
+  const r: Rule = { name: "scenario: a won war can occupy another civilisation's home world; its people stay", check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_occupy');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_occupy');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const others = e.stars.filter((s: any) => !s.isPlayerStar && !s.isDead && !s.formationStage && s.planets.length);
+    const [a, b] = others;
+    for (const s of [a, b]) { Object.assign(s, { hasLife: true, biologyPhase: 'intelligent', civLevel: 6 }); s.planets[0].hasLife = true; }
+    e.interstellar.polities[a.id] = { ...(e.interstellar.polities[a.id] ?? {}), techs: ['rocketry', 'orbital', 'colony_ark'] };
+    let c: any = null;
+    for (let id = 9100; id < 9140 && !c; id++) {
+      e.conquestAfterWar({ id, attackerStarId: a.id, defenderStarId: b.id, attackerStrength: 0.9, defenderStrength: 0.1 }, a, b);
+      c = e.colonyAt(b.id, b.planets.findIndex((p: any) => p.hasLife));
+    }
+    if (!c) throw new Error('no home world taken in forty clear victories');
+    if (!c.occupation?.homeWorld || c.occupation.prevRulerStarId !== b.id) throw new Error('not recorded as an occupied home world');
+    if (!(b.hasLife && b.biologyPhase === 'intelligent')) throw new Error('the natives did not stay');
+    if (!e.canSettle || e.colonies.colonies.filter((x: any) => x.starId === b.id).length !== 1) throw new Error('duplicate records');
+    // The natives are lost: the occupiers remain as a plain colony.
+    b.biologyPhase = 'multicellular';
+    e.tick += 2_000; e.stepColonyWorlds([], null);
+    const after = e.colonyAt(c.starId, c.planetIndex);
+    if (!after || after.occupation || after.status !== 'colony') throw new Error(`with the natives gone it stayed ${after?.status}`);
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
