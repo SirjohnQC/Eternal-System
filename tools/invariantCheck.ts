@@ -583,12 +583,14 @@ for (const { seed, stats } of SEEDS) {
     for (let i = 0; i < 2_100; i++) e.update();
     const others = e.stars.filter((s: any) => !s.isPlayerStar && !s.isDead && !s.formationStage && s.planets.length);
     const [a, b] = others;
-    for (const s of [a, b]) { Object.assign(s, { hasLife: true, biologyPhase: 'intelligent', civLevel: 6 }); s.planets[0].hasLife = true; }
+    for (const s of [a, b]) { Object.assign(s, { hasLife: true, biologyPhase: 'intelligent', civLevel: 6 }); s.planets[e.homeIndexOf(s)].hasLife = true; }
+    const bHome = e.homeIndexOf(b);
+    if (b.planets[bHome].type === 'gas') b.planets[bHome].type = 'rocky';
     e.interstellar.polities[a.id] = { ...(e.interstellar.polities[a.id] ?? {}), techs: ['rocketry', 'orbital', 'colony_ark'] };
     let c: any = null;
     for (let id = 9100; id < 9140 && !c; id++) {
       e.conquestAfterWar({ id, attackerStarId: a.id, defenderStarId: b.id, attackerStrength: 0.9, defenderStrength: 0.1 }, a, b);
-      c = e.colonyAt(b.id, b.planets.findIndex((p: any) => p.hasLife));
+      c = e.colonyAt(b.id, bHome);
     }
     if (!c) throw new Error('no home world taken in forty clear victories');
     if (!c.occupation?.homeWorld || c.occupation.prevRulerStarId !== b.id) throw new Error('not recorded as an occupied home world');
