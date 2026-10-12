@@ -1,6 +1,14 @@
 @echo off
+rem Git rewrites this very file when it switches versions, and cmd reads a
+rem running .bat from disk line by line - so run from a copy in %TEMP%.
+if /i not "%~2"=="--from-temp" (
+  copy /y "%~f0" "%TEMP%\eternal-pull-claude.bat" >nul
+  set "ETERNAL_REPO=%~dp0"
+  call "%TEMP%\eternal-pull-claude.bat" "%~1" --from-temp
+  exit /b
+)
 setlocal EnableExtensions
-cd /d "%~dp0"
+cd /d "%ETERNAL_REPO%"
 
 rem ---------------------------------------------------------------------
 rem  Switch to and update a version of the game.
