@@ -2088,9 +2088,12 @@ export class PixiBigBangRenderer {
           );
         }
 
-        // A forming home world shows its molten stage, like the planet view.
-        const formingHome = star.isPlayerStar && !!star.formationDestiny && !!star.formationStage;
-        const kind = formingHome ? 'lava' as PlanetKind : (planet.type as PlanetKind) || 'rocky';
+        // A forming home world shows its current stage, like the planet view:
+        // the engine already sets `planet.type` to that stage's face (lava →
+        // rocky → ice → the destiny's sea). Forcing 'lava' kept magma here
+        // through the late stages, and on EVERY planet of the player's system
+        // (the check never looked at which planet was home) (#12).
+        const kind = (planet.type as PlanetKind) || 'rocky';
         const withRings = kind === 'gas' && !planet.isDead;
         const seed = (star.id * 17 + i * 31) | 0;
         const landedIdx = star.planets.findIndex(p => p.discovery === 'landing');

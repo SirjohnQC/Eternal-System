@@ -251,7 +251,8 @@ const starCache = new Map<string, HTMLCanvasElement>();
 const planetCache = new Map<string, HTMLCanvasElement>();
 const moonCache = new Map<string, HTMLCanvasElement>();
 const starGlowCache = new Map<string, HTMLCanvasElement>();
-const orreryCache = new Map<string, HTMLCanvasElement>();
+/** wrapEquirectToGlobe results, per source texture (dropped with the texture). */
+let globeCache = new WeakMap<HTMLCanvasElement, Map<string, HTMLCanvasElement>>();
 
 const STAR_GLOW_RGBA: Record<StarTempBand, string> = {
   blue:   '140,185,255',
@@ -674,7 +675,7 @@ export function clearCosmicSpriteCaches(): void {
   planetCache.clear();
   moonCache.clear();
   starGlowCache.clear();
-  orreryCache.clear();
+  globeCache = new WeakMap();
   coronaCache.clear();
 }
 
@@ -687,8 +688,13 @@ export function wrapEquirectToGlobe(
   size: number,
   opts: { rings?: boolean; ringTint?: RGB; seed?: number } = {},
 ): HTMLCanvasElement {
-  const key = `orb|${equirect.width}x${equirect.height}|${size}|${opts.rings ? 1 : 0}|${opts.seed ?? 0}`;
-  const hit = orreryCache.get(key);
+  // Cached PER TEXTURE. Keyed only on size/rings/seed, a planet whose texture
+  // changed (a formation stage, life arriving) got its FIRST globe back
+  // forever — the body card and system map kept showing magma on a world that
+  // had become an ocean (#12). Callers that re-bake on change get a new globe.
+  const key = `${size}|${opts.rings ? 1 : 0}|${opts.seed ?? 0}|${opts.ringTint?.join(',') ?? ''}`;
+  let perTexture = globeCache.get(equirect);
+  const hit = perTexture?.get(key);
   if (hit) return hit;
 
   const w = opts.rings ? Math.round(size * 1.85) : size;
@@ -753,7 +759,8 @@ export function wrapEquirectToGlobe(
   }
 
   pack.ctx.putImageData(pack.img, 0, 0);
-  orreryCache.set(key, pack.cv);
+  if (!perTexture) { perTexture = new Map(); globeCache.set(equirect, perTexture); }
+  perTexture.set(key, pack.cv);
   return pack.cv;
 }
 export function bakeStarGlow(band: StarTempBand, size = 160): HTMLCanvasElement {
