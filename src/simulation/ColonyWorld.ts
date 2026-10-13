@@ -12,6 +12,7 @@
  * Pure: the engine supplies the grid; no DOM.
  */
 import { GRID_SIZE, SEA_LEVEL, type PlanetGrid } from './PlanetGrid';
+import { colonyLook, type Colony } from './Colonies';
 
 /** Share of a world's land a colony at full population covers. */
 export const TERRITORY_AT_FULL = 0.35;
@@ -97,4 +98,29 @@ export function stampColony(grid: PlanetGrid, civId: string, population: number)
     }
   }
   return n;
+}
+
+/**
+ * The Codex "Species" card for a colony world: its people, not the star's.
+ * A colony world often orbits a lifeless star (or a star whose natives live
+ * on another planet), so the star's own life says nothing about who is here.
+ * Null while another people's home world is held: there the natives are the
+ * people, and the star's own species card already describes them. Once the
+ * natives are gone the occupiers are the world's people.
+ *
+ * `people` is what the views call the colonists (the player's lineage name,
+ * or the founding civilisation's people); `founder` is who sent them.
+ */
+export function colonyPeopleCard(c: Colony, people: string, founder: string): { name: string; desc: string } | null {
+  if (c.occupation?.homeWorld) return null;
+  const stage = c.stage ?? 'same';
+  const look = colonyLook(c);
+  const what = stage === 'same' ? `The same people as on ${founder}'s home world`
+    : stage === 'species' ? 'A new species, their own now'
+    : stage === 'subspecies' ? 'A subspecies of their ancestors'
+    : 'A local variant of their ancestors';
+  const kind = c.seizedTick != null ? `Conquerors from ${founder}`
+    : c.status === 'outpost' ? `An outpost of ${founder}` : `Settlers from ${founder}`;
+  const gens = `${c.generations} generation${c.generations === 1 ? '' : 's'} here`;
+  return { name: people, desc: `${kind} · ${what}${look ? ` (${look})` : ''} · ${gens}` };
 }

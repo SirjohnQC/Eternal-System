@@ -634,12 +634,16 @@ for (const { seed, stats } of SEEDS) {
     if (!c) throw new Error('no home world taken in forty clear victories');
     if (!c.occupation?.homeWorld || c.occupation.prevRulerStarId !== b.id) throw new Error('not recorded as an occupied home world');
     if (!(b.hasLife && b.biologyPhase === 'intelligent')) throw new Error('the natives did not stay');
+    // While held, the Codex species card stays the natives' (P4).
+    const { colonyPeopleCard } = await import('../src/simulation/ColonyWorld');
+    if (colonyPeopleCard(c, 'X', 'Y')) throw new Error('an occupied home world\'s species card shows the occupiers');
     if (!e.canSettle || e.colonies.colonies.filter((x: any) => x.starId === b.id).length !== 1) throw new Error('duplicate records');
     // The natives are lost: the occupiers remain as a plain colony.
     b.biologyPhase = 'multicellular';
     e.tick += 2_000; e.stepColonyWorlds([], null);
     const after = e.colonyAt(c.starId, c.planetIndex);
     if (!after || after.occupation || after.status !== 'colony') throw new Error(`with the natives gone it stayed ${after?.status}`);
+    if (!/^Conquerors from/.test(colonyPeopleCard(after, 'X', 'Y')?.desc ?? '')) throw new Error('with the natives gone the species card is not the occupiers\'');
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
@@ -736,6 +740,14 @@ for (const { seed, stats } of SEEDS) {
     if (home?.adaptations) throw new Error('the HOME species changed — colony adaptations leaked into it');
     // The Codex lineage lists it under its home species (P4).
     if (!e.colonyOffshoots(col.homeLineageId).includes(col)) throw new Error('colony missing from its species\' offshoots');
+    // Its Codex species card is its own people, not the star's (P4): a colony
+    // world's star is often lifeless ("No life detected").
+    {
+      const { colonyPeopleCard } = await import('../src/simulation/ColonyWorld');
+      const card = colonyPeopleCard(col, col.lineage.name, 'Home');
+      if (!card || card.name !== col.lineage.name) throw new Error(`colony species card names ${card?.name}, not ${col.lineage.name}`);
+      if (!card.desc.includes(`${col.generations} generation`)) throw new Error(`colony species card lacks its generations: ${card.desc}`);
+    }
     // Its surface (P4, ColonyWorld.ts): territory sized by population, its own
     // people on it, derived the same way every time, re-stamped as it grows.
     const { territorySize } = await import('../src/simulation/ColonyWorld');
