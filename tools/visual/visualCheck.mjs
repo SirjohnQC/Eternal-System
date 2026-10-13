@@ -38,6 +38,8 @@ const SCENES = [
   { name: 'ice-world',            path: '/diorama-preview.html?type=ice&seed=7' },
   { name: 'gas-giant',            path: '/diorama-preview.html?type=gas&seed=7' },
   { name: 'ocean-primitive-life', path: '/diorama-preview.html?type=ocean&seed=7&phase=primitive&civLevel=0' },
+  // A colony world (expansion P4): its own terrain, the settlers' territory, a diverged people, no home nations.
+  { name: 'rocky-colony-world',   path: '/diorama-preview.html?type=rocky&seed=7&colony=0.6&adapt=1&civLevel=5' },
 ];
 
 const VIEWPORT = { width: 960, height: 640 };
