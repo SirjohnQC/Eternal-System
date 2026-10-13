@@ -1272,9 +1272,20 @@ function homeDioramaLiveData(): void {
 function refreshColonyDiorama(): void {
   const site = _dioramaSite;
   if (!site || !engine || !_dioramaRenderer) return;
-  const v = engine.colonyWorldView(site.starId, site.planetIndex);
+  const v = engine.otherWorldView(site.starId, site.planetIndex);
   if (!v || v.sig === site.sig) return;
+  // Settled since it was opened (or its colony died out): a new surface, redrawn whole.
+  const settledChanged = (v.colony === null) !== site.sig.startsWith('landed|');
   site.sig = v.sig;
+  if (settledChanged) {
+    const star = engine.stars.find(s => s.id === site.starId);
+    const planet = star?.planets[site.planetIndex];
+    if (star && planet) {
+      _dioramaRenderer.refreshData(v.grid, { ...DEFAULT_BIOSPHERE }, v.species, planet, star, site.planetIndex,
+        { civLevel: v.civLevel, phase: v.colony ? 'intelligent' : 'none' });
+      return;
+    }
+  }
   _dioramaRenderer.setLiveData(v.species, { ...DEFAULT_BIOSPHERE });
   _dioramaRenderer.markSurfaceDirty();
 }
@@ -1297,8 +1308,9 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   // under another planet's type and a double-click opened the homeworld's
   // surface map (#16).
   const isHomeView = target.isPlayerStar && planetIndex === homeIndex;
-  // A colony world is drawn as a diorama too, from its own derived surface (P4).
-  const colonyView = !isHomeView && engine ? engine.colonyWorldView(target.id, planetIndex) : null;
+  // A colony world is drawn as a diorama too, from its own derived surface (P4);
+  // so is a world your people have landed on in your own system, unsettled.
+  const colonyView = !isHomeView && engine ? engine.otherWorldView(target.id, planetIndex) : null;
   _dioramaSite = colonyView ? { starId: target.id, planetIndex, sig: colonyView.sig } : null;
 
   const overlay = document.getElementById('planet-overlay')!;
@@ -1341,7 +1353,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
 
     if (colonyView && planet) {
       _dioramaRenderer.refreshData(colonyView.grid, { ...DEFAULT_BIOSPHERE }, colonyView.species, planet, target, planetIndex,
-        { civLevel: colonyView.civLevel, phase: 'intelligent' });
+        { civLevel: colonyView.civLevel, phase: colonyView.colony ? 'intelligent' : 'none' });
     } else if (runtimeState.playerPlanetGrid && planet) {
       _dioramaRenderer.refreshData(
         runtimeState.playerPlanetGrid,
@@ -2381,7 +2393,8 @@ function buildStarPlanetList(star: StarBody): void {
       const typeLabel = planet.type.charAt(0).toUpperCase() + planet.type.slice(1);
       const bioStr = planet.biosphere > 0 ? ` · Biosphere ${Math.round(planet.biosphere * 100)}%` : '';
       const lifeStr = planet.hasLife ? 'Life confirmed' : 'Barren';
-      const badgeLabel = isHome ? 'HOME WORLD' : 'COLONIZED';
+      // Landed on is not settled: only a world with a colony is "colonized".
+      const badgeLabel = isHome ? 'HOME WORLD' : engine?.colonyAt(star.id, idx) ? 'COLONIZED' : 'LANDED';
       const badgeClass = isHome ? 'badge-home' : 'badge-landing';
 
       row.className = 'planet-row' + (isHome ? ' planet-row-home' : '');

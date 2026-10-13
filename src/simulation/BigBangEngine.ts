@@ -3867,6 +3867,34 @@ export class BigBangEngine {
     return { grid: entry.grid, species, civLevel, colony: c, sig };
   }
 
+  /**
+   * The surface of a world other than the home world, for the diorama: a
+   * colony world (colonyWorldView), or a world the player's people have
+   * landed on in their own system but not settled (Space Age landings) —
+   * its own terrain, no one living there. Null for the home world, for
+   * other civilisations' own worlds, and for worlds not landed on: those
+   * keep the planet renderer.
+   */
+  otherWorldView(starId: number, planetIndex: number): {
+    grid: PlanetGrid; species: SpeciesGenome[]; civLevel: number; colony: Colony | null; sig: string;
+  } | null {
+    const colony = this.colonyWorldView(starId, planetIndex);
+    if (colony) return colony;
+    const star = this.stars.find(s => s.id === starId);
+    const planet = star?.planets[planetIndex];
+    if (!star || !planet || planet.isDead || !star.isPlayerStar || star.formationStage) return null;
+    if (planetIndex === this.homeIndexOf(star) || planet.discovery !== 'landing') return null;
+    if (colonyAt(this.colonies, starId, planetIndex)) return null;   // a colony with no surface view (occupied home world)
+    const key = `landed:${siteKey(starId, planetIndex)}`;
+    let entry = this.colonyGrids.get(key);
+    if (!entry) {
+      entry = { grid: generatePlanetGrid(planet.type, worldGridSeed(starId, planetIndex), planet.dna ?? null), sig: `landed|${starId}|${planetIndex}` };
+      this.colonyGrids.set(key, entry);
+      while (this.colonyGrids.size > 4) this.colonyGrids.delete(this.colonyGrids.keys().next().value!);
+    }
+    return { grid: entry.grid, species: [], civLevel: 0, colony: null, sig: entry.sig };
+  }
+
   /** The player's peoples on other worlds descended from a home species (Codex lineage, P4). */
   colonyOffshoots(homeLineageId: string): Colony[] {
     return offshootsOf(this.colonies, homeLineageId);

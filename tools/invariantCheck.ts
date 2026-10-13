@@ -398,6 +398,19 @@ for (const { seed, stats } of SEEDS) {
       : h.homeWorld(ps) !== homePlanet || h.homePlanetOf(ps) !== homePlanet ? 'homeWorld/homePlanetOf disagree with homeIndexOf'
       : h.ensurePlayerGrid() !== grid ? 'home grid was rebuilt after the landings'
       : null;
+    // Landed-on worlds in the home system open as dioramas of their own
+    // terrain, not the planet renderer (P4 regression); home keeps its grid.
+    if (!detail) {
+      ps.formationStage = null;                  // a Space Age world is long formed
+      if (h.otherWorldView(ps.id, home)) detail = 'the home world got an other-world view';
+      for (let i = 0; i < ps.planets.length && !detail; i++) {
+        if (i === home || ps.planets[i].isDead || ps.planets[i].discovery !== 'landing') continue;
+        const v = h.otherWorldView(ps.id, i);
+        if (!v) detail = `landed orbit ${i + 1} (${ps.planets[i].type}) has no diorama view`;
+        else if (v.grid === grid) detail = `landed orbit ${i + 1} shares the home grid`;
+        else if (v.colony || v.species.length) detail = `landed orbit ${i + 1} shows people with no colony`;
+      }
+    }
     break;
   }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
