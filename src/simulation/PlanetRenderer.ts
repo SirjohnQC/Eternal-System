@@ -1,7 +1,8 @@
 import { makeGasBands, gasStormColor } from '../rendering/GasLook';
 import { SeedRNG } from '../utils/SeedRNG';
+import { formationStageLabel, bioPhaseLabel, eraTitle } from './Progression';
 import { StarBody, PlanetFormationStage } from './BigBangEngine';
-import { TECH_LEVELS, gameState, runtimeState, DEFAULT_PLANET_DNA, PlanetDNA } from './GameState';
+import { gameState, runtimeState, DEFAULT_PLANET_DNA, PlanetDNA } from './GameState';
 import { drawBiosphereTerrainLayer, drawBiosphereHUDLayer } from './BiosphereRenderer';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { type PlanetGrid, BIOME_COLORS, sampleGrid, classifyBiome } from './PlanetGrid';
@@ -937,24 +938,15 @@ export class PlanetRenderer {
     ctx.font = '11px Cinzel, serif';
     let techStr: string;
     if (star.formationStage) {
-      const stageLabels: Record<string, string> = {
-        magma: 'Molten Surface', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
-        atmosphere: 'Atmosphere Forming', ice_age: 'Ice Age', primordial: 'Primordial Ocean',
-      };
-      techStr = `  ⟳ ${stageLabels[star.formationStage] ?? star.formationStage}`;
+      techStr = `  ⟳ ${formationStageLabel(star.formationStage)}`;
       ctx.fillStyle = '#cc6633';
     } else if (star.biologyPhase !== 'intelligent') {
       // Pre-intelligent: show biology phase with distinct color
-      const bioLabels: Record<string, string> = {
-        microbial:     '🦠 Microbial Life',
-        multicellular: '🌿 Multicellular Life',
-        complex:       '🐚 Complex Organisms',
-        primitive:     '🔥 Primitive Species',
-      };
-      techStr = `  ${bioLabels[star.biologyPhase] ?? star.biologyPhase}`;
+      const bioIcons: Record<string, string> = { microbial: '🦠', multicellular: '🌿', complex: '🐚', primitive: '🔥' };
+      techStr = `  ${bioIcons[star.biologyPhase] ?? ''} ${bioPhaseLabel(star.biologyPhase)}`;
       ctx.fillStyle = '#44cc88';
     } else {
-      techStr = star.hasLife ? `  ${this.eraLabel?.(star) ?? TECH_LEVELS[civLevel]}` : '  No intelligent life detected';
+      techStr = star.hasLife ? `  ${this.eraLabel?.(star) ?? eraTitle(civLevel)}` : '  No intelligent life detected';
       ctx.fillStyle = '#7b5ea7';
     }
     ctx.fillText(techStr, W / 2 - 100, 30);

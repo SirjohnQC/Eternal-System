@@ -112,6 +112,37 @@ rule({
 });
 
 rule({
+  // One source of truth (#9, #21): the player's era IS what its nations know.
+  // Wars, absorption, catastrophes and Creative leaps move the era from
+  // outside; the engine reconciles the nations the same tick.
+  name: "the player's era equals its nations' era",
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const ns = runtimeState.playerNations;
+    if (!ps || !ns?.isFounded || !ps.hasLife || ps.biologyPhase !== 'intelligent') return null;
+    const want = Math.min(ns.maxEra, TECH_LEVELS.length - 1);
+    if (ps.civLevel !== want) return `civLevel=${ps.civLevel}, nations' era=${ns.maxEra}`;
+    const p = (engine as any).progressionOf(ps);
+    if (p.era !== ps.civLevel || p.eraName !== (engine as any).eraNameOf(ps)) return `progression ${p.era} "${p.eraName}" vs era ${ps.civLevel} "${(engine as any).eraNameOf(ps)}"`;
+    return null;
+  },
+});
+
+rule({
+  // Every view reads one progression (#9): its stage matches the star, and
+  // its labels are the ones for that stage and era.
+  name: 'progression agrees with the star it describes',
+  check: ({ engine, stars }) => firstBad(stars.filter(s => !s.isDead), s => {
+    const p = (engine as any).progressionOf(s);
+    const stage = s.formationStage ? 'forming' : !s.hasLife ? 'lifeless' : s.biologyPhase !== 'intelligent' ? 'life' : 'civilization';
+    if (p.stage !== stage) return true;
+    if (stage === 'civilization' && (p.era !== s.civLevel || !p.eraName.endsWith(TECH_LEVELS[s.civLevel]) || !p.fullLabel.includes(p.eraName))) return true;
+    if (s.formationStage === 'magma' && p.worldDnaKnown) return true;     // #18
+    return false;
+  }, s => { const p = (engine as any).progressionOf(s); return `stage ${p.stage}, era ${p.era} "${p.eraName}", civLevel ${s.civLevel}, ${s.formationStage ?? s.biologyPhase}`; }),
+});
+
+rule({
   // Also run this one long (--ticks=250000): regressions that leave a stale
   // culture record are rare and late (#20).
   name: 'culture exists only for intelligent living civilisations',
@@ -713,6 +744,48 @@ for (const { seed, stats } of SEEDS) {
     e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
     const c2 = e2.colonyAt(col.starId, col.planetIndex);
     if (!c2 || JSON.stringify(c2.adaptations) !== JSON.stringify(col.adaptations) || c2.generations !== 30) throw new Error('divergence did not survive save/load');
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: the player's era and its nations stay one record (#9, #21) ────
+{
+  const r: Rule = { name: "scenario: a war won, a merged world, a catastrophe and Creative leaps keep era and nations one record", check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_progression');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_progression');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    if (!e.leapToEra(2)) throw new Error('could not leap to the Medieval age');
+    const ns = () => runtimeState.playerNations!;
+    const agree = (when: string) => {
+      const p = e.progressionOf(ps);
+      if (ps.civLevel !== Math.min(ns().maxEra, TECH_LEVELS.length - 1)) throw new Error(`${when}: civLevel ${ps.civLevel} vs nations ${ns().maxEra}`);
+      if (p.era !== ps.civLevel || p.eraName !== e.eraNameOf(ps)) throw new Error(`${when}: progression "${p.eraName}" vs "${e.eraNameOf(ps)}"`);
+    };
+    agree('after the leap');
+    // The spoils of a war: the era jumps from outside; the nations learn up to it.
+    const before = ns().maxEra;
+    e.shiftEra(ps, ps.civLevel + 2, 'the spoils of a war won');
+    agree('after a war won');
+    if (!(ns().maxEra >= before + 2)) throw new Error(`nations did not learn up to the new era (${before} → ${ns().maxEra})`);
+    if (!ns().nations.some((n: any) => n.history.some((h: any) => h.because?.includes('the spoils of a war won')))) throw new Error('the nations do not remember why they learned');
+    // A raw write from outside (an old code path) is reconciled by the next tick.
+    ps.civLevel += 1;
+    e.update();
+    agree('one tick after a raw era write');
+    // A catastrophe: the era drops, the nations forget past it.
+    e.shiftEra(ps, ps.civLevel - 3, 'an asteroid struck the world');
+    agree('after a catastrophe');
+    // Creative leaps both ways.
+    e.leapToEra(6); agree('after a leap up');
+    e.leapToEra(1); agree('after a leap down');
+    for (let i = 0; i < 300; i++) e.update();
+    agree('300 ticks later');
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }

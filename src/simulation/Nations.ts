@@ -892,6 +892,33 @@ export class NationSystem {
     this.version++;
   }
 
+  /**
+   * Something outside the nations lifted the world to `era` (the spoils of a
+   * won war, a merged world's knowledge): the leading nation learns what that
+   * age implies, the oldest open knowledge first, until it stands there. The
+   * mirror of setback(), so the world's era and its nations never part (#9).
+   * Returns how many techs it learned.
+   */
+  catchUp(era: number, tick: number, cause: string): number {
+    const live = this.nations.filter(n => !n.fallen);
+    if (!live.length) return 0;
+    const lead = live.reduce((a, b) => (b.era > a.era || (b.era === a.era && b.techs.length > a.techs.length) ? b : a));
+    const learned: string[] = [];
+    for (let guard = 0; guard < 120 && eraOf(lead.techs) < era; guard++) {
+      const opts = available(lead.techs);
+      if (!opts.length) break;
+      const t = opts.reduce((a, b) => (b.era < a.era || (b.era === a.era && b.id < a.id) ? b : a));
+      lead.techs.push(t.id);
+      learned.push(t.name);
+    }
+    if (!learned.length) return 0;
+    lead.era = eraOf(lead.techs);
+    lead.research = null;
+    this.log(lead, tick, `${lead.name} learned ${learned.slice(-3).join(', ')}${learned.length > 3 ? ' and more' : ''}.`, [cause]);
+    this.version++;
+    return learned.length;
+  }
+
   /** Whether two nations know of each other: a shared frontier, or both have ships (Industrial+). */
   private inContact(r: Relation): boolean {
     const A = this.nations[r.a], B = this.nations[r.b];
