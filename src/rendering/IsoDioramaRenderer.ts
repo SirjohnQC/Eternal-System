@@ -32,7 +32,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { formationHeat } from '../simulation/Formation';
-import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
+import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
@@ -57,7 +57,7 @@ import {
 import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
-import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
+import { buildClimate, CELL_COLS, CELL_ROWS, type ClimateSources } from './weather/WeatherClimate';
 import { sunFacing, moonShade } from './sky/SunLight';
 import { orbitSky, axialTilt, seasonZero, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
@@ -1203,37 +1203,12 @@ export class IsoDioramaRenderer {
   private computeFocus(): void {
     const grid = this.grid;
     if (!grid) { this.focusLat = 0; this.focusLon = 0; return; }
-
-    const STRIDE = 8;
-    const R = 3; // neighbourhood radius, in strided samples
-    let bestScore = -1, bestRow = GRID_SIZE >> 1, bestCol = 0;
-
-    for (let row = STRIDE * R; row < GRID_SIZE - STRIDE * R; row += STRIDE) {
-      // Weight toward mid-latitudes so the disc isn't centred on a polar ice cap.
-      const ny = row / (GRID_SIZE - 1);
-      const latWeight = 1 - Math.abs(ny - 0.5) * 1.4;
-      if (latWeight <= 0) continue;
-
-      for (let col = 0; col < GRID_SIZE; col += STRIDE) {
-        let score = 0;
-        for (let dr = -R; dr <= R; dr++) {
-          for (let dc = -R; dc <= R; dc++) {
-            const r2 = row + dr * STRIDE;
-            const c2 = (col + dc * STRIDE + GRID_SIZE) % GRID_SIZE;
-            const cell = grid[r2]?.[c2];
-            if (!cell) continue;
-            if (!isWater(cell.biome)) score += 1 + cell.fertility;
-          }
-        }
-        score *= latWeight;
-        if (score > bestScore) { bestScore = score; bestRow = row; bestCol = col; }
-      }
-    }
-
+    const { row: bestRow, col: bestCol } = faceOf(grid);
     // Grid row 0 = north pole → lat +90°, row N-1 = south pole → lat -90°.
     this.focusLat = (0.5 - bestRow / (GRID_SIZE - 1)) * Math.PI;
     this.focusLon = (bestCol / GRID_SIZE) * Math.PI * 2;
   }
+
 
   /**
    * Inverse azimuthal-equidistant projection.
@@ -1589,6 +1564,7 @@ export class IsoDioramaRenderer {
     // Towns first: their fields and roads are painted by the bake. The
     // geometry is the one the bake is about to lay out.
     if (this.habitable && this.rawGrid) this.grid = this.ventedGrid(this.rawGrid);
+    this.lastSimVentKey = this.simVentKey();
     this.planTowns(this.geomForBake());
     this.placeVentFx(this.geomForBake());
     const bio = this.biosphere;
@@ -1632,6 +1608,10 @@ export class IsoDioramaRenderer {
    * `includeCamera: false` when a settle re-bakes the camera set this frame.
    */
   private rebakeHabitableSurface(includeCamera = true): void {
+    // A volcano rose or died in the simulation: its cone is terrain, laid out
+    // by a full bake, not a repaint.
+    const vk = this.simVentKey();
+    if (vk !== this.lastSimVentKey) { this.lastSimVentKey = vk; this.bakeAll(true); return; }
     this.planTowns();
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
@@ -3388,10 +3368,15 @@ export class IsoDioramaRenderer {
     const prof = this.habitable
       ? volcanoProfile(this.planetType, this.planetSeed, this.forming ? this.star?.formationStage ?? null : null)
       : null;
-    const key = prof ? `${this.planetSeed}|${this.planetType}|${prof.count}|${prof.scale}|${prof.state}|${this.focusLat.toFixed(3)}|${this.focusLon.toFixed(3)}` : '';
+    // The simulation's own volcanoes (a volcano sign raised one, #111) are
+    // drawn as volcanoes too, so they are part of the key (rule 1).
+    const sim = this.habitable ? this.simVents(raw) : [];
+    const key = `${prof ? `${this.planetSeed}|${this.planetType}|${prof.count}|${prof.scale}|${prof.state}|${this.focusLat.toFixed(3)}|${this.focusLon.toFixed(3)}` : ''}|${sim.map(v => `${v.row},${v.col}`).join(';')}`;
     if (key !== this.ventKey) {
       this.ventKey = key;
-      this.vents = prof ? this.planVents(raw, prof) : [];
+      const planned = prof ? this.planVents(raw, prof) : [];
+      // A volcano from the simulation replaces a decorative one too close to it.
+      this.vents = [...sim, ...planned.filter(p => !sim.some(v => Math.hypot(v.dx - p.dx, v.dy - p.dy) < (p.R + v.R) / GRID_SIZE * 1.5))];
     }
     if (this.vents.length === 0) return raw;
     const out = raw.slice();
@@ -3422,6 +3407,47 @@ export class IsoDioramaRenderer {
       }
     }
     return out;
+  }
+
+  /**
+   * Volcanoes the simulation made (#111): an open volcanic vent on a local
+   * peak at least 0.70 high, on the visible face. A lava world is mostly
+   * volcanic ground and has its own planned vents, so it is left to those.
+   */
+  private simVents(grid: PlanetGrid): Vent[] {
+    if (this.planetType === 'lava' || this.forming) return [];
+    const out: Vent[] = [];
+    for (let row = 1; row < GRID_SIZE - 1 && out.length < 4; row++) {
+      for (let col = 0; col < GRID_SIZE && out.length < 4; col++) {
+        const cell = grid[row][col];
+        if (cell.biome !== 'volcanic' || cell.elevation < 0.7) continue;
+        let peak = true;
+        for (let dr = -1; dr <= 1 && peak; dr++) for (let dc = -1; dc <= 1; dc++) {
+          if ((dr || dc) && grid[row + dr][(col + dc + GRID_SIZE) % GRID_SIZE].elevation > cell.elevation) { peak = false; break; }
+        }
+        if (!peak) continue;
+        const d = this.gridToDisc(row, col);
+        if (!d || Math.hypot(d.dx, d.dy) > 0.7) continue;
+        if (out.some(v => Math.abs(v.row - row) < 6 && Math.abs(v.col - col) < 6)) continue;
+        out.push({ row, col, dx: d.dx, dy: d.dy, R: 8, base: Math.max(SEA_LEVEL, cell.elevation - 0.25), peak: Math.max(0.9, cell.elevation + 0.08), state: 'active', crater: null, flows: [] });
+      }
+    }
+    return out;
+  }
+
+  /** The simulation's volcanoes as a key: when it changes, the cones must be re-planned (a full bake). */
+  private simVentKey(): string {
+    return this.rawGrid && this.habitable ? this.simVents(this.rawGrid).map(v => `${v.row},${v.col}`).join(';') : '';
+  }
+  private lastSimVentKey = '';
+
+  /**
+   * A downpour where a rain sign fell (#111): heavy cloud and rain over that
+   * ground for a while. Only on worlds with weather.
+   */
+  forceDownpour(cell: { row: number; col: number }, seconds = 60): boolean {
+    if (!this.habitable) return false;
+    return this.cutaway.forceDownpour(Math.floor(cell.col / CELL_COLS), Math.floor(cell.row / CELL_ROWS), seconds);
   }
 
   private planVents(grid: PlanetGrid, prof: VolcanoProfile): Vent[] {

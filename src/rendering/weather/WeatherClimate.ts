@@ -136,7 +136,7 @@ export function personalityFor(seed: number): WeatherPersonality {
  * hash. Same elevation rule as planVolcanoChimneys; a lava world is ~65%
  * volcanic biome, so "every volcanic cell emits" would blanket the planet.
  */
-function isVent(grid: PlanetGrid, r: number, c: number, seed: number): boolean {
+function isVent(grid: PlanetGrid, r: number, c: number, seed: number, thin = true): boolean {
   const cell = grid[r][c];
   if (cell.biome !== 'volcanic' && cell.biome !== 'mountain') return false;
   if (cell.elevation < 0.70) return false;
@@ -149,7 +149,7 @@ function isVent(grid: PlanetGrid, r: number, c: number, seed: number): boolean {
       if (n.elevation > cell.elevation) return false;
     }
   }
-  return hashCell(r, c, seed) < 0.35;
+  return !thin || hashCell(r, c, seed) < 0.35;
 }
 
 export function buildClimate(input: ClimateInput, opts: ClimateOptions = {}): ClimateSources {
@@ -172,7 +172,9 @@ export function buildClimate(input: ClimateInput, opts: ClimateOptions = {}): Cl
           t += cell.temperature;
           e += Math.max(SEA_LEVEL, cell.elevation);
           if (cell.civId) civ++;
-          if (lava && isVent(grid, r, q, input.seed)) vents++;
+          // A lava world's vents (thinned), and elsewhere every open volcano
+          // the simulation made (a volcano sign, #111): its ash rises.
+          if (lava ? isVent(grid, r, q, input.seed) : cell.biome === 'volcanic' && isVent(grid, r, q, input.seed, false)) vents++;
         }
       }
       const k = j * WX_NX + i;
