@@ -189,6 +189,53 @@ html,body{
   font-family:var(--font-pixel);
   font-size:9px;color:var(--dim);letter-spacing:2px;
 }
+/* ── The god in the glass (src/ui/MenuScene.ts) ── */
+#menu-scene{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
+#screen-menu.scene-on::before{display:none}
+#screen-menu.scene-on .menu-nebula{opacity:0.5}
+.menu-console{
+  position:absolute;left:22px;bottom:18px;z-index:2;max-width:min(560px,70vw);
+  font-family:var(--font-pixel);font-size:var(--fs-micro);letter-spacing:1px;
+  color:rgba(68,255,204,0.55);display:flex;flex-direction:column;gap:3px;pointer-events:none;
+  text-align:left;
+}
+.menu-console .mc-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.menu-console .mc-line:not(:last-child){opacity:0.45}
+#screen-menu .menu-version{right:22px;left:auto;transform:none}
+/* Before the first touch: everything waits behind dark glass. */
+#menu-awaken{
+  position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;
+  align-items:center;justify-content:flex-end;gap:8px;padding-bottom:16vh;
+  background:radial-gradient(ellipse at 50% 45%,rgba(7,4,15,0.35),rgba(7,4,15,0.82) 70%);
+  border:0;cursor:pointer;color:var(--gold);transition:opacity 0.9s ease;
+}
+#menu-awaken.gone{opacity:0;pointer-events:none}
+#menu-awaken .ma-title{
+  font-family:var(--font-brand);font-size:14px;letter-spacing:6px;
+  animation:maPulse 2.4s ease-in-out infinite;
+}
+#menu-awaken .ma-sub{font-family:var(--font-pixel);font-size:var(--fs-label);color:var(--dim);letter-spacing:2px}
+@keyframes maPulse{0%,100%{opacity:0.45;text-shadow:0 0 0 transparent}50%{opacity:1;text-shadow:0 0 18px rgba(200,169,110,0.6)}}
+#screen-menu:not(.awake) .menu-content{opacity:0.35;filter:blur(1px);transition:opacity 1.2s,filter 1.2s}
+#screen-menu.awake .menu-content{opacity:1;filter:none;transition:opacity 1.2s,filter 1.2s}
+/* The glitch: the title splits into channels and slips. */
+#screen-menu.glitching .menu-logo{
+  animation:none;
+  text-shadow:-3px 0 rgba(255,60,90,0.75),3px 0 rgba(68,255,204,0.75),0 0 40px rgba(200,169,110,0.4);
+  transform:translateX(2px) skewX(-4deg);
+  clip-path:polygon(0 0,100% 0,100% 38%,96% 38%,96% 52%,100% 52%,100% 100%,0 100%,0 64%,4% 64%,4% 46%,0 46%);
+}
+#screen-menu.glitching .menu-tagline{transform:translateX(-6px);color:var(--teal)}
+#screen-menu.glitching .menu-btn{transform:translateX(1px)}
+@media (prefers-reduced-motion:reduce){#menu-awaken .ma-title{animation:none}}
+
+/* ── Wireframe d20 behind each rolled number (src/ui/D20.ts) ── */
+.stat-die-wrap{position:relative;width:84px;height:84px;margin:0 auto 6px;display:flex;align-items:center;justify-content:center}
+.stat-die{position:absolute;inset:0;width:100%;height:100%}
+.stat-die-wrap .stat-number{position:relative;z-index:1;margin:0;font-size:30px;text-shadow:0 0 6px #07040f,0 0 2px #07040f}
+.god-die-wrap{width:120px;height:120px;margin:0 auto 4px}
+.god-die-wrap .god-roll-num{position:relative;z-index:1;margin:0;font-size:38px;text-shadow:0 0 8px #07040f}
+.god-roll-card{position:relative}
 #no-save-msg{
   display:none;
   font-family:var(--font-pixel);
@@ -2687,6 +2734,7 @@ input[type="range"], select, label[for],
      SCREEN 0: START MENU
 ══════════════════════════════════════════════════════════ -->
 <div class="screen active" id="screen-menu">
+  <canvas id="menu-scene" aria-hidden="true"></canvas>
   <div class="menu-nebula"></div>
   <div class="menu-content">
     <div class="menu-logo">ETERNAL<br>SYSTEMS</div>
@@ -2700,6 +2748,11 @@ input[type="range"], select, label[for],
     <div class="hint">SCROLL · PAN · CLICK STARS · [F] FOCUS · [ESC] PLANET VIEW</div>
   </div>
   <div class="menu-version" id="menu-version">ETERNAL SYSTEMS · PROCEDURAL AI SIMULATION</div>
+  <div class="menu-console" id="menu-console" aria-hidden="true"></div>
+  <button type="button" id="menu-awaken" aria-label="Touch the glass to begin">
+    <span class="ma-title">TOUCH THE GLASS</span>
+    <span class="ma-sub">something on the other side is waiting to wake</span>
+  </button>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════
@@ -2743,7 +2796,7 @@ input[type="range"], select, label[for],
           <div id="god-roll-section">
             <div class="god-roll-card">
               <div class="god-roll-header">⟁ DIVINE DOMINION ROLL</div>
-              <div class="god-roll-num" id="god-roll-num">—</div>
+              <div class="stat-die-wrap god-die-wrap"><canvas class="stat-die" id="god-die"></canvas><div class="god-roll-num" id="god-roll-num">—</div></div>
               <div class="god-roll-label" id="god-roll-label"></div>
             </div>
           </div>

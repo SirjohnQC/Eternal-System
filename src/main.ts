@@ -71,6 +71,9 @@ import {
 import { symptomsOf } from './simulation/Nations';
 import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
+import { MenuScene } from './ui/MenuScene';
+import { UiSound, wireUiSounds } from './audio/UiSound';
+import { D20View, setDiceActive } from './ui/D20';
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -109,6 +112,8 @@ function showScreen(name: string): void {
   if (el) el.classList.add('active');
   gameState.screen = name as typeof gameState.screen;
   document.body.classList.toggle('hud-on', name === 'game' || name === 'bigbang');
+  menuScene?.setActive(name === 'menu');
+  setDiceActive(name === 'rolling');
 
   // Music transitions
   void AudioManager.init().then(() => {
@@ -138,6 +143,15 @@ const answeredQuestions: Partial<PlanetDNA> = {};
 let currentStatIndex = 0;
 let rollingInterval: ReturnType<typeof setInterval> | null = null;
 let godDivineRoll = 10;
+/** The title screen's backdrop (the god in the glass). */
+let menuScene: MenuScene | null = null;
+/** The wireframe d20 behind each rolled number, by stat; and the God's own. */
+const statDice = new Map<string, D20View>();
+let godDie: D20View | null = null;
+/** A die's colour for a final roll (the same tiers as the number). */
+function tierColor(v: number): string {
+  return v >= 17 ? '#ffdd00' : v >= 13 ? '#44ccff' : v >= 8 ? '#44aa44' : '#aa4422';
+}
 let godRollTriggered = false;
 
 function hashStr(s: string): number {
@@ -190,12 +204,17 @@ function initRollingScreen(): void {
     card.innerHTML = `
       <div class="stat-name">${STAT_LABELS[key]}</div>
       <div class="stat-desc">${STAT_DESC[key]}</div>
-      <div class="stat-number" id="stat-num-${key}">—</div>
+      <div class="stat-die-wrap"><canvas class="stat-die"></canvas><div class="stat-number" id="stat-num-${key}">—</div></div>
       <div class="stat-bar-wrap"><div class="stat-bar-fill" id="stat-bar-${key}"></div></div>
       <div class="stat-lock-badge" id="stat-lock-${key}">LOCKED</div>
     `;
     container.appendChild(card);
+    statDice.get(key)?.dispose();
+    statDice.set(key, new D20View(card.querySelector('canvas')!, i));
   });
+  godDie?.dispose();
+  const godCanvas = document.getElementById('god-die') as HTMLCanvasElement | null;
+  godDie = godCanvas ? new D20View(godCanvas, 7) : null;
 
   showRollButton();
   highlightCard(STAT_KEYS[0]);
@@ -282,17 +301,21 @@ function triggerGodRoll(): void {
   AudioManager.playSfx('dice_roll');
 
   numEl.className = 'god-roll-num rolling';
+  godDie?.roll();
   let count = 0;
   const maxCount = 28;
   const interval = setInterval(() => {
     numEl.textContent = String(Math.floor(Math.random() * 20) + 1).padStart(2, '0');
     count++;
+    if (count % 2 === 0) UiSound.tick(count / maxCount);
     if (count >= maxCount) {
       clearInterval(interval);
       const rng = new SeedRNG(Date.now() + 99991);
       godDivineRoll = rng.nextInt(1, 20);
       numEl.textContent = String(godDivineRoll).padStart(2, '0');
       numEl.className = `god-roll-num settled ${getStatTier(godDivineRoll)}`;
+      godDie?.settle('#aa88dd');
+      UiSound.lock(godDivineRoll);
       labelEl.textContent = godDivineRoll >= 17 ? 'OMNIPRESENT' :
                             godDivineRoll >= 13 ? 'INTERVENING' :
                             godDivineRoll >=  8 ? 'WATCHFUL' : 'DISTANT';
@@ -352,6 +375,7 @@ function rollCurrentStat(): void {
 
   const numEl = document.getElementById(`stat-num-${key}`)!;
   numEl.className = 'stat-number rolling';
+  statDice.get(key)?.roll();
 
   let count = 0;
   const maxCount = 28;
@@ -360,6 +384,7 @@ function rollCurrentStat(): void {
   rollingInterval = setInterval(() => {
     numEl.textContent = String(Math.floor(Math.random() * 20) + 1).padStart(2, '0');
     count++;
+    if (count % 2 === 0) UiSound.tick(count / maxCount);
     if (count >= maxCount) {
       clearInterval(rollingInterval!);
       const rng = new SeedRNG(Date.now() + currentStatIndex * 7331);
@@ -368,6 +393,8 @@ function rollCurrentStat(): void {
 
       numEl.textContent = String(finalVal).padStart(2, '0');
       numEl.className = `stat-number settled ${getStatTier(finalVal)}`;
+      statDice.get(key)?.settle(tierColor(finalVal));
+      UiSound.lock(finalVal);
 
       const bar = document.getElementById(`stat-bar-${key}`) as HTMLElement;
       bar.style.width = `${(finalVal / 20) * 100}%`;
@@ -399,6 +426,37 @@ function getBarColor(v: number): string {
   if (v >= 13) return 'linear-gradient(90deg,#44ccff,#0088cc)';
   if (v >= 8)  return 'linear-gradient(90deg,#44aa44,#226622)';
   return 'linear-gradient(90deg,#aa4422,#661111)';
+}
+
+// ─── Title screen: the god in the glass ───────────────────────────────────────
+function initMenuScene(): void {
+  const menuEl = document.getElementById('screen-menu');
+  const canvas = document.getElementById('menu-scene') as HTMLCanvasElement | null;
+  if (!menuEl) return;
+  if (canvas && !menuScene) {
+    menuScene = new MenuScene(canvas, menuEl, document.getElementById('menu-console'),
+      menuEl.querySelector<HTMLElement>('.menu-logo'));
+    menuEl.classList.add('scene-on');
+  }
+  wireUiSounds(document);
+  const awaken = document.getElementById('menu-awaken');
+  awaken?.addEventListener('click', e => wakeMenu(e.clientX, e.clientY));
+  const onKey = () => { if (gameState.screen === 'menu') wakeMenu(); };
+  document.addEventListener('keydown', onKey, { once: true });
+}
+
+/** The first touch: the eye opens, the menu comes forward, sound unlocks. */
+function wakeMenu(x?: number, y?: number): void {
+  const menuEl = document.getElementById('screen-menu');
+  if (!menuEl || menuEl.classList.contains('awake')) return;
+  menuEl.classList.add('awake');
+  document.getElementById('menu-awaken')?.classList.add('gone');
+  menuScene?.wake(x, y);
+  void AudioManager.wake().then(ok => {
+    if (!ok) return;
+    UiSound.awaken();
+    void AudioManager.playMusic('ambient_menu');
+  });
 }
 
 // ─── Big Bang ─────────────────────────────────────────────────────────────────
@@ -4491,10 +4549,14 @@ window.addEventListener('DOMContentLoaded', () => {
   // Auto-validate stored Gemini key silently on startup
   if (geminiKey) void testGeminiConnection(geminiKey);
 
+  initMenuScene();
   showScreen('menu');
 
   // Start menu music immediately — AudioContext auto-resumes on first interaction
-  void AudioManager.init().then(() => AudioManager.playMusic('ambient_menu'));
+  void AudioManager.init().then(() => {
+    void AudioManager.playMusic('ambient_menu');
+    if (AudioManager.running) wakeMenu(); // sound already allowed: no need to touch the glass
+  });
 
   document.getElementById('begin-btn')?.addEventListener('click', () => {
     showScreen('rolling');
