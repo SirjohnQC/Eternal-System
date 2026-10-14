@@ -88,11 +88,29 @@ if errorlevel 1 (
   git checkout -- package-lock.json
 )
 
-rem Never switch or reset over uncommitted work.
+rem Your own edits to the game's files never block an update and are never
+rem lost: they are put aside (git stash), the version is switched, and they
+rem are put back on top. Untracked files (New_Idea.txt, your notes) are never
+rem touched by any of this.
+set "STASHED="
 git diff --quiet
-if errorlevel 1 goto dirty
+if errorlevel 1 goto stash
 git diff --cached --quiet
-if errorlevel 1 goto dirty
+if errorlevel 1 goto stash
+goto stashed
+
+:stash
+echo.
+echo  Putting your local changes aside while updating:
+git --no-pager status --short --untracked-files=no
+git stash push -m "Eternal launcher: changes put aside before an update" >nul
+if errorlevel 1 (
+  echo  Could not put them aside. Nothing was changed.
+  exit /b 1
+)
+set "STASHED=1"
+
+:stashed
 
 for /f %%i in ('git rev-parse HEAD') do set "BEFORE=%%i"
 for /f "delims=" %%i in ('git rev-parse --abbrev-ref HEAD') do set "CURRENT=%%i"
@@ -123,6 +141,7 @@ if errorlevel 1 (
   echo Commits only on your side:
   git --no-pager log --oneline "%TARGET%..HEAD"
   echo Resolve manually, e.g.:  git merge %TARGET%
+  call :putback
   exit /b 1
 )
 git merge --ff-only "%TARGET%"
@@ -136,6 +155,9 @@ if "%BEFORE%"=="%AFTER%" (
 ) else (
   echo Now on %LOCAL%: %BEFORE:~0,7% -^> %AFTER:~0,7%
 )
+
+rem Your changes go back before npm runs (npm rewrites package-lock.json).
+call :putback
 
 rem Dependencies changed? Install them.
 git diff --quiet %BEFORE% %AFTER% -- package.json package-lock.json
@@ -153,15 +175,27 @@ echo The menu and Settings show the build: vX.Y.Z and the commit.
 endlocal
 exit /b 0
 
-:dirty
-echo.
-echo  NOT UPDATED: you have uncommitted changes to these tracked files.
-echo  Commit or stash them first, or discard them with: git checkout -- ^<file^>
-git --no-pager status --short --untracked-files=no
-exit /b 1
-
 :failed
 echo.
-echo Git could not switch or update. A local edit may clash with an incoming
-echo file; see the message above. "git status" shows what is modified.
+echo Git could not switch or update; see the message above.
+call :putback
 exit /b 1
+
+rem Put the changes set aside before the update back on top of the version
+rem now checked out. If they clash with what changed, the game is left as the
+rem new version, clean, and the changes stay safe in the stash.
+:putback
+if not defined STASHED exit /b 0
+git stash apply >nul 2>&1
+if errorlevel 1 (
+  git reset --hard -q
+  echo.
+  echo  Your local changes clash with this version, so they were NOT put back.
+  echo  They are kept safe in the stash. To see them:   git stash show -p
+  echo  To try putting them back yourself:             git stash pop
+  exit /b 0
+)
+git stash drop -q
+echo.
+echo  Your local changes were put back on top of this version.
+exit /b 0
