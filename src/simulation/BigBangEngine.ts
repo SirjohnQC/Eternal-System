@@ -3358,6 +3358,9 @@ export class BigBangEngine {
    * Rare biosphere-scale disasters, independent of the phase ladder.
    * The player's world is never sterilised outright; it only loses ground.
    */
+  /** Biosphere catastrophes that struck any world this session (probes and the smoke test; not saved). */
+  catastrophesApplied = 0;
+
   private rollBiosphereCatastrophe(star: StarBody): void {
     const pressure = (this.stats.entropy + this.stats.hostility) / 2;
     const forged = star.isPlayerStar ? gameState.forgeMods?.catastrophe ?? 1 : 1;
@@ -3369,6 +3372,7 @@ export class BigBangEngine {
     if (!cat) return;
 
     star.habitability = Math.max(0.02, this.habitabilityOf(star) * cat.habDamage);
+    this.catastrophesApplied++;
     const name = star.isPlayerStar
       ? (gameState.playerPlanetName || star.civName)
       : star.civName;
