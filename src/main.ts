@@ -2230,11 +2230,21 @@ function setStyle(id: string, prop: string, val: string): void {
   if (el) el.style.setProperty(prop, val);
 }
 
+/**
+ * Whether a people's culture is shown yet: from their first era (#20). The
+ * record exists from the moment the world turns intelligent, but before the
+ * first age the people are barely there, and a full culture sheet read as
+ * something they had not built yet.
+ */
+function cultureShown(star: StarBody | null | undefined): boolean {
+  return !!star && !!engine && engine.progressionOf(star).era >= 1;
+}
+
 /** Show the civilisation's culture, or hide the section if it has none. */
 function renderCultureSection(star: StarBody | null): void {
   const sec = document.getElementById('pi-culture-section');
   if (!sec) return;
-  const civ = star ? engine?.cultureFor(star) ?? null : null;
+  const civ = star && cultureShown(star) ? engine?.cultureFor(star) ?? null : null;
   if (!civ) { sec.style.display = 'none'; return; }
   sec.style.display = '';
 
@@ -5856,6 +5866,7 @@ function codexRecords(): CodexRecord[] {
   }
 
   for (const civ of Object.values(gameState.civilizations)) {
+    if (!cultureShown(engine?.stars.find(s => s.id === civ.starId))) continue;  // from the first era (#20)
     out.push({
       id: `civ_${civ.starId}`,
       tick: civ.generatedAtTick,
