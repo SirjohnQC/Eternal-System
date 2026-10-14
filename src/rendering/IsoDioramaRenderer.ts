@@ -4362,8 +4362,10 @@ export class IsoDioramaRenderer {
    * an impact flash lighting the surface, a shockwave over the terrain, ejecta
    * arcs, a dust plume, and a scorched crater that stays ~60 s, fading.
    *
-   * @param cell where it lands; null picks a land cell in view (seeded by the
-   *   world and the strike count, so it is not always the same spot)
+   * @param cell where it lands; null picks a cell in view, land or sea in
+   *   proportion to what the face shows (seeded by the world and the strike
+   *   count, so it is not always the same spot). A sea strike throws up a
+   *   splash and a tsunami instead of a crater (#26).
    * @param size 0.4 (comet fragment) .. 1.2 (extinction-class); default 0.8
    */
   playMeteorStrike(cell?: { row: number; col: number } | null, size = 0.8): void {
@@ -4381,32 +4383,34 @@ export class IsoDioramaRenderer {
       }
     }
     const seed = (this.planetSeed ^ Math.imul(n + 1, 2654435761)) >>> 0;
-    this.meteor.start(x, y, pg.rx * (0.2 + 0.12 * size), size, seed, this.VW, this.VH);
+    // Sea as the face draws it (rim falloff included), as for creatures.
+    let water = false;
+    if (at && this.habitable) {
+      const d = this.gridToDisc(at.row, at.col), gc = this.grid?.[at.row]?.[at.col];
+      if (d && gc) water = gc.elevation - this.rimFalloff(Math.hypot(d.dx, d.dy)) < SEA_LEVEL;
+    }
+    this.meteor.start(x, y, pg.rx * (0.2 + 0.12 * size), size, seed, this.VW, this.VH, water);
   }
 
   /**
-   * A land cell well inside the visible face (disc radius < 0.7), chosen with
-   * a seeded pick among ~200 sampled candidates. Null when no land is in view
-   * (an ocean world): the strike then lands in the sea at the centre.
+   * A cell well inside the visible face (disc radius < 0.7), chosen with a
+   * seeded pick among sampled candidates. Land and sea both count (#26: it
+   * used to skip water, so meteors only ever hit land), so the share of sea
+   * strikes follows the share of sea in view.
    */
   private pickStrikeCell(n: number): { row: number; col: number } | null {
-    const grid = this.grid;
-    if (!grid) return null;
+    if (!this.grid) return null;
     const rnd = new Stream((this.planetSeed ^ Math.imul(n + 7, 0x9e3779b1)) >>> 0);
-    let best: { row: number; col: number } | null = null, bestScore = -1;
-    for (let i = 0; i < 400; i++) {
-      const row = rnd.int(0, GRID_SIZE - 1), col = rnd.int(0, GRID_SIZE - 1);
-      const d = this.gridToDisc(row, col);
-      if (!d) continue;
-      const r = Math.hypot(d.dx, d.dy);
-      if (r > 0.7) continue;
-      const c = grid[row]?.[col];
-      if (!c || isWater(c.biome)) continue;
-      // Prefer the middle of the face, with a random spread.
-      const score = (1 - r) + rnd.next() * 0.8;
-      if (score > bestScore) { bestScore = score; best = { row, col }; }
+    // A point of the inner face, uniform by area (as the player sees it), not
+    // a uniform grid cell: the face is usually centred on land, so favouring
+    // the middle or the grid meant a sea strike was rare or never (#26).
+    for (let i = 0; i < 40; i++) {
+      const dx = rnd.next() * 1.4 - 0.7, dy = rnd.next() * 1.4 - 0.7;
+      if (dx * dx + dy * dy > 0.49) continue;
+      const gp = this.discToGrid(dx, dy);
+      if (gp && this.grid[gp.row]?.[gp.col]) return gp;
     }
-    return best;
+    return null;
   }
 
   /** Fill the reused strike view from the active geometry (no allocation). */
