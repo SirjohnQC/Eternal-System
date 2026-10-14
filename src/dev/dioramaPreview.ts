@@ -20,6 +20,7 @@ import { NationSystem } from '../simulation/Nations';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
+import { stampColony } from '../simulation/ColonyWorld';
 
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
@@ -197,6 +198,26 @@ function rebuild(): void {
     // about as many eras as ?civLevel, so they have learned and polluted.
     for (let t = 1; t <= Math.max(10, 20 * star.civLevel); t++) ns.step(grid, t * 2000, 40000);
     if (ns.isFounded) nations = ns;
+  }
+  // ?colony=0..1 shows a COLONY world (expansion P4) the way main.ts draws one:
+  // the world's own terrain, the settlers' territory stamped on it at that
+  // population, one people (the most intelligent lineage, landed), no home
+  // nations. ?adapt=1 gives them a diverged look (darker, stockier, shaggy).
+  const colonyPop = params.get('colony');
+  if (colonyPop !== null && !formation) {
+    const lead = species.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+    const people: SpeciesGenome[] = lead ? [{
+      ...lead, name: `${lead.name} of ${planet.name}`,
+      dna: { ...lead.dna, environment: 'land' },
+      adaptations: params.get('adapt') === '1' ? { size: 0.3, pigment: 0.45, eyes: 0, insulation: 0.35 } : undefined,
+    }] : [];
+    stampColony(grid, 'colony_preview', Math.max(0, Math.min(1, Number(colonyPop) || 0)));
+    assignDominantSpecies(grid, people);
+    nations = null;
+    renderer.refreshData(grid, { ...DEFAULT_BIOSPHERE }, people, planet, star, 0,
+      { civLevel: star.civLevel, phase: 'intelligent' });
+    (window as any).__gallery?.(people, star.civLevel);
+    return;
   }
   renderer.refreshData(grid, bio, species, planet, star, 0);
   (window as any).__gallery?.(species, star.civLevel);

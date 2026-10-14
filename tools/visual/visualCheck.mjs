@@ -38,6 +38,8 @@ const SCENES = [
   { name: 'ice-world',            path: '/diorama-preview.html?type=ice&seed=7' },
   { name: 'gas-giant',            path: '/diorama-preview.html?type=gas&seed=7' },
   { name: 'ocean-primitive-life', path: '/diorama-preview.html?type=ocean&seed=7&phase=primitive&civLevel=0' },
+  // A colony world (expansion P4): its own terrain, the settlers' territory, a diverged people, no home nations.
+  { name: 'rocky-colony-world',   path: '/diorama-preview.html?type=rocky&seed=7&colony=0.6&adapt=1&civLevel=5' },
   // A late era with nearly all the land settled: creatures still walk outside the towns (playtest Oct 13).
   { name: 'rocky-late-era-settled', path: '/diorama-preview.html?type=rocky&seed=3&phase=intelligent&civLevel=8&settled=0.97' },
 ];

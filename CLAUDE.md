@@ -27,6 +27,7 @@ npx vite --port 5173      # vite.config.ts defaults to port 3000 if --port is om
     (shows the home world mid-formation, no life); pair with `destiny=<type>`
   - other params: `seed`, `year`, `ecc`, `archetype`, `phase`, `civLevel`,
     `pressure`, `oxygen`, `nebula=1`, `fx`, `fxCell`, `storm=<vortex>`, `nations=0` (hide countries),
+    `colony=<0..1>` (a colony world at that population, P4; add `adapt=1` for a diverged people),
     `settled=<0..1>` (that share of the land settled, e.g. 0.97 for a late era)
 
 Chromium is available for screenshots via Playwright (`executablePath: '/opt/pw-browsers/chromium'`).
