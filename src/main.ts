@@ -114,9 +114,38 @@ function showScreen(name: string): void {
   void AudioManager.init().then(() => {
     if (name === 'menu') void AudioManager.playMusic('ambient_menu');
     if (name === 'bigbang') void AudioManager.playMusic('ambient_bigbang', false);
-    if (name === 'game')    void AudioManager.playCosmosPlaylist();
+    if (name === 'game') { warMusicOn = false; void AudioManager.playCosmosPlaylist(); }
   });
 }
+
+// ─── Music follows war ────────────────────────────────────────────────────────
+// ambient_war.mp3 shipped but nothing ever played it. While any of your
+// nations is at war (or your star is, with another star), the war track
+// plays; at peace the cosmos playlist comes back. A change must hold for
+// WAR_MUSIC_HOLD_MS before the music follows, so a skirmish that ends at
+// once does not flip the music back and forth.
+const WAR_MUSIC_HOLD_MS = 20_000;
+let warMusicOn = false;
+let warMusicSince = 0;
+function playerAtWar(): boolean {
+  const ns = runtimeState.playerNations;
+  if (ns?.isFounded && ns.relations.some(r => r.war)) return true;
+  const ps = engine?.getPlayerStar();
+  return !!ps && !!engine?.activeWars.some(w => !w.resolved && (w.attackerStarId === ps.id || w.defenderStarId === ps.id));
+}
+function updateWarMusic(): void {
+  if (gameState.screen !== 'game') { warMusicSince = 0; return; }
+  const want = playerAtWar();
+  if (want === warMusicOn) { warMusicSince = 0; return; }
+  const now = Date.now();
+  if (!warMusicSince) { warMusicSince = now; return; }
+  if (now - warMusicSince < WAR_MUSIC_HOLD_MS) return;
+  warMusicSince = 0;
+  warMusicOn = want;
+  if (want) void AudioManager.playMusic('ambient_war');
+  else void AudioManager.playCosmosPlaylist();
+}
+setInterval(updateWarMusic, 4000);
 
 // ─── D20 Stat Rolling ─────────────────────────────────────────────────────────
 // Player rolls 4 stats. The God auto-rolls 'divine' independently.
