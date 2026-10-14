@@ -6059,6 +6059,15 @@ initFaithHand({
   },
   tick: () => engine?.tick ?? 0,
   effect: (kind, cell) => _dioramaRenderer?.playDivineEffect(kind, cell),
+  // What a card did to the land, shown where it did it (#111). The works fall
+  // on the home world, the only world the diorama shows on this branch.
+  landChanged: (work, cell) => {
+    if (!_dioramaRenderer) return;
+    if (work === 'rains' && cell) _dioramaRenderer.forceDownpour(cell, 75);
+    if (work === 'volcano') _dioramaRenderer.playDivineEffect('smite', cell);
+    if (work === 'spread' || work === 'bounty') _dioramaRenderer.playDivineEffect('fertility', cell);
+    if (work === 'wither') _dioramaRenderer.playDivineEffect('sink', cell);
+  },
   host: faithHost,
   context: () => {
     const ps = engine?.getPlayerStar();

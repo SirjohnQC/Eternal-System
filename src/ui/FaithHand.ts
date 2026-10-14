@@ -21,6 +21,7 @@ import {
 } from '../simulation/FaithCards';
 import { SeedRNG } from '../utils/SeedRNG';
 import type { DivineEffectKind } from '../rendering/IsoDioramaRenderer';
+import type { WorkId } from '../simulation/DivineWorks';
 
 export const SEEK_COST = 6;
 export const HAND_MAX = 6;
@@ -32,6 +33,8 @@ export interface FaithHandDeps {
   tick(): number;
   /** Show a card taking hold on the diorama (at a capital, if any). */
   effect?(kind: DivineEffectKind, cell: { row: number; col: number } | null): void;
+  /** Show what a card did to the land where it did it: a downpour for rain, an eruption for a volcano (#111). */
+  landChanged?(work: WorkId, cell: { row: number; col: number } | null): void;
   /** The engine side of the heavens, and the home surface. */
   host(): DivineHost | null;
   /** What the world allows now (which cards can turn up). */
@@ -197,6 +200,7 @@ function play(c: FaithCard): void {
   gameState.faithHand = hand().filter(x => x !== c);
   deps.chat(res.line, 'god');
   if (res.where || scopeOf(c) !== 'nation') deps.effect?.(EFFECT_OF[c.actions[0]], res.where);
+  for (const w of res.works) if (w.changed > 0) deps.landChanged?.(w.work, w.where);
   hideTip();
   deps.dpChanged();
   refresh(true);
