@@ -38,7 +38,9 @@ export type BiomeType =
   | 'deep_ocean' | 'ocean' | 'shallow' | 'beach'
   | 'plains'     | 'grassland' | 'forest' | 'jungle'
   | 'desert'     | 'savanna'   | 'tundra' | 'snow'
-  | 'mountain'   | 'volcanic';
+  | 'mountain'   | 'volcanic'
+  /** Inland water above the sea, in a basin (#47); its surface is `GridCell.lake`. */
+  | 'lake';
 
 /** RGB color per biome for terrain rendering */
 export const BIOME_COLORS: Record<BiomeType, [number, number, number]> = {
@@ -56,11 +58,22 @@ export const BIOME_COLORS: Record<BiomeType, [number, number, number]> = {
   snow:       [215, 228, 232],
   mountain:   [115, 105, 100],
   volcanic:   [95,  25,  8],
+  lake:       [52,  118, 160],
 };
 
 /** Whether a biome is water (affects life spread, city placement) */
 export function isWater(biome: BiomeType): boolean {
-  return biome === 'deep_ocean' || biome === 'ocean' || biome === 'shallow';
+  return biome === 'deep_ocean' || biome === 'ocean' || biome === 'shallow' || biome === 'lake';
+}
+
+/**
+ * A cell's biome after its ground changed (a divine edit, a rift): its lake
+ * holds while the ground stays at or under the lake's surface (#47);
+ * otherwise the usual classification.
+ */
+export function reclassify(cell: GridCell, planetType: string): BiomeType {
+  if (cell.lake && cell.elevation <= cell.lake + 1e-6) return 'lake';
+  return classifyBiome(cell.elevation, cell.moisture, cell.temperature, planetType);
 }
 
 /** Whether a biome is habitable land */
@@ -94,6 +107,8 @@ export interface GridCell {
    * this cell is not a channel. See `RIVER_STEP`.
    */
   riverDir:     number;
+  /** Surface level of the lake this cell lies under (#47); 0/absent: none. */
+  lake?:        number;
 }
 
 export type PlanetGrid = GridCell[][];
@@ -103,12 +118,12 @@ export type PlanetGrid = GridCell[][];
  * the generated grid, so they only apply to a grid from the same generator:
  * bump this whenever generatePlanetGrid's output changes for the same inputs.
  */
-export const GRID_GENERATOR = 2; // 2: continents no longer mirrored (#104)
+export const GRID_GENERATOR = 3; // 2: continents no longer mirrored (#104); 3: lakes (#47)
 
 /** Every field of a cell, saved where it differs from the generated world (#77). */
 export const SAVED_GRID_FIELDS = [
   'elevation', 'moisture', 'temperature', 'biome', 'fertility', 'lifeDensity',
-  'dominantSpeciesId', 'civId', 'river', 'riverDir',
+  'dominantSpeciesId', 'civId', 'river', 'riverDir', 'lake',
 ] as const;
 
 /**
@@ -485,6 +500,117 @@ function riverJitter(row: number, col: number, dr: number, dc: number): number {
  * carries a channel when the flow is already a river. A lip that drops a
  * whole terrace is a waterfall.
  */
+/** Worlds whose basins hold no standing water: molten, gaseous, metal, parched or frozen. */
+const NO_LAKES = new Set(['lava', 'gas', 'mechanical', 'desert', 'ice']);
+
+/**
+ * Lakes (#47): water standing in basins above the sea. A priority flood from
+ * the sea (and the poles) finds, for every land cell, the level water would
+ * have to rise to before it could flow out; where that is above the ground
+ * the cell is in a basin. Basins of a lake's size (4-400 cells) in wet enough
+ * country fill to their spill level: the ground is flattened to the surface,
+ * the cell is a lake, and the shore around it is a little moister (greener).
+ * At most ~3% of the land, the largest basins first. Rivers then flow into
+ * the lakes as into the sea.
+ */
+function fillLakes(grid: PlanetGrid, planetType: string): void {
+  if (NO_LAKES.has(planetType)) return;
+  const n = GRID_SIZE, N = n * n;
+  const filled = new Float32Array(N);
+  const done = new Uint8Array(N);
+  // Binary min-heap of cell indices keyed on `filled`.
+  const heap: number[] = [];
+  const push = (i: number) => {
+    heap.push(i);
+    let k = heap.length - 1;
+    while (k > 0) { const p = (k - 1) >> 1; if (filled[heap[p]] <= filled[heap[k]]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; }
+  };
+  const pop = (): number => {
+    const top = heap[0], last = heap.pop()!;
+    if (heap.length) {
+      heap[0] = last;
+      let k = 0;
+      for (;;) {
+        const l = 2 * k + 1, r = l + 1;
+        let m = k;
+        if (l < heap.length && filled[heap[l]] < filled[heap[m]]) m = l;
+        if (r < heap.length && filled[heap[r]] < filled[heap[m]]) m = r;
+        if (m === k) break;
+        [heap[m], heap[k]] = [heap[k], heap[m]]; k = m;
+      }
+    }
+    return top;
+  };
+  for (let i = 0; i < N; i++) {
+    const row = (i / n) | 0, c = grid[row][i % n];
+    if (c.elevation < SEA_LEVEL || row === 0 || row === n - 1) { filled[i] = c.elevation; done[i] = 1; push(i); }
+  }
+  while (heap.length) {
+    const i = pop(), row = (i / n) | 0, col = i % n;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const r = row + dr;
+      if (r < 0 || r >= n) continue;
+      const j = r * n + (col + dc + n) % n;
+      if (done[j]) continue;
+      done[j] = 1;
+      filled[j] = Math.max(grid[r][(col + dc + n) % n].elevation, filled[i]);
+      push(j);
+    }
+  }
+  // Basins: connected cells whose ground lies under their spill level.
+  const basin = new Int32Array(N).fill(-1);
+  const basins: Array<{ cells: number[]; level: number; moist: number }> = [];
+  for (let i = 0; i < N; i++) {
+    const c = grid[(i / n) | 0][i % n];
+    if (basin[i] >= 0 || c.elevation < SEA_LEVEL || filled[i] - c.elevation < 0.004) continue;
+    const id = basins.length, cells: number[] = [], q = [i];
+    basin[i] = id;
+    let moist = 0;
+    while (q.length) {
+      const k = q.pop()!, row = (k / n) | 0, col = k % n;
+      cells.push(k); moist += grid[row][col].moisture;
+      if (cells.length > 400) continue;    // too big: an inland sea, not a lake; stop growing
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const r = row + dr;
+        if (r < 0 || r >= n) continue;
+        const j = r * n + (col + dc + n) % n;
+        if (basin[j] >= 0) continue;
+        const cj = grid[r][(col + dc + n) % n];
+        if (cj.elevation < SEA_LEVEL || filled[j] - cj.elevation < 0.004) continue;
+        basin[j] = id; q.push(j);
+      }
+    }
+    basins.push({ cells, level: filled[i], moist: moist / cells.length });
+  }
+  let land = 0;
+  for (let i = 0; i < N; i++) if (grid[(i / n) | 0][i % n].elevation >= SEA_LEVEL) land++;
+  let budget = Math.floor(land * 0.03);
+  const lakes = basins.filter(b => b.cells.length >= 4 && b.cells.length <= 400 && b.moist >= 0.42)
+    .sort((a, b) => b.cells.length - a.cells.length);
+  for (const b of lakes) {
+    if (b.cells.length > budget) continue;
+    budget -= b.cells.length;
+    for (const k of b.cells) {
+      const row = (k / n) | 0, col = k % n, c = grid[row][col];
+      c.elevation = b.level;
+      c.lake = b.level;
+      c.biome = 'lake';
+      c.fertility = 0;
+      // A moister, greener shore around it.
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+        const r = row + dr;
+        if (r < 0 || r >= n) continue;
+        const s2 = grid[r][(col + dc + n) % n];
+        if (s2.biome === 'lake' || s2.elevation < SEA_LEVEL) continue;
+        s2.moisture = Math.min(1, s2.moisture + 0.03);
+        s2.biome = classifyBiome(s2.elevation, s2.moisture, s2.temperature, planetType);
+        s2.fertility = fertilityFor(s2.biome, s2.moisture, s2.temperature);
+      }
+    }
+  }
+}
+
 function traceRivers(grid: PlanetGrid, planetType: string): void {
   if (planetType === 'lava' || planetType === 'gas') return;
   const n = GRID_SIZE;
@@ -496,7 +622,7 @@ function traceRivers(grid: PlanetGrid, planetType: string): void {
   const dirIx = [7, 0, 1, 6, -1, 2, 5, 4, 3];
   for (let row = 0; row < n; row++) {
     for (let col = 0; col < n; col++) {
-      if (grid[row][col].elevation < SEA_LEVEL) continue;
+      if (grid[row][col].elevation < SEA_LEVEL || grid[row][col].biome === 'lake') continue;
       const i = row * n + col;
       land.push(i);
       let bestE = Infinity;
@@ -901,6 +1027,7 @@ export function generatePlanetGrid(
       cell.fertility = fertilityFor(cell.biome, cell.moisture, cell.temperature);
     }
   }
+  fillLakes(grid, planetType);
   traceRivers(grid, planetType);
 
   return grid;
