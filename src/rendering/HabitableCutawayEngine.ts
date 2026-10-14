@@ -3345,9 +3345,9 @@ export class HabitableCutawayEngine {
   /**
    * Host-drawn overlays in `pick` space, through the same view map as the
    * static layers. `groundOverlay` (territory tint) lies on the ground, under
-   * plants and props; `lineOverlay` (border lines) is drawn over the plants
-   * so a forest does not hide a frontier, still under the day/night veil and
-   * the weather. Null: none.
+   * plants and props; `lineOverlay` (border lines) lies on the ground too,
+   * over the water, under plants, buildings and flags (#95), and under the
+   * day/night veil and the weather. Null: none.
    */
   groundOverlay: HTMLCanvasElement | null = null;
   lineOverlay: HTMLCanvasElement | null = null;
@@ -4032,11 +4032,13 @@ export class HabitableCutawayEngine {
       }
       g.drawImage(this.fluidScratch, 0, 0);
     }
+    // Border lines lie on the ground, after the water (a coast keeps its line)
+    // and before plants, buildings and flags, which stand on them (#95).
+    this.drawGroundOverlay(g, layerBob, this.lineOverlay);
     // Plants and stones, live: over land and shore water, under the
     // day/night veil and weather shadows.
     if (this.liveFlora) this.drawFlora(g, elapsed, layerBob);
     input.drawProps?.(g);
-    this.drawGroundOverlay(g, layerBob, this.lineOverlay);
     const veil = this.veilImage, veilG = this.veilG;
     if (veil && veilG) {
       if (doVeil) {
