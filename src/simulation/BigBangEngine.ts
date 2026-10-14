@@ -404,6 +404,13 @@ export interface StarBody {
    * "which planet is home" question goes through `homeIndexOf`.
    */
   homePlanetIndex?: number;
+  /**
+   * The age at which the player's world, before its nations, reaches its next
+   * era. Absent in older saves (set on the next tick). It replaced
+   * `age % rate === 0`, which could never fire: age grows by 2 a tick, so an
+   * odd age never meets an even rate and the world stayed Primitive forever.
+   */
+  nextEraAge?: number;
 }
 
 export interface NebulaCloud {
@@ -574,6 +581,9 @@ const ORBIT_ECC_RATE   = 0.00002;
  * the old N-body cascade into the heaviest neighbour.
  */
 const MERGE_DIST       = 22;
+/** Biosphere a living world grows back toward after a blow, and how fast (per tick). */
+const BIOSPHERE_REGROW_TO = 0.8;
+const BIOSPHERE_REGROW = 0.00005;
 /** Soft capture range — gently pull orbit radii together so a future merge
  *  can happen, instead of two near-misses skating past forever. */
 const CAPTURE_DIST     = 48;
@@ -2544,6 +2554,7 @@ export class BigBangEngine {
       }
 
       star.age++;
+      if (star.hasLife && !star.formationStage) this.tendLifeWorld(star);
 
       // A world still walking its formation ladder holds any life it has
       // dormant: no catastrophes, no spread, no biology ladder until it is
@@ -2636,9 +2647,15 @@ export class BigBangEngine {
       const advanceRate = this.civAdvanceRate(star);
       // Other stars' civilisations climb by what they learn (stepPolities);
       // only the player's world before its nations still follows the clock.
-      if (star.isPlayerStar && !playerNations && star.age % Math.max(1, Math.floor(advanceRate)) === 0 &&
-          star.civLevel < TECH_LEVELS.length - 1) {
-        this.advanceCiv(star);
+      if (star.isPlayerStar && !playerNations && star.civLevel < TECH_LEVELS.length - 1) {
+        // A threshold, not `age % rate === 0`: age grows by 2 a tick, so an
+        // odd age never met an even rate and the clock never struck.
+        const step = Math.max(1, Math.floor(advanceRate));
+        star.nextEraAge ??= Math.ceil(star.age / step) * step;   // a multiple reached exactly still counts
+        if (star.age >= star.nextEraAge) {
+          this.advanceCiv(star);
+          star.nextEraAge = (Math.floor(star.age / step) + 1) * step;
+        }
       }
 
       // Wars — only spacefaring civs (Space Age+): a people whose ships cannot
@@ -6218,6 +6235,20 @@ export class BigBangEngine {
     return { outcome: 'dna' };
   }
 
+  /**
+   * A living system's life world: alive while the system's life is (one
+   * record, rule 7), and its biosphere grows back after a blow. Impacts,
+   * void storms and the supernova shockwave only ever took it away, so over
+   * a long game every world's biosphere ratcheted to zero, and an impact
+   * marked the home world lifeless under a living civilisation.
+   */
+  private tendLifeWorld(star: StarBody): void {
+    const lp = star.planets[this.homeIndexOf(star)];
+    if (!lp || lp.isDead) return;
+    if (!lp.hasLife) lp.hasLife = true;
+    if (lp.biosphere < BIOSPHERE_REGROW_TO) lp.biosphere = Math.min(BIOSPHERE_REGROW_TO, Math.max(lp.biosphere, 0) + BIOSPHERE_REGROW);
+  }
+
   /** @deprecated Use nudgePlayerEvolution() */
   nudgePlayerCivLevel(): void {
     const ps = this.getPlayerStar();
@@ -6553,12 +6584,18 @@ export class BigBangEngine {
       }
 
       case 'asteroid_impact': {
-        const lifePlanet = target.planets.find(p => p.hasLife) ?? target.planets[0];
+        // The impact falls on the living world. It ravages the biosphere and
+        // throws a civilisation back, but it does not end life on a world
+        // whose life goes on (the star's life is the record, rule 7): it used
+        // to mark the planet lifeless while its people lived on, so the home
+        // world read "No life detected" beside 100 billion people.
+        const lifePlanet = target.planets[this.homeIndexOf(target)] ?? target.planets.find(p => p.hasLife) ?? target.planets[0];
         if (lifePlanet) {
           lifePlanet.biosphere = Math.max(0, lifePlanet.biosphere - 0.45);
           if (lifePlanet.biosphere < 0.1) {
-            lifePlanet.hasLife = false;
             if (target.civLevel > 0) target.civLevel = Math.max(0, target.civLevel - 2);
+            if (target.hasLife) lifePlanet.biosphere = 0.1;
+            else lifePlanet.hasLife = false;
           }
         }
         this.onCosmicEvent?.('asteroid_impact', target.civName);

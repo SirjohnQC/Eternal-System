@@ -112,6 +112,17 @@ rule({
 });
 
 rule({
+  // One life record (rule 7): a living, formed system's life world is alive.
+  // An asteroid impact used to mark the home world lifeless under a living
+  // civilisation ("No life detected" beside 100 billion people).
+  name: "a living system's life world is alive",
+  check: ({ engine, stars }) => firstBad(stars.filter(s => !s.isDead && s.hasLife && !s.formationStage), s => {
+    const lp = s.planets[(engine as any).homeIndexOf(s)];
+    return !!lp && !lp.isDead && !lp.hasLife;
+  }, s => `#${s.id} ${s.biologyPhase}, life world #${(engine as any).homeIndexOf(s)} hasLife=false`),
+});
+
+rule({
   // Also run this one long (--ticks=250000): regressions that leave a stale
   // culture record are rare and late (#20).
   name: 'culture exists only for intelligent living civilisations',
@@ -713,6 +724,43 @@ for (const { seed, stats } of SEEDS) {
     e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
     const c2 = e2.colonyAt(col.starId, col.planetIndex);
     if (!c2 || JSON.stringify(c2.adaptations) !== JSON.stringify(col.adaptations) || c2.generations !== 30) throw new Error('divergence did not survive save/load');
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: the home world's life record and era clock (playtest Oct 13) ──
+{
+  const r: Rule = { name: 'scenario: an impact does not unmake a living home world; the first era always comes', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_homelife');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_homelife');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    const home = ps.planets[e.homeIndexOf(ps)];
+    // Repeated impacts: ravaged, thrown back, but alive.
+    for (let k = 0; k < 4; k++) e.applyCosmicStrike({ id: 9000 + k, type: 'asteroid_impact', targetStarId: ps.id, scheduledTick: e.tick, warningTick: e.tick, resolved: false, smited: false }, ps);
+    if (!home.hasLife) throw new Error('four impacts marked the living home world lifeless');
+    // A save broken by the old impact heals: the life world is alive again and its biosphere regrows.
+    home.hasLife = false; home.biosphere = 0;
+    for (let i = 0; i < 200; i++) e.update();
+    if (!home.hasLife || !(home.biosphere > 0)) throw new Error(`a broken home world did not heal (hasLife ${home.hasLife}, biosphere ${home.biosphere})`);
+    // The era clock: an odd age against an even rate must still strike (age grows by 2 a tick).
+    if (runtimeState.playerNations) runtimeState.playerNations = null;
+    Object.assign(ps, { biologyPhase: 'intelligent', civLevel: 0, hasLife: true });
+    e.update();                                   // its culture now exists (it changes the rate)
+    ps.civLevel = 0;
+    const step = Math.max(1, Math.floor(e.civAdvanceRate(ps)));
+    // Land the age just before a multiple with the parity that the old
+    // `age % step === 0` could never meet (age grows by 2 a tick).
+    ps.nextEraAge = undefined;
+    ps.age = step * 3 - 3 + (step % 2 === 0 ? 0 : 1);
+    if (step % 2 === 0 && ps.age % 2 === 0) ps.age -= 1;
+    for (let i = 0; i < 4 && ps.civLevel === 0; i++) e.update();
+    if (ps.civLevel < 1) throw new Error(`the first era never came (age ${ps.age}, step ${step}, next ${ps.nextEraAge})`);
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
