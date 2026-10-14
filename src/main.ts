@@ -1,5 +1,5 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
-import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
+import { initFaithHand, refresh as refreshFaithHand, showWhy } from './ui/FaithHand';
 import { initTechCards, openTechCards } from './ui/TechCards';
 import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
@@ -3718,6 +3718,15 @@ function handleLeaderResponse(cost: number, valence: 1 | -1 | 0, action: string,
   closeLeaderDialogue();
 }
 
+/** Undo showWhy: the card is back to its plain price. */
+function clearWhy(btn: HTMLElement, costText: string): void {
+  if (!btn.classList.contains('has-why')) return;
+  btn.classList.remove('has-why');
+  btn.title = '';
+  const cost = btn.querySelector('.divine-action-cost');
+  if (cost) cost.textContent = costText;
+}
+
 function updateDivineActions(): void {
   const dp = gameState.divinePoints;
 
@@ -3746,6 +3755,7 @@ function updateDivineActions(): void {
       const canAfford = dp >= cost;
       btn.disabled = !canAfford;
       btn.classList.toggle('affordable', canAfford);
+      clearWhy(btn, `✦ ${cost} DP`);
     }
   }
 
@@ -3758,6 +3768,7 @@ function updateDivineActions(): void {
     if (!hasReligion) {
       btn.disabled = true;
       btn.classList.remove('affordable');
+      showWhy(btn, 'NO FAITH YET', 'Your people have no religion yet. It forms as they grow; then prophets and revelations can reach them.');
     }
   }
   updateSmiteButton();
@@ -3771,6 +3782,8 @@ function updateDivineActions(): void {
     meteorBtn.style.display = '';
     meteorBtn.disabled = !hasMeteorTarget || dp < 20;
     meteorBtn.classList.toggle('affordable', hasMeteorTarget && dp >= 20);
+    if (hasMeteorTarget) clearWhy(meteorBtn, '✦ 20 DP');
+    else showWhy(meteorBtn, 'NO TARGET', 'No lifeless world within reach. Explore further to find one.');
   }
 
   // Terraform — visible only when home planet has valid transform options and not already terraforming
