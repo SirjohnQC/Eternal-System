@@ -8,6 +8,8 @@
  *     and "???" cards show up, modifiers stay in range, the reveal is complete;
  *   - the player can steer: chasing water mostly makes ocean worlds, chasing
  *     cold mostly makes ice worlds (aim, but no guarantee);
+ *   - Creative decrees hold the world's type through any cards; "let fate
+ *     decide" finishes the forge (deterministically) with a random world;
  *   - the engine holds a forged world (no ladder, no stray life) until the
  *     golden spark, which finishes it and wakes life exactly once.
  *
@@ -61,6 +63,10 @@ const { gameState } = await import('../src/simulation/GameState');
 const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
 const { SeedRNG } = await import('../src/utils/SeedRNG');
 
+/** true/false when icons can be checked (run from the repo root), else null. */
+function icons(name: string): boolean | null {
+  return existsSync('public/assets/pixel/divine/cards') ? existsSync(`public/assets/pixel/divine/cards/${name}.png`) : null;
+}
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '  — ' + detail : ''}`);
@@ -156,6 +162,67 @@ function steer(param: string, dir = 1): Record<string, number> {
   check('chasing water mostly makes ocean worlds', (water['ocean'] ?? 0) >= 150 * 0.6, JSON.stringify(water));
   check('chasing cold mostly makes ice worlds', (cold['ice'] ?? 0) >= 150 * 0.6, JSON.stringify(cold));
   check('…but neither is guaranteed', (water['ocean'] ?? 0) < 150 || (cold['ice'] ?? 0) < 150);
+}
+
+// ── 4b. Creative decrees and "Let fate decide" ─────────────────────────────
+{
+  // A decree is the world's type whatever the cards do, and the surface DNA agrees.
+  const agrees: Record<string, (p: any) => boolean> = {
+    ocean: p => p.oceans === 'ocean_world',
+    ice: p => p.climate === 'frozen',
+    desert: p => p.climate === 'desert' && p.oceans === 'barren',
+    rocky: p => p.oceans === 'mixed',
+  };
+  const bad: string[] = [];
+  for (const d of F.DECREES) {
+    if (icons(d.icon) === false) bad.push(`${d.destiny}: no icon ${d.icon}`);
+    for (let i = 0; i < 120; i++) {
+      const rng = new SeedRNG(`decree_${d.destiny}_${i}`);
+      const s = F.newForge(`decree_${d.destiny}_${i}`, { life: rng.nextInt(1, 20), evolution: rng.nextInt(1, 20), hostility: rng.nextInt(1, 20), entropy: rng.nextInt(1, 20), divine: 10 }, rng.nextFloat(3000, 30000), 'W');
+      // Decreed at a random point of the draft, then cards chosen at random or by chasing a force against it.
+      const at = rng.nextInt(0, 4);
+      const chase = F.FORGE_PARAMS[rng.nextInt(0, F.FORGE_PARAMS.length - 1)];
+      while (s.phase === 'draft') {
+        if (s.round === at && !s.decree) F.decreeWorld(s, d.destiny);
+        if (s.decree && F.destinyOf(s.dna) !== d.destiny) { bad.push(`${d.destiny} #${i}: forces drifted to ${F.destinyOf(s.dna)} mid-draft`); break; }
+        let k = rng.nextInt(0, s.hand.length - 1);
+        if (i % 2) s.hand.forEach((c: any, j: number) => { if (((F.FATE_BY_ID[c.id].effects as any)[chase] ?? 0) > ((F.FATE_BY_ID[s.hand[k].id].effects as any)[chase] ?? 0)) k = j; });
+        F.forgeCard(s, k);
+      }
+      if (s.decree === d.destiny && (s.outcome.destiny !== d.destiny || !agrees[d.destiny](s.outcome.planetDNA))) {
+        bad.push(`${d.destiny} #${i}: became ${s.outcome.destiny} ${JSON.stringify(s.outcome.planetDNA)}`);
+      }
+    }
+  }
+  check('a Creative decree holds the world\'s type, and its surface agrees', bad.length === 0, bad.slice(0, 3).join('; '));
+
+  // Lifting a decree hands the type back to the forces; decrees only while drafting.
+  const s = F.newForge('decree_lift', STATS, 6000, 'W');
+  F.decreeWorld(s, 'desert');
+  F.decreeWorld(s, null);
+  check('a lifted decree gives the type back to the forces', !s.decree && F.forgeDestiny(s) === F.destinyOf(s.dna));
+  const done = playOut('decree_done', st => 0);
+  check('no decree once the draft is over', !F.decreeWorld(done, 'ice') && done.outcome.destiny === F.forgeDestiny(done));
+
+  // "Let fate decide": straight to the reveal, deterministic, random worlds across seeds.
+  const fates: Record<string, number> = {};
+  let unfinished = 0, same = true;
+  for (let i = 0; i < 200; i++) {
+    const a = F.newForge(`fate_${i}`, STATS, 3000 + i * 130, 'W');
+    if (i % 3) F.forgeCard(a, 0);                       // sometimes after a pick of one's own
+    const b = JSON.parse(JSON.stringify(a));
+    F.letFateDecide(a); F.letFateDecide(b);
+    if (a.phase !== 'reveal' || !a.outcome) unfinished++;
+    else fates[a.outcome.destiny] = (fates[a.outcome.destiny] ?? 0) + 1;
+    if (JSON.stringify(a.outcome) !== JSON.stringify(b.outcome)) same = false;
+  }
+  check('"let fate decide" always ends the forge at the reveal', unfinished === 0, `${unfinished}`);
+  check('"let fate decide" is deterministic (a reload decides the same)', same);
+  check('"let fate decide" gives every type of world', ['ocean', 'rocky', 'ice', 'desert'].every(d => (fates[d] ?? 0) >= 4), JSON.stringify(fates));
+  const ice = F.newForge('fate_decreed', STATS, 6000, 'W');
+  F.decreeWorld(ice, 'ice');
+  F.letFateDecide(ice);
+  check('"let fate decide" keeps a Creative decree', ice.outcome?.destiny === 'ice');
 }
 
 // ── 5. Engine: held until the spark ────────────────────────────────────────
