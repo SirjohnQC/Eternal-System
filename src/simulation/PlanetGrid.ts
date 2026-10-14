@@ -893,6 +893,49 @@ export function avgFertility(grid: PlanetGrid): number {
  */
 const SPREAD_PER_STEP = 0.38;
 
+/**
+ * A people lands on this world (BigBangEngine.relocateHome): settle `want`
+ * habitable cells, starting at the most fertile one and spreading outward
+ * over land (x wraps); when a landmass is full the next landing goes to the
+ * most fertile cell left. Settled cells get `civId` and enough life to count
+ * as settled for the life-spread pass. Returns how many cells were settled
+ * (fewer than `want` on a world with little habitable land).
+ */
+export function seedLanding(grid: PlanetGrid, want: number, civId: string): number {
+  const N = GRID_SIZE * GRID_SIZE;
+  const cellOf = (i: number) => grid[(i / GRID_SIZE) | 0][i % GRID_SIZE];
+  const land: number[] = [];
+  for (let i = 0; i < N; i++) if (isHabitable(cellOf(i).biome)) land.push(i);
+  land.sort((a, b) => cellOf(b).fertility - cellOf(a).fertility || a - b);
+  const seen = new Uint8Array(N);
+  let n = 0, next = 0;
+  while (n < want) {
+    while (next < land.length && seen[land[next]]) next++;
+    if (next >= land.length) break;
+    const queue = [land[next]];
+    seen[land[next]] = 1;
+    for (let q = 0; q < queue.length && n < want; q++) {
+      const i = queue[q], cell = cellOf(i);
+      cell.civId = civId;
+      cell.lifeDensity = Math.max(cell.lifeDensity, 0.6);
+      n++;
+      const r = (i / GRID_SIZE) | 0, c = i % GRID_SIZE;
+      const around = [
+        r > 0 ? i - GRID_SIZE : -1,
+        r < GRID_SIZE - 1 ? i + GRID_SIZE : -1,
+        r * GRID_SIZE + (c + 1) % GRID_SIZE,
+        r * GRID_SIZE + (c + GRID_SIZE - 1) % GRID_SIZE,
+      ];
+      for (const j of around) {
+        if (j < 0 || seen[j] || !isHabitable(cellOf(j).biome)) continue;
+        seen[j] = 1;
+        queue.push(j);
+      }
+    }
+  }
+  return n;
+}
+
 export function stepLifeSpread(
   grid: PlanetGrid,
   bioPhase: string,

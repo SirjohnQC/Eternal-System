@@ -179,6 +179,12 @@ export interface GameStateData {
   /** Sectors of the universe (Universe.ts) the player's people have charted. */
   sectorsCharted: number[];
   playerPlanetDNA: PlanetDNA | null;
+  /**
+   * The last time the whole people moved to another world (the TP card "A New
+   * World", BigBangEngine.relocateHome). That world's surface is generated
+   * from its own DNA, not the setup answers. Optional: older saves never moved.
+   */
+  homeMoved?: { starId: number; planetIndex: number; tick: number } | null;
   codexEntries: CodexEntry[];
   playerSpeciesTraits: Record<string, string>;   // category → chosen value from traits modal
   playerSpeciesDescription: string;              // Gemini-generated species description
@@ -266,6 +272,7 @@ export function createDefaultGameState(): GameStateData {
   forgeMods: null,
   sectorsCharted: [],
   playerPlanetDNA: null,
+  homeMoved: null,
   codexEntries: [],
   playerSpeciesTraits: {},
   playerSpeciesDescription: '',

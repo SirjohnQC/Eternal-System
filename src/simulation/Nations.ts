@@ -709,6 +709,72 @@ export class NationSystem {
   }
 
   /**
+   * The whole people crossed to another world (BigBangEngine.relocateHome).
+   * Every nation keeps who it is: techs, era, temper, history, its relations
+   * with the others. The old territory is gone; each nation plants a new
+   * capital on the land settled at the landing, spread apart the way the
+   * first capitals were, and the land is shared out from there. A nation
+   * the landing leaves no room for is lost in the crossing.
+   */
+  resettle(grid: PlanetGrid, tick: number, where: string): void {
+    if (!this.founded) return;
+    this.owner.fill(-1);
+    const settled: number[] = [];
+    for (let r = 0; r < GRID_SIZE; r++) for (let c = 0; c < GRID_SIZE; c++) {
+      const cell = grid[r][c];
+      if (cell.civId != null && !isWater(cell.biome)) settled.push(r * GRID_SIZE + c);
+    }
+    const live = this.nations.filter(n => !n.fallen);
+    // Capitals: the most fertile settled cell first, then each next one as far
+    // (wrapped) from the others as the settled land allows, fertility weighted.
+    const caps: number[] = [];
+    const taken = new Set<number>();
+    const wrapDist = (a: number, b: number) => {
+      const ar = (a / GRID_SIZE) | 0, ac = a % GRID_SIZE, br = (b / GRID_SIZE) | 0, bc = b % GRID_SIZE;
+      let dc = Math.abs(ac - bc); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc;
+      return Math.hypot(ar - br, dc);
+    };
+    const fert = (i: number) => grid[(i / GRID_SIZE) | 0][i % GRID_SIZE].fertility;
+    // One more than needed, then the first (the middle of the landing) is
+    // dropped: capitals spread around the landing split it evenly, where one
+    // in the middle would take the lion's share.
+    const want = live.length >= 2 ? live.length + 1 : live.length;
+    while (caps.length < want && caps.length < settled.length) {
+      let pick = -1, pickScore = -1;
+      const stride = settled.length > 4000 ? 3 : 1;
+      for (let s = 0; s < settled.length; s += stride) {
+        const i = settled[s];
+        if (taken.has(i)) continue;
+        let d = 1;
+        if (caps.length) { d = Infinity; for (const k of caps) d = Math.min(d, wrapDist(i, k)); }
+        const score = d * (0.5 + fert(i)) + this.rng.next() * 0.01;
+        if (score > pickScore) { pickScore = score; pick = i; }
+      }
+      if (pick < 0) break;
+      caps.push(pick);
+      taken.add(pick);
+    }
+    if (want > live.length && caps.length > live.length) caps.shift();
+    live.forEach((n, k) => {
+      const cap = caps[k];
+      if (cap == null) {
+        n.fallen = true;
+        this.log(n, tick, `${n.name} was lost in the crossing to ${where}.`, ['the landing left no land for it']);
+        this.news.push(`${n.name} did not survive the crossing to ${where}.`);
+        return;
+      }
+      n.capital = { row: (cap / GRID_SIZE) | 0, col: cap % GRID_SIZE };
+      this.owner[cap] = n.id;
+      n.marks.crossed = this.log(n, tick, `${n.name} crossed to ${where} and raised a new capital.`,
+        ['the whole people left their old world']);
+    });
+    for (const r of this.relations) if (r.war && (this.nations[r.a].fallen || this.nations[r.b].fallen)) r.war = null;
+    this.claim(grid, settled);
+    this.recompute(grid, tick);
+    this.version++;
+  }
+
+  /**
    * Territory: every settled cell goes to the nation that reaches it most
    * cheaply over land (multi-source Dijkstra from the current territories).
    * Cells are never taken from an owner here — phase 3 (relations, war) moves

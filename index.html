@@ -4538,6 +4538,40 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
   font-size:10px;letter-spacing:2px;padding:8px 18px;cursor:pointer;
 }
 #faith-modal .fm-btn:hover{border-color:var(--gold);color:var(--gold)}
+/* ── Tech cards (src/ui/TechCards.ts): TP spent; cyan is TP's colour ── */
+.res-tp{cursor:pointer}
+#tech-modal{
+  position:fixed;inset:0;z-index:310;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse at center,rgba(6,18,30,0.9),rgba(0,0,0,0.95));
+}
+#tech-modal .tm-box{display:flex;flex-direction:column;align-items:center;gap:12px;padding:24px 30px;max-width:min(560px,calc(100vw - 32px))}
+#tech-modal .tm-title{font-family:var(--font-display);font-size:18px;letter-spacing:4px;color:var(--cyan);text-shadow:0 0 14px rgba(90,212,232,.45)}
+#tech-modal .tm-sub{font-family:var(--font-ui);font-size:12.5px;color:#9fbccc;max-width:520px;text-align:center}
+#tech-modal .tm-sub b{color:var(--cyan);font-weight:500}
+#tech-modal .tm-body{display:flex;gap:18px;align-items:center;margin:8px 0;flex-wrap:wrap;justify-content:center}
+#tech-modal .tm-foot{display:flex;gap:12px}
+#tech-modal .fm-btn{
+  background:transparent;border:1px solid var(--border);color:var(--dim);font-family:var(--font-pixel);
+  font-size:10px;letter-spacing:2px;padding:8px 18px;cursor:pointer;
+}
+#tech-modal .fm-btn:hover:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
+#tech-modal .fm-btn:disabled{opacity:.4;cursor:default}
+#tech-modal .tm-go:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
+.tech-card{--faith-accent:var(--cyan);--faith-glow:rgba(90,212,232,0.4)}
+.tech-card.affordable .divine-action-cost{color:var(--cyan)}
+#tech-modal .tm-worlds{display:flex;flex-direction:column;gap:6px;width:min(420px,calc(100vw - 64px))}
+#tech-modal .tm-world{
+  display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;text-align:left;
+  background:rgba(90,212,232,0.04);border:1px solid rgba(90,212,232,0.2);padding:8px 12px;cursor:pointer;color:var(--text);
+}
+#tech-modal .tm-world:hover{border-color:rgba(90,212,232,0.5)}
+#tech-modal .tm-world.selected{border-color:var(--cyan);background:rgba(90,212,232,0.1)}
+#tech-modal .tm-world-name{font-family:var(--font-pixel);font-size:11px;letter-spacing:1px;color:var(--cyan)}
+#tech-modal .tm-world-type{grid-column:1;font-family:var(--font-ui);font-size:11px;color:var(--dim)}
+#tech-modal .tm-world-harsh{grid-column:2;grid-row:1 / span 2;font-family:var(--font-pixel);font-size:9px;letter-spacing:2px}
+#tech-modal .tm-world-note{grid-column:1 / span 2;font-family:var(--font-ui);font-size:10.5px;font-style:italic;color:#9fbccc}
+#tech-modal .tm-kind{color:#5dcc8a}#tech-modal .tm-fair{color:var(--gold2)}
+#tech-modal .tm-harsh{color:#ff9944}#tech-modal .tm-brutal{color:#ff6b4a}
 .faith-dots{display:flex;gap:5px;margin-top:5px;pointer-events:none}
 .faith-dot{
   width:5px;height:5px;background:rgba(123,94,167,0.3);
