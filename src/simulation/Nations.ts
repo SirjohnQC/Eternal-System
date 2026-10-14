@@ -461,6 +461,59 @@ export class NationSystem {
     n.omens.push({ ...omen, started: false, active: false });
   }
 
+  // ── Tech cards (TechCards.ts): what the people do with what they know ──────
+
+  /** Live nations that know `tech`. */
+  knowersOf(tech: string): Nation[] {
+    return this.nations.filter(n => !n.fallen && n.techs.includes(tech));
+  }
+
+  /** Narrow (negative) or widen nation `k`'s gap between rich and poor, and say why. */
+  shiftInequality(k: number, d: number, tick: number, why: string, cause?: number): void {
+    const n = this.nations[k];
+    if (!n || n.fallen) return;
+    n.state.inequality = Math.max(0, Math.min(1, n.state.inequality + d));
+    this.log(n, tick, d < 0 ? `${n.name} narrowed the gap between rich and poor.` : `The rich of ${n.name} grew richer.`, [why], [cause]);
+    this.version++;
+  }
+
+  /**
+   * Nation `k` finishes what it is studying (Eureka): its choice was its own,
+   * made from its own pressures, so the card only hurries it. Returns the
+   * tech's name, or null when it was studying nothing.
+   */
+  finishStudy(k: number): string | null {
+    const n = this.nations[k];
+    if (!n || n.fallen) return null;
+    if (!n.research) this.choose(n);
+    if (!n.research) return null;
+    n.research.progress = Math.max(n.research.progress, 1);
+    n.research.why = [...n.research.why.slice(0, 2), 'a sudden breakthrough'];
+    return TECH_BY_ID[n.research.id]?.name ?? null;
+  }
+
+  /**
+   * Nation `k` learns `tech` from outside (stolen from another world): only a
+   * technology it could study now (every prerequisite known). Returns false
+   * if it could not.
+   */
+  learnFromOutside(k: number, tech: string, tick: number, how: string, cause?: number): boolean {
+    const n = this.nations[k];
+    const t = TECH_BY_ID[tech];
+    if (!n || n.fallen || !t || n.techs.includes(tech) || !t.requires.every(r => n.techs.includes(r))) return false;
+    n.techs.push(tech);
+    if (n.research?.id === tech) n.research = null;
+    n.state.inequality = Math.max(0, Math.min(1, n.state.inequality + (t.effect.inequality ?? 0)));
+    const was = n.era;
+    n.era = eraOf(n.techs);
+    const learned = this.log(n, tick, `${n.name} ${t.deed}.`, [how], [cause]);
+    n.marks[`tech:${t.id}`] = learned;
+    if (n.era > was) n.marks.era = this.log(n, tick, `${n.name} entered a new age.`, [`it learned ${t.name}`], [learned]);
+    this.discoveries.push({ nation: n, tech: t, tick });
+    this.version++;
+    return true;
+  }
+
   /** Write a line to a nation's history (a card cast over it, say). Returns its chronicle id (0 if none). */
   record(k: number, tick: number, what: string, because: string[], causes: number[] = []): number {
     const n = this.nations[k];
