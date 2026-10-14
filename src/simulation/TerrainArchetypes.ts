@@ -195,7 +195,11 @@ export function continentsElevation(nx: number, ny: number, seed: number): numbe
   let e = 0.20;
   let i = 0;
   for (const c of continentCentres(seed)) {
-    const dx = Math.min(Math.abs(nx - c.cx), 1 - Math.abs(nx - c.cx)) * 2;
+    // Signed distance east of the centre, wrapped. It used to be the absolute
+    // distance, so the coast warp, the shoulder and the inland noise were
+    // sampled the same on both sides: every continent was its own mirror
+    // image (#104; mean mirror score 0.89 over 27 worlds, some exactly 1).
+    const dx = ((((nx - c.cx) % 1) + 1.5) % 1 - 0.5) * 2;
     const dy = (ny - c.cy) * 1.58;
     const warp =
       (fbm(dx * 10, dy * 10, seed ^ (0x51 + i * 19), 3) - 0.5) * 0.34

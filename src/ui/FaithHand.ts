@@ -104,7 +104,9 @@ function face(c: FaithCard, big = false): string {
 }
 
 function tipFor(c: FaithCard): string {
+  const why = deps ? castable(c, nationsOf(), deps.host()) : null;
   return `<div class="ft-name">${esc(c.name)}</div>
+    ${why ? `<div class="ft-why">⊘ ${esc(why)}</div>` : ''}
     <div class="ft-desc">${esc(describe(c))}</div>
     <table>${anatomy(c).map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>
     <div class="ft-origin">${esc(c.origin)}</div>
@@ -206,6 +208,18 @@ function play(c: FaithCard): void {
   refresh(true);
 }
 
+/**
+ * A card that can't be played for a reason other than DP says so: its price
+ * line reads `short` and hovering shows `long` (#23: in creative mode, with
+ * DP to spare, a greyed card read as "not enough DP").
+ */
+export function showWhy(el: HTMLElement, short: string, long: string): void {
+  el.title = long;
+  el.classList.add('has-why');
+  const cost = el.querySelector('.divine-action-cost');
+  if (cost) cost.textContent = `⊘ ${short}`;
+}
+
 // ─── The deck ─────────────────────────────────────────────────────────────────
 
 /** Re-render the hand into the Faith deck (skipped when nothing visible changed). */
@@ -226,7 +240,7 @@ export function refresh(force = false): void {
     <span class="divine-action-name">SEEK A SIGN</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/seek.png" alt="" width="32" height="32"/></span>
     <span class="divine-action-desc">${ready ? `Glimpse what the world could become. ${hand().length}/${HAND_MAX} in hand.` : 'Your world has no shape yet for a sign to fall upon.'}</span>
-    <span class="divine-action-cost">✦ ${SEEK_COST} DP</span></button>`;
+    <span class="divine-action-cost">${!ready ? '⊘ NOT YET' : hand().length >= HAND_MAX ? '⊘ HAND FULL' : `✦ ${SEEK_COST} DP`}</span></button>`;
   const cards = hand().map(c => face(c)).join('');
   const crucible = hand().length >= 2 ? `<button class="divine-action-btn faith-orange faith-hand-el${burning ? ' selected' : ' affordable'}" id="faith-crucible-btn">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
@@ -245,6 +259,9 @@ export function refresh(force = false): void {
     if (c) {
       el.classList.toggle('affordable', can(c));
       el.classList.toggle('faith-off', !can(c) && !burning);
+      // Not castable for a reason other than DP: say so on the card (#23).
+      const why = burning ? null : castable(c, ns, host);
+      if (why) showWhy(el, 'NOT NOW', why);
       el.classList.toggle('faith-pick', !!burnPick?.includes(c.id));
       el.addEventListener('mouseenter', () => showTip(c, el));
       el.addEventListener('mouseleave', hideTip);

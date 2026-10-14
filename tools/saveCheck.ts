@@ -79,14 +79,34 @@ console.log('\n═══ round trip ═══');
   const a = new BigBangEngine(makeCanvas()) as any;
   a.init(stats, 'roundtrip');
   for (let i = 0; i < 10_000; i++) a.update();
+  // The home surface carries what happened on it (#77): mark some of it the
+  // way life spread, settling and divine land edits do.
+  const ga = a.ensurePlayerGrid();
+  if (ga) for (let r = 40; r < 60; r++) for (let c = 100; c < 140; c++) {
+    ga[r][c].lifeDensity = (r * 7 + c) % 10 / 10;
+    ga[r][c].civId = String(a.getPlayerStar().id);
+    if (c < 110) { ga[r][c].elevation = 0.83 + r / 1000; ga[r][c].biome = 'mountain'; }
+  }
   const json = JSON.stringify({ version: SAVE_VERSION, savedAt: 0, gameState: { ...gameState }, engine: a.serialize(), eventLog: [] });
+  const gridBefore = ga ? ga.map((row: any[]) => row.map(c => ({ ...c }))) : null;
   const parsed = migrateSave(JSON.parse(json));
   check('current save parses', parsed.ok);
   if (parsed.ok) {
     const b = loadIntoEngine(parsed.save);
     check('identical at load', fingerprint(a) === fingerprint(b));
-    for (let i = 0; i < 5_000; i++) { a.update(); b.update(); }
+    // The grid is one global (runtimeState), so compare b's against a copy of a's.
+    const gridDiff = (gx: any, gy: any): number => {
+      if (!gx || !gy) return gx === gy ? 0 : -1;
+      let n = 0;
+      for (let r = 0; r < gx.length; r++) for (let c = 0; c < gx[r].length; c++) {
+        for (const k of Object.keys(gx[r][c])) if (gx[r][c][k] !== gy[r][c][k]) n++;
+      }
+      return n;
+    };
+    const d0 = gridDiff(gridBefore, b.ensurePlayerGrid());
+    check('home surface restored exactly (#77)', d0 === 0, d0 === 0 ? `${(JSON.stringify(parsed.save.engine.playerGrid ?? {}).length / 1024).toFixed(1)} KB of changes saved` : `${d0} fields differ`);
     check('identical 5k ticks after load', fingerprint(a) === fingerprint(b));
+
   }
 }
 

@@ -28,6 +28,8 @@ let nations: NationSystem | null = null;
 renderer.setNationSource(() => nations);
 
 const params = new URLSearchParams(location.search);
+// ?debug=1 exposes the renderer to browser checks (tools/*.mjs probes).
+if (params.get('debug') === '1') (window as unknown as { __diorama?: IsoDioramaRenderer }).__diorama = renderer;
 // BigBangEngine's PLANET_ORBIT_MU (0.0012 rad per 60 Hz tick at radius 10), so
 // the preview's year matches the game's. ?year=N runs the clock N times faster.
 const orbitSpeed = (r: number) => 0.0012 / Math.sqrt(Math.max(0.5, r / 10));

@@ -86,8 +86,9 @@ class AudioManagerClass {
   private initialized = false;
 
   constructor() {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    this.settings = saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : { ...DEFAULT_SETTINGS };
+    let saved: Partial<AudioSettings> = {};
+    try { saved = JSON.parse(globalThis.localStorage?.getItem(STORAGE_KEY) ?? '{}') ?? {}; } catch { /* blocked or corrupt: defaults */ }
+    this.settings = { ...DEFAULT_SETTINGS, ...saved };
   }
 
   // ── Init (called on first user gesture) ───────────────────────────────────
@@ -271,6 +272,23 @@ class AudioManagerClass {
     src.start(0);
   }
 
+  // ── Synthesised sounds (no files: UI hover, dice ticks…) ────────────────
+  /** Run `play` with the audio context and the SFX bus, when sound can play. */
+  synth(play: (ctx: AudioContext, out: AudioNode) => void): void {
+    if (!this.ctx || !this.sfxGain || this.settings.muted || this.ctx.state !== 'running') return;
+    try { play(this.ctx, this.sfxGain); } catch { /* never let a sound break the UI */ }
+  }
+
+  /** Whether sound is live (false until the player's first click or key). */
+  get running(): boolean { return this.ctx?.state === 'running'; }
+
+  /** Resume after a user gesture (the browser's autoplay rule). */
+  async wake(): Promise<boolean> {
+    await this.init();
+    try { await this.ctx?.resume(); } catch { /* ok */ }
+    return this.running;
+  }
+
   // ── Volume ────────────────────────────────────────────────────────────────
 
   setMasterVolume(v: number): void {
@@ -306,7 +324,7 @@ class AudioManagerClass {
   }
 
   private saveSettings(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.settings));
+    try { globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(this.settings)); } catch { /* storage blocked */ }
   }
 }
 

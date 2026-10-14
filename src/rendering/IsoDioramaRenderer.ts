@@ -605,6 +605,8 @@ export class IsoDioramaRenderer {
   private inhabitants: Array<{
     wx: number; wy: number; row: number; col: number; sprite: HTMLCanvasElement;
     w: number; h: number; phase: number; sway: number; depth: number;
+    /** Home on the unlifted ground (base px), where wander targets are tested for land (#25). */
+    gx: number; gy: number;
     /** 0 = fully above the surface, 1 = fully under. See waterSubmersion(). */
     submersion: number;
     /** The genome drawn, for the detailed CreatureForge sprite when big enough. */
@@ -1227,6 +1229,18 @@ export class IsoDioramaRenderer {
    * Disc coords (dx, dy) in [-1,1] → grid (row, col). The rim of the disc is the
    * great circle 90° away from the focus, so the top face shows one hemisphere.
    */
+  /** Whether the ground drawn at base px (x, y) is land (rim falloff included, as the bake draws it). */
+  private landAtBase(x: number, y: number): boolean {
+    const grid = this.grid, g = this.placeGeom;
+    if (!grid) return true;
+    const dx = (x - g.cx) / g.rx, dy = (y - g.cy) / g.ry;
+    const r = Math.hypot(dx, dy);
+    if (r > 0.97) return false;
+    const gp = this.discToGrid(dx, dy);
+    const cell = gp ? grid[gp.row]?.[gp.col] : undefined;
+    return !!cell && cell.elevation - this.rimFalloff(r) >= SEA_LEVEL;
+  }
+
   private discToGrid(dx: number, dy: number): { row: number; col: number } | null {
     const f = this.discToGridF(dx, dy);
     if (!f) return null;
@@ -2814,10 +2828,15 @@ export class IsoDioramaRenderer {
    * land pixel beside land of another owner is a border.
    */
   private updateNationOverlay(now: number): void {
-    if (now < this.nationNext) return;
+    const eng = this.cutaway;
+    // The overlay is drawn through the pick buffer's geometry: when that
+    // changes (a rebake, a camera set swap), rebuild at once. Waiting for the
+    // 250 ms poll left the old overlay on the new ground: the borders flashed
+    // while moving, and on every passive rebake while standing still (#94).
+    const pickMoved = !!eng.groundOverlay && (eng.pickEpoch !== this.nationEpoch || eng.pick !== this.nationPick);
+    if (now < this.nationNext && !pickMoved) return;
     this.nationNext = now + 250;
     const ns = this.nationsHere();
-    const eng = this.cutaway;
     if (!ns || !ns.isFounded || !this.habitable || this.forming) {
       eng.groundOverlay = null; eng.lineOverlay = null;
       if (this.nationFlagVer !== -1) { this.nationFlagVer = -1; this.nationSpots = []; this.nationSpotKey = ''; this.pushTownProps(); }
@@ -3119,7 +3138,7 @@ export class IsoDioramaRenderer {
     // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
     // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
 
-    const creatureSpots: Array<{ x: number; y: number; row: number; col: number; id: string; onWater: boolean }> = [];
+    const creatureSpots: Array<{ x: number; y: number; gy: number; row: number; col: number; id: string; onWater: boolean }> = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
       fertility: number; row: number; col: number;
@@ -3173,7 +3192,7 @@ export class IsoDioramaRenderer {
           const occupant = byId.get(cell.dominantSpeciesId);
           if (this.habitable && !onLand && !(occupant && inhabitsWater(occupant))) continue;
           creatureSpots.push({
-            x: px, y: py - lift, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
+            x: px, y: py - lift, gy: py, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
             onWater: this.habitable && !onLand,
           });
         }
@@ -3242,7 +3261,7 @@ export class IsoDioramaRenderer {
       const depth = (spot.y - (cy - ry)) / (ry * 2);
       const sprite = dioramaCreatureSprite(genome, phase ?? 'intelligent', depth);
       this.inhabitants.push({
-        wx: spot.x, wy: spot.y, row: spot.row, col: spot.col, sprite,
+        wx: spot.x, wy: spot.y, gx: spot.x, gy: spot.gy, row: spot.row, col: spot.col, sprite,
         w: sprite.width,
         h: sprite.height,
         phase: s.range(0, Math.PI * 2),
@@ -3416,10 +3435,13 @@ export class IsoDioramaRenderer {
    * STRIDE x body length per gait cycle), then idles. Flyers hover above the
    * ground and drift faster; swimmers and the sessile stay put.
    */
-  private wanderOf(c: { genome: SpeciesGenome; phase: number }, t: number, bodyLen: number, f: ForgedBody):
+  private wanderOf(c: { genome: SpeciesGenome; phase: number; gx: number; gy: number; submersion: number }, t: number, bodyLen: number, f: ForgedBody):
     { dx: number; dy: number; left: boolean; moving: boolean; lift: number } {
     const loc = c.genome.dna.locomotion;
     const flyer = loc === 'flying', walker = loc === 'walking' || loc === 'crawling';
+    // A land walker only picks wander points on land; one over the sea becomes
+    // "back home" (#25: two-legged peoples strolled out onto the water).
+    const landBound = walker && this.habitable && c.submersion === 0 && !inhabitsWater(c.genome);
     if (!flyer && !walker) return { dx: 0, dy: 0, left: false, moving: false, lift: 0 };
     const seed = Math.floor(c.phase * 9973);
     // Stride speed: one STRIDE of body length per gait cycle (frames / rate seconds).
@@ -3430,7 +3452,9 @@ export class IsoDioramaRenderer {
     const pt = (k: number): [number, number] => {
       const a = (Math.sin((k + seed) * 12.9898) * 43758.5453) % 1, r = (Math.sin((k + seed) * 78.233) * 12543.21) % 1;
       const ang = a * Math.PI * 2, rad = reach * (0.3 + 0.7 * Math.abs(r));
-      return [Math.cos(ang) * rad, Math.sin(ang) * rad * 0.5];
+      const x = Math.cos(ang) * rad, y = Math.sin(ang) * rad * 0.5;
+      if (landBound && (!this.landAtBase(c.gx + x, c.gy + y) || !this.landAtBase(c.gx + x / 2, c.gy + y / 2))) return [0, 0];
+      return [x, y];
     };
     const tt = t + c.phase * WANDER_LEG, k = Math.floor(tt / WANDER_LEG), u = tt - k * WANDER_LEG;
     const [ax, ay] = pt(k - 1), [bx, by] = pt(k);
@@ -4362,8 +4386,10 @@ export class IsoDioramaRenderer {
    * an impact flash lighting the surface, a shockwave over the terrain, ejecta
    * arcs, a dust plume, and a scorched crater that stays ~60 s, fading.
    *
-   * @param cell where it lands; null picks a land cell in view (seeded by the
-   *   world and the strike count, so it is not always the same spot)
+   * @param cell where it lands; null picks a cell in view, land or sea in
+   *   proportion to what the face shows (seeded by the world and the strike
+   *   count, so it is not always the same spot). A sea strike throws up a
+   *   splash and a tsunami instead of a crater (#26).
    * @param size 0.4 (comet fragment) .. 1.2 (extinction-class); default 0.8
    */
   playMeteorStrike(cell?: { row: number; col: number } | null, size = 0.8): void {
@@ -4381,32 +4407,34 @@ export class IsoDioramaRenderer {
       }
     }
     const seed = (this.planetSeed ^ Math.imul(n + 1, 2654435761)) >>> 0;
-    this.meteor.start(x, y, pg.rx * (0.2 + 0.12 * size), size, seed, this.VW, this.VH);
+    // Sea as the face draws it (rim falloff included), as for creatures.
+    let water = false;
+    if (at && this.habitable) {
+      const d = this.gridToDisc(at.row, at.col), gc = this.grid?.[at.row]?.[at.col];
+      if (d && gc) water = gc.elevation - this.rimFalloff(Math.hypot(d.dx, d.dy)) < SEA_LEVEL;
+    }
+    this.meteor.start(x, y, pg.rx * (0.2 + 0.12 * size), size, seed, this.VW, this.VH, water);
   }
 
   /**
-   * A land cell well inside the visible face (disc radius < 0.7), chosen with
-   * a seeded pick among ~200 sampled candidates. Null when no land is in view
-   * (an ocean world): the strike then lands in the sea at the centre.
+   * A cell well inside the visible face (disc radius < 0.7), chosen with a
+   * seeded pick among sampled candidates. Land and sea both count (#26: it
+   * used to skip water, so meteors only ever hit land), so the share of sea
+   * strikes follows the share of sea in view.
    */
   private pickStrikeCell(n: number): { row: number; col: number } | null {
-    const grid = this.grid;
-    if (!grid) return null;
+    if (!this.grid) return null;
     const rnd = new Stream((this.planetSeed ^ Math.imul(n + 7, 0x9e3779b1)) >>> 0);
-    let best: { row: number; col: number } | null = null, bestScore = -1;
-    for (let i = 0; i < 400; i++) {
-      const row = rnd.int(0, GRID_SIZE - 1), col = rnd.int(0, GRID_SIZE - 1);
-      const d = this.gridToDisc(row, col);
-      if (!d) continue;
-      const r = Math.hypot(d.dx, d.dy);
-      if (r > 0.7) continue;
-      const c = grid[row]?.[col];
-      if (!c || isWater(c.biome)) continue;
-      // Prefer the middle of the face, with a random spread.
-      const score = (1 - r) + rnd.next() * 0.8;
-      if (score > bestScore) { bestScore = score; best = { row, col }; }
+    // A point of the inner face, uniform by area (as the player sees it), not
+    // a uniform grid cell: the face is usually centred on land, so favouring
+    // the middle or the grid meant a sea strike was rare or never (#26).
+    for (let i = 0; i < 40; i++) {
+      const dx = rnd.next() * 1.4 - 0.7, dy = rnd.next() * 1.4 - 0.7;
+      if (dx * dx + dy * dy > 0.49) continue;
+      const gp = this.discToGrid(dx, dy);
+      if (gp && this.grid[gp.row]?.[gp.col]) return gp;
     }
-    return best;
+    return null;
   }
 
   /** Fill the reused strike view from the active geometry (no allocation). */
