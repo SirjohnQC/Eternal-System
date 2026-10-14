@@ -4,6 +4,7 @@ import { initTechCards, openTechCards } from './ui/TechCards';
 import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
+import { openLedger } from './ui/LedgerUI';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
@@ -1649,6 +1650,11 @@ function showTileNation(target: TileRef): void {
     chron.style.display = n ? '' : 'none';
     const last = n?.history[n.history.length - 1];
     chron.onclick = n ? () => openChronicle({ nation: n.id, entry: last?.id }) : null;
+  }
+  const ledger = document.getElementById('pi-tile-ledger') as HTMLButtonElement | null;
+  if (ledger) {
+    ledger.style.display = n ? '' : 'none';
+    ledger.onclick = n ? () => openLedger(n.id) : null;
   }
   if (!n) { setText('pi-tile-nation-detail', ''); return; }
   const signs = symptomsOf(n);
@@ -4443,6 +4449,11 @@ function initHudShell(): void {
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('rail-chronicle')?.classList.add('active');
     openChronicle();
+  });
+  document.getElementById('rail-ledger')?.addEventListener('click', () => {
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-ledger')?.classList.add('active');
+    openLedger();
   });
   document.getElementById('rail-codex')?.addEventListener('click', () => {
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));

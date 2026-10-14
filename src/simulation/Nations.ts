@@ -303,6 +303,39 @@ const FOOD_PER_FERTILE = 1.0, FOOD_PER_PERSON = 0.012;
 /** People a cell carries comfortably (crowding above this). */
 const CARRY_PER_CELL = 30;
 const HISTORY_MAX = 60;
+/** Era-time between ledger samples, and how many are kept (LEDGER_EVERY × LEDGER_MAX = 3 ages). */
+export const LEDGER_EVERY = 0.02;
+export const LEDGER_MAX = 150;
+
+/** Why a nation's numbers are what they are (NationSystem.explain; the World Ledger). */
+export interface NationExplain {
+  /** Food yield over need (1 = exactly fed). */
+  fed: number;
+  /** People the food carries. */
+  carries: number;
+  food: { techs: number; cards: number; season: number; pollutionLoss: number; offworld: number; trade: number };
+  materials: { techs: number; cards: number; offworld: number; trade: number };
+  /** Per step: in from what they know and from cards; out: a share clears by itself; and where it settles. */
+  pollution: { fromTechs: number; fromCards: number; clearsShare: number; settles: number; techs: Array<{ name: string; perStep: number }> };
+  /** Where cohesion drifts. */
+  cohesionTarget: number;
+  research: { cards: number; techs: number; studying: string | null; progress: number; why: string[] };
+  /** People a cell houses, against no technology. */
+  housing: number;
+  /** Cards working on it now or waiting to (endsIn / startsIn in era-time). */
+  omens: Array<{ card: string; op: OmenOp; sign: string; working: boolean; primary: boolean; startsIn: number; endsIn: number }>;
+}
+
+/** One nation's numbers at one moment (the World Ledger). */
+export interface LedgerSample {
+  /** Era-time (NationSystem.now) and the engine tick it was taken at. */
+  age: number; tick: number;
+  population: number; foodYield: number; foodNeed: number; materials: number;
+  pollution: number; inequality: number; cohesion: number; land: number;
+  /** Technologies known. */
+  techs: number;
+  fallen: boolean;
+}
 /** Entries the chronicle keeps (all nations and the player's acts). */
 const CHRONICLE_MAX = 2000;
 
@@ -434,6 +467,9 @@ export class NationSystem {
   private lastTick = -1;
   /** Every history entry of every nation, plus the player's acts, oldest first (capped). */
   readonly chronicle: HistoryEntry[] = [];
+  /** Each nation's numbers over time, by nation index (sampleLedger). */
+  readonly ledger: LedgerSample[][] = [];
+  private ledgerAge = -Infinity;
   private byId = new Map<number, HistoryEntry>();
   private nextId = 1;
   private rng: SeedRNG;
@@ -884,6 +920,66 @@ export class NationSystem {
       this.relate(grid, tick, eras);
       this.research(tick, eras);
     }
+    this.sampleLedger(tick);
+  }
+
+  // ── The ledger: each nation's numbers over time (the World Ledger panel) ───
+
+  /**
+   * Why nation `k`'s numbers are what they are, and where they are heading
+   * (the World Ledger). Pure: reads the state recompute() left, changes
+   * nothing, draws no random numbers.
+   */
+  explain(k: number): NationExplain | null {
+    const n = this.nations[k];
+    if (!n || n.fallen) return null;
+    const s = n.state, fx = effectOf(n.techs), om = this.modsOf(n);
+    const techPollution = n.techs.map(id => TECH_BY_ID[id]).filter(t => (t.effect.pollution ?? 0) !== 0)
+      .map(t => ({ name: t.name, perStep: (t.effect.pollution ?? 0) * 3 }));
+    const pollIn = fx.pollution * 3 + om.pollution;
+    // pollution' = pollution × 0.96 + in: it settles where what comes in equals what clears.
+    const settles = Math.max(0, Math.min(1, pollIn / 0.04));
+    const sprawl = s.land / (N / 7), p = n.pressures;
+    const cohesionTarget = Math.max(0, Math.min(1, 0.55 + 0.3 * n.values.collectivism + 0.15 * n.values.piety - 0.25 * sprawl
+      - 0.4 * p.hunger - 0.15 * p.crowding - 0.35 * s.inequality - 0.15 * s.pollution + fx.cohesion + om.cohesion));
+    const now = this.age;
+    const omens = n.omens.filter(o => o.until > now).map(o => ({
+      card: o.card, op: o.op, sign: OMEN_SIGN[o.op], working: o.active, primary: o.primary,
+      startsIn: Math.max(0, o.from - now), endsIn: Math.max(0, o.until - now),
+    }));
+    return {
+      fed: s.foodYield / Math.max(1e-6, s.foodNeed),
+      carries: s.foodYield / FOOD_PER_PERSON,
+      food: { techs: fx.food, cards: om.food, season: s.harvest, pollutionLoss: 0.5 * s.pollution, offworld: s.offworldFood ?? 0, trade: s.tradeFood },
+      materials: { techs: fx.materials, cards: om.materials, offworld: s.offworldMaterials ?? 0, trade: s.tradeMaterials },
+      pollution: { fromTechs: fx.pollution * 3, fromCards: om.pollution, clearsShare: 0.04, settles, techs: techPollution },
+      cohesionTarget,
+      research: { cards: om.research, techs: fx.knowledge, studying: n.research ? TECH_BY_ID[n.research.id]?.name ?? null : null, progress: n.research?.progress ?? 0, why: n.research?.why ?? [] },
+      housing: fx.housing,
+      omens,
+    };
+  }
+
+
+  /**
+   * Every LEDGER_EVERY of era-time, each nation's state is written down, so
+   * a view can show rates and trends (food, pollution, people...). Runtime
+   * only, like the nations themselves; the last LEDGER_MAX samples are kept
+   * (about three ages).
+   */
+  private sampleLedger(tick: number): void {
+    if (this.ledgerAge > -Infinity && this.age - this.ledgerAge < LEDGER_EVERY) return;
+    this.ledgerAge = this.age;
+    this.nations.forEach((n, k) => {
+      const log = (this.ledger[k] ??= []);
+      const s = n.state;
+      log.push({
+        age: this.age, tick, population: s.population, foodYield: s.foodYield, foodNeed: s.foodNeed,
+        materials: s.materials, pollution: s.pollution, inequality: s.inequality, cohesion: s.cohesion,
+        land: s.land, techs: n.techs.length, fallen: n.fallen,
+      });
+      if (log.length > LEDGER_MAX) log.splice(0, log.length - LEDGER_MAX);
+    });
   }
 
   /**
