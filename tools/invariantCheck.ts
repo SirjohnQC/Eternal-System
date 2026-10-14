@@ -491,7 +491,7 @@ for (const { seed, stats } of SEEDS) {
     try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
     if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
   };
-  const { RELOCATE_TP, RELOCATE_ERA } = await import('../src/simulation/BigBangEngine');
+  const { RELOCATE_TP, RELOCATE_ERA, RELOCATE_STAR_ERA } = await import('../src/simulation/BigBangEngine');
   const { GRID_SIZE } = await import('../src/simulation/PlanetGrid');
 
   /** A world at the Space Age with a free world beside home, or null. */
@@ -509,7 +509,7 @@ for (const { seed, stats } of SEEDS) {
       e.leapToEra(RELOCATE_ERA);
       if (ps.civLevel !== RELOCATE_ERA || !runtimeState.playerNations?.isFounded) continue;
       gameState.techPoints = RELOCATE_TP;
-      if (e.relocationTargets().length) return { e, ps };
+      if (e.relocationTargets().some((t: any) => !t.otherStar)) return { e, ps };
     }
     return null;
   };
@@ -519,11 +519,11 @@ for (const { seed, stats } of SEEDS) {
     if (!w) return 'no seed reached the Space Age with a free world in its system (or the card was allowed too early)';
     gameState.techPoints = RELOCATE_TP - 1;
     const blocked = w.e.relocationBlock();
-    const refused = w.e.relocateHome(w.e.relocationTargets()[0]?.planetIndex ?? 0);
+    const refused = w.e.relocateHome(w.ps.id, w.e.relocationTargets()[0]?.planetIndex ?? 0);
     gameState.techPoints = RELOCATE_TP;
     if (!blocked) return `playable with ${RELOCATE_TP - 1} TP`;
     if (refused !== null) return 'relocateHome went ahead without the TP';
-    if (w.e.relocateHome(w.e.homeIndexOf(w.ps)) !== null) return 'moved to the world it already lives on';
+    if (w.e.relocateHome(w.ps.id, w.e.homeIndexOf(w.ps)) !== null) return 'moved to the world it already lives on';
     return null;
   });
 
@@ -531,11 +531,11 @@ for (const { seed, stats } of SEEDS) {
     if (!w) return 'no Space Age world';
     const { e, ps } = w;
     const ns = runtimeState.playerNations!;
-    const target = e.relocationTargets()[0].planetIndex;
+    const target = e.relocationTargets().find((t: any) => !t.otherStar).planetIndex;
     const oldIdx = e.homeIndexOf(ps), oldPlanet = ps.planets[oldIdx], oldGrid = e.ensurePlayerGrid();
     const era = ps.civLevel, techs = ns.nations.map(n => n.techs.length).join(','), alive = ns.nations.filter(n => !n.fallen).length;
     const tp = gameState.techPoints;
-    const line = e.relocateHome(target);
+    const line = e.relocateHome(ps.id, target);
     if (!line) return 'refused a listed target';
     if (e.homeIndexOf(ps) !== target) return `home is orbit ${e.homeIndexOf(ps) + 1}, wanted ${target + 1}`;
     if (gameState.techPoints !== tp - RELOCATE_TP) return `TP ${tp} → ${gameState.techPoints}`;
@@ -574,6 +574,113 @@ for (const { seed, stats } of SEEDS) {
     const ps2 = e2.getPlayerStar();
     if (!ps2 || e2.homeIndexOf(ps2) !== e.homeIndexOf(ps)) return 'the loaded game has another home world';
     return biomes(e2.ensurePlayerGrid()) === before ? null : 'the loaded home world has different ground';
+  });
+}
+
+// ── Scenario: "A New World" to another star (Interstellar, #40) ──────────────
+// Crossing to another star moves the player's identity: everything that was
+// the people's must follow them, and the star they left must be left with
+// nothing of theirs (rule 7).
+{
+  const scen = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const { RELOCATE_TP, RELOCATE_ERA, RELOCATE_STAR_ERA } = await import('../src/simulation/BigBangEngine');
+  const C = await import('../src/simulation/Colonies');
+
+  const setup = (): { e: any; from: Star } | null => {
+    for (let k = 0; k < 12; k++) {
+      resetGameState('Inv_newstar');
+      gameState.skipFormation = true;
+      const e = new BigBangEngine(makeCanvas()) as any;
+      e.init(SEEDS[0].stats, `inv_newstar_${k}`);
+      for (let i = 0; i < 3_000; i++) e.update();
+      if (!e.leapToEra(RELOCATE_ERA)) continue;
+      const from = e.getPlayerStar() as Star;
+      gameState.techPoints = RELOCATE_TP;
+      if (e.relocationTargets().some((t: any) => t.otherStar)) {
+        // Known stars are a Space Age people's own system only.
+        return null;
+      }
+      e.leapToEra(RELOCATE_STAR_ERA);
+      if (from.civLevel !== RELOCATE_STAR_ERA || !runtimeState.playerNations?.isFounded) continue;
+      gameState.techPoints = RELOCATE_TP;
+      if (e.relocationTargets().some((t: any) => t.otherStar)) return { e, from };
+    }
+    return null;
+  };
+  const w = setup();
+
+  scen('A New World to another star moves everything that was the people\'s, and leaves nothing of theirs behind', () => {
+    if (!w) return 'no Interstellar world with a free world under another star (or other stars were offered at the Space Age)';
+    const { e, from } = w;
+    const a = from.id;
+    // Give the people one of everything that is keyed to their star.
+    const enemy = (e.stars as Star[]).find(s => !s.isDead && !s.isPlayerStar && s.id !== a)!;
+    e.activeWars.push({ id: 9_999, attackerStarId: enemy.id, defenderStarId: a, startTick: e.tick, duration: 1e6,
+      phase: 'siege', attackerStrength: 0.5, defenderStrength: 0.5, lastBattleReportTick: e.tick, resolved: false });
+    e.orbitalFleets.push({ id: 9_999, warId: 9_999, starId: a, angle: 0, speed: 0.01, orbitRadius: 20, civColor: '#ff0000' });
+    e.fleets.push({ id: 9_999, fromStarId: enemy.id, toStarId: a, x: enemy.x, y: enemy.y, progress: 0.5, hostile: true, isPlayerFleet: false });
+    const site = (e.stars as Star[]).find(s => !s.isDead && s.id !== a && s.planets.some(p => p.type !== 'gas'))!;
+    const colony = C.foundColony(e.colonies, { starId: site.id, planetIndex: site.planets.findIndex(p => p.type !== 'gas'), name: 'Test colony', x: site.x, y: site.y, suitability: 0.6 },
+      { starId: a, isPlayer: true, lineage: null, tier: 3 }, e.tick);
+    e.colonies.lastLaunch[a] = e.tick;
+    e.interstellar.polities[enemy.id] ??= { starId: enemy.id, techs: [], research: null, era: 3, population: 0.5, pollution: 0, inequality: 0, cohesion: 0.8,
+      pressures: { hunger: 0, crowding: 0, scarcity: 0, unrest: 0, pollution: 0 }, importFood: 0, importMaterials: 0, attitude: {}, grievance: {} };
+    e.interstellar.polities[enemy.id].attitude[a] = -0.7;
+    e.interstellar.polities[enemy.id].grievance[a] = 0.4;
+    e.interstellar.routes.push({ a: Math.min(a, enemy.id), b: Math.max(a, enemy.id), goods: 'ore', to: a, since: e.tick });
+    gameState.factionFlags[a] ??= { colors: ['#123456'] } as any;
+    gameState.leaders.push({ id: 'test_leader', starId: a } as any);
+    const culture = gameState.civilizations[a];
+    const ns = runtimeState.playerNations!;
+    const techs = ns.nations.map(n => n.techs.join(',')).join('|');
+    const era = from.civLevel, species = gameState.playerSpecies.length;
+
+    const t = e.relocationTargets().find((x: any) => x.otherStar)!;
+    const line = e.relocateHome(t.starId, t.planetIndex);
+    if (!line) return 'refused a listed target under another star';
+    const to = e.getPlayerStar() as Star;
+    const b = t.starId;
+    const bad: string[] = [];
+    const want = (ok: boolean, what: string) => { if (!ok) bad.push(what); };
+    want(!!to && to.id === b, `player star is #${to?.id}, wanted #${b}`);
+    want(e.currentPlayerStarId === b && gameState.playerStarId === b, 'player star id not moved');
+    want(!from.isPlayerStar && from.civLevel === 0 && from.biologyPhase !== 'intelligent' && from.hasLife, `old star: player=${from.isPlayerStar} civ=${from.civLevel} phase=${from.biologyPhase} life=${from.hasLife}`);
+    want(!gameState.civilizations[a], 'the old star kept a culture record');
+    want(!culture || gameState.civilizations[b] === culture, 'the culture did not move with the people');
+    want(to.civLevel === era && to.biologyPhase === 'intelligent' && to.hasLife, `new star: civ=${to.civLevel} phase=${to.biologyPhase}`);
+    want(e.homeIndexOf(to) === t.planetIndex, 'home is not the chosen world');
+    want(runtimeState.playerNations === ns && ns.nations.map(n => n.techs.join(',')).join('|') === techs, 'the nations changed or forgot');
+    want(gameState.playerSpecies.length === species, 'species lost in the crossing');
+    const war = e.activeWars.find((x: any) => x.id === 9_999);
+    want(war.defenderStarId === b, 'the war stayed with the old star');
+    want(e.orbitalFleets.find((x: any) => x.id === 9_999).starId === b, 'the siege stayed at the old star');
+    want(!e.fleets.some((x: any) => x.id === 9_999), 'a war fleet still flies at the empty world');
+    want(colony.founderStarId === b, 'the colony still answers to the old star');
+    want(e.colonies.lastLaunch[b] !== undefined && e.colonies.lastLaunch[a] === undefined, 'launch clock not moved');
+    const pol = e.interstellar.polities[enemy.id];
+    want(pol.attitude[b] === -0.7 && pol.grievance[b] === 0.4 && pol.attitude[a] === undefined, 'other peoples forgot who they hate');
+    want(e.interstellar.routes.every((r: any) => r.a !== a && r.b !== a && r.to !== a && r.a < r.b), 'a trade route still runs to the old star');
+    want(!!gameState.factionFlags[b] && !gameState.factionFlags[a], 'the flag stayed behind');
+    want(gameState.leaders.every((l: any) => l.starId !== a), 'a leader stayed behind');
+    if (bad.length) return bad.join('; ');
+    // Time runs: they stay where they went, and the old star stays wild.
+    for (let i = 0; i < 3_000; i++) e.update();
+    const now = e.getPlayerStar();
+    if (now?.id !== b) return `after 3k ticks the player star is #${now?.id}`;
+    // A new people may rise from the animals left behind; it must be its own.
+    if (from.isPlayerStar || (culture && gameState.civilizations[a] === culture)) return 'the old star is the people\'s again';
+    if (e.ensurePlayerGrid() == null) return 'no home grid at the new star';
+    // And a save keeps it.
+    const e2 = new BigBangEngine(makeCanvas()) as any;
+    e2.init(SEEDS[0].stats, 'inv_newstar_load');
+    e2.loadState(JSON.parse(JSON.stringify(e.serialize())));
+    return e2.getPlayerStar()?.id === b && e2.homeIndexOf(e2.getPlayerStar()) === t.planetIndex ? null : 'the loaded game lives somewhere else';
   });
 }
 

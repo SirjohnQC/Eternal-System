@@ -2,19 +2,20 @@
  * Tech cards: what the player's people have learned (TP) spent on what only
  * knowledge can do (#40). Opened from the TP chip in the top bar.
  *
- * The first card is A NEW WORLD (Space Age): the whole people leaves its
- * world for another one in the same system. The engine does the move
+ * The first card is A NEW WORLD: the whole people leaves its world for
+ * another one in the same system (Space Age) or under another star
+ * (Interstellar). The engine does the move
  * (BigBangEngine.relocateHome); this module only offers it and asks where.
  */
 import { gameState } from '../simulation/GameState';
-import { RELOCATE_TP, type RelocationTarget, type BigBangEngine } from '../simulation/BigBangEngine';
+import { RELOCATE_TP, RELOCATE_STAR_ERA, type RelocationTarget, type BigBangEngine } from '../simulation/BigBangEngine';
 
 export interface TechCardDeps {
   engine(): BigBangEngine | null;
   /** TP changed: refresh the chip. */
   tpChanged(): void;
-  /** The people moved: views of the old home must close. */
-  moved(line: string): void;
+  /** The people moved (to another star: `far`): views of the old home must close. */
+  moved(line: string, far: boolean): void;
 }
 
 let deps: TechCardDeps | null = null;
@@ -46,50 +47,64 @@ export function openTechCards(): void {
   const eng = deps?.engine();
   if (!eng) return;
   const block = eng.relocationBlock();
+  const far = (eng.getPlayerStar()?.civLevel ?? 0) >= RELOCATE_STAR_ERA;
   const card = `<button class="divine-action-btn faith-proc faith-proc-big tech-card${block ? ' faith-off' : ' affordable'}" data-card="new-world">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">A NEW WORLD</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/exodus.png" alt="" width="32" height="32"/></span>
-    <span class="divine-action-desc">${esc(block ?? 'Your whole people leaves its world for another in your system. They keep what they know; their old world is left to the wild.')}</span>
+    <span class="divine-action-desc">${esc(block ?? `Your whole people leaves its world for another ${far ? 'in your system or under another star' : 'in your system'}. They keep what they know; their old world is left to the wild.`)}</span>
     <span class="divine-action-cost">◆ ${RELOCATE_TP} TP</span></button>`;
   const m = modal('TECH CARDS', `What your people have learned, spent. You hold <b>${gameState.techPoints} TP</b>.`,
     card, '<button class="fm-btn" data-act="close">CLOSE</button>');
   m.querySelector('[data-card="new-world"]')?.addEventListener('click', () => { if (!eng.relocationBlock()) pickWorld(); });
 }
 
+/** Worlds of other stars offered at once (the kindest first). */
+const OTHER_STARS_SHOWN = 10;
+
 /** A NEW WORLD: choose where the people go, then confirm. */
 function pickWorld(): void {
   const eng = deps?.engine();
   if (!eng) return;
-  const targets = eng.relocationTargets();
+  const all = eng.relocationTargets();
+  const home = all.filter(t => !t.otherStar);
+  const far = all.filter(t => t.otherStar).slice(0, OTHER_STARS_SHOWN);
+  const targets = [...home, ...far];
   if (!targets.length) {
-    modal('A NEW WORLD', 'No world in your system has ground to stand on that is free to take.', '',
+    modal('A NEW WORLD', 'No world you know has ground to stand on that is free to take.', '',
       '<button class="fm-btn" data-act="close">CLOSE</button>');
     return;
   }
+  const key = (t: RelocationTarget) => `${t.starId}:${t.planetIndex}`;
   let chosen: RelocationTarget | null = null;
-  const rows = targets.map(t => `<button class="tm-world" data-i="${t.planetIndex}">
-      <span class="tm-world-name">${esc(t.name)}</span>
-      <span class="tm-world-type">${esc(t.type)} · orbit ${t.planetIndex + 1}</span>
+  const row = (t: RelocationTarget) => `<button class="tm-world" data-k="${key(t)}">
+      <span class="tm-world-name">${esc(/^[IVX]+$/.test(t.name) && t.otherStar ? `${t.starName} ${t.name}` : t.name)}</span>
+      <span class="tm-world-type">${esc(t.type)} · orbit ${t.planetIndex + 1}${t.otherStar ? ` of ${esc(t.starName)}` : ''}</span>
       <span class="tm-world-harsh tm-${harshness(t)}">${harshness(t).toUpperCase()}</span>
       ${t.colony ? '<span class="tm-world-note">your settlers are there</span>' : ''}
-    </button>`).join('');
-  const m = modal('A NEW WORLD', 'Where will your people go? The whole people crosses; nothing is left behind but the wild.',
-    `<div class="tm-worlds">${rows}</div>`,
+    </button>`;
+  const section = (title: string, list: RelocationTarget[]) =>
+    list.length ? `<div class="tm-group">${title}</div>${list.map(row).join('')}` : '';
+  const anyFar = all.some(t => t.otherStar);
+  const sub = anyFar
+    ? 'Where will your people go? Your own system, or across the dark to another star. The whole people crosses; nothing is left behind but the wild.'
+    : 'Where will your people go? The whole people crosses; nothing is left behind but the wild.';
+  const m = modal('A NEW WORLD', sub,
+    `<div class="tm-worlds">${section('YOUR SYSTEM', home)}${section(`OTHER STARS${all.filter(t => t.otherStar).length > far.length ? ` · the ${far.length} kindest` : ''}`, far)}</div>`,
     `<button class="fm-btn" data-act="close">NOT YET</button><button class="fm-btn tm-go" data-act="go" disabled>CROSS OVER · ${RELOCATE_TP} TP</button>`);
   const go = m.querySelector<HTMLButtonElement>('[data-act="go"]')!;
   m.querySelectorAll<HTMLElement>('.tm-world').forEach(el => el.addEventListener('click', () => {
     m.querySelectorAll('.tm-world').forEach(x => x.classList.remove('selected'));
     el.classList.add('selected');
-    chosen = targets.find(t => t.planetIndex === Number(el.dataset['i'])) ?? null;
+    chosen = targets.find(t => key(t) === el.dataset['k']) ?? null;
     go.disabled = !chosen;
   }));
   go.addEventListener('click', () => {
     if (!chosen) return;
-    const line = eng.relocateHome(chosen.planetIndex);
+    const line = eng.relocateHome(chosen.starId, chosen.planetIndex);
     close();
     deps?.tpChanged();
-    if (line) deps?.moved(line);
+    if (line) deps?.moved(line, chosen.otherStar);
   });
 }
 

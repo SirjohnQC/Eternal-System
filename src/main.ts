@@ -6236,13 +6236,13 @@ setupFaithDeckFold();
 initTechCards({
   engine: () => engine,
   tpChanged: () => setResourceChip('tech-display', 'tech-display-val', gameState.techPoints),
-  moved: (line) => {
+  moved: (line, far) => {
     // Whatever was open showed the old home: close it, follow the people.
     if (document.getElementById('planet-overlay')?.style.display === 'flex') closePlanetView();
     addChatMessage(line, 'god');   // the feed already has it (onCivEvent)
     const ps = engine?.getPlayerStar();
     if (ps) updateBottomBar(ps);
-    engine?.focusPlayerStar();
+    engine?.focusPlayerStar(false, far);
   },
 });
 initFaithHand({
