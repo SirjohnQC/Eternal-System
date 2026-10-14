@@ -42,3 +42,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:smoke
+      - name: Tech cards (every card played in a seeded world, ~40 s)
+        run: npm run test:techcards

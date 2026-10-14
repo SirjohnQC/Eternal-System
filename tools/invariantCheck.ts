@@ -312,6 +312,26 @@ rule({
   },
 });
 
+rule({
+  // Tech cards (#40): TP is spent, never owed; a technology pays its TP once.
+  name: 'TP never negative; each technology paid once',
+  check: () => {
+    if (gameState.techPoints < 0) return `techPoints ${gameState.techPoints}`;
+    const paid = gameState.techRewarded ?? [];
+    return new Set(paid).size === paid.length ? null : `${paid.length - new Set(paid).size} technologies paid twice`;
+  },
+});
+
+rule({
+  // A timed tech-card effect never outlives a full age of the slowest pace by much (no stuck shields).
+  name: 'tech card effects are bounded in time',
+  check: ({ engine }) => {
+    const fx = gameState.techEffects ?? {};
+    const far = (engine as any).tick + 400_000;
+    return (fx.defenceUntil ?? 0) > far || (fx.kinshipUntil ?? 0) > far ? `defence ${fx.defenceUntil}, kinship ${fx.kinshipUntil} at tick ${(engine as any).tick}` : null;
+  },
+});
+
 const { orreryColor } = await import('../src/rendering/OrreryPalette');
 rule({
   // The system panel's orrery appends alpha digits to each planet's colour; a
@@ -377,6 +397,11 @@ function resetGameState(name: string): void {
   gameState.techPoints = 0;
   gameState.firstContactFired = false;
   gameState.homeMoved = null;
+  gameState.techWear = {};
+  gameState.techRewarded = [];
+  gameState.tpEraHigh = 0;
+  gameState.techCardsKnown = [];
+  gameState.techEffects = {};
   runtimeState.playerPlanetGrid = null;
   runtimeState.playerNations = null;
 }

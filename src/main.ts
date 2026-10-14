@@ -1,4 +1,4 @@
-import { BigBangEngine, StarBody, Planet, EngineSnapshot, RELOCATE_ERA, RELOCATE_TP, type ZoomTier } from './simulation/BigBangEngine';
+import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
 import { initTechCards, openTechCards } from './ui/TechCards';
 import { preloadDivineIcons } from './ui/IconPreload';
@@ -948,10 +948,21 @@ function wireEngineEvents(eng: BigBangEngine): void {
     setResourceChip('tech-display', 'tech-display-val', total);
     // +5 DP every tech level advance
     awardDP(5, `tech level ${total} reached`);
-    // The Space Age opens the first tech card.
-    if (eng.getPlayerStar()?.civLevel === RELOCATE_ERA) {
-      showToast('tech', `A new tech card: A NEW WORLD. Click TP on the star map to move your whole people to another world (${RELOCATE_TP} TP).`, 10000);
-    }
+  };
+  // Tech cards (#40): TP from discoveries and plays; a card opens when its technology is learned.
+  eng.onTPChanged = (total) => setResourceChip('tech-display', 'tech-display-val', total);
+  // Cards that open together (a leap, a burst of discoveries) come as one toast.
+  let opened: string[] = [];
+  let openedTimer: ReturnType<typeof setTimeout> | null = null;
+  eng.onTechCardUnlocked = (card) => {
+    opened.push(card.name);
+    if (openedTimer) return;
+    openedTimer = setTimeout(() => {
+      const names = opened; opened = []; openedTimer = null;
+      const list = names.length > 4 ? `${names.slice(0, 4).join(', ')} and ${names.length - 4} more` : names.join(', ');
+      showToast('tech', `${names.length > 1 ? 'New tech cards' : 'A new tech card'}: ${list}. Click TP on the star map to see your cards.`, 9000);
+      addFeedEntry(`◆ ${names.length > 1 ? 'New tech cards' : 'New tech card'}: ${names.join(', ')}`, 'discovery');
+    }, 400);
   };
 
   wireCosmicCallbacks();
@@ -6244,6 +6255,7 @@ initTechCards({
     if (ps) updateBottomBar(ps);
     engine?.focusPlayerStar(false, far);
   },
+  played: (line) => addChatMessage(line, 'god'),   // the feed already has it (onCivEvent)
 });
 initFaithHand({
   chat: (text, kind) => addChatMessage(text, kind),
