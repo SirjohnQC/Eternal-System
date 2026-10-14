@@ -396,6 +396,101 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: "A New World" (TP card): the whole people moves (#40) ─────────
+{
+  const scen = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const { RELOCATE_TP, RELOCATE_ERA } = await import('../src/simulation/BigBangEngine');
+  const { GRID_SIZE } = await import('../src/simulation/PlanetGrid');
+
+  /** A world at the Space Age with a free world beside home, or null. */
+  const spaceAgeWorld = (): { e: any; ps: Star } | null => {
+    for (let k = 0; k < 12; k++) {
+      resetGameState('Inv_newworld');
+      gameState.skipFormation = true;
+      const e = new BigBangEngine(makeCanvas()) as any;
+      e.init(SEEDS[0].stats, `inv_newworld_${k}`);
+      for (let i = 0; i < 3_000; i++) e.update();
+      if (!e.leapToEra(RELOCATE_ERA - 1)) continue;
+      const ps = e.getPlayerStar() as Star;
+      gameState.techPoints = RELOCATE_TP;
+      if (!e.relocationBlock()) return null;            // must still be refused below the Space Age
+      e.leapToEra(RELOCATE_ERA);
+      if (ps.civLevel !== RELOCATE_ERA || !runtimeState.playerNations?.isFounded) continue;
+      gameState.techPoints = RELOCATE_TP;
+      if (e.relocationTargets().length) return { e, ps };
+    }
+    return null;
+  };
+  const w = spaceAgeWorld();
+
+  scen('A New World is refused before the Space Age and without the TP', () => {
+    if (!w) return 'no seed reached the Space Age with a free world in its system (or the card was allowed too early)';
+    gameState.techPoints = RELOCATE_TP - 1;
+    const blocked = w.e.relocationBlock();
+    const refused = w.e.relocateHome(w.e.relocationTargets()[0]?.planetIndex ?? 0);
+    gameState.techPoints = RELOCATE_TP;
+    if (!blocked) return `playable with ${RELOCATE_TP - 1} TP`;
+    if (refused !== null) return 'relocateHome went ahead without the TP';
+    if (w.e.relocateHome(w.e.homeIndexOf(w.ps)) !== null) return 'moved to the world it already lives on';
+    return null;
+  });
+
+  scen('A New World moves the whole people: new home, same era, nations re-sited, old world wild', () => {
+    if (!w) return 'no Space Age world';
+    const { e, ps } = w;
+    const ns = runtimeState.playerNations!;
+    const target = e.relocationTargets()[0].planetIndex;
+    const oldIdx = e.homeIndexOf(ps), oldPlanet = ps.planets[oldIdx], oldGrid = e.ensurePlayerGrid();
+    const era = ps.civLevel, techs = ns.nations.map(n => n.techs.length).join(','), alive = ns.nations.filter(n => !n.fallen).length;
+    const tp = gameState.techPoints;
+    const line = e.relocateHome(target);
+    if (!line) return 'refused a listed target';
+    if (e.homeIndexOf(ps) !== target) return `home is orbit ${e.homeIndexOf(ps) + 1}, wanted ${target + 1}`;
+    if (gameState.techPoints !== tp - RELOCATE_TP) return `TP ${tp} → ${gameState.techPoints}`;
+    if (ps.civLevel !== era) return `era ${era} → ${ps.civLevel}`;
+    if (runtimeState.playerNations !== ns) return 'the nations were replaced';
+    if (ns.nations.map(n => n.techs.length).join(',') !== techs) return 'nations lost what they knew';
+    const nowAlive = ns.nations.filter(n => !n.fallen);
+    if (nowAlive.length !== alive) return `${alive - nowAlive.length} nation(s) lost in the crossing`;
+    const grid = e.ensurePlayerGrid();
+    if (!grid || grid === oldGrid) return 'the home grid was not rebuilt for the new world';
+    for (const n of nowAlive) {
+      if (ns.owner[n.capital.row * GRID_SIZE + n.capital.col] !== n.id) return `${n.name}'s capital is not its own land`;
+      if (grid[n.capital.row][n.capital.col].civId == null) return `${n.name}'s capital is not settled`;
+    }
+    if (!oldPlanet.hasLife) return 'the old world lost its wild life';
+    if (!ps.planets[target].hasLife) return 'the new home has no life';
+    // The new home stays home, and its grid stays this world's, as time runs.
+    for (let i = 0; i < 2_000; i++) e.update();
+    if (e.homeIndexOf(ps) !== target) return 'home drifted back after the move';
+    if (e.ensurePlayerGrid() !== grid) return 'the new home grid was rebuilt by the simulation';
+    return null;
+  });
+
+  scen("A New World survives a save: the new home's ground comes from its own DNA", () => {
+    if (!w || !gameState.homeMoved) return 'no move to save';
+    const { e, ps } = w;
+    const biomes = (g: any) => { let h = 0; for (let r = 0; r < GRID_SIZE; r += 8) for (let c = 0; c < GRID_SIZE; c += 8) h = (h * 31 + g[r][c].biome.length + Math.round(g[r][c].elevation * 100)) | 0; return h; };
+    const before = biomes(e.ensurePlayerGrid());
+    const saved = JSON.parse(JSON.stringify({ engine: e.serialize(), moved: gameState.homeMoved }));
+    runtimeState.playerPlanetGrid = null;
+    const e2 = new BigBangEngine(makeCanvas()) as any;
+    e2.init(SEEDS[0].stats, 'inv_newworld_load');
+    e2.loadState(saved.engine);
+    gameState.homeMoved = saved.moved;
+    runtimeState.playerPlanetGrid = null;
+    const ps2 = e2.getPlayerStar();
+    if (!ps2 || e2.homeIndexOf(ps2) !== e.homeIndexOf(ps)) return 'the loaded game has another home world';
+    return biomes(e2.ensurePlayerGrid()) === before ? null : 'the loaded home world has different ground';
+  });
+}
+
 // ── Scenario: a colony ark, end to end (Colonies.ts, P1) ────────────────────
 // Real engine paths: launch → voyage (fleet) → landfall → growth → save/load.
 {
@@ -775,101 +870,6 @@ for (const { seed, stats } of SEEDS) {
   demoted('star death', s => e.makeRemnant(s, 'supernova'));
 }
 
-
-// ── Scenario: "A New World" (TP card): the whole people moves (#40) ─────────
-{
-  const scen = (name: string, run: () => string | null) => {
-    const r: Rule = { name: `scenario: ${name}`, check: () => null };
-    rules.push(r);
-    let detail: string | null;
-    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
-    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
-  };
-  const { RELOCATE_TP, RELOCATE_ERA } = await import('../src/simulation/BigBangEngine');
-  const { GRID_SIZE } = await import('../src/simulation/PlanetGrid');
-
-  /** A world at the Space Age with a free world beside home, or null. */
-  const spaceAgeWorld = (): { e: any; ps: Star } | null => {
-    for (let k = 0; k < 12; k++) {
-      resetGameState('Inv_newworld');
-      gameState.skipFormation = true;
-      const e = new BigBangEngine(makeCanvas()) as any;
-      e.init(SEEDS[0].stats, `inv_newworld_${k}`);
-      for (let i = 0; i < 3_000; i++) e.update();
-      if (!e.leapToEra(RELOCATE_ERA - 1)) continue;
-      const ps = e.getPlayerStar() as Star;
-      gameState.techPoints = RELOCATE_TP;
-      if (!e.relocationBlock()) return null;            // must still be refused below the Space Age
-      e.leapToEra(RELOCATE_ERA);
-      if (ps.civLevel !== RELOCATE_ERA || !runtimeState.playerNations?.isFounded) continue;
-      gameState.techPoints = RELOCATE_TP;
-      if (e.relocationTargets().length) return { e, ps };
-    }
-    return null;
-  };
-  const w = spaceAgeWorld();
-
-  scen('A New World is refused before the Space Age and without the TP', () => {
-    if (!w) return 'no seed reached the Space Age with a free world in its system (or the card was allowed too early)';
-    gameState.techPoints = RELOCATE_TP - 1;
-    const blocked = w.e.relocationBlock();
-    const refused = w.e.relocateHome(w.e.relocationTargets()[0]?.planetIndex ?? 0);
-    gameState.techPoints = RELOCATE_TP;
-    if (!blocked) return `playable with ${RELOCATE_TP - 1} TP`;
-    if (refused !== null) return 'relocateHome went ahead without the TP';
-    if (w.e.relocateHome(w.e.homeIndexOf(w.ps)) !== null) return 'moved to the world it already lives on';
-    return null;
-  });
-
-  scen('A New World moves the whole people: new home, same era, nations re-sited, old world wild', () => {
-    if (!w) return 'no Space Age world';
-    const { e, ps } = w;
-    const ns = runtimeState.playerNations!;
-    const target = e.relocationTargets()[0].planetIndex;
-    const oldIdx = e.homeIndexOf(ps), oldPlanet = ps.planets[oldIdx], oldGrid = e.ensurePlayerGrid();
-    const era = ps.civLevel, techs = ns.nations.map(n => n.techs.length).join(','), alive = ns.nations.filter(n => !n.fallen).length;
-    const tp = gameState.techPoints;
-    const line = e.relocateHome(target);
-    if (!line) return 'refused a listed target';
-    if (e.homeIndexOf(ps) !== target) return `home is orbit ${e.homeIndexOf(ps) + 1}, wanted ${target + 1}`;
-    if (gameState.techPoints !== tp - RELOCATE_TP) return `TP ${tp} → ${gameState.techPoints}`;
-    if (ps.civLevel !== era) return `era ${era} → ${ps.civLevel}`;
-    if (runtimeState.playerNations !== ns) return 'the nations were replaced';
-    if (ns.nations.map(n => n.techs.length).join(',') !== techs) return 'nations lost what they knew';
-    const nowAlive = ns.nations.filter(n => !n.fallen);
-    if (nowAlive.length !== alive) return `${alive - nowAlive.length} nation(s) lost in the crossing`;
-    const grid = e.ensurePlayerGrid();
-    if (!grid || grid === oldGrid) return 'the home grid was not rebuilt for the new world';
-    for (const n of nowAlive) {
-      if (ns.owner[n.capital.row * GRID_SIZE + n.capital.col] !== n.id) return `${n.name}'s capital is not its own land`;
-      if (grid[n.capital.row][n.capital.col].civId == null) return `${n.name}'s capital is not settled`;
-    }
-    if (!oldPlanet.hasLife) return 'the old world lost its wild life';
-    if (!ps.planets[target].hasLife) return 'the new home has no life';
-    // The new home stays home, and its grid stays this world's, as time runs.
-    for (let i = 0; i < 2_000; i++) e.update();
-    if (e.homeIndexOf(ps) !== target) return 'home drifted back after the move';
-    if (e.ensurePlayerGrid() !== grid) return 'the new home grid was rebuilt by the simulation';
-    return null;
-  });
-
-  scen("A New World survives a save: the new home's ground comes from its own DNA", () => {
-    if (!w || !gameState.homeMoved) return 'no move to save';
-    const { e, ps } = w;
-    const biomes = (g: any) => { let h = 0; for (let r = 0; r < GRID_SIZE; r += 8) for (let c = 0; c < GRID_SIZE; c += 8) h = (h * 31 + g[r][c].biome.length + Math.round(g[r][c].elevation * 100)) | 0; return h; };
-    const before = biomes(e.ensurePlayerGrid());
-    const saved = JSON.parse(JSON.stringify({ engine: e.serialize(), moved: gameState.homeMoved }));
-    runtimeState.playerPlanetGrid = null;
-    const e2 = new BigBangEngine(makeCanvas()) as any;
-    e2.init(SEEDS[0].stats, 'inv_newworld_load');
-    e2.loadState(saved.engine);
-    gameState.homeMoved = saved.moved;
-    runtimeState.playerPlanetGrid = null;
-    const ps2 = e2.getPlayerStar();
-    if (!ps2 || e2.homeIndexOf(ps2) !== e.homeIndexOf(ps)) return 'the loaded game has another home world';
-    return biomes(e2.ensurePlayerGrid()) === before ? null : 'the loaded home world has different ground';
-  });
-}
 
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
