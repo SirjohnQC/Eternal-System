@@ -53,6 +53,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
   type EvolutionEvent,
 } from './EvolutionEngine';
+import { tryQuake, restlessness, quakePlace, QUAKE_EVERY, type Quake } from './Quakes';
 import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, diffGrid, applyGridEdits, GRID_GENERATOR, type PlanetGrid, type GridEdits } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
@@ -1869,6 +1870,10 @@ export class BigBangEngine {
 
   /** Which star/planet the current player grid was generated for. */
   private playerGridFor: { starId: number; planetIndex: number } | null = null;
+  /** Recent quakes on the home world (#50), newest last; for the view and probes. Runtime only: the land keeps what they did. */
+  quakes: Quake[] = [];
+  /** A quake shook the home world: the view shakes, raises dust, shows a rift. */
+  onPlayerQuake?: (q: Quake) => void;
   /** Surface changes from a loaded save, applied when that grid is next built (#77). */
   private pendingGridEdits: { starId: number; planetIndex: number; edits: GridEdits; generator?: number } | null = null;
 
@@ -2453,6 +2458,32 @@ export class BigBangEngine {
   invalidatePlayerGrid(): void {
     runtimeState.playerPlanetGrid = null;
     this.playerGridFor = null;
+  }
+
+  /**
+   * Earthquakes on the home world (#50): a chance every QUAKE_EVERY ticks,
+   * scaled by how restless the world is; the quake itself starts on a fault
+   * (Quakes.ts). A felt one is news; a great one may split the land.
+   */
+  private stepQuakes(star: StarBody): void {
+    if (this.tick % QUAKE_EVERY !== 0) return;
+    const grid = runtimeState.playerPlanetGrid;
+    const f = this.playerGridFor;
+    if (!grid || !f || f.starId !== star.id) return;
+    const planet = star.planets[f.planetIndex];
+    const restless = restlessness(this.stats.entropy, gameState.playerPlanetDNA?.chaos, planet?.type === 'lava');
+    const q = tryQuake(grid, this.rng.fork(`quake_${this.tick}`), this.tick, 0.08 * restless, planet?.type ?? 'rocky');
+    if (!q) return;
+    this.quakes.push(q);
+    if (this.quakes.length > 6) this.quakes.shift();
+    this.onPlayerQuake?.(q);
+    if (q.rift.length) this.onPlayerWorldChanged?.();
+    if (q.magnitude < 6 || !star.hasLife) return;
+    const place = quakePlace(grid, q.at);
+    let line = q.magnitude >= 7 ? `The ground heaved across ${place}.` : `The ground shook across ${place}.`;
+    if (q.settled >= 30 && star.civLevel >= 1) line += ' Walls cracked in the towns.';
+    if (q.rift.length) line += q.flooded ? ' The land split, and the sea poured into the rift.' : ' The land split open along a new rift.';
+    this.onCivEvent?.(line);
   }
 
   /**
@@ -3259,6 +3290,9 @@ export class BigBangEngine {
       // ── Biosphere catastrophes ──────────────────────────────────────────────
       this.rollBiosphereCatastrophe(star);
       if (!star.hasLife) continue;
+
+      // ── Earthquakes on the home world (#50) ─────────────────────────────────
+      if (star.isPlayerStar) this.stepQuakes(star);
 
       // ── Planet surface: life spread, territory, species ranges ──────────────
       // This used to live inside the pre-intelligence branch, so the moment a
