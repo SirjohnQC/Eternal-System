@@ -228,7 +228,6 @@ function rebuild(): void {
 await renderer.init(stage);
 renderer.setClock(() => (performance.now() / (1000 / 60)) * YEAR);
 // Exposed for console poking while iterating on the look.
-(window as any).__diorama = renderer;
 // Frame-budget bench for the zoom camera (tools/zoomBench.ts drives it).
 installZoomBench(renderer);
 
