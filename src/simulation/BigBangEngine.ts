@@ -2141,6 +2141,8 @@ export class BigBangEngine {
     }
 
     // Kinematic galactic swirl around a FIXED centre (gal.cx/cy).
+    // Each galaxy's widest orbit is the same for all its stars: once per tick.
+    const maxOrbit = new Map<Galaxy, number>();
     for (const star of active) {
       if (star.isDead) continue;
       const gal = star.galaxyId != null ? galById.get(star.galaxyId) : undefined;
@@ -2157,7 +2159,9 @@ export class BigBangEngine {
       }
       // A galaxy near the edge of the universe (and galaxies grow) must not
       // swing its outer stars onto the rim, where they used to stick.
-      star.orbitRadius = Math.min(star.orbitRadius, this.maxOrbitIn(gal));
+      let mo = maxOrbit.get(gal);
+      if (mo === undefined) { mo = this.maxOrbitIn(gal); maxOrbit.set(gal, mo); }
+      star.orbitRadius = Math.min(star.orbitRadius, mo);
       if (star.orbitAngle == null) {
         star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
       }
@@ -2180,18 +2184,54 @@ export class BigBangEngine {
    * of near-misses in the same galaxy so a later pass can finish the job.
    */
   private resolveCloseApproaches(active: StarBody[]): void {
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        const a = active[i], b = active[j];
+    // Only stars within `reach` of each other interact (contact or capture),
+    // so each star is tested against its neighbours in a grid of `reach`-sized
+    // cells, not every other star: the all-pairs version was ~75% of a tick
+    // late in a long game (stars keep igniting, so it grew with their square)
+    // and is what made fast speeds lag (#116). The pairs are visited in the
+    // same order as before, so the outcome is identical.
+    const n = active.length;
+    if (n < 2) return;
+    let maxR = 0;
+    for (const s of active) if (s.radius > maxR) maxR = s.radius;
+    // Room for a merge to grow a star mid-pass; if one outgrows it anyway the
+    // rest of the pass checks every pair (never misses a contact).
+    const reach = Math.max(CAPTURE_DIST, MERGE_DIST, (maxR + 4) * 2 * 1.15);
+    const cell = (v: number) => Math.floor(v / reach);
+    const grid = new Map<number, number[]>();
+    const key = (cx: number, cy: number) => (cx + 4096) * 8192 + (cy + 4096);
+    for (let i = 0; i < n; i++) {
+      const k = key(cell(active[i].x), cell(active[i].y));
+      const l = grid.get(k);
+      if (l) l.push(i); else grid.set(k, [i]);
+    }
+    const near: number[] = [];
+    let brute = false;
+    for (let i = 0; i < n; i++) {
+      const a = active[i];
+      near.length = 0;
+      if (brute) {
+        for (let j = i + 1; j < n; j++) near.push(j);
+      } else {
+        const cx = cell(a.x), cy = cell(a.y);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const l = grid.get(key(cx + dx, cy + dy));
+          if (l) for (const j of l) if (j > i) near.push(j);
+        }
+        near.sort((x, y) => x - y);
+      }
+      for (const j of near) {
+        const b = active[j];
         if (a.isDead || b.isDead) continue;
-        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
         const contact = Math.max(MERGE_DIST, (a.radius + b.radius) * 1.15);
-        if (dist < contact) {
+        if (d2 < contact * contact) {
           this.mergeStars(a, b);
+          if (!brute && (Math.max(a.radius, b.radius) + maxR) * 1.15 > reach) brute = true;
           continue;
         }
         if (
-          dist < CAPTURE_DIST &&
+          d2 < CAPTURE_DIST * CAPTURE_DIST &&
           a.galaxyId != null && a.galaxyId === b.galaxyId &&
           a.orbitRadius != null && b.orbitRadius != null
         ) {
@@ -2489,11 +2529,12 @@ export class BigBangEngine {
         continue;
       }
 
-      // Panspermia: check if hits a star's planet zone
+      // Panspermia: check if hits a star's planet zone (squared: no root per star, #116)
       for (const star of this.stars) {
         if (star.isDead) continue;
         const dx = star.x - ast.x, dy = star.y - ast.y;
-        if (Math.sqrt(dx * dx + dy * dy) < star.radius * 3 + PANSPERMIA_DIST * (this.stats.life / 20)) {
+        const zone = star.radius * 3 + PANSPERMIA_DIST * (this.stats.life / 20);
+        if (dx * dx + dy * dy < zone * zone) {
           // Panspermia event — a delivered biosphere still has to be able to
           // survive where it lands, so the roll is weighted by habitability.
           // Nothing survives landing on a world that is still molten, so a

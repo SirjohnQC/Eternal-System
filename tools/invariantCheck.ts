@@ -790,6 +790,55 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: the grid collision pass equals the all-pairs one (#116) ───────
+// The close-approach pass tests each star only against its grid neighbours
+// (it was all pairs, and the main cost of a long game). Crowd the stars so
+// many touch, then run the grid pass on one copy of the world and the old
+// all-pairs loop on another: the same merges, the same orbit drift.
+{
+  const r: Rule = { name: 'scenario: the grid collision pass matches the all-pairs pass on a crowded sky', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const CAP = 48, MERGE = 22;
+    const brute = (eng: any, active: any[]) => {
+      for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
+        const a = active[i], b = active[j];
+        if (a.isDead || b.isDead) continue;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const contact = Math.max(MERGE, (a.radius + b.radius) * 1.15);
+        if (dist < contact) { eng.mergeStars(a, b); continue; }
+        if (dist < CAP && a.galaxyId != null && a.galaxyId === b.galaxyId && a.orbitRadius != null && b.orbitRadius != null) {
+          const mid = (a.orbitRadius + b.orbitRadius) * 0.5;
+          a.orbitRadius += (mid - a.orbitRadius) * 0.003;
+          b.orbitRadius += (mid - b.orbitRadius) * 0.003;
+        }
+      }
+    };
+    for (const k of [0.15, 0.3, 0.6]) {
+      resetGameState('Inv_grid');
+      const e = new BigBangEngine(makeCanvas()) as any;
+      e.init(SEEDS[0].stats, 'inv_grid');
+      for (let i = 0; i < 3_000; i++) e.update();
+      // Pull every star toward the middle: a crowded sky with many contacts.
+      const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
+      for (const st of e.stars) { st.x = cx + (st.x - cx) * k; st.y = cy + (st.y - cy) * k; }
+      const snap = JSON.parse(JSON.stringify(e.serialize()));
+      const e2 = new BigBangEngine(makeCanvas()) as any;
+      e2.init(SEEDS[0].stats, 'inv_grid');
+      e2.loadState(JSON.parse(JSON.stringify(snap)));
+      e.loadState(JSON.parse(JSON.stringify(snap)));
+      const alive = (x: any) => x.stars.filter((st: any) => !st.isDead);
+      e.resolveCloseApproaches(alive(e));
+      brute(e2, alive(e2));
+      const a = JSON.stringify(e.serialize().stars ?? e.serialize()), b = JSON.stringify(e2.serialize().stars ?? e2.serialize());
+      const merged = alive(e2).length;
+      if (a !== b) { detail = `crowded x${k}: grid and all-pairs passes disagree (${alive(e).length} vs ${merged} stars left)`; break; }
+    }
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Scenarios: drive rare transitions directly ──────────────────────────────
 // Some transitions happen too rarely for the seeded runs to hit reliably
 // (a catastrophe on an intelligent world, ~88k ticks on one seed). Force them.
