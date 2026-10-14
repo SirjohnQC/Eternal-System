@@ -1377,7 +1377,8 @@ export class IsoDioramaRenderer {
     const d = this.gridToDisc(row, col);
     const rim = this.habitable && d ? this.rimFalloff(Math.hypot(d.dx, d.dy)) : 0;
     const elevation = cell.elevation - rim;
-    const biome = this.habitable ? classifyBiome(elevation, cell.moisture, cell.temperature, this.planetType as HabitableType) : cell.biome;
+    const biome = cell.biome === 'lake' ? 'lake'
+      : this.habitable ? classifyBiome(elevation, cell.moisture, cell.temperature, this.planetType as HabitableType) : cell.biome;
     // [cold end, hot end] in °C and how much water the air can hold, by world.
     const stage = this.forming ? this.star?.formationStage ?? '' : '';
     const RANGE: Record<string, [number, number, number]> = {
@@ -2090,7 +2091,7 @@ export class IsoDioramaRenderer {
 
           // Re-classify with a rim falloff so land sits in the middle of an ocean.
           const elev = cell.elevation - this.rimFalloff(r);
-          const biome: BiomeType = this.planetType === 'lava'
+          const biome: BiomeType = this.planetType === 'lava' || cell.biome === 'lake'
             ? cell.biome
             : classifyBiome(elev, cell.moisture, cell.temperature, this.planetType);
 
@@ -2660,7 +2661,7 @@ export class IsoDioramaRenderer {
       if (!cell) return false;
       const e = this.elevationAt(grid, dx, dy) ?? cell.elevation;
       if (e - this.rimFalloff(r) < SEA_LEVEL + 0.004) return false;
-      return cell.biome !== 'snow' && cell.biome !== 'volcanic';
+      return cell.biome !== 'snow' && cell.biome !== 'volcanic' && cell.biome !== 'lake';
     };
     const fertileAt = (x: number, y: number) => {
       if (!isLand(x, y)) return 0;
@@ -3166,7 +3167,8 @@ export class IsoDioramaRenderer {
         // Stand props ON the terrain: the surface is extruded by elevation now,
         // so an unlifted position buries a town inside the hill it sits on.
         const lift = this.liftAtCell(cell, r);
-        const onLand = cell.elevation - this.rimFalloff(r) >= SEA_LEVEL;
+        // A lake (#47) lies above the sea but is water all the same.
+        const onLand = cell.elevation - this.rimFalloff(r) >= SEA_LEVEL && cell.biome !== 'lake';
         if (onLand) landKeys.add(sampleKey(px, py));
         if (cell.civId != null && onLand) {
           settlementSpots.push({
