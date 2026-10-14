@@ -15,6 +15,7 @@
  */
 
 import { dashedLine, type ViewBox } from './lineClip';
+import { systemReach } from './viewCull';
 import { ruledByPlayer } from '../simulation/Sovereignty';
 import {
   Application, Container, Graphics, Text, TextStyle,
@@ -795,7 +796,9 @@ export class PixiBigBangRenderer {
     for (const star of stars) {
       if (star.isDead || star.planets.length === 0) continue;
       if (!star.isPlayerStar && camera.scale < 1.15) continue;
-      if (!inView(star.x, star.y, camera, halfW, halfH)) continue;
+      // Belts lie beyond the planets: cull by the system's reach (#84).
+      const reach = systemReach(star) * 1.6;
+      if (!inView(star.x, star.y, camera, halfW + reach, halfH + reach)) continue;
 
       let outer = 0;
       for (const p of star.planets) {
@@ -2049,7 +2052,10 @@ export class PixiBigBangRenderer {
       }
       // System zoom used to draw every planet in the cosmos — with wider
       // spacing that meant dozens of off-screen Kepler orbit polylines/frame.
-      if (!inView(star.x, star.y, camera, halfW, halfH)) continue;
+      // Cull by the system's reach, not the star's point: zoomed in on an outer
+      // world the star itself is off screen, and every planet vanished (#84).
+      const reach = systemReach(star);
+      if (!inView(star.x, star.y, camera, halfW + reach, halfH + reach)) continue;
 
       for (let i = 0; i < star.planets.length; i++) {
         const planet = star.planets[i];

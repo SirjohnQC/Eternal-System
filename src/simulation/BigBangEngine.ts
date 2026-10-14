@@ -1,4 +1,4 @@
-import { NationSystem } from './Nations';
+import { NationSystem, type Nation } from './Nations';
 import {
   emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
@@ -34,6 +34,11 @@ import {
 } from './GameState';
 import { bakePlanetTexture } from './PlanetRenderer';
 import { genomeSeedFor } from './PlanetGenome';
+import {
+  TECH_CARDS, TECH_CARD_BY_ID, TP_PER_ERA, TP_PER_DISCOVERY, techPrice, noteTechUse, techCardUnlocked,
+  type TechCardDef,
+} from './TechCards';
+import { available as techsAvailable, TECH_BY_ID as TECH_DEFS } from './Technology';
 import { stepEncounters, ENCOUNTER_EVERY, type EncounterEvent, type EncounterKind } from './SystemEncounters';
 import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
@@ -48,7 +53,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
   type EvolutionEvent,
 } from './EvolutionEngine';
-import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, type PlanetGrid } from './PlanetGrid';
+import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, diffGrid, applyGridEdits, GRID_GENERATOR, type PlanetGrid, type GridEdits } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
@@ -224,7 +229,7 @@ export interface RelocationTarget {
   colony: boolean;
 }
 /** TP the whole people's move to another world costs. */
-export const RELOCATE_TP = 10;
+export const RELOCATE_TP = TECH_CARD_BY_ID.new_world.cost;
 /** The era from which a people can leave its world (Space Age). */
 export const RELOCATE_ERA = TECH_LEVELS.indexOf('Space Age');
 /** The era from which they can cross to another star (Interstellar). */
@@ -559,6 +564,12 @@ export interface EngineSnapshot {
   /** Colonies on other worlds (Colonies.ts). Optional: older saves have none. */
   colonies?: ColonyState;
   worldHistory?: WorldHistoryState;
+  /**
+   * The home world's surface as the simulation left it: life spread, civ
+   * territory, divine land edits (#77). Stored as changes against the
+   * generated grid. Optional: older saves regenerate the surface as before.
+   */
+  playerGrid?: { starId: number; planetIndex: number; edits: GridEdits; generator?: number };
 }
 
 export interface Camera {
@@ -1858,6 +1869,8 @@ export class BigBangEngine {
 
   /** Which star/planet the current player grid was generated for. */
   private playerGridFor: { starId: number; planetIndex: number } | null = null;
+  /** Surface changes from a loaded save, applied when that grid is next built (#77). */
+  private pendingGridEdits: { starId: number; planetIndex: number; edits: GridEdits; generator?: number } | null = null;
 
   /**
    * Index of the planet the player lives on. THE home rule: the planet view,
@@ -1902,6 +1915,22 @@ export class BigBangEngine {
     const f = this.playerGridFor;
     if (g && f && f.starId === ps.id && f.planetIndex === planetIndex) return g;
 
+    // A copy of the generated surface: the base stays clean for saves to diff against.
+    runtimeState.playerPlanetGrid = this.generateHomeGrid(ps, planetIndex).map(row => row.map(c => ({ ...c })));
+    this.playerGridFor = { starId: ps.id, planetIndex };
+    const pending = this.pendingGridEdits;
+    if (pending && pending.starId === ps.id && pending.planetIndex === planetIndex) {
+      applyGridEdits(runtimeState.playerPlanetGrid, pending.edits);
+    }
+    this.pendingGridEdits = null;
+    return runtimeState.playerPlanetGrid;
+  }
+
+  /** The generated surface last built, kept so saves needn't rebuild it (~0.3 s). Never mutated. */
+  private homeGridBase: { key: string; grid: PlanetGrid } | null = null;
+
+  /** The home world's surface as generated, before anything lived or changed on it. Do not mutate. */
+  private generateHomeGrid(ps: StarBody, planetIndex: number): PlanetGrid {
     const planet = ps.planets[planetIndex];
     // `planet.type` is the face of the current formation stage while the world
     // forms, then its destiny. The setup DNA's ocean answer only shapes the
@@ -1913,13 +1942,282 @@ export class BigBangEngine {
     // its ground is its own DNA, the same the system map draws it from.
     const moved = gameState.homeMoved;
     const movedHere = !!moved && moved.starId === ps.id && moved.planetIndex === planetIndex;
-    runtimeState.playerPlanetGrid = generatePlanetGrid(
-      planet?.type ?? 'rocky',
-      ps.id * 7777 + planetIndex * 131,
-      movedHere ? (planet?.dna ?? dna) : dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
-    );
-    this.playerGridFor = { starId: ps.id, planetIndex };
-    return runtimeState.playerPlanetGrid;
+    const type = planet?.type ?? 'rocky', seed = ps.id * 7777 + planetIndex * 131;
+    const gridDna = movedHere ? (planet?.dna ?? dna) : dna && !labDna ? { ...dna, oceans: 'mixed' as const } : dna;
+    const key = `${type}|${seed}|${JSON.stringify(gridDna ?? null)}`;
+    if (this.homeGridBase?.key !== key) this.homeGridBase = { key, grid: generatePlanetGrid(type, seed, gridDna) };
+    return this.homeGridBase.grid;
+  }
+
+  /** The home surface's changes, for a save (null when no surface was built). */
+  private savedPlayerGrid(): EngineSnapshot['playerGrid'] {
+    const g = runtimeState.playerPlanetGrid, f = this.playerGridFor;
+    if (!g || !f) return this.pendingGridEdits ?? undefined; // loaded but never viewed: keep what was loaded
+    const ps = this.stars.find(s => s.id === f.starId);
+    if (!ps || !ps.planets[f.planetIndex]) return undefined;
+    return { starId: f.starId, planetIndex: f.planetIndex, edits: diffGrid(g, this.generateHomeGrid(ps, f.planetIndex)), generator: GRID_GENERATOR };
+  }
+
+  // ── Tech cards (TechCards.ts; docs/plans/2026-10-14-tech-cards.md) ─────────
+
+  /** Called when TP change for a reason other than an age (a discovery, a card played). */
+  onTPChanged?: (total: number) => void;
+  /** A tech card became playable for the first time (its technology was learned). */
+  onTechCardUnlocked?: (card: TechCardDef) => void;
+
+  /** TP for a technology the home world's nations learned for the first time (paid once per game). */
+  private rewardDiscovery(tech: string): void {
+    const paid = (gameState.techRewarded ??= []);
+    if (paid.includes(tech)) return;
+    paid.push(tech);
+    gameState.techPoints += TP_PER_DISCOVERY;
+    this.onTPChanged?.(gameState.techPoints);
+  }
+
+  /** Everything any of the home world's live nations knows. */
+  private homeKnowledge(): Set<string> {
+    const ns = runtimeState.playerNations;
+    return new Set(ns?.isFounded ? ns.nations.filter(n => !n.fallen).flatMap(n => n.techs) : []);
+  }
+
+  /** Tell the player about cards that just became playable (once each, saved). */
+  private announceTechCards(): void {
+    const ps = this.getPlayerStar();
+    if (!ps) return;
+    const seen = (gameState.techCardsKnown ??= []);
+    const known = this.homeKnowledge();
+    for (const c of TECH_CARDS) {
+      if (seen.includes(c.id) || !techCardUnlocked(c, known, ps.civLevel)) continue;
+      seen.push(c.id);
+      this.onTechCardUnlocked?.(c);
+    }
+  }
+
+  /** Every tech card, as the hand shows it: unlocked or sealed, its price now, and why it cannot be played. */
+  techCardViews(): Array<{ card: TechCardDef; unlocked: boolean; price: number; block: string | null; acts: string[]; age: number }> {
+    const ps = this.getPlayerStar();
+    const known = this.homeKnowledge();
+    const wear = (gameState.techWear ??= {});
+    return TECH_CARDS.map(card => {
+      const unlocked = !!ps && techCardUnlocked(card, known, ps.civLevel);
+      const price = techPrice(card, wear, this.tick);
+      const age = card.needs.era ?? TECH_DEFS[card.needs.tech!]?.era ?? 1;
+      return { card, unlocked, price, block: unlocked ? this.techCardBlock(card, price) : null, acts: unlocked ? this.techCardTargets(card).map(n => n.name) : [], age };
+    });
+  }
+
+  /** The nations a card's omens fall on. */
+  private techCardTargets(card: TechCardDef): Nation[] {
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded || card.who === 'world') return [];
+    return card.who === 'all' ? ns.nations.filter(n => !n.fallen) : ns.knowersOf(card.needs.tech!);
+  }
+
+  /** Why a card cannot be played now, or null. */
+  private techCardBlock(card: TechCardDef, price: number): string | null {
+    const ps = this.getPlayerStar();
+    if (!ps || ps.biologyPhase !== 'intelligent') return 'Your people have not yet woken.';
+    if (gameState.techPoints < price) return `It takes ${price} TP; you have ${gameState.techPoints}.`;
+    if (card.who !== 'world' && !this.techCardTargets(card).length) return 'No nation knows how.';
+    switch (card.special) {
+      case 'new_world': return this.relocationBlock() ?? (this.relocationTargets().length ? null : 'No world you know is free to take.');
+      case 'defence': return this.tick < (gameState.techEffects?.defenceUntil ?? -1) ? 'Your rockets already stand ready.' : null;
+      case 'kinship': return !this.colonies.colonies.some(c => c.byPlayer && ruledByPlayer(c)) ? 'You have no colonies to reach.'
+        : this.tick < (gameState.techEffects?.kinshipUntil ?? -1) ? 'Your colonies are already close.' : null;
+      case 'founding_fleet': return this.foundingFleetSite() ? null : 'No world in reach your people could settle, or your fleet is full.';
+      case 'ambassadors': return this.knownPolities().length ? null : 'You know no other people.';
+      case 'espionage': return this.espionageTarget() ? null : 'No people in reach knows anything you could use.';
+      case 'terraform': return this.getTerraformInfo()?.options.length ? null : 'Your world cannot be remade now.';
+      case 'seedships': return this.getMeteorTarget() ? null : 'No lifeless world in reach.';
+      default: return null;
+    }
+  }
+
+  /**
+   * Play a tech card (the player's act): TP spent, wear noted, the act written
+   * into the Chronicle, the omens laid on the nations it names (each linked to
+   * the act), its price laid with them or after, and its special act done.
+   * `choice` picks what a card needs picked: a terraform target type. A New
+   * World goes through relocateHome (it has its own picker). Returns the
+   * feed line, or null when the card cannot be played.
+   */
+  playTechCard(id: string, choice?: string): string | null {
+    const card = TECH_CARD_BY_ID[id];
+    const ps = this.getPlayerStar();
+    if (!card || !ps || card.special === 'new_world') return null;
+    const wear = (gameState.techWear ??= {});
+    const price = techPrice(card, wear, this.tick);
+    if (!techCardUnlocked(card, this.homeKnowledge(), ps.civLevel) || this.techCardBlock(card, price)) return null;
+    if (card.special === 'terraform' && !this.getTerraformInfo()?.options.some(o => o.targetType === choice)) return null;
+
+    const rng = this.rng.fork(`tech_${card.id}_${this.tick}`);
+    const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+    const targets = this.techCardTargets(card);
+    gameState.techPoints -= price;
+    noteTechUse(wear, card.id, this.tick);
+    this.onTPChanged?.(gameState.techPoints);
+    const title = card.name.charAt(0) + card.name.slice(1).toLowerCase();
+    const castId = ns ? ns.remark(this.tick, `You spent ${price} TP on ${title}.`, [card.does]) : 0;
+    const cause = castId || undefined;
+    const now = ns?.now ?? 0;
+    for (const n of targets) {
+      for (const o of card.omens ?? []) {
+        ns!.bless(n.id, { card: title, op: o.op, m: o.m, cond: o.cond ?? 'always', from: now, until: now + o.eras, aftermath: false, primary: true, cause });
+      }
+      for (const p of card.price ?? []) {
+        const from = p.when === 'with' ? now : now + Math.max(...(card.omens ?? [{ eras: p.eras }]).map(o => o.eras));
+        ns!.bless(n.id, { card: title, op: p.op, m: p.m, cond: 'always', from, until: from + p.eras, aftermath: p.when === 'after', primary: false, cause });
+      }
+      if (card.inequality) ns!.shiftInequality(n.id, card.inequality, this.tick, title, cause);
+    }
+    // A world act's price (Founding Fleet, Gene Shaping) falls on every nation.
+    if (card.who === 'world' && card.price?.length && ns) {
+      for (const n of ns.nations.filter(x => !x.fallen)) {
+        for (const p of card.price) ns.bless(n.id, { card: title, op: p.op, m: p.m, cond: 'always', from: now, until: now + p.eras, aftermath: p.when === 'after', primary: false, cause });
+      }
+    }
+    const said = this.techCardSpecial(card, rng, targets, choice, cause);
+    const all = targets.length === ns?.nations.filter(n => !n.fallen).length;
+    const who = card.who === 'world' ? '' : all ? 'every nation takes it up' : targets.length === 1 ? `${targets[0].name} takes it up`
+      : `${targets.slice(0, -1).map(n => n.name).join(', ')} and ${targets[targets.length - 1].name} take it up`;
+    const line = `${card.name}:${said ?? (who ? ` ${who}.` : '')}`.trim();
+    this.onCivEvent?.(line);
+    this.onPlayerWorldChanged?.();
+    return line;
+  }
+
+  /** A card's engine-level act; returns what the feed should say (null: the default). */
+  private techCardSpecial(card: TechCardDef, rng: SeedRNG, targets: Nation[], choice: string | undefined, cause: number | undefined): string | null {
+    const ps = this.getPlayerStar()!;
+    const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+    const fx = (gameState.techEffects ??= {});
+    const AGE_TICKS = this.civAdvanceRate(ps, false);   // one age of the home world's pace, in ticks
+    switch (card.special) {
+      case 'eureka': {
+        const got = targets.map(n => ns!.finishStudy(n.id)).filter(Boolean);
+        return got.length ? ` a breakthrough in ${[...new Set(got)].join(', ')}.` : null;
+      }
+      case 'accident': {
+        if (!ns || !rng.chance(1 / 3)) return null;
+        const knowers = ns.knowersOf(card.needs.tech!);
+        if (!knowers.length) return null;
+        const n = rng.pick(knowers);
+        ns.bless(n.id, { card: 'Nuclear accident', op: 'pestilence', m: 1, cond: 'always', from: ns.now, until: ns.now + 0.25, aftermath: false, primary: false, cause });
+        ns.bless(n.id, { card: 'Nuclear accident', op: 'smoke', m: 1.5, cond: 'always', from: ns.now, until: ns.now + 0.5, aftermath: false, primary: false, cause });
+        ns.record(n.id, this.tick, `A reactor of ${n.name} failed; fallout drifted over its towns.`, ['the deterrent was kept ready'], cause ? [cause] : []);
+        return ` every nation stands down; but a reactor of ${n.name} failed, and fallout drifts over its towns.`;
+      }
+      case 'defence':
+        fx.defenceUntil = this.tick + AGE_TICKS;
+        return ' rockets stand ready; no asteroid will strike your world for an age.';
+      case 'eyes': {
+        this.revealArea(ps.x, ps.y, Math.max(1500, ps.explorationRadius * 6));
+        return ' the sky around you is charted far out.';
+      }
+      case 'kinship':
+        fx.kinshipUntil = this.tick + AGE_TICKS;
+        return ' ships and signals bind your colonies to home.';
+      case 'founding_fleet': {
+        const go = this.foundingFleetSite();
+        if (!go) return null;
+        this.launchArk(go.launcher, go.site);
+        return ` an ark leaves for ${go.site.name}.`;
+      }
+      case 'ambassadors': {
+        const told: string[] = [];
+        const home = this.homeKnowledge();
+        for (const s of this.knownPolities()) {
+          const p = this.interstellar.polities[s.id];
+          p.attitude[ps.id] = Math.min(1, (p.attitude[ps.id] ?? 0) + 0.4);
+          p.grievance[ps.id] = Math.max(0, (p.grievance[ps.id] ?? 0) - 0.2);
+          // Each learns one thing from you it could use now.
+          const can = techsAvailable(p.techs).filter(t => home.has(t.id));
+          if (can.length) { const t = rng.pick(can); p.techs.push(t.id); told.push(`${s.civName} learned ${t.name}`); }
+        }
+        return ` envoys reach ${this.knownPolities().length} peoples; they warm to yours.${told.length ? ` ${told.slice(0, 3).join('; ')}${told.length > 3 ? '…' : ''}.` : ''}`;
+      }
+      case 'espionage': {
+        const spy = this.espionageTarget();
+        if (!spy || !ns) return null;
+        ns.learnFromOutside(spy.nation.id, spy.tech, this.tick, `stolen from ${spy.from.civName}`, cause);
+        const p = this.interstellar.polities[spy.from.id];
+        if (p) p.grievance[ps.id] = Math.min(1, (p.grievance[ps.id] ?? 0) + 0.5);
+        return ` ${spy.nation.name} stole ${TECH_DEFS[spy.tech].name} from ${spy.from.civName}. They found out.`;
+      }
+      case 'terraform':
+        return this.startTerraform(choice as Planet['type']) ? ` your world begins to become ${choice}.` : null;
+      case 'gene_shaping': {
+        let changed = 0;
+        for (let i = 0; i < 2 && gameState.playerSpecies.length; i++) {
+          const r = applyNudgeMutation(ps.biologyPhase, gameState.playerDNA, gameState.playerSpecies, gameState.playerBiosphere,
+            rng, this.tick, runtimeState.branchDefs,
+            gameState.signatureSpeciesId ? { id: gameState.signatureSpeciesId, locked: lockedTraits(gameState.mutationsOwned) } : null);
+          gameState.playerSpecies = r.updatedSpecies;
+          gameState.playerBiosphere = r.updatedBiosphere;
+          for (const evt of r.events) { this.onMutationEvent?.(evt); changed++; }
+        }
+        this.playerSpeciesChanged();
+        return changed ? ` your species is reshaped (${changed} change${changed > 1 ? 's' : ''}).` : ' the shaping takes, quietly.';
+      }
+      case 'seedships': {
+        const t = this.getMeteorTarget();
+        if (!t) return null;
+        this.sendMeteor();
+        return ` life is carried to ${t.civName}.`;
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** Known peoples of other stars (polities). */
+  private knownPolities(): StarBody[] {
+    return this.stars.filter(s => !s.isDead && !s.isPlayerStar && this.interstellar.polities[s.id] && this.isStarKnownToPlayer(s));
+  }
+
+  /** Founding Fleet: the player's launcher and the world it would settle now (null if none or the fleet is full). */
+  private foundingFleetSite(): { launcher: Launcher; site: Candidate } | null {
+    const ps = this.getPlayerStar();
+    const ns = runtimeState.playerNations;
+    if (!ps || !ns?.isFounded) return null;
+    const live = ns.nations.filter(n => !n.fallen);
+    const techs = [...new Set(live.flatMap(n => n.techs))];
+    const cap = capabilityOf(techs);
+    const arks = this.fleets.filter(f => f.ark && f.fromStarId === ps.id).length;
+    if (cap.tier < 1 || coloniesOf(this.colonies, ps.id) + arks >= cap.maxSettlements) return null;
+    if (this.colonies.colonies.length + this.fleets.filter(f => f.ark).length >= MAX_TOTAL) return null;
+    const avg = (k: 'militarism' | 'piety' | 'curiosity' | 'collectivism' | 'xenophobia') => live.reduce((a, n) => a + n.values[k], 0) / Math.max(1, live.length);
+    const mx = (k: 'hunger' | 'crowding' | 'scarcity' | 'unrest' | 'pollution') => live.reduce((a, n) => Math.max(a, n.pressures[k]), 0);
+    const launcher: Launcher = {
+      starId: ps.id, x: ps.x, y: ps.y, era: ns.maxEra, techs,
+      pressures: { hunger: mx('hunger'), crowding: mx('crowding'), scarcity: mx('scarcity'), unrest: mx('unrest'), pollution: mx('pollution') },
+      values: { militarism: avg('militarism'), piety: avg('piety'), curiosity: avg('curiosity'), collectivism: avg('collectivism'), xenophobia: avg('xenophobia') },
+      isPlayer: true,
+    };
+    const taken = takenSites(this.colonies);
+    for (const f of this.fleets) if (f.ark) taken.add(siteKey(f.toStarId, f.ark.planetIndex));
+    const site = pickTarget(launcher, this.colonyCandidates().filter(c => this.canSettle(ps.id, c)), taken);
+    return site ? { launcher, site } : null;
+  }
+
+  /** Industrial Espionage: the most advanced people in reach, a tech of theirs your most curious nation could use now. */
+  private espionageTarget(): { from: StarBody; nation: Nation; tech: string } | null {
+    const ps = this.getPlayerStar();
+    const ns = runtimeState.playerNations;
+    if (!ps || !ns?.isFounded) return null;
+    const reach = reachOf(ps.civLevel);
+    const spies = ns.nations.filter(n => !n.fallen).sort((a, b) => b.values.curiosity - a.values.curiosity || a.id - b.id);
+    const peoples = this.stars
+      .filter(s => !s.isDead && !s.isPlayerStar && this.interstellar.polities[s.id] && Math.hypot(s.x - ps.x, s.y - ps.y) <= reach)
+      .sort((a, b) => this.interstellar.polities[b.id].era - this.interstellar.polities[a.id].era || a.id - b.id);
+    for (const from of peoples) {
+      const theirs = new Set(this.interstellar.polities[from.id].techs);
+      for (const nation of spies) {
+        const t = techsAvailable(nation.techs).filter(x => theirs.has(x.id)).sort((x, y) => y.era - x.era || (x.id < y.id ? -1 : 1))[0];
+        if (t) return { from, nation, tech: t.id };
+      }
+    }
+    return null;
   }
 
   // ── A New World (TP card): the whole people moves (#40) ───────────────────
@@ -1967,19 +2265,25 @@ export class BigBangEngine {
     return out.sort((a, b) => Number(a.otherStar) - Number(b.otherStar) || b.suitability - a.suitability || a.distance - b.distance);
   }
 
+  /** TP "A New World" costs now (its card's price, marked up by recent moves). */
+  newWorldPrice(): number {
+    return techPrice(TECH_CARD_BY_ID.new_world, gameState.techWear ?? {}, this.tick);
+  }
+
   /** Why "A New World" cannot be played now, or null when it can. */
   relocationBlock(): string | null {
     const ps = this.getPlayerStar();
     if (!ps || !ps.hasLife || ps.biologyPhase !== 'intelligent') return 'Your people have not yet woken.';
     if (ps.formationDestiny) return 'Your world is still forming.';
     if (ps.civLevel < RELOCATE_ERA) return `Your people must reach the ${TECH_LEVELS[RELOCATE_ERA]} to leave their world.`;
-    if (gameState.techPoints < RELOCATE_TP) return `It takes ${RELOCATE_TP} TP; you have ${gameState.techPoints}.`;
+    const price = this.newWorldPrice();
+    if (gameState.techPoints < price) return `It takes ${price} TP; you have ${gameState.techPoints}.`;
     return null;
   }
 
   /**
    * Play "A New World": the whole people leaves its world for world
-   * `planetIndex` of star `starId`, at a cost of RELOCATE_TP. They keep their
+   * `planetIndex` of star `starId`, at the card's price (newWorldPrice). They keep their
    * era, their nations (each raises a new capital), their species, faith and
    * culture; the old world is left to its wild life. Crossing to another star
    * makes it the player's star (`movePlayerStar`). Returns the line for the
@@ -1995,7 +2299,8 @@ export class BigBangEngine {
     let settledBefore = 0;
     if (oldGrid) for (const row of oldGrid) for (const c of row) if (c.civId != null && !isWater(c.biome)) settledBefore++;
 
-    gameState.techPoints -= RELOCATE_TP;   // the caller refreshes the TP chip
+    gameState.techPoints -= this.newWorldPrice();   // the caller refreshes the TP chip
+    noteTechUse((gameState.techWear ??= {}), 'new_world', this.tick);
 
     // The people's own settlers there are absorbed into the arriving whole.
     const absorbed = colonyAt(this.colonies, to.id, planetIndex);
@@ -3679,6 +3984,7 @@ export class BigBangEngine {
         }
         ns.advance(grid, this.tick, STEP / rate);
         for (const d of ns.drainDiscoveries()) {
+          this.rewardDiscovery(d.tech.id);
           if (this.announcedTechs.has(d.tech.id)) continue;
           this.announcedTechs.add(d.tech.id);
           learned.push(d.tech.name);
@@ -3723,8 +4029,11 @@ export class BigBangEngine {
       this.onCivEvent?.(`${civPhaseOf(star.civLevel).label}: ${eraTitle(star.civLevel)}`);
       this.advancePlayerPlanetDiscovery(star);
       if (star.civLevel === 1) this.onPlayerReligionMoment?.();
-      // TECH points
-      gameState.techPoints += 3;
+      // TECH points: once per age reached (an age lost and regained pays once).
+      if (star.civLevel > (gameState.tpEraHigh ?? 0)) {
+        gameState.tpEraHigh = star.civLevel;
+        gameState.techPoints += TP_PER_ERA;
+      }
       this.onTechPointEarned?.(gameState.techPoints);
       // Codex milestones
       this.fireCodexMilestone(`civ_${star.civLevel}`);
@@ -3793,6 +4102,7 @@ export class BigBangEngine {
     for (const d of ns.drainDiscoveries()) {
       // The first nation to learn a thing is news; the rest follow quietly,
       // and so does a rediscovery after a setback.
+      this.rewardDiscovery(d.tech.id);
       if (this.announcedTechs.has(d.tech.id)) continue;
       this.announcedTechs.add(d.tech.id);
       if (d.tech.spaceship) {
@@ -3803,6 +4113,7 @@ export class BigBangEngine {
       }
     }
     for (const line of ns.drainNews()) this.onCivEvent?.(line);
+    this.announceTechCards();
     // The world stands in the era its most advanced nation has reached.
     while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);
     // A new sub-era (Middle, Late) of the age the world already stands in is
@@ -4017,7 +4328,7 @@ export class BigBangEngine {
       }
       const g = this.colonyGenerationInputs(c);
       if (!g) continue;
-      const change = liveGeneration(c, g.env, g.contact, this.tick, () => rng.next());
+      const change = liveGeneration(c, g.env, this.kinship(c, g.contact), this.tick, () => rng.next());
       this.stepColonyRule(c, rng);
       if (!change) continue;
       const people = c.byPlayer ? (gameState.playerSpeciesName || c.lineage?.name || 'your people')
@@ -4042,6 +4353,12 @@ export class BigBangEngine {
   }
 
   /** Contact between a world and the people ruling it: by distance, none without ships. */
+  /** Kinship Network (tech card): the player's colonies keep close contact with home while it lasts. */
+  private kinship(c: Colony, contact: number): number {
+    if (!(c.byPlayer && ruledByPlayer(c)) || this.tick >= (gameState.techEffects?.kinshipUntil ?? -1)) return contact;
+    return Math.min(0.95, contact * 1.6 + 0.2);
+  }
+
   private contactWith(star: StarBody, ruler: StarBody | null): number {
     if (!ruler || ruler.isDead || !ruler.hasLife) return 0;
     if (ruler.id === star.id) return 0.8;
@@ -4100,7 +4417,7 @@ export class BigBangEngine {
       return;
     }
     if (c.status === 'independent') return;
-    const contact = this.contactWith(star, ruler);
+    const contact = this.kinship(c, this.contactWith(star, ruler));
     if (stepLoyalty(c, contact, !!ruler, this.tick, rng.next()) !== 'independent') return;
     const people = c.lineage?.name ? `the ${c.lineage.name}` : 'its people';
     const why = !ruler ? `with ${was} gone, ${people} of ${c.name} govern themselves`
@@ -7099,6 +7416,12 @@ export class BigBangEngine {
   private applyCosmicStrike(ev: CosmicEvent, target: StarBody): void {
     const known = this.isStarKnownToPlayer(target) || target.isPlayerStar;
 
+    // Planetary Defence (tech card): rockets stand ready while it lasts.
+    if (ev.type === 'asteroid_impact' && target.isPlayerStar && this.tick < (gameState.techEffects?.defenceUntil ?? -1)) {
+      this.onCivEvent?.('An asteroid fell toward your world; your rockets met it in the dark and turned it aside.');
+      return;
+    }
+
     switch (ev.type) {
       case 'supernova': {
         // Routed through the same path as a collision detonation, so an advanced
@@ -7629,11 +7952,17 @@ export class BigBangEngine {
       interstellar: this.interstellar,
       colonies: this.colonies,
       worldHistory: this.worldHistory,
+      playerGrid: this.savedPlayerGrid(),
     };
   }
 
   loadState(snap: EngineSnapshot): void {
     this.tick = snap.tick;
+    // The surface is rebuilt from the save's changes when it is next needed (#77).
+    this.invalidatePlayerGrid();
+    // Changes made against another generator's terrain would land on the wrong
+    // ground: drop them, and the surface regenerates as it did before #77.
+    this.pendingGridEdits = snap.playerGrid && (snap.playerGrid.generator ?? 1) === GRID_GENERATOR ? snap.playerGrid : null;
     this.phase = snap.phase;
     this.stars = snap.stars;
     // Saves written before the genome existed have no genomeSeed. Derive it
@@ -7653,6 +7982,11 @@ export class BigBangEngine {
         if (p.eccentricity == null) p.eccentricity = 0;
         if (p.periapsisAngle == null) p.periapsisAngle = 0;
       }
+    }
+    // Saves from before the tech cards: the ages already reached have paid their TP.
+    {
+      const ps = this.stars.find(st => st.isPlayerStar && !st.isDead);
+      if (ps && gameState.tpEraHigh == null) gameState.tpEraHigh = ps.civLevel;
     }
     this.nebulae = snap.nebulae;
     this.asteroids = snap.asteroids;

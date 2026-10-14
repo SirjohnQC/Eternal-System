@@ -46,6 +46,7 @@ npm test                  # typecheck + seeded invariants (~1 min) — run befor
 npm run test:invariants -- --seeds=8 --ticks=200000   # longer local run
 npm run test:smoke        # 400k-tick smoke test (~4 min)
 npm run test:visual       # diorama screenshots vs goldens (~2 min; see docs/VISUAL_TESTS.md)
+npm run test:techcards    # every tech card played in a seeded world, vs untouched twins (~40 s; CI runs it after the smoke test)
 ```
 
 `tools/invariantCheck.ts` checks per-star rules on every sampled tick across fixed seeds.
@@ -62,7 +63,7 @@ npx esbuild tools/smokeTest.ts --bundle --platform=node --format=esm \
 ```
 
 - `smokeTest.ts` — whole-simulation "is everything still working" check; run after any sim change.
-- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars. `universeCheck.ts` — the universe's 3×3 sectors (2–5 galaxies each, random home, Entropy lumpiness, charting by tech, the universe map frame). `forgeCheck.ts` — the Forge (Fate Cards forging the home world: deck, determinism, pacing, steering, engine hold until the golden spark). `cinematicCheck.ts` — the Big Bang cinematic (timeline, same universe with or without it, skip/end handoff, camera on home before the black-gap zone). `ecologyCheck.ts` — the living world's ecology (species per world, the food web, extinction pressure, the diorama's hunts and quarrels).
+- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars. `universeCheck.ts` — the universe's 3×3 sectors (2–5 galaxies each, random home, Entropy lumpiness, charting by tech, the universe map frame). `forgeCheck.ts` — the Forge (Fate Cards forging the home world: deck, determinism, pacing, steering, engine hold until the golden spark). `cinematicCheck.ts` — the Big Bang cinematic (timeline, same universe with or without it, skip/end handoff, camera on home before the black-gap zone). `techCardsCheck.ts` — tech cards (TP): the TP economy, every card's effect where it should fall and nowhere else, its price, wear, and consequences against an untouched twin. `ecologyCheck.ts` — the living world's ecology (species per world, the food web, extinction pressure, the diorama's hunts and quarrels).
 - `*Check.ts` — targeted checks (weather, zoom, formation, settlement, moon, sky, ...);
   exit non-zero on failure. `weatherCheck` and `zoomCheck` want `node --expose-gc`.
 - `*Render.ts` — write PNGs for visual review (usually take `<out.png>` as the first arg).

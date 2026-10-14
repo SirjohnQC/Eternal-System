@@ -57,7 +57,15 @@ interface Strike {
   /** Sparks shed from the head: offset along trail, lateral drift. */
   sp: Float32Array;
   scorched: boolean;
+  /** Landed in the sea (#26): a splash and a tsunami, no crater. */
+  water: boolean;
 }
+
+/** Rings of a sea impact running outward over the water (#26). */
+interface Tsunami { x: number; y: number; reach: number; age: number; size: number }
+/** How long the waves run, s. */
+const TSUNAMI_LIFE = 9;
+const SPRAY = ['#ffffff', '#d8f4ff', '#9ad8f0'];
 
 interface Scorch {
   x: number; y: number; w: number; h: number;
@@ -175,22 +183,24 @@ function pxDisc(g: CanvasRenderingContext2D, x: number, y: number, r: number, co
 export class MeteorStrike {
   private strikes: Strike[] = [];
   private scorches: Scorch[] = [];
+  private tsunamis: Tsunami[] = [];
   private puffs: Array<HTMLCanvasElement | null> = [];
   /** Puff sprite sizes, px. */
   private static readonly PUFF_N = [3, 4, 5, 7, 9, 12];
 
-  get active(): boolean { return this.strikes.length > 0 || this.scorches.length > 0; }
+  get active(): boolean { return this.strikes.length > 0 || this.scorches.length > 0 || this.tsunamis.length > 0; }
 
   /** Drop every strike and crater (new planet / new game). */
-  clear(): void { this.strikes.length = 0; this.scorches.length = 0; }
+  clear(): void { this.strikes.length = 0; this.scorches.length = 0; this.tsunamis.length = 0; }
 
   /**
    * Begin a strike at base-world (ix, iy).
    * @param reach shockwave reach, base-world px
    * @param size 0.4 (small comet fragment) .. 1.2 (dinosaur-killer)
    * @param VH backbuffer height, for the entry height
+   * @param water it lands in the sea: a splash, spray and a tsunami instead of a crater (#26)
    */
-  start(ix: number, iy: number, reach: number, size: number, seed: number, VW: number, VH: number): void {
+  start(ix: number, iy: number, reach: number, size: number, seed: number, VW: number, VH: number, water = false): void {
     const rnd = hashStream(seed);
     size = Math.max(0.4, Math.min(1.2, size));
     // Enters from high on the left or right, at 30-50 degrees from vertical.
@@ -222,7 +232,7 @@ export class MeteorStrike {
     }
     const sp = new Float32Array(16);
     for (let i = 0; i < 8; i++) { sp[i * 2] = rnd(); sp[i * 2 + 1] = (rnd() - 0.5) * 2; }
-    this.strikes.push({ ix, iy, sx, sy, reach, size, age: 0, seed, ej, nEj, pf, nPf, sp, scorched: false });
+    this.strikes.push({ ix, iy, sx, sy, reach, size, age: 0, seed, ej, nEj, pf, nPf, sp, scorched: false, water });
     if (this.strikes.length > 3) this.strikes.shift();
   }
 
@@ -238,6 +248,11 @@ export class MeteorStrike {
     for (let i = this.strikes.length - 1; i >= 0; i--) {
       const s = this.strikes[i];
       s.age += dt;
+      if (!s.scorched && s.age >= T_FALL && s.water) {
+        s.scorched = true;
+        this.tsunamis.push({ x: s.ix, y: s.iy, reach: s.reach, age: 0, size: s.size });
+        if (this.tsunamis.length > 3) this.tsunamis.shift();
+      }
       if (!s.scorched && s.age >= T_FALL) {
         s.scorched = true;
         const w = Math.max(8, Math.round(s.reach * 0.95 * s.size + 6));
@@ -252,6 +267,43 @@ export class MeteorStrike {
       c.age += dt;
       if (c.age > SCORCH_LIFE) this.scorches.splice(i, 1);
     }
+    for (let i = this.tsunamis.length - 1; i >= 0; i--) {
+      const w = this.tsunamis[i];
+      w.age += dt;
+      if (w.age > TSUNAMI_LIFE) this.tsunamis.splice(i, 1);
+    }
+  }
+
+  /**
+   * A sea impact's tsunami: three crests running out from the splash, slowing
+   * and thinning as they spread, clipped to the face. Surface pass.
+   */
+  private drawTsunamis(g: CanvasRenderingContext2D, v: StrikeView): void {
+    if (this.tsunamis.length === 0) return;
+    const squash = v.ry / Math.max(1, v.rx);
+    g.save();
+    g.beginPath();
+    g.ellipse(v.cx, v.cy, v.rx + 1, v.ry + 1, 0, 0, Math.PI * 2);
+    g.clip();
+    for (const w of this.tsunamis) {
+      const x = v.wsx(w.x), y = v.wsy(w.y);
+      for (let c = 0; c < 3; c++) {
+        const t = (w.age - c * 0.9) / TSUNAMI_LIFE;
+        if (t <= 0 || t >= 1) continue;
+        const r = w.reach * v.k * (0.3 + 4.2 * w.size * (1 - Math.pow(1 - t, 1.8)));
+        // Quantised fade: pixel art does not cross-fade smoothly.
+        g.globalAlpha = Math.ceil((1 - t) * 4) / 4 * (c === 0 ? 0.9 : 0.6);
+        g.strokeStyle = c === 0 ? '#e8fbff' : '#9ad8f0';
+        g.lineWidth = Math.max(1, Math.round(v.k * (t < 0.3 ? 2 : 1)));
+        g.beginPath(); g.ellipse(x, y, r, r * squash, 0, 0, Math.PI * 2); g.stroke();
+        // The trough behind the crest, darker water.
+        g.globalAlpha *= 0.5;
+        g.strokeStyle = '#1c4a6a';
+        g.beginPath(); g.ellipse(x, y, Math.max(1, r - 2 * v.k), Math.max(1, (r - 2 * v.k) * squash), 0, 0, Math.PI * 2); g.stroke();
+      }
+    }
+    g.restore();
+    g.globalAlpha = 1;
   }
 
   /**
@@ -259,6 +311,7 @@ export class MeteorStrike {
    * terrain and the day/night veil, under clouds and atmosphere).
    */
   drawSurface(g: CanvasRenderingContext2D, v: StrikeView): void {
+    this.drawTsunamis(g, v);
     if (this.scorches.length === 0) return;
     const prevS = g.imageSmoothingEnabled;
     g.imageSmoothingEnabled = false;
@@ -416,10 +469,12 @@ export class MeteorStrike {
       const t = b / 1.9, e = 1 - Math.pow(1 - t, 2.2);
       const rr = reach * 1.7 * e;
       g.globalAlpha = (1 - t) * 0.95;
-      g.strokeStyle = t < 0.3 ? '#fff2b0' : '#ffd8a0';
+      g.strokeStyle = s.water ? '#ffffff' : t < 0.3 ? '#fff2b0' : '#ffd8a0';
       g.lineWidth = t < 0.4 ? 2 : 1;
       g.beginPath(); g.ellipse(ix, iy, rr, rr * squash, 0, 0, Math.PI * 2); g.stroke();
-      // Trailing dust ring: brown, slower.
+      // Trailing dust ring: brown, slower (none at sea).
+      if (s.water) { g.restore(); g.globalAlpha = 1; }
+      else {
       const rd = rr * 0.72;
       g.globalAlpha = (1 - t) * 0.8;
       g.strokeStyle = '#8a6a52';
@@ -427,10 +482,20 @@ export class MeteorStrike {
       g.beginPath(); g.ellipse(ix, iy, rd, rd * squash, 0, 0, Math.PI * 2); g.stroke();
       g.restore();
       g.globalAlpha = 1;
+      }
     }
     // 3 - fireball: concentric pixel discs (quantised fire ramp, hottest at
     // the core) rising off the impact and cooling outward-in.
-    if (b < 1.0) {
+    if (s.water && b < 1.6) {
+      // At sea: a column of white water thrown up and falling back.
+      const t = b / 1.6;
+      const r = Math.max(2, Math.round(reach * 0.16 * s.size * (0.7 + t * 0.6)));
+      const hgt = reach * 0.9 * s.size * Math.sin(Math.PI * Math.min(1, t * 1.15));
+      const fx = Math.round(ix);
+      g.globalAlpha = 1 - t * 0.6;
+      for (let k = 0; k < 4; k++) pxDisc(g, fx + (k & 1 ? 1 : -1) * Math.round(r * 0.3), Math.round(iy - hgt * (k / 3)), Math.max(1, Math.round(r * (1 - k * 0.18))), SPRAY[Math.min(2, k)]);
+      g.globalAlpha = 1;
+    } else if (b < 1.0) {
       const t = b;
       const r = Math.max(2, Math.round(reach * 0.22 * s.size * (0.6 + t * 1.1)));
       const fx = Math.round(ix), fy = Math.round(iy - reach * 0.32 * t);
@@ -446,7 +511,7 @@ export class MeteorStrike {
       const vx = s.ej[i * 4] * v.k, vy = s.ej[i * 4 + 1] * v.k, land = s.ej[i * 4 + 2] * v.k, hot = s.ej[i * 4 + 3];
       const x = ix + vx * b, y = iy + vy * b + 0.5 * G * b * b;
       if (y > iy + land && b > 0.1) continue;        // came down
-      const col = b < hot ? EJ_HOT[Math.min(2, Math.floor(b / hot * 3))] : EJ_COLD[i & 1];
+      const col = s.water ? SPRAY[i % 3] : b < hot ? EJ_HOT[Math.min(2, Math.floor(b / hot * 3))] : EJ_COLD[i & 1];
       g.fillStyle = col;
       const q = (i % 2 === 0 && s.size >= 0.6) ? 2 * p : p;
       g.fillRect(Math.round(x), Math.round(y), q, q);
@@ -457,7 +522,8 @@ export class MeteorStrike {
       }
     }
     // 5 - plume: dust puffs rising and spreading into a mushroom, fading.
-    if (b > 0.15) {
+    // At sea it is steam: thinner and gone sooner.
+    if (b > 0.15 && (!s.water || b < 4)) {
       const life = T_STRIKE - T_FALL;
       const fade = 1 - Math.max(0, (b - life * 0.45) / (life * 0.55));
       for (let i = 0; i < s.nPf; i++) {
@@ -473,11 +539,11 @@ export class MeteorStrike {
         if (!spr) continue;
         const a = Math.ceil(fade * Math.min(1, bt * 3) * 4) / 4;
         if (a <= 0) continue;
-        g.globalAlpha = a * 0.92;
+        g.globalAlpha = a * (s.water ? 0.5 : 0.92);
         const n = spr.width * p;
         g.drawImage(spr, Math.round(x - n / 2), Math.round(y - n / 2), n, n);
         // Lit from the fire beneath for the first second.
-        if (bt < 1.2) {
+        if (bt < 1.2 && !s.water) {
           g.globalCompositeOperation = 'lighter';
           g.globalAlpha = (1 - bt / 1.2) * 0.4;
           g.fillStyle = '#ff7a2a';
