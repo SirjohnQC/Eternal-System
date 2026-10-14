@@ -1416,6 +1416,45 @@ for (const { seed, stats } of SEEDS) {
   });
 }
 
+// ── Scenario: generated continents are not mirror images (#104) ────────────
+// The coast warp, shoulder and inland noise were sampled with the absolute
+// distance from each mass's centre, so every continent mirrored itself
+// (mean mirror score 0.89 over 27 ocean worlds). Discs are clean circles by
+// design (a rare roll), so only 'continents' worlds are held to this.
+{
+  const r: Rule = { name: 'scenario: generated continents are not mirror images', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const { generatePlanetGrid, SEA_LEVEL } = await import('../src/simulation/PlanetGrid');
+    const { structureFor } = await import('../src/simulation/TerrainArchetypes');
+    const N = 256;
+    const mirror = (seed: number): number => {
+      const g = generatePlanetGrid('ocean', seed, null);
+      let best = 0;
+      for (let axis = 0; axis < N; axis += 4) {
+        let same = 0, tot = 0;
+        for (let row = 20; row < 236; row += 4) for (let d = 1; d < 40; d += 2) {
+          const a = g[row][(axis + d) % N].elevation >= SEA_LEVEL, b = g[row][(axis - d + N) % N].elevation >= SEA_LEVEL;
+          if (!a && !b) continue;
+          tot++; if (a === b) same++;
+        }
+        if (tot > 100) best = Math.max(best, same / tot);
+      }
+      return best;
+    };
+    const scores: number[] = [];
+    for (let i = 0; i < 40 && scores.length < 12; i++) {
+      const seed = 1000 + i * 7919;
+      if (structureFor('ocean', seed) === 'continents') scores.push(mirror(seed));
+    }
+    const mean = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
+    if (scores.length < 6) detail = `only ${scores.length} continent worlds sampled`;
+    else if (mean > 0.75) detail = `mean mirror score ${mean.toFixed(2)} over ${scores.length} worlds (> 0.75)`;
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
 let blocking = crashes.length;
