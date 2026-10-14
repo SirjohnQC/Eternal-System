@@ -1318,6 +1318,26 @@ for (const { seed, stats } of SEEDS) {
     return null;
   });
 
+  scen("an encounter carries a world's history with it, or takes it away (#89 × #115)", () => {
+    const [h, o] = npc;
+    if (!h || !o) return 'no two NPC systems';
+    const hist = e.worldHistory as Record<string, any[]>;
+    const last = h.planets.length - 1;
+    hist[`${h.id}:${last}`] = [{ tick: 1, text: 'a colony was here' }];
+    // Captured: the log moves to the captor's new slot, with a line added.
+    const moved = h.planets.pop()!; o.planets.push(moved);
+    e.carryWorldHistory({ kind: 'captured', host: h, other: o, planet: moved.name, planetIndex: last, toIndex: o.planets.length - 1 });
+    const there = hist[`${o.id}:${o.planets.length - 1}`];
+    if (hist[`${h.id}:${last}`]) return 'the log stayed at the old slot after a capture';
+    if (!there || there[0]?.text !== 'a colony was here' || there.length !== 2) return 'the captured world lost its log';
+    // Gone (swallowed, ejected, absorbed, shattered): no log left for a later world in that slot.
+    const gone = o.planets.length - 1;
+    o.planets.pop();
+    e.carryWorldHistory({ kind: 'ejected', host: o, other: h, planet: moved.name, planetIndex: gone });
+    if (hist[`${o.id}:${gone}`]) return 'a world flung out left its log for the next world in its slot';
+    return null;
+  });
+
   scen('encounters replay identically from the same state', () => {
     const run = () => {
       resetGameState('Inv_encounters_det');
