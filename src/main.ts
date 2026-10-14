@@ -5874,7 +5874,9 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
         rows.push(['People', `${look} · ${stage === 'species' ? 'a new species' : stage}`]);
       }
     }
-    rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
+    // Landed on is not settled: only a world with a colony (or home) is "Settled".
+    const settled = isHome || !!engine?.colonyAt(star.id, planetIndex);
+    rows.push(['Survey', planet.discovery === 'landing' ? (settled ? 'Settled' : 'Landed') : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
   const card = document.createElement('div');
   card.id = 'body-card';
