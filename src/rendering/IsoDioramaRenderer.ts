@@ -605,6 +605,8 @@ export class IsoDioramaRenderer {
   private inhabitants: Array<{
     wx: number; wy: number; row: number; col: number; sprite: HTMLCanvasElement;
     w: number; h: number; phase: number; sway: number; depth: number;
+    /** Home on the unlifted ground (base px), where wander targets are tested for land (#25). */
+    gx: number; gy: number;
     /** 0 = fully above the surface, 1 = fully under. See waterSubmersion(). */
     submersion: number;
     /** The genome drawn, for the detailed CreatureForge sprite when big enough. */
@@ -1227,6 +1229,18 @@ export class IsoDioramaRenderer {
    * Disc coords (dx, dy) in [-1,1] → grid (row, col). The rim of the disc is the
    * great circle 90° away from the focus, so the top face shows one hemisphere.
    */
+  /** Whether the ground drawn at base px (x, y) is land (rim falloff included, as the bake draws it). */
+  private landAtBase(x: number, y: number): boolean {
+    const grid = this.grid, g = this.placeGeom;
+    if (!grid) return true;
+    const dx = (x - g.cx) / g.rx, dy = (y - g.cy) / g.ry;
+    const r = Math.hypot(dx, dy);
+    if (r > 0.97) return false;
+    const gp = this.discToGrid(dx, dy);
+    const cell = gp ? grid[gp.row]?.[gp.col] : undefined;
+    return !!cell && cell.elevation - this.rimFalloff(r) >= SEA_LEVEL;
+  }
+
   private discToGrid(dx: number, dy: number): { row: number; col: number } | null {
     const f = this.discToGridF(dx, dy);
     if (!f) return null;
@@ -3119,7 +3133,7 @@ export class IsoDioramaRenderer {
     // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
     // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
 
-    const creatureSpots: Array<{ x: number; y: number; row: number; col: number; id: string; onWater: boolean }> = [];
+    const creatureSpots: Array<{ x: number; y: number; gy: number; row: number; col: number; id: string; onWater: boolean }> = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
       fertility: number; row: number; col: number;
@@ -3173,7 +3187,7 @@ export class IsoDioramaRenderer {
           const occupant = byId.get(cell.dominantSpeciesId);
           if (this.habitable && !onLand && !(occupant && inhabitsWater(occupant))) continue;
           creatureSpots.push({
-            x: px, y: py - lift, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
+            x: px, y: py - lift, gy: py, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
             onWater: this.habitable && !onLand,
           });
         }
@@ -3242,7 +3256,7 @@ export class IsoDioramaRenderer {
       const depth = (spot.y - (cy - ry)) / (ry * 2);
       const sprite = dioramaCreatureSprite(genome, phase ?? 'intelligent', depth);
       this.inhabitants.push({
-        wx: spot.x, wy: spot.y, row: spot.row, col: spot.col, sprite,
+        wx: spot.x, wy: spot.y, gx: spot.x, gy: spot.gy, row: spot.row, col: spot.col, sprite,
         w: sprite.width,
         h: sprite.height,
         phase: s.range(0, Math.PI * 2),
@@ -3416,10 +3430,13 @@ export class IsoDioramaRenderer {
    * STRIDE x body length per gait cycle), then idles. Flyers hover above the
    * ground and drift faster; swimmers and the sessile stay put.
    */
-  private wanderOf(c: { genome: SpeciesGenome; phase: number }, t: number, bodyLen: number, f: ForgedBody):
+  private wanderOf(c: { genome: SpeciesGenome; phase: number; gx: number; gy: number; submersion: number }, t: number, bodyLen: number, f: ForgedBody):
     { dx: number; dy: number; left: boolean; moving: boolean; lift: number } {
     const loc = c.genome.dna.locomotion;
     const flyer = loc === 'flying', walker = loc === 'walking' || loc === 'crawling';
+    // A land walker only picks wander points on land; one over the sea becomes
+    // "back home" (#25: two-legged peoples strolled out onto the water).
+    const landBound = walker && this.habitable && c.submersion === 0 && !inhabitsWater(c.genome);
     if (!flyer && !walker) return { dx: 0, dy: 0, left: false, moving: false, lift: 0 };
     const seed = Math.floor(c.phase * 9973);
     // Stride speed: one STRIDE of body length per gait cycle (frames / rate seconds).
@@ -3430,7 +3447,9 @@ export class IsoDioramaRenderer {
     const pt = (k: number): [number, number] => {
       const a = (Math.sin((k + seed) * 12.9898) * 43758.5453) % 1, r = (Math.sin((k + seed) * 78.233) * 12543.21) % 1;
       const ang = a * Math.PI * 2, rad = reach * (0.3 + 0.7 * Math.abs(r));
-      return [Math.cos(ang) * rad, Math.sin(ang) * rad * 0.5];
+      const x = Math.cos(ang) * rad, y = Math.sin(ang) * rad * 0.5;
+      if (landBound && (!this.landAtBase(c.gx + x, c.gy + y) || !this.landAtBase(c.gx + x / 2, c.gy + y / 2))) return [0, 0];
+      return [x, y];
     };
     const tt = t + c.phase * WANDER_LEG, k = Math.floor(tt / WANDER_LEG), u = tt - k * WANDER_LEG;
     const [ax, ay] = pt(k - 1), [bx, by] = pt(k);
