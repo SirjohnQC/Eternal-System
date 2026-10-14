@@ -832,6 +832,31 @@ for (const { seed, stats } of SEEDS) {
     return null;
   });
 
+  scen("the player's system keeps every world until the Space Age, then encounters can reach it", () => {
+    const ps = e.getPlayerStar() as Star | undefined;
+    const intruder = npc[4] ?? npc[1];
+    if (!ps || !intruder || ps.planets.length < 2) return 'no player system with 2+ planets, or no intruder';
+    const was = { level: ps.civLevel, formation: ps.formationStage, x: intruder.x, y: intruder.y };
+    ps.formationStage = null;
+    // A heavy intruder on the home system's second orbit: the worst case.
+    intruder.mass = Math.max(intruder.mass, ps.mass * 2);
+    ps.civLevel = TECH_LEVELS.indexOf('Space Age') - 1;
+    const roster = [...ps.planets];
+    overlap(ps, intruder, 6_000);
+    const kept = ps.planets.length >= roster.length && roster.every((p, k) => ps.planets[k] === p);
+    ps.civLevel = TECH_LEVELS.indexOf('Space Age');
+    overlap(ps, intruder, 15_000);
+    const after = ps.planets.filter(p => roster.includes(p)).length;
+    Object.assign(ps, { civLevel: was.level, formationStage: was.formation });
+    intruder.x = was.x; intruder.y = was.y;
+    if (!kept) return `before the Space Age the home system went from ${roster.length} to ${ps.planets.length} worlds`;
+    if (roster.length > 1 && after >= roster.length && roster.slice(1).some(p => !p.hasLife)) {
+      return `at the Space Age nothing was ever taken from the home system (${JSON.stringify(e.encounterTally)})`;
+    }
+    if (!ps.planets.includes(roster[e.homeIndexOf(ps)] ?? roster[0])) return 'the home world itself was taken';
+    return null;
+  });
+
   scen('encounters replay identically from the same state', () => {
     const run = () => {
       resetGameState('Inv_encounters_det');

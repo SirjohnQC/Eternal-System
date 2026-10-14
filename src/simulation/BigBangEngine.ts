@@ -626,6 +626,12 @@ const CIV_EVACUATION_LEVEL = 6;
  * to wreck the surviving world rather than simply being absorbed.
  */
 const MERGER_CATASTROPHE_RATIO = 0.45;
+/**
+ * Encounters (#115) leave every world of the player's system alone until the
+ * player's people reach this era (Space Age). Shield, not immunity: from then
+ * on the outer worlds can be stretched, stolen or lost like anyone's.
+ */
+const HOME_SYSTEM_SHIELD_UNTIL = TECH_LEVELS.indexOf('Space Age');
 /** Ticks between moon-colonisation checks. */
 const MOON_CHECK_RATE = 1000;
 /** Ticks between planet-formation stage checks. */
@@ -2215,7 +2221,8 @@ export class BigBangEngine {
    * Overlapping star systems work on each other's planets (#115,
    * SystemEncounters.ts): tides stretch, capture or fling out outer worlds,
    * orbits through a star's corona fall in, crossing worlds collide. Worlds
-   * people live on, colonies, the home world and ark targets are never taken.
+   * people live on, colonies, the home world and ark targets are never taken,
+   * nor any world of the player's system before the Space Age.
    */
   private updateSystemEncounters(): void {
     const taken = new Set(this.colonies.colonies.map(c => siteKey(c.starId, c.planetIndex)));
@@ -2230,6 +2237,9 @@ export class BigBangEngine {
         const p = s.planets[i];
         if (p.hasLife || p.destinyType || taken.has(siteKey(s.id, i))) return true;
         if (s.isPlayerStar && i === this.homeIndexOf(s)) return true;
+        // Your whole system is held together until your people reach space:
+        // its worlds are where the Space Age goes first (outposts, landings).
+        if (s.isPlayerStar && s.civLevel < HOME_SYSTEM_SHIELD_UNTIL) return true;
         if (s.hasLife && i === (s.bestPlanetIndex ?? 0)) return true;
         const g = this.playerGridFor;
         return !!g && g.starId === s.id && g.planetIndex === i;
