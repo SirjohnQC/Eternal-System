@@ -1456,6 +1456,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       // Live binding: a new game replaces `engine`, and its animTick restarts.
       _dioramaRenderer.setClock(() => engine?.currentAnimTick ?? 0);
       _dioramaRenderer.setNationSource(() => runtimeState.playerNations);
+      _dioramaRenderer.setFireSource(() => engine?.fires.cells ?? null);
     }
 
     if (colonyView && planet) {
