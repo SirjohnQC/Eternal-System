@@ -22,6 +22,8 @@ const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
 const { gameState, BIO_PHASE_SEQUENCE, TECH_LEVELS } = await import('../src/simulation/GameState');
 const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
 const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
+const { systemReach } = await import('../src/rendering/viewCull');
+const { planetOffsetFromStar } = await import('../src/simulation/Orbit');
 const { runtimeState } = await import('../src/simulation/GameState');
 const { EVOLUTION_TICK_RATE } = await import('../src/simulation/EvolutionEngine');
 const { formationFaceType } = await import('../src/simulation/Formation');
@@ -81,6 +83,17 @@ rule({
   check: ({ stars }) => firstBad(stars,
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS + 1,
     s => `r=${Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2).toFixed(1)} > ${UNIVERSE_RADIUS}`),
+});
+
+rule({
+  // The system view culls a system by its star plus this reach; a planet
+  // outside it would vanish while on screen (#84).
+  name: 'every planet lies within its system\'s view reach',
+  check: ({ stars, engine }) => firstBad(stars.filter(s => !s.isDead && s.planets.length), s => {
+    const reach = systemReach(s);
+    const t = (engine as any).animTick ?? 0;
+    return s.planets.some((p: any) => Math.hypot(planetOffsetFromStar(p, t).x, planetOffsetFromStar(p, t).y) > reach + 0.5);
+  }, s => `star ${s.id}: reach ${systemReach(s).toFixed(1)}`),
 });
 
 rule({
@@ -297,6 +310,29 @@ rule({
   },
 });
 
+const { LEDGER_MAX } = await import('../src/simulation/Nations');
+rule({
+  // The World Ledger reads these: samples bounded and in order, and every
+  // explanation finite (a NaN would print as "NaN% fed").
+  name: "nations' ledgers are bounded and in order; their explanations are finite",
+  check: () => {
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded) return null;
+    for (let k = 0; k < ns.nations.length; k++) {
+      const log = ns.ledger[k] ?? [];
+      if (log.length > LEDGER_MAX) return `${ns.nations[k].name}: ${log.length} samples`;
+      for (let i = 1; i < log.length; i++) if (log[i].age < log[i - 1].age) return `${ns.nations[k].name}: sample ${i} goes back in time`;
+      const x = ns.explain(k);
+      if (!x) continue;
+      const nums = [x.fed, x.carries, x.pollution.settles, x.pollution.fromTechs, x.pollution.fromCards, x.cohesionTarget,
+        x.food.techs, x.food.cards, x.food.season, x.materials.techs, x.research.techs, x.research.cards];
+      if (nums.some(v => !Number.isFinite(v))) return `${ns.nations[k].name}: explain() gave ${nums.join(', ')}`;
+      if (x.pollution.settles < 0 || x.pollution.settles > 1 || x.cohesionTarget < 0 || x.cohesionTarget > 1) return `${ns.nations[k].name}: settles ${x.pollution.settles}, cohesion → ${x.cohesionTarget}`;
+    }
+    return null;
+  },
+});
+
 rule({
   // System encounters (#115) stretch, capture and remove planets: every orbit
   // left behind must still be one the orbit drawer can place.
@@ -309,6 +345,26 @@ rule({
       }
     }
     return null;
+  },
+});
+
+rule({
+  // Tech cards (#40): TP is spent, never owed; a technology pays its TP once.
+  name: 'TP never negative; each technology paid once',
+  check: () => {
+    if (gameState.techPoints < 0) return `techPoints ${gameState.techPoints}`;
+    const paid = gameState.techRewarded ?? [];
+    return new Set(paid).size === paid.length ? null : `${paid.length - new Set(paid).size} technologies paid twice`;
+  },
+});
+
+rule({
+  // A timed tech-card effect never outlives a full age of the slowest pace by much (no stuck shields).
+  name: 'tech card effects are bounded in time',
+  check: ({ engine }) => {
+    const fx = gameState.techEffects ?? {};
+    const far = (engine as any).tick + 400_000;
+    return (fx.defenceUntil ?? 0) > far || (fx.kinshipUntil ?? 0) > far ? `defence ${fx.defenceUntil}, kinship ${fx.kinshipUntil} at tick ${(engine as any).tick}` : null;
   },
 });
 
@@ -377,6 +433,11 @@ function resetGameState(name: string): void {
   gameState.techPoints = 0;
   gameState.firstContactFired = false;
   gameState.homeMoved = null;
+  gameState.techWear = {};
+  gameState.techRewarded = [];
+  gameState.tpEraHigh = 0;
+  gameState.techCardsKnown = [];
+  gameState.techEffects = {};
   runtimeState.playerPlanetGrid = null;
   runtimeState.playerNations = null;
 }
@@ -1353,6 +1414,45 @@ for (const { seed, stats } of SEEDS) {
     const a = run(), b = run();
     return a === b ? null : 'two runs from the same seed differ';
   });
+}
+
+// ── Scenario: generated continents are not mirror images (#104) ────────────
+// The coast warp, shoulder and inland noise were sampled with the absolute
+// distance from each mass's centre, so every continent mirrored itself
+// (mean mirror score 0.89 over 27 ocean worlds). Discs are clean circles by
+// design (a rare roll), so only 'continents' worlds are held to this.
+{
+  const r: Rule = { name: 'scenario: generated continents are not mirror images', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const { generatePlanetGrid, SEA_LEVEL } = await import('../src/simulation/PlanetGrid');
+    const { structureFor } = await import('../src/simulation/TerrainArchetypes');
+    const N = 256;
+    const mirror = (seed: number): number => {
+      const g = generatePlanetGrid('ocean', seed, null);
+      let best = 0;
+      for (let axis = 0; axis < N; axis += 4) {
+        let same = 0, tot = 0;
+        for (let row = 20; row < 236; row += 4) for (let d = 1; d < 40; d += 2) {
+          const a = g[row][(axis + d) % N].elevation >= SEA_LEVEL, b = g[row][(axis - d + N) % N].elevation >= SEA_LEVEL;
+          if (!a && !b) continue;
+          tot++; if (a === b) same++;
+        }
+        if (tot > 100) best = Math.max(best, same / tot);
+      }
+      return best;
+    };
+    const scores: number[] = [];
+    for (let i = 0; i < 40 && scores.length < 12; i++) {
+      const seed = 1000 + i * 7919;
+      if (structureFor('ocean', seed) === 'continents') scores.push(mirror(seed));
+    }
+    const mean = scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length);
+    if (scores.length < 6) detail = `only ${scores.length} continent worlds sampled`;
+    else if (mean > 0.75) detail = `mean mirror score ${mean.toFixed(2)} over ${scores.length} worlds (> 0.75)`;
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

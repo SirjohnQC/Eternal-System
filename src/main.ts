@@ -1,9 +1,10 @@
-import { BigBangEngine, StarBody, Planet, EngineSnapshot, RELOCATE_ERA, RELOCATE_TP, type ZoomTier } from './simulation/BigBangEngine';
+import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand, showWhy } from './ui/FaithHand';
 import { initTechCards, openTechCards } from './ui/TechCards';
 import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
+import { openLedger } from './ui/LedgerUI';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
@@ -71,6 +72,9 @@ import {
 import { symptomsOf } from './simulation/Nations';
 import { TECH_BY_ID } from './simulation/Technology';
 import { flagCanvas } from './rendering/NationFlagArt';
+import { MenuScene } from './ui/MenuScene';
+import { UiSound, wireUiSounds } from './audio/UiSound';
+import { D20View, setDiceActive } from './ui/D20';
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -109,14 +113,45 @@ function showScreen(name: string): void {
   if (el) el.classList.add('active');
   gameState.screen = name as typeof gameState.screen;
   document.body.classList.toggle('hud-on', name === 'game' || name === 'bigbang');
+  menuScene?.setActive(name === 'menu');
+  setDiceActive(name === 'rolling');
 
   // Music transitions
   void AudioManager.init().then(() => {
     if (name === 'menu') void AudioManager.playMusic('ambient_menu');
     if (name === 'bigbang') void AudioManager.playMusic('ambient_bigbang', false);
-    if (name === 'game')    void AudioManager.playCosmosPlaylist();
+    if (name === 'game') { warMusicOn = false; void AudioManager.playCosmosPlaylist(); }
   });
 }
+
+// ─── Music follows war ────────────────────────────────────────────────────────
+// ambient_war.mp3 shipped but nothing ever played it. While any of your
+// nations is at war (or your star is, with another star), the war track
+// plays; at peace the cosmos playlist comes back. A change must hold for
+// WAR_MUSIC_HOLD_MS before the music follows, so a skirmish that ends at
+// once does not flip the music back and forth.
+const WAR_MUSIC_HOLD_MS = 20_000;
+let warMusicOn = false;
+let warMusicSince = 0;
+function playerAtWar(): boolean {
+  const ns = runtimeState.playerNations;
+  if (ns?.isFounded && ns.relations.some(r => r.war)) return true;
+  const ps = engine?.getPlayerStar();
+  return !!ps && !!engine?.activeWars.some(w => !w.resolved && (w.attackerStarId === ps.id || w.defenderStarId === ps.id));
+}
+function updateWarMusic(): void {
+  if (gameState.screen !== 'game') { warMusicSince = 0; return; }
+  const want = playerAtWar();
+  if (want === warMusicOn) { warMusicSince = 0; return; }
+  const now = Date.now();
+  if (!warMusicSince) { warMusicSince = now; return; }
+  if (now - warMusicSince < WAR_MUSIC_HOLD_MS) return;
+  warMusicSince = 0;
+  warMusicOn = want;
+  if (want) void AudioManager.playMusic('ambient_war');
+  else void AudioManager.playCosmosPlaylist();
+}
+setInterval(updateWarMusic, 4000);
 
 // ─── D20 Stat Rolling ─────────────────────────────────────────────────────────
 // Player rolls 4 stats. The God auto-rolls 'divine' independently.
@@ -138,6 +173,15 @@ const answeredQuestions: Partial<PlanetDNA> = {};
 let currentStatIndex = 0;
 let rollingInterval: ReturnType<typeof setInterval> | null = null;
 let godDivineRoll = 10;
+/** The title screen's backdrop (the god in the glass). */
+let menuScene: MenuScene | null = null;
+/** The wireframe d20 behind each rolled number, by stat; and the God's own. */
+const statDice = new Map<string, D20View>();
+let godDie: D20View | null = null;
+/** A die's colour for a final roll (the same tiers as the number). */
+function tierColor(v: number): string {
+  return v >= 17 ? '#ffdd00' : v >= 13 ? '#44ccff' : v >= 8 ? '#44aa44' : '#aa4422';
+}
 let godRollTriggered = false;
 
 function hashStr(s: string): number {
@@ -190,12 +234,17 @@ function initRollingScreen(): void {
     card.innerHTML = `
       <div class="stat-name">${STAT_LABELS[key]}</div>
       <div class="stat-desc">${STAT_DESC[key]}</div>
-      <div class="stat-number" id="stat-num-${key}">—</div>
+      <div class="stat-die-wrap"><canvas class="stat-die"></canvas><div class="stat-number" id="stat-num-${key}">—</div></div>
       <div class="stat-bar-wrap"><div class="stat-bar-fill" id="stat-bar-${key}"></div></div>
       <div class="stat-lock-badge" id="stat-lock-${key}">LOCKED</div>
     `;
     container.appendChild(card);
+    statDice.get(key)?.dispose();
+    statDice.set(key, new D20View(card.querySelector('canvas')!, i));
   });
+  godDie?.dispose();
+  const godCanvas = document.getElementById('god-die') as HTMLCanvasElement | null;
+  godDie = godCanvas ? new D20View(godCanvas, 7) : null;
 
   showRollButton();
   highlightCard(STAT_KEYS[0]);
@@ -279,20 +328,23 @@ function triggerGodRoll(): void {
   const labelEl = document.getElementById('god-roll-label')!;
   if (section) section.style.display = 'flex';
 
-  AudioManager.playSfx('dice_roll');
 
   numEl.className = 'god-roll-num rolling';
+  godDie?.roll();
   let count = 0;
   const maxCount = 28;
   const interval = setInterval(() => {
     numEl.textContent = String(Math.floor(Math.random() * 20) + 1).padStart(2, '0');
     count++;
+    if (count % 2 === 0) UiSound.tick(count / maxCount);
     if (count >= maxCount) {
       clearInterval(interval);
       const rng = new SeedRNG(Date.now() + 99991);
       godDivineRoll = rng.nextInt(1, 20);
       numEl.textContent = String(godDivineRoll).padStart(2, '0');
       numEl.className = `god-roll-num settled ${getStatTier(godDivineRoll)}`;
+      godDie?.settle('#aa88dd');
+      UiSound.lock(godDivineRoll);
       labelEl.textContent = godDivineRoll >= 17 ? 'OMNIPRESENT' :
                             godDivineRoll >= 13 ? 'INTERVENING' :
                             godDivineRoll >=  8 ? 'WATCHFUL' : 'DISTANT';
@@ -348,10 +400,10 @@ function rollCurrentStat(): void {
   const key = STAT_KEYS[currentStatIndex];
 
   setSimBootStatus('calibrating', 'CALIBRATING');
-  AudioManager.playSfx('dice_roll');
 
   const numEl = document.getElementById(`stat-num-${key}`)!;
   numEl.className = 'stat-number rolling';
+  statDice.get(key)?.roll();
 
   let count = 0;
   const maxCount = 28;
@@ -360,6 +412,7 @@ function rollCurrentStat(): void {
   rollingInterval = setInterval(() => {
     numEl.textContent = String(Math.floor(Math.random() * 20) + 1).padStart(2, '0');
     count++;
+    if (count % 2 === 0) UiSound.tick(count / maxCount);
     if (count >= maxCount) {
       clearInterval(rollingInterval!);
       const rng = new SeedRNG(Date.now() + currentStatIndex * 7331);
@@ -368,6 +421,8 @@ function rollCurrentStat(): void {
 
       numEl.textContent = String(finalVal).padStart(2, '0');
       numEl.className = `stat-number settled ${getStatTier(finalVal)}`;
+      statDice.get(key)?.settle(tierColor(finalVal));
+      UiSound.lock(finalVal);
 
       const bar = document.getElementById(`stat-bar-${key}`) as HTMLElement;
       bar.style.width = `${(finalVal / 20) * 100}%`;
@@ -399,6 +454,37 @@ function getBarColor(v: number): string {
   if (v >= 13) return 'linear-gradient(90deg,#44ccff,#0088cc)';
   if (v >= 8)  return 'linear-gradient(90deg,#44aa44,#226622)';
   return 'linear-gradient(90deg,#aa4422,#661111)';
+}
+
+// ─── Title screen: the god in the glass ───────────────────────────────────────
+function initMenuScene(): void {
+  const menuEl = document.getElementById('screen-menu');
+  const canvas = document.getElementById('menu-scene') as HTMLCanvasElement | null;
+  if (!menuEl) return;
+  if (canvas && !menuScene) {
+    menuScene = new MenuScene(canvas, menuEl, document.getElementById('menu-console'),
+      menuEl.querySelector<HTMLElement>('.menu-logo'));
+    menuEl.classList.add('scene-on');
+  }
+  wireUiSounds(document);
+  const awaken = document.getElementById('menu-awaken');
+  awaken?.addEventListener('click', e => wakeMenu(e.clientX, e.clientY));
+  const onKey = () => { if (gameState.screen === 'menu') wakeMenu(); };
+  document.addEventListener('keydown', onKey, { once: true });
+}
+
+/** The first touch: the eye opens, the menu comes forward, sound unlocks. */
+function wakeMenu(x?: number, y?: number): void {
+  const menuEl = document.getElementById('screen-menu');
+  if (!menuEl || menuEl.classList.contains('awake')) return;
+  menuEl.classList.add('awake');
+  document.getElementById('menu-awaken')?.classList.add('gone');
+  menuScene?.wake(x, y);
+  void AudioManager.wake().then(ok => {
+    if (!ok) return;
+    UiSound.awaken();
+    void AudioManager.playMusic('ambient_menu');
+  });
 }
 
 // ─── Big Bang ─────────────────────────────────────────────────────────────────
@@ -948,10 +1034,21 @@ function wireEngineEvents(eng: BigBangEngine): void {
     setResourceChip('tech-display', 'tech-display-val', total);
     // +5 DP every tech level advance
     awardDP(5, `tech level ${total} reached`);
-    // The Space Age opens the first tech card.
-    if (eng.getPlayerStar()?.civLevel === RELOCATE_ERA) {
-      showToast('tech', `A new tech card: A NEW WORLD. Click TP on the star map to move your whole people to another world (${RELOCATE_TP} TP).`, 10000);
-    }
+  };
+  // Tech cards (#40): TP from discoveries and plays; a card opens when its technology is learned.
+  eng.onTPChanged = (total) => setResourceChip('tech-display', 'tech-display-val', total);
+  // Cards that open together (a leap, a burst of discoveries) come as one toast.
+  let opened: string[] = [];
+  let openedTimer: ReturnType<typeof setTimeout> | null = null;
+  eng.onTechCardUnlocked = (card) => {
+    opened.push(card.name);
+    if (openedTimer) return;
+    openedTimer = setTimeout(() => {
+      const names = opened; opened = []; openedTimer = null;
+      const list = names.length > 4 ? `${names.slice(0, 4).join(', ')} and ${names.length - 4} more` : names.join(', ');
+      showToast('tech', `${names.length > 1 ? 'New tech cards' : 'A new tech card'}: ${list}. Click TP on the star map to see your cards.`, 9000);
+      addFeedEntry(`◆ ${names.length > 1 ? 'New tech cards' : 'New tech card'}: ${names.join(', ')}`, 'discovery');
+    }, 400);
   };
 
   wireCosmicCallbacks();
@@ -1530,6 +1627,32 @@ function applyTileAction(action: TileAction, target: TileRef): void {
   }
 }
 
+/** Enable a tile power only when it can be paid for and does something here. */
+function setTileActionState(btn: HTMLButtonElement, action: TileAction, cell: GridCell): void {
+  const affordable = gameState.divinePoints >= action.cost;
+  const applicable = action.enabled(cell);
+  btn.disabled = !affordable || !applicable;
+  btn.title = !applicable ? 'No effect here'
+            : !affordable ? 'Needs ' + action.cost + ' Divine Power'
+            : '';
+}
+
+/**
+ * Keep the open tile panel's powers in step with DP (#19): they were set once
+ * when the tile was picked, so after spending DP elsewhere a 12 DP power still
+ * looked available at 7 DP (and did nothing when clicked).
+ */
+function refreshTileActionButtons(): void {
+  const grid = runtimeState.playerPlanetGrid;
+  if (!selectedTile || !grid) return;
+  const cell = grid[selectedTile.row]?.[selectedTile.col];
+  if (!cell) return;
+  document.querySelectorAll<HTMLButtonElement>('#pi-tile-actions .pi-tile-btn').forEach(btn => {
+    const action = TILE_ACTIONS.find(a => a.id === btn.dataset['act']);
+    if (action) setTileActionState(btn, action, cell);
+  });
+}
+
 function buildTileActionButtons(cell: GridCell, target: TileRef): void {
   const wrap = document.getElementById('pi-tile-actions');
   if (!wrap) return;
@@ -1538,18 +1661,14 @@ function buildTileActionButtons(cell: GridCell, target: TileRef): void {
   for (const action of TILE_ACTIONS) {
     const btn = document.createElement('button');
     btn.className = 'pi-tile-btn';
+    btn.dataset['act'] = action.id;
     const cost = document.createElement('span');
     cost.className = 'cost';
     cost.textContent = action.cost + ' DP';
     btn.textContent = action.label;
     btn.appendChild(cost);
 
-    const affordable = gameState.divinePoints >= action.cost;
-    const applicable = action.enabled(cell);
-    btn.disabled = !affordable || !applicable;
-    btn.title = !applicable ? 'No effect here'
-              : !affordable ? 'Needs ' + action.cost + ' Divine Power'
-              : '';
+    setTileActionState(btn, action, cell);
 
     btn.addEventListener('click', () => {
       if (gameState.divinePoints < action.cost) return;
@@ -1649,6 +1768,11 @@ function showTileNation(target: TileRef): void {
     chron.style.display = n ? '' : 'none';
     const last = n?.history[n.history.length - 1];
     chron.onclick = n ? () => openChronicle({ nation: n.id, entry: last?.id }) : null;
+  }
+  const ledger = document.getElementById('pi-tile-ledger') as HTMLButtonElement | null;
+  if (ledger) {
+    ledger.style.display = n ? '' : 'none';
+    ledger.onclick = n ? () => openLedger(n.id) : null;
   }
   if (!n) { setText('pi-tile-nation-detail', ''); return; }
   const signs = symptomsOf(n);
@@ -2162,11 +2286,21 @@ function setStyle(id: string, prop: string, val: string): void {
   if (el) el.style.setProperty(prop, val);
 }
 
+/**
+ * Whether a people's culture is shown yet: from their first era (#20). The
+ * record exists from the moment the world turns intelligent, but before the
+ * first age the people are barely there, and a full culture sheet read as
+ * something they had not built yet.
+ */
+function cultureShown(star: StarBody | null | undefined): boolean {
+  return !!star && !!engine && engine.progressionOf(star).era >= 1;
+}
+
 /** Show the civilisation's culture, or hide the section if it has none. */
 function renderCultureSection(star: StarBody | null): void {
   const sec = document.getElementById('pi-culture-section');
   if (!sec) return;
-  const civ = star ? engine?.cultureFor(star) ?? null : null;
+  const civ = star && cultureShown(star) ? engine?.cultureFor(star) ?? null : null;
   if (!civ) { sec.style.display = 'none'; return; }
   sec.style.display = '';
 
@@ -3639,6 +3773,7 @@ function updateDivineActions(): void {
   }
   updateSmiteButton();
   refreshFaithHand();
+  refreshTileActionButtons();
 
   // Send Meteor — always in Faith deck (mockup); afford only with a valid target
   const meteorBtn = document.getElementById('send-meteor-btn') as HTMLButtonElement | null;
@@ -4457,6 +4592,11 @@ function initHudShell(): void {
     document.getElementById('rail-chronicle')?.classList.add('active');
     openChronicle();
   });
+  document.getElementById('rail-ledger')?.addEventListener('click', () => {
+    document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('rail-ledger')?.classList.add('active');
+    openLedger();
+  });
   document.getElementById('rail-codex')?.addEventListener('click', () => {
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
     document.getElementById('rail-codex')?.classList.add('active');
@@ -4504,10 +4644,14 @@ window.addEventListener('DOMContentLoaded', () => {
   // Auto-validate stored Gemini key silently on startup
   if (geminiKey) void testGeminiConnection(geminiKey);
 
+  initMenuScene();
   showScreen('menu');
 
   // Start menu music immediately — AudioContext auto-resumes on first interaction
-  void AudioManager.init().then(() => AudioManager.playMusic('ambient_menu'));
+  void AudioManager.init().then(() => {
+    void AudioManager.playMusic('ambient_menu');
+    if (AudioManager.running) wakeMenu(); // sound already allowed: no need to touch the glass
+  });
 
   document.getElementById('begin-btn')?.addEventListener('click', () => {
     showScreen('rolling');
@@ -5795,6 +5939,7 @@ function codexRecords(): CodexRecord[] {
   }
 
   for (const civ of Object.values(gameState.civilizations)) {
+    if (!cultureShown(engine?.stars.find(s => s.id === civ.starId))) continue;  // from the first era (#20)
     out.push({
       id: `civ_${civ.starId}`,
       tick: civ.generatedAtTick,
@@ -6257,6 +6402,7 @@ initTechCards({
     if (ps) updateBottomBar(ps);
     engine?.focusPlayerStar(false, far);
   },
+  played: (line) => addChatMessage(line, 'god'),   // the feed already has it (onCivEvent)
 });
 initFaithHand({
   chat: (text, kind) => addChatMessage(text, kind),

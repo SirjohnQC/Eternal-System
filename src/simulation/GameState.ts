@@ -185,6 +185,17 @@ export interface GameStateData {
    * from its own DNA, not the setup answers. Optional: older saves never moved.
    */
   homeMoved?: { starId: number; planetIndex: number; tick: number } | null;
+  // ── Tech cards (TechCards.ts). All optional: older saves have none. ──
+  /** Recent plays of each tech card (raises its price; fades). */
+  techWear?: Record<string, { n: number; tick: number }>;
+  /** Technologies that already paid their discovery TP (once per game, reloads included). */
+  techRewarded?: string[];
+  /** Highest age that already paid its TP (an age lost and regained pays once). */
+  tpEraHigh?: number;
+  /** Tech cards already announced as playable. */
+  techCardsKnown?: string[];
+  /** Timed tech-card effects, as ticks they last until. */
+  techEffects?: { defenceUntil?: number; kinshipUntil?: number };
   codexEntries: CodexEntry[];
   playerSpeciesTraits: Record<string, string>;   // category → chosen value from traits modal
   playerSpeciesDescription: string;              // Gemini-generated species description
