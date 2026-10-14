@@ -57,6 +57,7 @@ import {
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { colonyLook, type Colony } from './simulation/Colonies';
+import { colonyPeopleCard } from './simulation/ColonyWorld';
 import { generationsAgo } from './simulation/WorldHistory';
 import { orreryColor } from './rendering/OrreryPalette';
 import { BUILD_LABEL } from './buildInfo';
@@ -2005,11 +2006,24 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     : (star.hasLife ? star.civName + 'ians' : '—');
 
   const iconEl = document.getElementById('pi-species-icon');
+  // A colony world: its people are the settlers, not the star's own life
+  // (a lifeless star, or natives on another planet) — P4.
+  const founderCiv = colony && !colony.byPlayer ? gameState.civilizations[colony.founderStarId] : undefined;
+  const colonyGenome = colony
+    ? (colony.lineage ?? (founderCiv ? genomeFromSummary(founderCiv.sourceGenome, `npc_${colony.founderStarId}`) : null))
+    : null;
+  const colonyCard = colony && engine
+    ? colonyPeopleCard(colony, colony.lineage?.name
+        ?? (colony.byPlayer ? engine.colonyFounderName(colony) : `${engine.colonyFounderName(colony)}ians`),
+        engine.colonyFounderName(colony))
+    : null;
   // Another world's people: draw them (their form follows their body plan).
   const npcCiv = !isPlayer && star.biologyPhase === 'intelligent' ? gameState.civilizations[star.id] : undefined;
-  const npcGenome = npcCiv ? genomeFromSummary(npcCiv.sourceGenome, `npc_${star.id}`) : null;
+  const npcGenome = colonyCard ? colonyGenome : npcCiv ? genomeFromSummary(npcCiv.sourceGenome, `npc_${star.id}`) : null;
   if (iconEl) {
-    const key = npcGenome ? `npc_${star.id}` : '';
+    // Keyed on the colony's look too, so a people that changes is redrawn.
+    const key = colonyCard && colony ? `colony_${colony.id}_${colony.stage ?? 'same'}_${colonyLook(colony)}`
+      : npcGenome ? `npc_${star.id}` : '';
     if (npcGenome) {
       if (iconEl.dataset['portrait'] !== key) {
         iconEl.textContent = '';
@@ -2020,10 +2034,10 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
       }
     } else {
       iconEl.dataset['portrait'] = '';
-      iconEl.textContent = star.hasLife ? SPECIES_ICONS[civLevel] : '—';
+      iconEl.textContent = colonyCard ? SPECIES_ICONS[7] : star.hasLife ? SPECIES_ICONS[civLevel] : '—';
     }
   }
-  setText('pi-species-name', speciesName);
+  setText('pi-species-name', colonyCard?.name ?? speciesName);
 
   let speciesDesc = 'No life detected on this world.';
   if (star.formationStage) {
@@ -2037,6 +2051,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     if (form) speciesDesc = `A ${form} people · ${speciesDesc}`;
     if (dna) speciesDesc += ` · ${dna.climate} world`;
   }
+  if (colonyCard) speciesDesc = colonyCard.desc;
   setText('pi-species-desc', speciesDesc);
 
   // Tech track
