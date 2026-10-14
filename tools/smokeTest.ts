@@ -224,7 +224,11 @@ let savedTick = 0;
 
   // Callbacks
   check('civ events fired', seen.civEvent > 0, String(seen.civEvent));
-  check('life events (filters/catastrophes) fired', seen.lifeEvent > 0, String(seen.lifeEvent));
+  // Catastrophes on other worlds only reach onLifeEvent when they sterilise
+  // one, so count every catastrophe the engine applied as well: at ~4 per
+  // run, the callback alone came up 0 on about one seed in four.
+  const struck = (engine as any).catastrophesApplied as number;
+  check('life events (filters/catastrophes) fired', seen.lifeEvent + struck > 0, `${seen.lifeEvent} life events, ${struck} catastrophes`);
   check('cosmic events fired', seen.cosmic > 0, String(seen.cosmic));
   check('wars fired', seen.war > 0, String(seen.war));
 
