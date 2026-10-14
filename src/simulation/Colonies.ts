@@ -317,3 +317,14 @@ export function liveGeneration(c: Colony, env: WorldEnv, contact: number, tick: 
 export function colonyLook(c: Colony): string {
   return describe(c.adaptations).slice(0, 2).join(', ');
 }
+
+/**
+ * The player's peoples that descend from a home species, living on other
+ * worlds (P4: the lineage in the Codex), most changed first. Includes colonies
+ * that broke away or were taken: they are still its descendants.
+ */
+export function offshootsOf(state: ColonyState, homeLineageId: string): Colony[] {
+  return state.colonies
+    .filter(c => c.byPlayer && c.lineage && c.homeLineageId === homeLineageId)
+    .sort((a, b) => distanceFromHome(b.adaptations) - distanceFromHome(a.adaptations) || a.foundedTick - b.foundedTick);
+}

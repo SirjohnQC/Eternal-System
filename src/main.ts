@@ -55,7 +55,8 @@ import {
   cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
-import { colonyLook } from './simulation/Colonies';
+import { colonyLook, type Colony } from './simulation/Colonies';
+import { generationsAgo } from './simulation/WorldHistory';
 import { orreryColor } from './rendering/OrreryPalette';
 import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
@@ -1689,6 +1690,102 @@ function formatPop(n: number): string {
 // Which star the planet panel is currently showing. `onCultureGenerated` needs
 // it to know whether a late Gemini result is worth re-rendering for.
 let _panelStarId: number | null = null;
+let _worldSectionTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * "This World" for any world but home: who lives there now, what they have
+ * become, who rules them, and the world's own history (#17; WorldHistory.ts).
+ */
+function buildWorldSection(star: StarBody, planetIndex: number, isHome: boolean): void {
+  const section = document.getElementById('pi-world-section');
+  const rowsEl = document.getElementById('pi-world-rows');
+  const list = document.getElementById('pi-world-history');
+  if (!section || !rowsEl || !list || !engine) return;
+  const colony = isHome ? null : engine.colonyAt(star.id, planetIndex);
+  const events = isHome ? [] : engine.worldHistoryAt(star.id, planetIndex);
+  section.style.display = colony || events.length ? '' : 'none';
+  if (section.style.display === 'none') return;
+  const esc = (t: string) => t.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
+  const rows: Array<[string, string]> = [];
+  if (colony) {
+    const founder = engine.colonyFounderName(colony);
+    const ruler = engine.colonyRulerName(colony);
+    if (colony.occupation?.homeWorld) {
+      rows.push(['People', star.civName]);
+      rows.push(['Occupied by', `${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+    } else {
+      const kind = colony.status === 'outpost' ? 'Outpost' : colony.status === 'independent' ? 'Independent colony'
+        : colony.status === 'occupied' ? 'Occupied colony' : 'Colony';
+      rows.push(['Settled by', founder]);
+      rows.push(['Standing', kind]);
+      if (colony.occupation) rows.push(['Occupied by', `${ruler} · grip ${Math.round(colony.occupation.hold * 100)}%`]);
+      else if (colony.status !== 'independent' && ruler !== founder) rows.push(['Ruled by', ruler]);
+      else if (colony.status === 'colony' || colony.status === 'outpost') rows.push(['Loyalty', `${Math.round(colony.loyalty * 100)}%`]);
+      rows.push(['Population', `${Math.round(colony.population * 100)}% of what it can hold`]);
+      const stage = colony.stage ?? 'same';
+      rows.push(['Their people', stage === 'same' ? 'unchanged from home'
+        : `${colonyLook(colony) || 'changed'} · ${stage === 'species' ? 'a new species' : stage}`]);
+      rows.push(['Generations here', String(colony.generations)]);
+    }
+  } else {
+    rows.push(['People', 'none now']);
+  }
+  rowsEl.innerHTML = rows.map(([k, v]) =>
+    `<div class="pi-row"><span class="pi-row-label">${esc(k)}</span><span class="pi-row-value" style="text-align:right;max-width:62%">${esc(v)}</span></div>`).join('');
+  const now = engine.tick;
+  setStyle('pi-world-history-title', 'display', events.length ? '' : 'none');
+  list.innerHTML = [...events].reverse().slice(0, 20).map(e =>
+    `<li><span class="wh-when">${esc(generationsAgo(e.tick, now))}</span>${esc(e.text)}${e.cause ? ` <span class="wh-cause">— ${esc(e.cause)}</span>` : ''}</li>`).join('');
+}
+
+/**
+ * The Codex lineage (expansion P4): on the home world, the player's species
+ * and the peoples it has become on other worlds; on a colony world, the people
+ * here and the species it came from. Portraits come from the same creature
+ * forge, so what divergence did shows (owner's idea: smaller / bigger / a
+ * different colour).
+ */
+function buildLineageSection(star: StarBody, planetIndex: number, isHome: boolean): void {
+  const section = document.getElementById('pi-lineage-section');
+  const box = document.getElementById('pi-lineage');
+  if (!section || !box || !engine) return;
+  const esc = (t: string) => t.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
+  const entry = (g: SpeciesGenome | null, name: string, desc: string, child: boolean) => {
+    const row = document.createElement('div');
+    row.className = child ? 'pi-lineage-row' : 'pi-lineage-root';
+    row.innerHTML = `<div class="pi-lineage-art"></div><div><div class="pi-lineage-name">${esc(name)}</div><div class="pi-lineage-desc">${esc(desc)}</div></div>`;
+    if (g) { try { row.firstElementChild!.appendChild(bakeCreaturePortrait(g, 40)); } catch { /* portrait is decoration */ } }
+    return row;
+  };
+  const stageWords = (c: Colony) => {
+    const stage = c.stage ?? 'same';
+    const look = colonyLook(c);
+    const what = stage === 'same' ? 'the same people' : stage === 'species' ? 'a new species' : stage;
+    const rule = c.status === 'independent' ? 'independent' : c.occupation ? `held by ${engine!.colonyRulerName(c)}` : c.status;
+    return `${look ? look + ' · ' : ''}${what} · ${rule} · ${c.generations} generations`;
+  };
+  const rows: HTMLElement[] = [];
+  if (isHome) {
+    const living = gameState.playerSpecies.filter(sp => !sp.isExtinct);
+    for (const sp of living) {
+      const kids = engine.colonyOffshoots(sp.id);
+      if (!kids.length) continue;
+      rows.push(entry(sp, sp.name, 'at home', false));
+      for (const c of kids) rows.push(entry(c.lineage, `on ${c.name}`, stageWords(c), true));
+    }
+    setText('pi-lineage-title', 'Lineage — peoples on other worlds');
+  } else {
+    const c = engine.colonyAt(star.id, planetIndex);
+    if (c?.byPlayer && c.lineage) {
+      const root = gameState.playerSpecies.find(sp => sp.id === c.homeLineageId) ?? null;
+      rows.push(entry(root, root?.name ?? c.lineage.name, root ? 'at home' : 'their ancestors', false));
+      rows.push(entry(c.lineage, `on ${c.name}`, stageWords(c), true));
+    }
+    setText('pi-lineage-title', 'Lineage — descended from');
+  }
+  section.style.display = rows.length ? '' : 'none';
+  box.replaceChildren(...rows);
+}
 
 function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   _panelStarId = star.id;
@@ -1705,7 +1802,23 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     ? gameState.playerPlanetName
     : (planet?.name ?? star.civName + ' Prime');
 
-  setText('pi-planet-name', displayName);
+  const colony = isHome ? null : engine?.colonyAt(star.id, planetIndex) ?? null;
+  setText('pi-planet-name', colony?.name ?? displayName);
+  buildWorldSection(star, planetIndex, isHome);
+  buildLineageSection(star, planetIndex, isHome);
+  // Views render from simulation state (CLAUDE.md rule 1): keep "This World"
+  // current while the panel is open, not only as it was on entry.
+  if (_worldSectionTimer) clearInterval(_worldSectionTimer);
+  _worldSectionTimer = isHome ? null : setInterval(() => {
+    const overlay = document.getElementById('planet-overlay');
+    if (!overlay || overlay.style.display === 'none' || _panelStarId !== star.id) {
+      if (_worldSectionTimer) clearInterval(_worldSectionTimer);
+      _worldSectionTimer = null;
+      return;
+    }
+    buildWorldSection(star, planetIndex, false);
+    buildLineageSection(star, planetIndex, false);
+  }, 1000);
   setText('pi-type-badge', (planet?.type ?? 'unknown').toUpperCase());
   setText('pi-star-system', star.civName + ' System');
   setText('pi-planet-index', planet ? `Orbit ${planetIndex + 1} of ${star.planets.length}` : '—');
@@ -1747,7 +1860,8 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     setStyle('pi-biosphere-bar', 'width', Math.round(biosphere * 100) + '%');
   } else {
     setStyle('pi-arch-row', 'display', 'none');
-    setText('pi-era', 'No Life Detected');
+    // A lifeless star with a colony on this world: the settlers are its life (#17).
+    setText('pi-era', colony ? `Settlers from ${engine?.colonyFounderName(colony) ?? 'afar'}` : 'No Life Detected');
     setText('pi-population', '—');
     setText('pi-biosphere', '0%');
     setStyle('pi-biosphere-bar', 'width', '0%');
