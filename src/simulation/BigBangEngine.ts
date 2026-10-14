@@ -45,7 +45,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
   type EvolutionEvent,
 } from './EvolutionEngine';
-import { stepLifeSpread, generatePlanetGrid, type PlanetGrid } from './PlanetGrid';
+import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, type PlanetGrid } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
@@ -201,6 +201,21 @@ export interface Planet {
    */
   destinyType?: DestinyType;
 }
+
+/** A world of the player's system the people could move to (the TP card "A New World"). */
+export interface RelocationTarget {
+  planetIndex: number;
+  name: string;
+  type: Planet['type'];
+  /** 0..1, the same habitability an ark weighs: low is a harsh world, not a closed one. */
+  suitability: number;
+  /** One of the people's own outposts or colonies is already there (it is absorbed). */
+  colony: boolean;
+}
+/** TP the whole people's move to another world costs. */
+export const RELOCATE_TP = 10;
+/** The era from which a people can leave its world (Space Age). */
+export const RELOCATE_ERA = TECH_LEVELS.indexOf('Space Age');
 
 // Moved to ./Orbit (pure) so renderers can place planets without the engine.
 export { planetOffsetFromStar } from './Orbit';
@@ -1867,13 +1882,122 @@ export class BigBangEngine {
     // forged world's water comes from its forging, so its DNA counts in full.
     const dna = gameState.playerPlanetDNA;
     const labDna = gameState.destinyOverride !== null || gameState.skipFormation || !!gameState.forge;
+    // A world the people moved to was never formed from the setup answers:
+    // its ground is its own DNA, the same the system map draws it from.
+    const moved = gameState.homeMoved;
+    const movedHere = !!moved && moved.starId === ps.id && moved.planetIndex === planetIndex;
     runtimeState.playerPlanetGrid = generatePlanetGrid(
       planet?.type ?? 'rocky',
       ps.id * 7777 + planetIndex * 131,
-      dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
+      movedHere ? (planet?.dna ?? dna) : dna && !labDna ? { ...dna, oceans: 'mixed' } : dna,
     );
     this.playerGridFor = { starId: ps.id, planetIndex };
     return runtimeState.playerPlanetGrid;
+  }
+
+  // ── A New World (TP card): the whole people moves (#40) ───────────────────
+
+  /**
+   * Worlds of the player's own system the people could move to now: any
+   * ground to stand on (not gas, lava or a husk), however harsh — a Space Age
+   * people can live where an ark would not bother to land. Never a world
+   * another people holds or an ark in flight is bound for.
+   */
+  relocationTargets(): RelocationTarget[] {
+    const ps = this.getPlayerStar();
+    if (!ps || this.relocationBlock()) return [];
+    const home = this.homeIndexOf(ps);
+    // A world another people holds, or one an ark is bound for, is not free.
+    // The people's own outposts and colonies are: the settlers are absorbed.
+    const held = new Set<number>();
+    for (const c of this.colonies.colonies) {
+      if (c.starId === ps.id && !(c.byPlayer && ruledByPlayer(c) && !c.occupation)) held.add(c.planetIndex);
+    }
+    for (const f of this.fleets) if (f.ark && f.toStarId === ps.id) held.add(f.ark.planetIndex);
+    const out: RelocationTarget[] = [];
+    ps.planets.forEach((p, i) => {
+      // Gas has no ground and lava none that holds: nothing to stand on.
+      if (i === home || p.type === 'gas' || p.type === 'lava' || p.isDead || held.has(i)) return;
+      const suitability = planetHabitability({ planetType: p.type as PlanetKind, orbitalRadius: p.orbitalRadius, starTemperature: ps.temperature });
+      out.push({ planetIndex: i, name: p.name, type: p.type, suitability, colony: !!colonyAt(this.colonies, ps.id, i) });
+    });
+    return out.sort((a, b) => b.suitability - a.suitability);
+  }
+
+  /** Why "A New World" cannot be played now, or null when it can. */
+  relocationBlock(): string | null {
+    const ps = this.getPlayerStar();
+    if (!ps || !ps.hasLife || ps.biologyPhase !== 'intelligent') return 'Your people have not yet woken.';
+    if (ps.formationDestiny) return 'Your world is still forming.';
+    if (ps.civLevel < RELOCATE_ERA) return `Your people must reach the ${TECH_LEVELS[RELOCATE_ERA]} to leave their world.`;
+    if (gameState.techPoints < RELOCATE_TP) return `It takes ${RELOCATE_TP} TP; you have ${gameState.techPoints}.`;
+    return null;
+  }
+
+  /**
+   * Play "A New World": the whole people leaves its world for `planetIndex`
+   * in the same system, at a cost of RELOCATE_TP. They keep their era, their
+   * nations (each raises a new capital), their species and their faith; the
+   * old world is left to its wild life. Returns the line for the feed, or
+   * null when the move is refused (see relocationBlock / relocationTargets).
+   */
+  relocateHome(planetIndex: number): string | null {
+    const ps = this.getPlayerStar();
+    if (!ps || !this.relocationTargets().some(t => t.planetIndex === planetIndex)) return null;
+    const oldIndex = this.homeIndexOf(ps);
+    const oldPlanet = ps.planets[oldIndex], planet = ps.planets[planetIndex];
+    const oldGrid = this.ensurePlayerGrid();
+    let settledBefore = 0;
+    if (oldGrid) for (const row of oldGrid) for (const c of row) if (c.civId != null && !isWater(c.biome)) settledBefore++;
+
+    gameState.techPoints -= RELOCATE_TP;   // the caller refreshes the TP chip
+
+    // The people's own settlers there are absorbed into the arriving whole.
+    const absorbed = colonyAt(this.colonies, ps.id, planetIndex);
+    if (absorbed) this.colonies.colonies = this.colonies.colonies.filter(c => c !== absorbed);
+
+    // Names: the old world keeps the name its people gave it; the new one is
+    // named after it.
+    const named = (n: string | undefined) => !!n && n !== '—' && n.trim() !== '';
+    const oldName = named(gameState.playerPlanetName) ? gameState.playerPlanetName
+      : named(oldPlanet.name) ? oldPlanet.name : 'the old world';
+    if (named(oldName) && oldName !== 'the old world') {
+      oldPlanet.name = oldName;
+      // "New Terra"; a second move from it is "New Terra II", not "New New Terra".
+      const base = `New ${oldName.replace(/^(New )+/, '').replace(/ [IVX]+$/, '')}`;
+      const used = new Set(ps.planets.filter(p => p !== planet).map(p => p.name));
+      const numerals = ['', ' II', ' III', ' IV', ' V', ' VI', ' VII', ' VIII'];
+      planet.name = numerals.map(n => base + n).find(n => !used.has(n)) ?? `${base} ${ps.planets.indexOf(planet) + 1}`;
+    }
+    gameState.playerPlanetName = planet.name;
+
+    // The old world keeps its wild life; the new one now carries the people.
+    planet.hasLife = true;
+    planet.biosphere = Math.max(planet.biosphere, 0.3);
+    planet.discovery = 'landing';
+    ps.homePlanetIndex = planetIndex;
+    ps.habitability = undefined;
+    gameState.playerPlanetDNA = planet.dna ? { ...planet.dna } : gameState.playerPlanetDNA;
+    gameState.homeMoved = { starId: ps.id, planetIndex, tick: this.tick };
+
+    // New ground: settle the landing, then let the nations raise new capitals.
+    this.invalidatePlayerGrid();
+    const grid = this.ensurePlayerGrid();
+    if (grid) {
+      seedLanding(grid, Math.max(200, Math.min(8000, Math.round(settledBefore * 0.5))), String(ps.id));
+      assignDominantSpecies(grid, gameState.playerSpecies);
+      const ns = runtimeState.playerNations;
+      if (ns?.isFounded) {
+        ns.resettle(grid, this.tick, planet.name);
+        ns.worldEvent(this.tick, `The whole people left ${oldName} for ${planet.name}.`, ['a god spent what they had learned to carry them']);
+        for (const line of ns.drainNews()) this.onCivEvent?.(line);
+      }
+    }
+    this.onPlayerWorldChanged?.();
+    const Old = oldName.charAt(0).toUpperCase() + oldName.slice(1);
+    const line = `A NEW WORLD: your people have left ${oldName} for ${planet.name}. ${Old} is left to its wild things.`;
+    this.onCivEvent?.(line);
+    return line;
   }
 
   /** The home world's face changed: regenerate its grid on next use. */

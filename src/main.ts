@@ -1,5 +1,6 @@
-import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
+import { BigBangEngine, StarBody, Planet, EngineSnapshot, RELOCATE_ERA, RELOCATE_TP, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand } from './ui/FaithHand';
+import { initTechCards, openTechCards } from './ui/TechCards';
 import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
@@ -940,6 +941,10 @@ function wireEngineEvents(eng: BigBangEngine): void {
     setResourceChip('tech-display', 'tech-display-val', total);
     // +5 DP every tech level advance
     awardDP(5, `tech level ${total} reached`);
+    // The Space Age opens the first tech card.
+    if (eng.getPlayerStar()?.civLevel === RELOCATE_ERA) {
+      showToast('tech', `A new tech card: A NEW WORLD. Click TP on the star map to move your whole people to another world (${RELOCATE_TP} TP).`, 10000);
+    }
   };
 
   wireCosmicCallbacks();
@@ -2981,6 +2986,7 @@ function closeEventLog(): void {
 // ─── Notification Toast ───────────────────────────────────────────────────────
 const TOAST_ICONS: Record<string, string> = {
   dna:             '🧬',
+  tech:            '◆',
   supernova:       '💥',
   asteroid_impact: '☄',
   void_storm:      '🌀',
@@ -2994,6 +3000,7 @@ const TOAST_ICONS: Record<string, string> = {
 
 const TOAST_TITLES: Record<string, string> = {
   dna:             'EVOLUTION',
+  tech:            'TECH CARD',
   supernova:       'STELLAR COLLAPSE',
   asteroid_impact: 'ASTEROID IMPACT',
   void_storm:      'VOID STORM',
@@ -5533,6 +5540,7 @@ function initEvoLab(): void {
   document.getElementById('evo-evolve-btn')?.addEventListener('click', evolveNow);
   document.getElementById('el-open-lab-btn')?.addEventListener('click', openEvoLab);
   document.getElementById('dna-display')?.addEventListener('click', openEvoLab);
+  document.getElementById('tech-display')?.addEventListener('click', openTechCards);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -6058,6 +6066,18 @@ function setupFaithDeckFold(): void {
   });
 }
 setupFaithDeckFold();
+initTechCards({
+  engine: () => engine,
+  tpChanged: () => setResourceChip('tech-display', 'tech-display-val', gameState.techPoints),
+  moved: (line) => {
+    // Whatever was open showed the old home: close it, follow the people.
+    if (document.getElementById('planet-overlay')?.style.display === 'flex') closePlanetView();
+    addChatMessage(line, 'god');   // the feed already has it (onCivEvent)
+    const ps = engine?.getPlayerStar();
+    if (ps) updateBottomBar(ps);
+    engine?.focusPlayerStar();
+  },
+});
 initFaithHand({
   chat: (text, kind) => addChatMessage(text, kind),
   dpChanged: () => {
