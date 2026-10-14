@@ -38,7 +38,7 @@ import { runForge, forgeActive, forgeAwaitingDescent, forgeDescend } from './ui/
 import { initUniverseMap, showDormantGalaxyCard, currentOverlay } from './ui/UniverseMapUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
 import {
-  generatePlanetGrid, classifyBiome, isWater, isHabitable,
+  generatePlanetGrid, classifyBiome, reclassify, isWater, isHabitable,
   SEA_LEVEL, GRID_SIZE, BIOME_COLORS, tintRiver,
   type BiomeType, type GridCell,
 } from './simulation/PlanetGrid';
@@ -1542,7 +1542,7 @@ interface TileRef { row: number; col: number }
 let selectedTile: TileRef | null = null;
 
 const BIOME_LABELS: Record<BiomeType, string> = {
-  deep_ocean: 'Deep Ocean', ocean: 'Ocean', shallow: 'Shallows', beach: 'Coast',
+  deep_ocean: 'Deep Ocean', ocean: 'Ocean', shallow: 'Shallows', lake: 'Lake', beach: 'Coast',
   plains: 'Plains', grassland: 'Grassland', forest: 'Forest', jungle: 'Jungle',
   desert: 'Desert', savanna: 'Savanna', tundra: 'Tundra', snow: 'Snowfield',
   mountain: 'Mountains', volcanic: 'Volcanic',
@@ -1627,7 +1627,7 @@ function applyTileAction(action: TileAction, target: TileRef): void {
 
       // Elevation edits change what the tile IS, so reclassify and recompute the
       // derived fields the rest of the simulation reads off it.
-      cell.biome = classifyBiome(cell.elevation, cell.moisture, cell.temperature, planetType);
+      cell.biome = reclassify(cell, planetType);
       if (!isHabitable(cell.biome)) { cell.fertility = 0; cell.lifeDensity = 0; }
       if (isWater(cell.biome)) cell.civId = null;
     }
