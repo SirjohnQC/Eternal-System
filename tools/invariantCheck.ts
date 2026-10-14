@@ -239,6 +239,21 @@ rule({
   },
 });
 
+rule({
+  // System encounters (#115) stretch, capture and remove planets: every orbit
+  // left behind must still be one the orbit drawer can place.
+  name: 'planet orbits are well-formed',
+  check: ({ engine }) => {
+    for (const s of (engine as any).stars as any[]) for (const p of s.planets) {
+      const e = p.eccentricity ?? 0;
+      if (!(p.orbitalRadius > 0) || !Number.isFinite(p.orbitalSpeed) || !(e >= 0 && e <= 0.72) || !Array.isArray(p.moons)) {
+        return `star #${s.id} planet ${p.name}: a=${p.orbitalRadius}, e=${e}, speed=${p.orbitalSpeed}`;
+      }
+    }
+    return null;
+  },
+});
+
 const { orreryColor } = await import('../src/rendering/OrreryPalette');
 rule({
   // The system panel's orrery appends alpha digits to each planet's colour; a
@@ -715,6 +730,73 @@ for (const { seed, stats } of SEEDS) {
     if (!c2 || JSON.stringify(c2.adaptations) !== JSON.stringify(col.adaptations) || c2.generations !== 30) throw new Error('divergence did not survive save/load');
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: overlapping systems work on each other's planets (#115) ───────
+{
+  const scen = (name: string, run: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = run(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const { systemReach, TIDE_REACH } = await import('../src/simulation/SystemEncounters');
+  resetGameState('Inv_encounters');
+  const e = new BigBangEngine(makeCanvas()) as any;
+  e.init(SEEDS[0].stats, 'inv_encounters');
+  for (let i = 0; i < 2_000; i++) e.update();
+  const npc = (e.stars as Star[]).filter(s => !s.isDead && !s.isPlayerStar && !s.formationStage && !s.hasLife && s.planets.length >= 3);
+  /** Park `intruder` on `host`'s second orbit and run encounter passes (the stars hold still). */
+  const overlap = (host: Star, intruder: Star, passes: number) => {
+    intruder.x = host.x + host.planets[1].orbitalRadius; intruder.y = host.y;
+    for (let i = 0; i < passes; i++) { e.tick += 20; e.updateSystemEncounters(); }
+  };
+
+  scen('a star inside another system strips it from the outside in; the inhabited world stays', () => {
+    const [h, i] = npc;
+    if (!h || !i) return 'no two lifeless NPC systems with 3+ planets';
+    h.hasLife = true; h.bestPlanetIndex = 0; h.planets[0].hasLife = true;
+    const home = h.planets[0], before = h.planets.length, total = before + i.planets.length;
+    e.encounterTally = {};
+    overlap(h, i, 15_000);
+    const t = e.encounterTally, taken = (t.captured ?? 0) + (t.ejected ?? 0) + (t.swallowed ?? 0) + (t.absorbed ?? 0) + (t.shattered ?? 0);
+    if (h.planets[0] !== home) return 'the inhabited world was moved or removed';
+    if (h.planets.length >= before) return `host kept all ${before} planets (${JSON.stringify(t)})`;
+    if (!taken) return `nothing was captured, ejected, swallowed or destroyed (${JSON.stringify(t)})`;
+    if (h.planets.length + i.planets.length > total) return 'planets were created';
+    const d = Math.hypot(i.x - h.x, i.y - h.y);
+    if (h.planets.length > 1 && systemReach(h) * TIDE_REACH > d) return `still overlapping: ${h.planets.map(p => p.orbitalRadius.toFixed(0) + '/' + (p.eccentricity ?? 0).toFixed(2)).join(' ')} at d=${d.toFixed(0)} (${JSON.stringify(t)})`;
+    return null;
+  });
+
+  scen('a colony or an ark target is never taken by an encounter', () => {
+    const [, , h, i] = npc;
+    if (!h || !i) return 'not enough lifeless NPC systems';
+    const last = h.planets.length - 1, outer = h.planets[last], count = h.planets.length;
+    e.fleets.push({ id: -1, fromStarId: i.id, toStarId: h.id, x: 0, y: 0, progress: 0, hostile: false, isPlayerFleet: false,
+      ark: { planetIndex: last, name: 'Test ark', suitability: 0.5, byPlayer: false } });
+    overlap(h, i, 2_000);
+    e.fleets = e.fleets.filter((f: any) => f.id !== -1);
+    if (h.planets.length !== count || h.planets[last] !== outer) return `the ark's world (orbit ${last + 1}) was taken`;
+    return null;
+  });
+
+  scen('encounters replay identically from the same state', () => {
+    const run = () => {
+      resetGameState('Inv_encounters_det');
+      const x = new BigBangEngine(makeCanvas()) as any;
+      x.init(SEEDS[0].stats, 'inv_encounters_det');
+      for (let k = 0; k < 2_000; k++) x.update();
+      const s = (x.stars as Star[]).filter(q => !q.isDead && !q.isPlayerStar && !q.formationStage && !q.hasLife && q.planets.length >= 3);
+      if (s.length < 2) return 'none';
+      s[1].x = s[0].x + s[0].planets[1].orbitalRadius; s[1].y = s[0].y;
+      for (let k = 0; k < 1_500; k++) { x.tick += 20; x.updateSystemEncounters(); }
+      return JSON.stringify([s[0].planets, s[1].planets].map(r => r.map(p => [p.name, p.orbitalRadius.toFixed(3), (p.eccentricity ?? 0).toFixed(3)])));
+    };
+    const a = run(), b = run();
+    return a === b ? null : 'two runs from the same seed differ';
+  });
 }
 
 // ── Scenarios: drive rare transitions directly ──────────────────────────────

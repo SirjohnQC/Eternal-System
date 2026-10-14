@@ -32,6 +32,7 @@ import {
 } from './GameState';
 import { bakePlanetTexture } from './PlanetRenderer';
 import { genomeSeedFor } from './PlanetGenome';
+import { stepEncounters, ENCOUNTER_EVERY, type EncounterEvent, type EncounterKind } from './SystemEncounters';
 import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
 import {
@@ -1913,6 +1914,9 @@ export class BigBangEngine {
       }
     } else {
       this.updateGravity();
+      if (this.phase === 'settled' && this.collisionsEnabled && this.tick % ENCOUNTER_EVERY === 0) {
+        this.updateSystemEncounters();
+      }
       this.updatePlanetFormation();
       if (this.tick % 600 === 0) this.updateGalaxies();
       this.updateTerraforming();
@@ -2202,6 +2206,63 @@ export class BigBangEngine {
         }
       }
     }
+  }
+
+  /** What system encounters have done this session (#115; probes and checks, not saved). */
+  encounterTally: Partial<Record<EncounterKind, number>> = {};
+
+  /**
+   * Overlapping star systems work on each other's planets (#115,
+   * SystemEncounters.ts): tides stretch, capture or fling out outer worlds,
+   * orbits through a star's corona fall in, crossing worlds collide. Worlds
+   * people live on, colonies, the home world and ark targets are never taken.
+   */
+  private updateSystemEncounters(): void {
+    const taken = new Set(this.colonies.colonies.map(c => siteKey(c.starId, c.planetIndex)));
+    for (const f of this.fleets) if (f.ark) taken.add(siteKey(f.toStarId, f.ark.planetIndex));
+    const events = stepEncounters({
+      stars: this.stars,
+      // A fork per pass: the main stream is untouched, and a reload replays it.
+      rng: this.rng.fork(`encounter_${this.tick}`),
+      nebulae: this.nebulae,
+      isProtected: (s, i) => {
+        if (s.formationStage != null) return true;           // still forming
+        const p = s.planets[i];
+        if (p.hasLife || p.destinyType || taken.has(siteKey(s.id, i))) return true;
+        if (s.isPlayerStar && i === this.homeIndexOf(s)) return true;
+        if (s.hasLife && i === (s.bestPlanetIndex ?? 0)) return true;
+        const g = this.playerGridFor;
+        return !!g && g.starId === s.id && g.planetIndex === i;
+      },
+    });
+    for (const e of events) {
+      this.encounterTally[e.kind] = (this.encounterTally[e.kind] ?? 0) + 1;
+      // The roster changed: habitability is re-derived from what is left.
+      if (e.kind !== 'perturbed') { e.host.habitability = undefined; e.other.habitability = undefined; }
+      if (e.host.isPlayerStar || e.other.isPlayerStar) this.reportEncounter(e);
+    }
+  }
+
+  /** One line in the news for an encounter in the player's own system. */
+  private reportEncounter(e: EncounterEvent): void {
+    const mine = e.host.isPlayerStar;
+    const them = mine ? e.other : e.host;
+    const who = them.isDead ? `the dead star ${them.civName}` : them.civName;
+    const line: Record<EncounterKind, string> = {
+      perturbed: '',   // too frequent to be news; the next tug decides
+      captured: mine
+        ? `${who} has torn ${e.planet} from our system and carried it off.`
+        : `Our star has caught a wandering world, ${e.planet}, from ${who}.`,
+      ejected: mine
+        ? `${e.planet} has been flung out of our system by ${who}, into the dark between the stars.`
+        : '',
+      swallowed: mine
+        ? `${e.planet} has fallen into ${who}.`
+        : `${e.planet} of ${who} has fallen into our star.`,
+      absorbed: `${e.planet} has crashed into ${e.otherPlanet}; one molten world remains.`,
+      shattered: `${e.planet} and ${e.otherPlanet} have collided and shattered; a cloud of debris spreads where they met.`,
+    };
+    if (line[e.kind]) this.onCivEvent?.(line[e.kind]);
   }
 
   private checkCollisions(): void {
