@@ -98,6 +98,69 @@ export interface GridCell {
 
 export type PlanetGrid = GridCell[][];
 
+/**
+ * Version of the terrain generator. Saved surface changes are stored against
+ * the generated grid, so they only apply to a grid from the same generator:
+ * bump this whenever generatePlanetGrid's output changes for the same inputs.
+ */
+export const GRID_GENERATOR = 1;
+
+/** Every field of a cell, saved where it differs from the generated world (#77). */
+export const SAVED_GRID_FIELDS = [
+  'elevation', 'moisture', 'temperature', 'biome', 'fertility', 'lifeDensity',
+  'dominantSpeciesId', 'civId', 'river', 'riverDir',
+] as const;
+
+/**
+ * What the simulation and the player changed on a grid, against the grid the
+ * world was generated with: per field, runs of changed cells (`runs` is
+ * [start, length, start, length, …] over row-major cell indices) and their
+ * values in order. Exact values (no rounding), and small: a settled world
+ * is a few KB once gzipped, because changed cells come in long runs.
+ */
+export type GridEdits = Partial<Record<(typeof SAVED_GRID_FIELDS)[number], { runs: number[]; vals: unknown[] }>>;
+
+/** The changes that turn `base` into `grid` (same size). */
+export function diffGrid(grid: PlanetGrid, base: PlanetGrid): GridEdits {
+  const out: GridEdits = {};
+  const rows = grid.length, cols = grid[0]?.length ?? 0, n = rows * cols;
+  for (const k of SAVED_GRID_FIELDS) {
+    const runs: number[] = [], vals: unknown[] = [];
+    let i = 0;
+    while (i < n) {
+      const a = grid[(i / cols) | 0][i % cols], b = base[(i / cols) | 0][i % cols];
+      if (a[k] === b[k]) { i++; continue; }
+      const start = i;
+      while (i < n) {
+        const a2 = grid[(i / cols) | 0][i % cols], b2 = base[(i / cols) | 0][i % cols];
+        if (a2[k] === b2[k]) break;
+        vals.push(a2[k]);
+        i++;
+      }
+      runs.push(start, i - start);
+    }
+    if (runs.length) out[k] = { runs, vals };
+  }
+  return out;
+}
+
+/** Apply `diffGrid` output to a freshly generated grid. Ignores anything malformed. */
+export function applyGridEdits(grid: PlanetGrid, edits: GridEdits): void {
+  const rows = grid.length, cols = grid[0]?.length ?? 0, n = rows * cols;
+  for (const k of SAVED_GRID_FIELDS) {
+    const e = edits[k];
+    if (!e || !Array.isArray(e.runs) || !Array.isArray(e.vals)) continue;
+    let v = 0;
+    for (let r = 0; r + 1 < e.runs.length; r += 2) {
+      const start = e.runs[r], len = e.runs[r + 1];
+      for (let i = start; i < start + len && i < n && v < e.vals.length; i++, v++) {
+        if (i < 0) continue;
+        (grid[(i / cols) | 0][i % cols] as unknown as Record<string, unknown>)[k] = e.vals[v];
+      }
+    }
+  }
+}
+
 // ─── Internal noise helpers ───────────────────────────────────────────────────
 
 /** Fast integer hash for deterministic spatial noise */
