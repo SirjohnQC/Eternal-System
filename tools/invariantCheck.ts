@@ -297,6 +297,29 @@ rule({
   },
 });
 
+const { LEDGER_MAX } = await import('../src/simulation/Nations');
+rule({
+  // The World Ledger reads these: samples bounded and in order, and every
+  // explanation finite (a NaN would print as "NaN% fed").
+  name: "nations' ledgers are bounded and in order; their explanations are finite",
+  check: () => {
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded) return null;
+    for (let k = 0; k < ns.nations.length; k++) {
+      const log = ns.ledger[k] ?? [];
+      if (log.length > LEDGER_MAX) return `${ns.nations[k].name}: ${log.length} samples`;
+      for (let i = 1; i < log.length; i++) if (log[i].age < log[i - 1].age) return `${ns.nations[k].name}: sample ${i} goes back in time`;
+      const x = ns.explain(k);
+      if (!x) continue;
+      const nums = [x.fed, x.carries, x.pollution.settles, x.pollution.fromTechs, x.pollution.fromCards, x.cohesionTarget,
+        x.food.techs, x.food.cards, x.food.season, x.materials.techs, x.research.techs, x.research.cards];
+      if (nums.some(v => !Number.isFinite(v))) return `${ns.nations[k].name}: explain() gave ${nums.join(', ')}`;
+      if (x.pollution.settles < 0 || x.pollution.settles > 1 || x.cohesionTarget < 0 || x.cohesionTarget > 1) return `${ns.nations[k].name}: settles ${x.pollution.settles}, cohesion → ${x.cohesionTarget}`;
+    }
+    return null;
+  },
+});
+
 rule({
   // System encounters (#115) stretch, capture and remove planets: every orbit
   // left behind must still be one the orbit drawer can place.

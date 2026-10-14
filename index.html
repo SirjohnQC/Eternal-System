@@ -2928,6 +2928,10 @@ input[type="range"], select, label[for],
         <img class="rail-icon" src="/assets/pixel/icons/chronicle.png" alt="" width="24" height="24"/>
         <span>CHRONICLE</span>
       </button>
+      <button class="rail-btn" id="rail-ledger" data-rail="ledger" title="World Ledger: food, pollution, people and more, and where they are heading">
+        <img class="rail-icon" src="/assets/pixel/icons/ledger.png" alt="" width="24" height="24"/>
+        <span>LEDGER</span>
+      </button>
       <button class="rail-btn" id="rail-codex" data-rail="codex" title="Codex" style="display:none">
         <img class="rail-icon" src="/assets/pixel/icons/codex.png" alt="" width="24" height="24"/>
         <span>CODEX</span>
@@ -3207,6 +3211,7 @@ input[type="range"], select, label[for],
           <div class="pi-row"><span class="pi-row-label">Nation</span><span class="pi-row-value" id="pi-tile-nation">—</span></div>
           <div class="pi-note" id="pi-tile-nation-detail"></div>
           <button class="pi-chron-link" id="pi-tile-chronicle" type="button" style="display:none">FOLLOW ITS HISTORY ▸</button>
+          <button class="pi-chron-link" id="pi-tile-ledger" type="button" style="display:none">SEE ITS LEDGER ▸</button>
           <div class="pi-row"><span class="pi-row-label">Dominant Species</span><span class="pi-row-value" id="pi-tile-species">—</span></div>
           <div class="pi-note" id="pi-tile-species-detail"></div>
           <div class="pi-tile-actions" id="pi-tile-actions"></div>
@@ -4388,6 +4393,68 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .faith-proc-big .faith-icon-wrap{width:56px;height:56px;margin:8px 0 6px}
 .faith-proc-big .faith-icon{width:48px;height:48px}
 @keyframes faithRise{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
+/* ── The World Ledger (src/ui/LedgerUI.ts) ── */
+#ledger{position:fixed;inset:0;z-index:305;display:none;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse at center,rgba(14,7,30,0.88),rgba(0,0,0,0.94));
+  --lg-surface:#0d0919;--lg-line:#9a8bb3;--lg-accent:var(--gold2);--lg-grid:rgba(200,169,110,.45);
+  --lg-good:#5dcc8a;--lg-bad:#ff7a5c}
+#ledger.open{display:flex}
+#ledger .lg-frame{width:min(1180px,calc(100vw - 32px));height:min(760px,calc(100vh - 48px));display:flex;flex-direction:column;
+  background:var(--lg-surface);border:1px solid rgba(200,169,110,.35);box-shadow:0 0 40px rgba(0,0,0,.6)}
+#ledger .lg-top{display:flex;align-items:baseline;gap:16px;padding:14px 18px 8px;border-bottom:1px solid rgba(200,169,110,.22)}
+#ledger .lg-title{font-family:var(--font-display);font-size:18px;letter-spacing:4px;color:var(--gold);text-shadow:0 0 12px rgba(200,169,110,.4)}
+#ledger .lg-sub{font-size:12px;color:#8d7fa2;flex:1}
+#ledger .lg-close{background:none;border:1px solid var(--border);color:var(--dim);font-size:12px;padding:3px 9px;cursor:pointer}
+#ledger .lg-close:hover{color:var(--gold);border-color:var(--gold)}
+#ledger .lg-chips{display:flex;flex-wrap:wrap;gap:6px;padding:9px 18px;border-bottom:1px solid rgba(123,94,167,.2)}
+#ledger .lg-chip{font-family:var(--font-pixel);font-size:10px;letter-spacing:1px;padding:4px 9px;cursor:pointer;background:transparent;
+  color:#a898bd;border:1px solid rgba(123,94,167,.35);border-left:3px solid var(--nc)}
+#ledger .lg-chip:hover{color:#e6dcf4}
+#ledger .lg-chip.on{background:color-mix(in srgb,var(--nc) 18%,#0a0716);color:#fff4dd;border-color:color-mix(in srgb,var(--nc) 60%,#000)}
+#ledger .lg-body{flex:1;overflow-y:auto;padding:12px 18px 16px;font-family:var(--font-ui);color:#cfc3e0}
+#ledger .lg-head{font-size:12.5px;margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#ledger .lg-head b{color:#efe6d2;font-weight:500}
+#ledger .lg-swatch{display:inline-block;width:9px;height:9px;margin-right:4px;vertical-align:middle}
+#ledger .lg-muted{color:#7f7393}
+#ledger .lg-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+#ledger .lg-tile{border:1px solid rgba(123,94,167,.28);padding:8px 10px 6px;display:flex;flex-direction:column;gap:2px;min-width:0}
+#ledger .lg-label{font-family:var(--font-pixel);font-size:9px;letter-spacing:2px;color:#8d7fa2}
+#ledger .lg-value{font-size:22px;font-weight:600;color:#f3ead6;line-height:1.15}
+#ledger .lg-delta{font-size:11px}
+#ledger .lg-delta .lg-muted{font-size:10px}
+#ledger .lg-good{color:var(--lg-good)} #ledger .lg-bad{color:var(--lg-bad)} #ledger .lg-neutral{color:#b8acc9}
+#ledger .lg-spark{width:100%;height:34px;margin-top:4px;display:block;cursor:crosshair}
+#ledger .lg-spark-empty{font-size:10px;font-style:italic;color:#6f6584;height:34px;display:flex;align-items:center}
+#ledger .lg-section{font-family:var(--font-pixel);font-size:9.5px;letter-spacing:3px;color:var(--gold);margin:16px 0 8px}
+#ledger .lg-meters{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px 16px}
+#ledger .lg-meter-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px}
+#ledger .lg-meter-val{font-size:11px;color:#cfc3e0}
+#ledger .lg-track{height:6px;background:rgba(154,139,179,.18);border-radius:3px;overflow:hidden}
+#ledger .lg-fill{height:100%;border-radius:3px}
+#ledger .lg-fill.lg-ok{background:#9a8bb3} #ledger .lg-fill.lg-warn{background:#ff9944} #ledger .lg-fill.lg-crit{background:#ff6b4a}
+#ledger .lg-cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:22px}
+@media (max-width:820px){#ledger .lg-cols{grid-template-columns:1fr}}
+#ledger .lg-why{display:flex;flex-direction:column;gap:9px}
+#ledger .lg-why-row{display:grid;grid-template-columns:92px 1fr;gap:10px;font-size:12px;line-height:1.45}
+#ledger .lg-why-k{font-family:var(--font-pixel);font-size:9px;letter-spacing:2px;color:#8d7fa2;padding-top:2px}
+#ledger .lg-why-v b{color:#f3ead6;font-weight:500}
+#ledger .lg-factors{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+#ledger .lg-factor{font-size:10.5px;padding:1px 6px;border:1px solid rgba(123,94,167,.3);color:#c3b6d6}
+#ledger .lg-card{display:grid;grid-template-columns:1fr auto;gap:1px 10px;padding:6px 8px;border-left:2px solid rgba(123,94,167,.35);margin-bottom:6px;font-size:11.5px}
+#ledger .lg-card.lg-working{border-left-color:var(--gold)}
+#ledger .lg-card-name{font-family:var(--font-pixel);font-size:10px;letter-spacing:1px;color:#efe6d2}
+#ledger .lg-card-time{font-size:10.5px;color:#a898bd;text-align:right}
+#ledger .lg-card-sign{grid-column:1 / span 2;color:#b8acc9;font-style:italic}
+#ledger .lg-none{font-size:12px;font-style:italic}
+#ledger .lg-table{width:100%;border-collapse:collapse;font-size:12px}
+#ledger .lg-table th{font-family:var(--font-pixel);font-weight:normal;font-size:9px;letter-spacing:2px;color:#8d7fa2;text-align:left;padding:4px 8px;border-bottom:1px solid rgba(123,94,167,.3)}
+#ledger .lg-table td{padding:5px 8px;border-bottom:1px solid rgba(123,94,167,.12);font-variant-numeric:tabular-nums}
+#ledger .lg-table tr[data-k]{cursor:pointer}
+#ledger .lg-table tr[data-k]:hover td{background:rgba(123,94,167,.12)}
+#ledger .lg-foot{font-size:10.5px;color:#6f6584;margin-top:14px}
+#ledger .lg-empty{font-size:13px;font-style:italic;color:#8d7fa2;padding:40px 0;text-align:center}
+#lg-tip{position:fixed;z-index:320;display:none;pointer-events:none;background:#140d24;border:1px solid rgba(200,169,110,.45);
+  color:#f3ead6;font-family:var(--font-ui);font-size:11px;padding:3px 7px;white-space:nowrap}
 /* ── The Chronicle (src/ui/ChronicleUI.ts) ── */
 #chronicle{position:fixed;inset:0;z-index:305;display:none;align-items:center;justify-content:center;
   background:radial-gradient(ellipse at center,rgba(14,7,30,0.88),rgba(0,0,0,0.94))}
