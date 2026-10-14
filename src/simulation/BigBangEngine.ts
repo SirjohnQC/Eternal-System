@@ -48,7 +48,7 @@ import {
   stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
   type EvolutionEvent,
 } from './EvolutionEngine';
-import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, diffGrid, applyGridEdits, type PlanetGrid, type GridEdits } from './PlanetGrid';
+import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, diffGrid, applyGridEdits, GRID_GENERATOR, type PlanetGrid, type GridEdits } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import { DEFAULT_BIOSPHERE } from './SpeciesGenome';
@@ -564,7 +564,7 @@ export interface EngineSnapshot {
    * territory, divine land edits (#77). Stored as changes against the
    * generated grid. Optional: older saves regenerate the surface as before.
    */
-  playerGrid?: { starId: number; planetIndex: number; edits: GridEdits };
+  playerGrid?: { starId: number; planetIndex: number; edits: GridEdits; generator?: number };
 }
 
 export interface Camera {
@@ -1865,7 +1865,7 @@ export class BigBangEngine {
   /** Which star/planet the current player grid was generated for. */
   private playerGridFor: { starId: number; planetIndex: number } | null = null;
   /** Surface changes from a loaded save, applied when that grid is next built (#77). */
-  private pendingGridEdits: { starId: number; planetIndex: number; edits: GridEdits } | null = null;
+  private pendingGridEdits: { starId: number; planetIndex: number; edits: GridEdits; generator?: number } | null = null;
 
   /**
    * Index of the planet the player lives on. THE home rule: the planet view,
@@ -1950,7 +1950,7 @@ export class BigBangEngine {
     if (!g || !f) return this.pendingGridEdits ?? undefined; // loaded but never viewed: keep what was loaded
     const ps = this.stars.find(s => s.id === f.starId);
     if (!ps || !ps.planets[f.planetIndex]) return undefined;
-    return { starId: f.starId, planetIndex: f.planetIndex, edits: diffGrid(g, this.generateHomeGrid(ps, f.planetIndex)) };
+    return { starId: f.starId, planetIndex: f.planetIndex, edits: diffGrid(g, this.generateHomeGrid(ps, f.planetIndex)), generator: GRID_GENERATOR };
   }
 
   // ── A New World (TP card): the whole people moves (#40) ───────────────────
@@ -7663,7 +7663,9 @@ export class BigBangEngine {
     this.tick = snap.tick;
     // The surface is rebuilt from the save's changes when it is next needed (#77).
     this.invalidatePlayerGrid();
-    this.pendingGridEdits = snap.playerGrid ?? null;
+    // Changes made against another generator's terrain would land on the wrong
+    // ground: drop them, and the surface regenerates as it did before #77.
+    this.pendingGridEdits = snap.playerGrid && (snap.playerGrid.generator ?? 1) === GRID_GENERATOR ? snap.playerGrid : null;
     this.phase = snap.phase;
     this.stars = snap.stars;
     // Saves written before the genome existed have no genomeSeed. Derive it

@@ -98,6 +98,13 @@ export interface GridCell {
 
 export type PlanetGrid = GridCell[][];
 
+/**
+ * Version of the terrain generator. Saved surface changes are stored against
+ * the generated grid, so they only apply to a grid from the same generator:
+ * bump this whenever generatePlanetGrid's output changes for the same inputs.
+ */
+export const GRID_GENERATOR = 1;
+
 /** Every field of a cell, saved where it differs from the generated world (#77). */
 export const SAVED_GRID_FIELDS = [
   'elevation', 'moisture', 'temperature', 'biome', 'fertility', 'lifeDensity',
