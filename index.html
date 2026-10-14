@@ -75,8 +75,9 @@ html,body{
   color:var(--text);
 }
 
-/* Animated starfield (pure CSS) */
-#screen-menu::before{
+/* Animated starfield (pure CSS): the menu, and behind the dice console */
+#screen-menu::before,
+#screen-rolling::before{
   content:'';
   position:absolute;inset:0;
   background-image:
@@ -189,9 +190,34 @@ html,body{
   font-family:var(--font-pixel);
   font-size:9px;color:var(--dim);letter-spacing:2px;
 }
+/* Dice console: a second, nearer layer of stars that twinkle, drifting the other way */
+#screen-rolling::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background-image:
+    radial-gradient(2px 2px at 12% 30%, rgba(255,221,153,0.95) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 78% 22%, rgba(255,255,255,0.95) 0%, transparent 100%),
+    radial-gradient(2px 2px at 88% 70%, rgba(170,136,221,0.95) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 22% 82%, rgba(90,212,232,0.9) 0%, transparent 100%),
+    radial-gradient(1.2px 1.2px at 50% 8%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 5% 60%, rgba(255,255,255,0.85) 0%, transparent 100%),
+    radial-gradient(2px 2px at 95% 45%, rgba(255,221,153,0.8) 0%, transparent 100%),
+    radial-gradient(1.2px 1.2px at 65% 92%, rgba(255,255,255,0.9) 0%, transparent 100%),
+    radial-gradient(1px 1px at 35% 45%, rgba(255,255,255,0.8) 0%, transparent 100%),
+    radial-gradient(1.5px 1.5px at 58% 62%, rgba(200,190,255,0.85) 0%, transparent 100%),
+    radial-gradient(1px 1px at 42% 18%, rgba(255,255,255,0.75) 0%, transparent 100%),
+    radial-gradient(1px 1px at 72% 38%, rgba(255,255,255,0.8) 0%, transparent 100%);
+  background-size:300px 300px, 340px 340px, 280px 280px, 360px 360px, 260px 260px, 320px 320px, 380px 380px, 300px 300px, 240px 240px, 350px 350px, 270px 270px, 330px 330px;
+  animation:driftStarsNear 70s linear infinite, starTwinkle 3.2s ease-in-out infinite alternate;
+}
+@keyframes driftStarsNear{
+  from{background-position:0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0,0 0}
+  to{background-position:-300px -150px,340px 170px,-280px -140px,360px 180px,-260px -130px,320px 160px,380px -190px,-300px -150px,240px -120px,-350px -175px,-270px 135px,-330px 165px}
+}
+@keyframes starTwinkle{from{opacity:0.45}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){#screen-rolling::before,#screen-rolling::after{animation:none}}
+
 /* ── The god in the glass (src/ui/MenuScene.ts) ── */
 #menu-scene{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0}
-#screen-menu.scene-on::before{display:none}
 #screen-menu.scene-on .menu-nebula{opacity:0.5}
 .menu-console{
   position:absolute;left:22px;bottom:18px;z-index:2;max-width:min(560px,70vw);
@@ -257,6 +283,7 @@ html,body{
 }
 
 .sim-chassis{
+  position:relative;z-index:1;
   width:min(980px, 96vw);
   max-height:min(94vh, 920px);
   display:flex;flex-direction:column;align-items:center;gap:10px;

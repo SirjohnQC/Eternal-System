@@ -298,7 +298,6 @@ function triggerGodRoll(): void {
   const labelEl = document.getElementById('god-roll-label')!;
   if (section) section.style.display = 'flex';
 
-  AudioManager.playSfx('dice_roll');
 
   numEl.className = 'god-roll-num rolling';
   godDie?.roll();
@@ -371,7 +370,6 @@ function rollCurrentStat(): void {
   const key = STAT_KEYS[currentStatIndex];
 
   setSimBootStatus('calibrating', 'CALIBRATING');
-  AudioManager.playSfx('dice_roll');
 
   const numEl = document.getElementById(`stat-num-${key}`)!;
   numEl.className = 'stat-number rolling';
