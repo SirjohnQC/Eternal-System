@@ -35,11 +35,18 @@ export interface Building {
   stilts?: boolean;
 }
 
+/**
+ * A farm field: a diamond on the isometric axes (#96). On the unsquashed
+ * ground (X = x, Y = y / SQUASH) its sides run at 45 degrees: half-sizes `hu`
+ * along (1, 1) and `hv` along (-1, 1), around (cx, cy). x0..y1 is its
+ * bounding box, for bucketing and overlap tests.
+ */
 export interface Field {
+  cx: number; cy: number; hu: number; hv: number;
   x0: number; y0: number; x1: number; y1: number;
   /** 0 ripe grain, 1 young green, 2 ploughed, 3 second crop (yellow-green), 4 orchard/garden. */
   crop: number;
-  /** Crop rows run along x (false) or y (true). */
+  /** Crop rows run along the u axis (false) or the v axis (true). */
   rowsY: boolean;
 }
 
@@ -227,8 +234,11 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
   // ── Fields ──
   const inTown = (x: number, y: number, pad: number) => plan.towns.some(t =>
     Math.hypot((x - t.x) / (t.r + pad), (y - t.y) / ((t.r + pad) * SQUASH)) < 1);
-  const overlaps = (f: Field) => plan.fields.some(o =>
-    f.x0 < o.x1 + 0.6 * sc && f.x1 > o.x0 - 0.6 * sc && f.y0 < o.y1 + 0.4 * sc && f.y1 > o.y0 - 0.4 * sc);
+  // Diamonds share their axes, so they are rectangles in (u, v): overlap is exact there.
+  const overlaps = (f: Field) => plan.fields.some(o => {
+    const [du, dv] = fieldUV(o, f.cx, f.cy);
+    return Math.abs(du) < f.hu + o.hu + 0.6 * sc && Math.abs(dv) < f.hv + o.hv + 0.6 * sc;
+  });
   for (const t of plan.towns) {
     const R = rng(townRng(t)() * 0x7fffffff ^ 0x3f1e);
     const era = t.era;
@@ -239,16 +249,14 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       const a = R() * Math.PI * 2;
       const dist = t.r * (1.08 + R() * (era === 0 ? 0.3 : 1.3)) + sc * R() * 2;
       const cx = t.x + Math.cos(a) * dist, cy = t.y + Math.sin(a) * dist * SQUASH;
+      // Same draws as the old rectangles (the plan's other picks are unchanged);
+      // 0.7 keeps a diamond's area close to the old rectangle's.
       const fw = sc * (era === 0 ? 1.4 + R() : 2.4 + R() * 3.4) * (era >= 3 ? 1.3 : 1);
       const fh = sc * SQUASH * (era === 0 ? 1.4 + R() : 2.2 + R() * 3) * (era >= 3 ? 1.3 : 1);
-      const f: Field = {
-        x0: cx - fw / 2, y0: cy - fh / 2, x1: cx + fw / 2, y1: cy + fh / 2,
-        crop: era === 0 ? 4 : pickCrop(R),
-        rowsY: R() < 0.5,
-      };
+      const f = isoField(cx, cy, fw * 0.7, fh / SQUASH * 0.7, era === 0 ? 4 : pickCrop(R), R() < 0.5);
       if (overlaps(f) || inTown(cx, cy, 0.4 * sc)) continue;
       let ok = true;
-      for (const [px, py] of [[f.x0, f.y0], [f.x1, f.y0], [f.x0, f.y1], [f.x1, f.y1], [cx, cy]]) {
+      for (const [px, py] of fieldCorners(f)) {
         if (inp.fertileAt(px, py) < 0.15) { ok = false; break; }
       }
       if (!ok) continue;
@@ -276,8 +284,9 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     }
     for (const [a, b] of edges) {
       const ta = plan.towns[a], tb = plan.towns[b];
-      const path = routeOverLand(inp, ta.x, ta.y, tb.x, tb.y, sc, R);
-      if (!path) continue;
+      const routed = routeOverLand(inp, ta.x, ta.y, tb.x, tb.y, sc, R);
+      if (!routed) continue;
+      const path = isoLegs(inp, routed);
       for (let i = 0; i + 1 < path.length; i++) {
         plan.roads.push({ ax: path[i][0], ay: path[i][1], bx: path[i + 1][0], by: path[i + 1][1], half, street: false });
       }
@@ -286,6 +295,24 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
 
   index(plan);
   return plan;
+}
+
+/** A diamond field around (cx, cy) with half-sizes hu, hv on the iso axes. */
+export function isoField(cx: number, cy: number, hu: number, hv: number, crop: number, rowsY: boolean): Field {
+  const ex = (hu + hv) / Math.SQRT2, ey = (hu + hv) / Math.SQRT2 * SQUASH;
+  return { cx, cy, hu, hv, x0: cx - ex, y0: cy - ey, x1: cx + ex, y1: cy + ey, crop, rowsY };
+}
+
+/** The field's position on its own axes: [u, v] (unsquashed ground units). */
+export function fieldUV(f: Field, x: number, y: number): [number, number] {
+  const X = x - f.cx, Y = (y - f.cy) / SQUASH;
+  return [(X + Y) / Math.SQRT2, (Y - X) / Math.SQRT2];
+}
+
+/** Its four corners and centre, in face coordinates. */
+function fieldCorners(f: Field): Array<[number, number]> {
+  const pt = (u: number, v: number): [number, number] => [f.cx + (u - v) / Math.SQRT2, f.cy + (u + v) / Math.SQRT2 * SQUASH];
+  return [pt(f.hu, 0), pt(-f.hu, 0), pt(0, f.hv), pt(0, -f.hv), [f.cx, f.cy]];
 }
 
 function pickCrop(R: () => number): number {
@@ -349,6 +376,34 @@ function makeBuilding(era: Era, inp: PlanInput, R: () => number, sc: number, x: 
     if (landmark && A.quirks.includes('colossal')) { b.w *= 1.6; b.d *= 1.6; b.h *= 2; }
   }
   return b;
+}
+
+/** Whether the straight line between two face points stays on land. */
+function landLine(inp: PlanInput, x0: number, y0: number, x1: number, y1: number): boolean {
+  const n = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
+  for (let i = 0; i <= n; i++) if (!inp.isLand(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n)) return false;
+  return true;
+}
+
+/**
+ * Lay a road path along the isometric axes (#97): each leg becomes a run
+ * along one diagonal then the other (an L on the iso grid), whichever order
+ * stays on land; a leg neither order can lay on land stays straight.
+ */
+export function isoLegs(inp: PlanInput, path: Array<[number, number]>): Array<[number, number]> {
+  const out: Array<[number, number]> = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    const [px, py] = path[i - 1], [qx, qy] = path[i];
+    const dX = qx - px, dY = (qy - py) / SQUASH;
+    const a = (dX + dY) / 2, b = (dY - dX) / 2;          // along (1, 1) and (-1, 1)
+    const viaU: [number, number] = [px + a, py + a * SQUASH];
+    const viaV: [number, number] = [px - b, py + b * SQUASH];
+    if (Math.abs(a) < 0.5 || Math.abs(b) < 0.5) { out.push([qx, qy]); continue; }   // already on an axis
+    if (landLine(inp, px, py, viaU[0], viaU[1]) && landLine(inp, viaU[0], viaU[1], qx, qy)) out.push(viaU);
+    else if (landLine(inp, px, py, viaV[0], viaV[1]) && landLine(inp, viaV[0], viaV[1], qx, qy)) out.push(viaV);
+    out.push([qx, qy]);
+  }
+  return out;
 }
 
 /**
@@ -506,6 +561,8 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   for (const n of c.f) {
     const f = plan.fields[n];
     if (x < f.x0 || x > f.x1 || y < f.y0 || y > f.y1) continue;
+    const [u, v] = fieldUV(f, x, y);
+    if (Math.abs(u) > f.hu || Math.abs(v) > f.hv) continue;
     // The farming year: sprouting in spring, the crop itself in summer,
     // stubble and fresh ploughing in autumn, frosted fallow in winter.
     let [cr, cg, cb] = season === 0 ? (f.crop === 2 ? CROPS[2] : SPRING)
@@ -515,10 +572,10 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
     cr = cr * 0.8 + r * 0.2; cg = cg * 0.8 + g * 0.2; cb = cb * 0.8 + b * 0.2;
     if (k >= 2) {
       // Crop rows: alternate darker furrows, half a world pixel apart.
-      const v = f.rowsY ? x : y / SQUASH;
-      if (Math.floor(v * (k >= 4 ? 2 : 1)) & 1) { cr *= 0.86; cg *= 0.86; cb *= 0.86; }
+      const along = f.rowsY ? u : v;
+      if (Math.floor(along * (k >= 4 ? 2 : 1)) & 1) { cr *= 0.86; cg *= 0.86; cb *= 0.86; }
       // A hedge or ditch along the edge.
-      const e = Math.min(x - f.x0, f.x1 - x, (y - f.y0) / SQUASH, (f.y1 - y) / SQUASH);
+      const e = Math.min(f.hu - Math.abs(u), f.hv - Math.abs(v));
       if (k >= 3 && e < 0.28) { cr = r * 0.62; cg = g * 0.7; cb = b * 0.58; }
     }
     return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
@@ -535,7 +592,8 @@ export function keepClear(plan: SettlementPlan, x: number, y: number): boolean {
   if (!c) return false;
   for (const n of c.f) {
     const f = plan.fields[n];
-    if (x >= f.x0 - 0.5 && x <= f.x1 + 0.5 && y >= f.y0 - 0.5 && y <= f.y1 + 0.5) return true;
+    const [u, v] = fieldUV(f, x, y);
+    if (Math.abs(u) <= f.hu + 0.5 && Math.abs(v) <= f.hv + 0.5) return true;
   }
   for (const n of c.r) {
     const rd = plan.roads[n];

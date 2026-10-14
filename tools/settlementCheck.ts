@@ -7,7 +7,13 @@
  *   node_modules/.bin/esbuild tools/settlementCheck.ts --bundle --platform=node \
  *     --format=esm --outfile="$TEMP/stc.mjs" --log-level=error && node "$TEMP/stc.mjs"
  */
-import { planSettlements, groundAt, keepClear, SQUASH, type PlanInput } from '../src/rendering/SettlementPlan';
+import { planSettlements, groundAt, keepClear, fieldUV, SQUASH, type PlanInput, type Field } from '../src/rendering/SettlementPlan';
+
+/** A diamond field's corners and centre (face coordinates). */
+const corners = (f: Field): Array<[number, number]> => {
+  const pt = (u: number, v: number): [number, number] => [f.cx + (u - v) / Math.SQRT2, f.cy + (u + v) / Math.SQRT2 * SQUASH];
+  return [pt(f.hu, 0), pt(-f.hu, 0), pt(0, f.hv), pt(0, -f.hv), [f.cx, f.cy]];
+};
 import { paintBuilding, townStyle } from '../src/rendering/SettlementForge';
 
 let fails = 0;
@@ -35,13 +41,22 @@ for (const era of [0, 2, 4, 6]) {
   check(`era ${era}: every town has buildings`, a.towns.every((_, i) => a.buildings.some(bb => bb.town === i)),
     `${a.buildings.length} buildings in ${a.towns.length} towns`);
   check(`era ${era}: buildings stand on land`, a.buildings.every(bb => isLand(bb.x, bb.y)));
-  check(`era ${era}: fields only on farmland`, a.fields.every(f => [[f.x0, f.y0], [f.x1, f.y1], [(f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2]].every(([x, y]) => fertileAt(x, y) > 0)),
+  check(`era ${era}: fields only on farmland`, a.fields.every(f => corners(f).every(([x, y]) => fertileAt(x, y) > 0)),
     `${a.fields.length} fields`);
   if (era >= 1) {
     check(`era ${era}: has fields and roads`, a.fields.length > 4 && a.roads.some(r => !r.street), `${a.roads.filter(r => !r.street).length} road segments`);
     let wet = 0, n = 0;
     for (const r of a.roads) for (let t = 0; t <= 1; t += 0.05) { n++; if (!isLand(r.ax + (r.bx - r.ax) * t, r.ay + (r.by - r.ay) * t)) wet++; }
     check(`era ${era}: roads keep to land (around the lake)`, wet / n < 0.02, `${wet}/${n} samples on water`);
+    // Roads between towns run on the isometric diagonals (#97): on the
+    // unsquashed ground each leg's |dx| equals |dy|.
+    let iso = 0, all = 0;
+    for (const r of a.roads.filter(r => !r.street)) {
+      const dX = r.bx - r.ax, dY = (r.by - r.ay) / SQUASH, len = Math.hypot(dX, dY);
+      all += len;
+      if (Math.abs(Math.abs(dX) - Math.abs(dY)) < 0.05 * len + 0.01) iso += len;
+    }
+    check(`era ${era}: roads run on the iso diagonals`, all > 0 && iso / all > 0.8, `${Math.round(100 * iso / Math.max(1e-9, all))}% of road length`);
   }
 }
 
@@ -61,6 +76,9 @@ for (const era of [0, 2, 4, 6]) {
   check('a road over a river is a bridge', groundAt(p, mx, my, 1, 90, 140, 70, true) >= 0);
   const f = p.fields[0];
   check('a field paints the ground', groundAt(p, (f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2, 1, 90, 140, 70) >= 0);
+  // A diamond (#96): inside its corners paints, the bounding box's corner does not.
+  const [u0, v0] = fieldUV(f, f.x0 + 0.01, f.y0 + 0.01);
+  check('fields are diamonds on the iso axes', Math.abs(u0) > f.hu || Math.abs(v0) > f.hv);
   check('a field never covers a river', groundAt(p, (f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2, 1, 90, 140, 70, true) < 0 || p.roads.some(r => Math.hypot(r.ax - (f.x0 + f.x1) / 2, r.ay - (f.y0 + f.y1) / 2) < 3));
   check('open country is left alone', groundAt(p, 380, 120, 1, 90, 140, 70) === -1 && !keepClear(p, 30, 120));
   check('trees keep off towns, fields and roads', keepClear(p, p.towns[0].x, p.towns[0].y) && keepClear(p, mx, my) && keepClear(p, (f.x0 + f.x1) / 2, (f.y0 + f.y1) / 2));
