@@ -110,6 +110,13 @@ rule({
       if (c && ['ocean', 'deep_ocean', 'shallow'].includes(c.biome)) return `cell ${i} burning on water`;
     }
     return null;
+  // Earthquakes (#50): the recent list stays short and every quake is in range.
+  name: 'home quakes are few and in range',
+  check: ({ engine }) => {
+    const qs = (engine as any).quakes ?? [];
+    if (qs.length > 6) return `${qs.length} quakes kept`;
+    const bad = qs.find((q: any) => !(q.magnitude >= 4 && q.magnitude <= 9) || !(q.at >= 0 && q.at < 65536));
+    return bad ? `quake ${JSON.stringify(bad).slice(0, 80)}` : null;
   },
 });
 
@@ -1482,6 +1489,20 @@ for (const { seed, stats } of SEEDS) {
     elevation: 0.6, moisture: moist, temperature: 0.7, biome, fertility: 0.6, lifeDensity: 0.95,
     dominantSpeciesId: null, civId: null, river: 0, riverDir: -1, burn: 0,
   }))) as any;
+// ── Scenarios: earthquakes (#50) ────────────────────────────────────────────
+// Quakes start on faults, follow a small-many/large-few law, and great ones
+// may split the land (Quakes.ts).
+{
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const Q = await import('../src/simulation/Quakes');
+  const { classifyBiome, SEA_LEVEL: SEA } = await import('../src/simulation/PlanetGrid');
+  const N = 256;
+  // A plain at 0.55 with a scarp (a 0.08 step) running down column 128.
+  const scarp = () => Array.from({ length: N }, () => Array.from({ length: N }, (_, c) => {
+    const elevation = c < 128 ? 0.5 : 0.58;
+    return { elevation, moisture: 0.5, temperature: 0.5, biome: classifyBiome(elevation, 0.5, 0.5, 'rocky'), fertility: 0.5,
+      lifeDensity: 0.8, dominantSpeciesId: null, civId: c < 160 && c > 96 ? '0' : null, river: 0, riverDir: -1 };
+  })) as any;
   const run = (name: string, fn: () => string | null) => {
     const r: Rule = { name: `scenario: ${name}`, check: () => null };
     rules.push(r);
@@ -1527,6 +1548,42 @@ for (const { seed, stats } of SEEDS) {
     for (let i = 0; i < 16; i++) W.healScars(g);
     const left = g.flat().filter((c: any) => (c.burn ?? 0) > 0).length;
     return left ? `${left} cells still scarred after 16 generations` : null;
+  run('quakes: no fault, no quake', () => {
+    const flat = scarp(); for (const row of flat) for (const c of row) c.elevation = 0.55;
+    const rng = new SeedRNG(1);
+    for (let i = 0; i < 50; i++) if (Q.quake(flat, rng, 0, 'rocky')) return 'a quake on flat ground';
+    return null;
+  });
+  run('quakes: most are small, few are great', () => {
+    const rng = new SeedRNG(2), g = scarp(); let n = 0, felt = 0, great = 0;
+    for (let i = 0; i < 1500; i++) {
+      const q = Q.quake(g, rng, 0, 'rocky');
+      if (!q) continue;
+      n++; if (q.magnitude >= 6) felt++; if (q.magnitude >= 7.8) great++;
+      if (q.magnitude < 4 || q.magnitude > 9) return `magnitude ${q.magnitude}`;
+    }
+    const f = felt / n, gr = great / n;
+    return f < 0.15 || f > 0.4 || gr > 0.15 ? `felt ${(f * 100).toFixed(0)}%, great ${(gr * 100).toFixed(0)}% of ${n}` : null;
+  });
+  run('quakes: a great quake may split the land, and the land stays consistent', () => {
+    const rng = new SeedRNG(3);
+    for (let i = 0; i < 30; i++) {
+      const g = scarp();
+      const q = Q.quake(g, rng, 0, 'rocky', 9);
+      if (!q || !q.rift.length) continue;
+      for (const idx of q.rift) {
+        const c = g[(idx / N) | 0][idx % N];
+        if (c.elevation <= SEA && c.civId != null) return 'a drowned rift cell is still settled';
+        if (c.biome !== classifyBiome(c.elevation, c.moisture, c.temperature, 'rocky')) return 'a rift cell kept its old biome';
+      }
+      if (q.flooded !== q.rift.some(idx => g[(idx / N) | 0][idx % N].elevation <= SEA)) return 'flooded flag disagrees with the land';
+      return null;
+    }
+    return 'no rift in 30 magnitude-9 quakes';
+  });
+  run('quakes: same seed, same quake', () => {
+    const a = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5), b = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5);
+    return JSON.stringify(a) === JSON.stringify(b) ? null : 'two runs differ';
   });
 }
 

@@ -1185,6 +1185,12 @@ function wireEngineEvents(eng: BigBangEngine): void {
     homeDioramaLiveData();
     _dioramaRenderer?.markSurfaceDirty();
   };
+  // A quake on the home world: the diorama shakes and raises dust (if it is
+  // showing home); a rift is a new shape of the land, so it is baked at once.
+  eng.onPlayerQuake = (q) => {
+    _dioramaRenderer?.playQuake(q.at, q.magnitude, q.rift);
+    if (q.rift.length) _dioramaRenderer?.markSurfaceDirty(true);
+  };
   eng.onTickUpdate = (tick) => {
     gameState.tick = tick;
     if (tick % 10 === 0) {
