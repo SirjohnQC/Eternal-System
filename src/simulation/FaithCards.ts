@@ -96,6 +96,8 @@ interface ActionDef {
   bane?: boolean;
   /** NATION: the omen it lays. */
   omen?: OmenOp;
+  /** NATION: what it does to the land of the nations that heed it, so it shows (#111). */
+  mark?: WorkId;
   /** WORLD / LIFE: what it does to land or life. */
   work?: WorkId;
   /** A strike falls on a capital (or one place) rather than across whole lands. */
@@ -114,7 +116,7 @@ const NATION_T: TargetId[] = ['hungriest', 'crowded', 'poorest', 'restless', 'st
 const LAND_T: TargetId[] = ['hungriest', 'crowded', 'poorest', 'strongest', 'weakest', 'rivals', 'all', 'wilds', 'driest', 'wettest', 'coldest'];
 const STRIKE_T: TargetId[] = ['strongest', 'weakest', 'advanced', 'restless', 'warring', 'wilds', 'driest', 'coldest'];
 
-type Opt = Partial<Pick<ActionDef, 'bane' | 'omen' | 'work' | 'strike' | 'cosmic' | 'echo' | 'targets' | 'needs'>>;
+type Opt = Partial<Pick<ActionDef, 'bane' | 'omen' | 'mark' | 'work' | 'strike' | 'cosmic' | 'echo' | 'targets' | 'needs'>>;
 const A = (id: ActionId, scope: Scope, verb: string, nouns: string[], adjectives: string[], drawn: ActionDef['drawn'],
   shadow: ActionDef['shadow'], base: number, icon: string, opt: Opt = {}): ActionDef =>
   ({ id, scope, verb, nouns, adjectives, drawn, shadow, base, icon, ...opt });
@@ -122,15 +124,15 @@ const A = (id: ActionId, scope: Scope, verb: string, nouns: string[], adjectives
 export const ACTIONS: ActionDef[] = [
   // ── Nations: omens ──
   A('harvest', 'nation', 'fills the granaries of', ['HARVEST', 'PLENTY', 'BOUNTY', 'GRANARY'], ['BOUNTIFUL', 'GOLDEN', 'ENDLESS', 'FAT'],
-    { hunger: 1.4, crowding: 0.2 }, [{ op: 'dependency', when: 'after' }, { op: 'greed', when: 'with' }, { op: 'fertility', when: 'with' }], 8, 'harvest', { omen: 'harvest' }),
+    { hunger: 1.4, crowding: 0.2 }, [{ op: 'dependency', when: 'after' }, { op: 'greed', when: 'with' }, { op: 'fertility', when: 'with' }], 8, 'harvest', { omen: 'harvest', mark: 'bounty' }),
   A('fertility', 'nation', 'fills the cradles of', ['CRADLE', 'MULTITUDE', 'SEED', 'HEARTH'], ['FRUITFUL', 'TEEMING', 'WARM'],
-    { war: 0.6, dominance: 0.3 }, [{ op: 'pestilence', when: 'after' }, { op: 'unrest', when: 'after' }], 7, 'evolution', { omen: 'fertility' }),
+    { war: 0.6, dominance: 0.3 }, [{ op: 'pestilence', when: 'after' }, { op: 'unrest', when: 'after' }], 7, 'evolution', { omen: 'fertility', mark: 'spread' }),
   A('inspire', 'nation', 'kindles invention in', ['SPARK', 'INVENTION', 'VISION', 'LANTERN'], ['BRIGHT', 'RESTLESS', 'SUDDEN'],
     { curiosity: 0.9, scarcity: 0.7, pollution: 0.4, era: 0.3 }, [{ op: 'smoke', when: 'with' }, { op: 'greed', when: 'with' }, { op: 'unrest', when: 'after' }], 9, 'sight', { omen: 'inspire' }),
   A('veins', 'nation', 'opens hidden veins of ore beneath', ['VEIN', 'ORE', 'QUARRY', 'LODE'], ['HIDDEN', 'SHINING', 'BURIED'],
     { scarcity: 1.4 }, [{ op: 'greed', when: 'with' }, { op: 'smoke', when: 'with' }, { op: 'discord', when: 'with' }], 7, 'terraform', { omen: 'veins' }),
   A('cleanse', 'nation', 'washes the soot from', ['RAIN', 'RIVER', 'BREATH', 'TIDE'], ['CLEANSING', 'CLEAR', 'SILVER'],
-    { pollution: 1.8 }, [{ op: 'stagnation', when: 'with' }, { op: 'blight', when: 'with' }], 8, 'harvest', { omen: 'cleanse' }),
+    { pollution: 1.8 }, [{ op: 'stagnation', when: 'with' }, { op: 'blight', when: 'with' }], 8, 'harvest', { omen: 'cleanse', mark: 'bounty' }),
   A('concord', 'nation', 'softens hearts between {t} and its neighbours', ['ACCORD', 'BRIDGE', 'OLIVE', 'HANDSHAKE'], ['OPEN', 'KINDRED', 'GENTLE'],
     { war: 1.0, unrest: 0.4, trade: 0.2 }, [{ op: 'unrest', when: 'with' }, { op: 'greed', when: 'with' }], 8, 'prophet', { omen: 'concord' }),
   A('discord', 'nation', 'sows discord between {t} and its neighbours', ['DISCORD', 'RUMOUR', 'WHISPER', 'SPLINTER'], ['BITTER', 'POISONED', 'CROOKED'],
@@ -142,11 +144,11 @@ export const ACTIONS: ActionDef[] = [
   A('fervor', 'nation', 'beats the war-drums in', ['BANNER', 'SPEAR', 'DRUM', 'HOST'], ['IRON', 'RED', 'MARCHING'],
     { war: 1.0, dominance: 0.2 }, [{ op: 'discord', when: 'with' }, { op: 'pestilence', when: 'after' }, { op: 'unrest', when: 'after' }], 7, 'smite', { omen: 'fervor' }),
   A('exodus', 'nation', 'sends people out of', ['EXODUS', 'ROAD', 'WANDERING', 'HORIZON'], ['LONG', 'FAR', 'UNCERTAIN'],
-    { crowding: 1.4, hunger: 0.6 }, [{ op: 'discord', when: 'with' }, { op: 'insularity', when: 'after' }], 7, 'meteor', { omen: 'exodus' }),
+    { crowding: 1.4, hunger: 0.6 }, [{ op: 'discord', when: 'with' }, { op: 'insularity', when: 'after' }], 7, 'meteor', { omen: 'exodus', mark: 'spread' }),
   A('blight', 'nation', 'withers the fields of', ['BLIGHT', 'LOCUST', 'ROT', 'CANKER'], ['BLACK', 'CREEPING', 'GREY'],
-    { dominance: 1.0, war: 0.4 }, [{ op: 'exodus', when: 'with' }, { op: 'unrest', when: 'with' }], 6, 'meteor', { omen: 'blight', bane: true }),
+    { dominance: 1.0, war: 0.4 }, [{ op: 'exodus', when: 'with' }, { op: 'unrest', when: 'with' }], 6, 'meteor', { omen: 'blight', mark: 'wither', bane: true }),
   A('pestilence', 'nation', 'sends fever among', ['PLAGUE', 'FEVER', 'PALLOR', 'MIASMA'], ['PALE', 'CREEPING', 'SILENT'],
-    { crowding: 0.8, dominance: 0.8 }, [{ op: 'zeal', when: 'with' }, { op: 'unrest', when: 'with' }], 6, 'smite', { omen: 'pestilence', bane: true }),
+    { crowding: 0.8, dominance: 0.8 }, [{ op: 'zeal', when: 'with' }, { op: 'unrest', when: 'with' }], 6, 'smite', { omen: 'pestilence', mark: 'wither', bane: true }),
   A('theft', 'nation', 'steals a rival\'s secrets for', ['CIPHER', 'MASK', 'KEY', 'SHADOW'], ['STOLEN', 'MASKED', 'SILENT'],
     { era: 0.5, dominance: 0.6, curiosity: 0.3 }, [{ op: 'discord', when: 'with' }, { op: 'insularity', when: 'after' }], 10, 'sight', { omen: 'theft', targets: ['weakest', 'backward', 'poorest', 'restless', 'hungriest'] }),
   A('foe', 'nation', 'turns every nation against', ['FOE', 'LEAGUE', 'PACT', 'COALITION'], ['COMMON', 'SWORN', 'GATHERED'],
@@ -154,13 +156,13 @@ export const ACTIONS: ActionDef[] = [
   A('schism', 'nation', 'splits the faith of', ['SCHISM', 'HERESY', 'RIFT', 'SECT'], ['SPLIT', 'HERETIC', 'BROKEN'],
     { piety: 0.9, unrest: 0.5, dominance: 0.3 }, [{ op: 'discord', when: 'with' }, { op: 'zeal', when: 'after' }], 6, 'revelation', { omen: 'schism', bane: true }),
   A('golden', 'nation', 'brings a golden age to', ['AGE', 'SUN', 'CROWN', 'LAUREL'], ['GOLDEN', 'GLORIOUS', 'SHINING'],
-    { peace: 0.8, trade: 0.6, curiosity: 0.3 }, [{ op: 'greed', when: 'with' }, { op: 'unrest', when: 'after' }, { op: 'insularity', when: 'after' }], 12, 'revelation', { omen: 'golden' }),
+    { peace: 0.8, trade: 0.6, curiosity: 0.3 }, [{ op: 'greed', when: 'with' }, { op: 'unrest', when: 'after' }, { op: 'insularity', when: 'after' }], 12, 'revelation', { omen: 'golden', mark: 'bounty' }),
   A('revolt', 'nation', 'raises the people of {t} against their rulers', ['REVOLT', 'TORCH', 'BARRICADE', 'UPRISING'], ['BURNING', 'RAGGED', 'RISING'],
     { unrest: 1.2, hunger: 0.4 }, [{ op: 'unrest', when: 'with' }, { op: 'fervor', when: 'after' }], 8, 'smite', { omen: 'revolt', targets: ['restless', 'strongest', 'hungriest', 'advanced'] }),
   A('cure', 'nation', 'teaches the healers of', ['CURE', 'BALM', 'HEALER', 'REMEDY'], ['HEALING', 'MERCIFUL', 'GENTLE'],
-    { crowding: 0.9, war: 0.3 }, [{ op: 'fertility', when: 'after' }, { op: 'greed', when: 'with' }], 7, 'harvest', { omen: 'cure' }),
+    { crowding: 0.9, war: 0.3 }, [{ op: 'fertility', when: 'after' }, { op: 'greed', when: 'with' }], 7, 'harvest', { omen: 'cure', mark: 'bounty' }),
   A('seafaring', 'nation', 'sends the ships of {t} to far shores', ['SAIL', 'TIDE', 'HARBOUR', 'COMPASS'], ['FAR', 'SALT', 'DISTANT'],
-    { crowding: 0.5, scarcity: 0.5, curiosity: 0.5 }, [{ op: 'pestilence', when: 'after' }, { op: 'discord', when: 'with' }], 8, 'meteor', { omen: 'seafaring' }),
+    { crowding: 0.5, scarcity: 0.5, curiosity: 0.5 }, [{ op: 'pestilence', when: 'after' }, { op: 'discord', when: 'with' }], 8, 'meteor', { omen: 'seafaring', mark: 'spread' }),
   // ── The world: works on the land ──
   A('rains', 'world', 'brings long rains over', ['RAIN', 'MONSOON', 'CLOUD', 'DELUGE'], ['LONG', 'SOFT', 'GREEN'],
     { hunger: 1.0, dry: 1.0, young: 0.4 }, [{ op: 'pestilence', when: 'after' }, { op: 'fertility', when: 'with' }], 9, 'harvest', { work: 'rains', targets: LAND_T, needs: 'grid' }),
@@ -689,6 +691,8 @@ export interface CastResult {
   line: string;
   /** A place to show it (a capital, or the centre of a work). */
   where: { row: number; col: number } | null;
+  /** What it did to the land, and where, so the view can show each (a downpour, an eruption) (#111). */
+  works: Array<{ work: WorkId; where: { row: number; col: number } | null; changed: number }>;
 }
 
 const titleCase = (s: string) => s.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()).replace(/^The /, '');
@@ -739,6 +743,20 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
     }
   }
 
+  // The marks heeded signs leave on those nations' land (#111): greener
+  // fields, new settlements, withered ground, where the player can see them.
+  const works: CastResult['works'] = [];
+  if (ns?.isFounded && host?.grid && heeded.length) {
+    for (const a of omens) {
+      if (!a.mark) continue;
+      const rep = work(a.mark, host.grid, ns, { kind: 'nations', ids: heeded.map(n => n.id) }, m * 0.8, card.duration, host.planetType, host.species);
+      works.push({ work: a.mark, where: rep.centre, changed: rep.changed });
+      // Every nation that heeded it (new settlements are not theirs yet when the mark is made).
+      if (rep.changed) for (const n of heeded) ns.record(n.id, tick, workLine(a.mark, n.name), [`the ${label}`], [castId]);
+    }
+    if (works.length) host.surfaceChanged();
+  }
+
   // Works on land and life: they happen.
   for (const a of card.actions.map(id => ACTION_BY_ID[id])) {
     if (!a.work || !host?.grid) continue;
@@ -746,6 +764,7 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
       : card.target === 'kin' || card.target === 'all' ? { kind: 'planet' }
       : { kind: card.target as 'wilds' | 'driest' | 'wettest' | 'coldest' };
     const rep = work(a.work, host.grid, ns, region, m, card.duration, host.planetType, host.species);
+    works.push({ work: a.work, where: rep.centre, changed: rep.changed });
     host.surfaceChanged();
     if (ns?.isFounded) {
       for (const [k, cells] of rep.nations) {
@@ -766,6 +785,7 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
       }
       if (!where) { const k = [...rep.nations.keys()][0]; if (k != null) where = ns.nations[k].capital; }
     }
+    if (!where) where = rep.centre;
     lines.push(rep.touched ? '' : 'the land did not answer');
   }
 
@@ -791,5 +811,5 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
     const where2 = td.nations && named.length ? names(named) : td.text;
     line = `${card.name}: ${said || `it is done upon ${where2}.`}`;
   }
-  return { heeded, ignored, line, where };
+  return { heeded, ignored, line, where, works };
 }

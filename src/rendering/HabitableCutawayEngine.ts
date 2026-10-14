@@ -41,7 +41,7 @@ import {
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import { FloraLayer, type FloraView } from './FloraLayer';
-import type { ClimateSources } from './weather/WeatherClimate';
+import { WX_NX, WX_NY, type ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
 import { ELEV_LIGHT } from './sky/SunLight';
@@ -674,7 +674,7 @@ const DESERT_PALETTE: CutawayPalette = {
     shallow:    rgb(110, 140, 150),
     beach:      rgb(220, 195, 140),
     plains:     rgb(210, 175, 110),
-    grassland:  rgb(190, 160, 95),
+    grassland:  rgb(124, 146, 72),   // oasis: a desert world blooms only where it is soaked (#111)
     forest:     rgb(150, 125, 70),
     jungle:     rgb(130, 110, 60),
     desert:     rgb(230, 190, 120),
@@ -3223,6 +3223,30 @@ export class HabitableCutawayEngine {
     const sea = kind === 1, land = kind === 0 || kind === 2 || kind === 3 || kind === 6;
     const spot = painter.faceSpot(k => (sea ? water[k] > 0.6 : land ? water[k] < 0.35 : true), Math.random);
     return !!spot && !!sim.events.force(sim, kind, spot.x, spot.y);
+  }
+  /**
+   * A downpour over weather cell (i, j) for `seconds` (a rain sign, #111):
+   * heavy cloud and rain seeded there now, and a supercell held over it so
+   * the storm keeps feeding itself instead of drifting off at once.
+   */
+  forceDownpour(i: number, j: number, seconds: number): boolean {
+    const sim = this.weatherSim;
+    if (!sim) return false;
+    const nx = WX_NX, ny = WX_NY;
+    for (let dj = -2; dj <= 2; dj++) {
+      const jj = j + dj;
+      if (jj < 0 || jj >= ny) continue;
+      for (let di = -3; di <= 3; di++) {
+        if (Math.hypot(di / 1.5, dj) > 2) continue;
+        const k = jj * nx + ((i + di) % nx + nx) % nx;
+        sim.vapour[k] = Math.max(sim.vapour[k], 1);
+        sim.cloud[k] = Math.max(sim.cloud[k], 0.95);
+        sim.raining[k] = 1;
+        sim.dryness[k] = 0;
+      }
+    }
+    sim.anomaly = { kind: 'supercell', i: ((i % nx) + nx) % nx, j: Math.max(0, Math.min(ny - 1, j)), until: sim.time + seconds };
+    return true;
   }
   /** Climate the painters were last given (a camera painter is built from it). */
   private weatherClimate: ClimateSources | null = null;

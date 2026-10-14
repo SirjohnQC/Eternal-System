@@ -85,11 +85,12 @@ Most playtest bugs trace back to one of these being broken. Follow them in new c
    but the cache must be keyed on the state it was built from and rebuilt when that
    state changes — never "built once on view entry". Things that only appear after
    leaving and re-entering a view are this rule broken (#8).
-2. **Progression is derived in one place.** Phase, era, tech label, culture unlocks and
-   card gates come from a single function over simulation state (#9). Don't add new
-   `TECH_LEVELS[...]`, `BIO_PHASE_LABELS[...]`, `CIV_PHASE_LABELS[...]` or
-   `civLevelToPhase(...)` lookups outside `src/simulation/` — there are ~20 already and
-   they drift apart.
+2. **Progression is derived in one place:** `src/simulation/Progression.ts`
+   (`engine.progressionOf(star)` in views). Stage, phase, era, sub-era and every label
+   for them come from it (#9). Don't read `TECH_LEVELS[...]`, `BIO_PHASE_LABELS[...]`,
+   `CIV_PHASE_LABELS[...]` or `civLevelToPhase(...)` anywhere else. The player's era
+   is what its nations know: move it from outside with `engine.shiftEra(star, to, cause)`,
+   never by writing `civLevel` (the engine reconciles the nations every tick).
 3. **Never assume the active planet is the homeworld.** Pass the star id and planet
    index explicitly. `isPlayerStar` means "owned by the player", not "being viewed"
    (#16, #17).
