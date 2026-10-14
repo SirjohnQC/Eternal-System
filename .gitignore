@@ -23,3 +23,7 @@ Thumbs.db
 # Superpowers brainstorming companion
 .superpowers/
 .cache/
+
+# Your own files in the game folder: never committed, never touched by the launcher
+New_Idea.txt
+pull-claude.old.bat
