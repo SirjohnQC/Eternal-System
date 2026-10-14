@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test:invariants": "esbuild tools/invariantCheck.ts --bundle --platform=node --format=esm --outfile=.cache/invariants.mjs --log-level=warning && node .cache/invariants.mjs",
     "test:smoke": "esbuild tools/smokeTest.ts --bundle --platform=node --format=esm --outfile=.cache/smoke.mjs --log-level=warning && node .cache/smoke.mjs",
-    "test": "npm run typecheck && npm run test:invariants && npm run test:saves",
+    "test": "npm run typecheck && npm run test:invariants && npm run test:saves && npm run test:lines",
+    "test:lines": "esbuild tools/lineClipCheck.ts --bundle --platform=node --format=esm --outfile=.cache/lines.mjs --log-level=warning && node .cache/lines.mjs",
     "test:saves": "esbuild tools/saveCheck.ts --bundle --platform=node --format=esm --outfile=.cache/saves.mjs --log-level=warning && node .cache/saves.mjs",
     "test:visual": "node tools/visual/visualCheck.mjs"
   },
