@@ -17,7 +17,7 @@ import {
 import { SeedRNG } from '../utils/SeedRNG';
 import { BigBangCinematic, CINE_TOTAL, ramp } from './BigBangCinematic';
 import { forgeProgress } from './Forge';
-import { subEraOf, SUB_ERA_NAMES } from './Technology';
+import { subEraOf } from './Technology';
 import {
   generateCosmos, sectorAt, sectorState, chartedByTech, dormantGalaxies as allDormant,
   type Cosmos, type DormantGalaxy, type SectorState,
@@ -26,7 +26,7 @@ import {
   UniverseStats, TECH_LEVELS, CIV_COLORS,
   BiologyPhase, BIO_PHASE_SEQUENCE, BIO_PHASE_LABELS, CODEX_MILESTONES,
   DNABranch, DEFAULT_DNA_BRANCH,
-  CodexEntry, civLevelToPhase,
+  CodexEntry,
   gameState, runtimeState, DEFAULT_PLANET_DNA,
   type PlanetDNA,
 } from './GameState';
@@ -74,6 +74,7 @@ import {
   lifeEligible, addBoost, LIFE_BOOST, SEED_BOOST, formationFaceType,
   spontaneousLifeChance, ejectaChance, formationFraction,
 } from './Formation';
+import { progressionOf, eraLabel, eraTitle, ageName, civPhaseOf, type Progression } from './Progression';
 import type { GeminiService } from '../ai/GeminiService';
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
@@ -706,11 +707,6 @@ function tempToColor(t: number): string {
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
-/** "the Medieval age", "the Space Age". */
-function ageName(level: number): string {
-  const l = TECH_LEVELS[level] ?? 'Primitive';
-  return /Age$/.test(l) ? l : `${l} age`;
-}
 
 export class BigBangEngine {
   private canvas: HTMLCanvasElement;
@@ -1959,6 +1955,9 @@ export class BigBangEngine {
     this.updateOrbitalFleets();
     this.updateCosmicEvents();
     this.updateReligions();
+    // Whatever moved the player's era this tick, its nations follow now (#9).
+    const home = this.getPlayerStar();
+    if (home) this.reconcilePlayerEra(home);
   }
 
   /**
@@ -2152,6 +2151,8 @@ export class BigBangEngine {
     }
 
     // Kinematic galactic swirl around a FIXED centre (gal.cx/cy).
+    // Each galaxy's widest orbit is the same for all its stars: once per tick.
+    const maxOrbit = new Map<Galaxy, number>();
     for (const star of active) {
       if (star.isDead) continue;
       const gal = star.galaxyId != null ? galById.get(star.galaxyId) : undefined;
@@ -2168,7 +2169,9 @@ export class BigBangEngine {
       }
       // A galaxy near the edge of the universe (and galaxies grow) must not
       // swing its outer stars onto the rim, where they used to stick.
-      star.orbitRadius = Math.min(star.orbitRadius, this.maxOrbitIn(gal));
+      let mo = maxOrbit.get(gal);
+      if (mo === undefined) { mo = this.maxOrbitIn(gal); maxOrbit.set(gal, mo); }
+      star.orbitRadius = Math.min(star.orbitRadius, mo);
       if (star.orbitAngle == null) {
         star.orbitAngle = Math.atan2(star.y - gal.cy, star.x - gal.cx);
       }
@@ -2191,18 +2194,54 @@ export class BigBangEngine {
    * of near-misses in the same galaxy so a later pass can finish the job.
    */
   private resolveCloseApproaches(active: StarBody[]): void {
-    for (let i = 0; i < active.length; i++) {
-      for (let j = i + 1; j < active.length; j++) {
-        const a = active[i], b = active[j];
+    // Only stars within `reach` of each other interact (contact or capture),
+    // so each star is tested against its neighbours in a grid of `reach`-sized
+    // cells, not every other star: the all-pairs version was ~75% of a tick
+    // late in a long game (stars keep igniting, so it grew with their square)
+    // and is what made fast speeds lag (#116). The pairs are visited in the
+    // same order as before, so the outcome is identical.
+    const n = active.length;
+    if (n < 2) return;
+    let maxR = 0;
+    for (const s of active) if (s.radius > maxR) maxR = s.radius;
+    // Room for a merge to grow a star mid-pass; if one outgrows it anyway the
+    // rest of the pass checks every pair (never misses a contact).
+    const reach = Math.max(CAPTURE_DIST, MERGE_DIST, (maxR + 4) * 2 * 1.15);
+    const cell = (v: number) => Math.floor(v / reach);
+    const grid = new Map<number, number[]>();
+    const key = (cx: number, cy: number) => (cx + 4096) * 8192 + (cy + 4096);
+    for (let i = 0; i < n; i++) {
+      const k = key(cell(active[i].x), cell(active[i].y));
+      const l = grid.get(k);
+      if (l) l.push(i); else grid.set(k, [i]);
+    }
+    const near: number[] = [];
+    let brute = false;
+    for (let i = 0; i < n; i++) {
+      const a = active[i];
+      near.length = 0;
+      if (brute) {
+        for (let j = i + 1; j < n; j++) near.push(j);
+      } else {
+        const cx = cell(a.x), cy = cell(a.y);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const l = grid.get(key(cx + dx, cy + dy));
+          if (l) for (const j of l) if (j > i) near.push(j);
+        }
+        near.sort((x, y) => x - y);
+      }
+      for (const j of near) {
+        const b = active[j];
         if (a.isDead || b.isDead) continue;
-        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
         const contact = Math.max(MERGE_DIST, (a.radius + b.radius) * 1.15);
-        if (dist < contact) {
+        if (d2 < contact * contact) {
           this.mergeStars(a, b);
+          if (!brute && (Math.max(a.radius, b.radius) + maxR) * 1.15 > reach) brute = true;
           continue;
         }
         if (
-          dist < CAPTURE_DIST &&
+          d2 < CAPTURE_DIST * CAPTURE_DIST &&
           a.galaxyId != null && a.galaxyId === b.galaxyId &&
           a.orbitRadius != null && b.orbitRadius != null
         ) {
@@ -2250,7 +2289,7 @@ export class BigBangEngine {
       }
     }
     bigger.habitability = undefined;  // the system's planet roster just changed
-    if (smaller.civLevel > bigger.civLevel) bigger.civLevel = smaller.civLevel;
+    if (smaller.civLevel > bigger.civLevel) this.shiftEra(bigger, smaller.civLevel, `what the people of ${smaller.civName} knew`);
     // Inheriting an intelligent biosphere by absorption must not leave the
     // survivor without a culture — `smaller.id`'s record does not transfer,
     // and `smaller` is marked dead below, so nothing else will ever call this.
@@ -2371,7 +2410,7 @@ export class BigBangEngine {
     for (const s of this.stars) {
       if (s.isDead || s.id === star.id) continue;
       if (Math.hypot(s.x - star.x, s.y - star.y) > 150) continue;
-      if (s.civLevel > 0) s.civLevel = Math.max(0, s.civLevel - 1);
+      if (s.civLevel > 0) this.shiftEra(s, s.civLevel - 1, `the shockwave of a dying star`);
       for (const p of s.planets) p.biosphere = Math.max(0, p.biosphere - 0.3);
     }
 
@@ -2500,11 +2539,12 @@ export class BigBangEngine {
         continue;
       }
 
-      // Panspermia: check if hits a star's planet zone
+      // Panspermia: check if hits a star's planet zone (squared: no root per star, #116)
       for (const star of this.stars) {
         if (star.isDead) continue;
         const dx = star.x - ast.x, dy = star.y - ast.y;
-        if (Math.sqrt(dx * dx + dy * dy) < star.radius * 3 + PANSPERMIA_DIST * (this.stats.life / 20)) {
+        const zone = star.radius * 3 + PANSPERMIA_DIST * (this.stats.life / 20);
+        if (dx * dx + dy * dy < zone * zone) {
           // Panspermia event — a delivered biosphere still has to be able to
           // survive where it lands, so the roll is weighted by habitability.
           // Nothing survives landing on a world that is still molten, so a
@@ -3266,10 +3306,8 @@ export class BigBangEngine {
     let ns = runtimeState.playerNations;
     const name = gameState.playerPlanetName || ps.civName;
     if (ns?.isFounded && target < ps.civLevel) {
-      ns.setback(ps.civLevel - target, this.tick, 'a god turned back the ages');
-      ps.civLevel = target;
-      this.nationEra = target;
-      return `The ages unwind: ${name} falls back to the ${ageName(target)}.`;
+      this.shiftEra(ps, target, 'a god turned back the ages');
+      return `The ages unwind: ${name} falls back to the ${ageName(ps.civLevel)}.`;
     }
     const rate = this.civAdvanceRate(ps, false), STEP = 2000;
     const learned: string[] = [];
@@ -3328,7 +3366,7 @@ export class BigBangEngine {
         this.exploredAreas.push({ x: star.x, y: star.y, r: sightR });
         this.playerFogIndex = this.exploredAreas.length - 1;
       }
-      this.onCivEvent?.(`${civLevelToPhase(star.civLevel).replace('_',' ')}: ${TECH_LEVELS[star.civLevel]}`);
+      this.onCivEvent?.(`${civPhaseOf(star.civLevel).label}: ${eraTitle(star.civLevel)}`);
       this.advancePlayerPlanetDiscovery(star);
       if (star.civLevel === 1) this.onPlayerReligionMoment?.();
       // TECH points
@@ -3341,7 +3379,7 @@ export class BigBangEngine {
       if (star.civLevel === 1) {
         if (!this.leaping) this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
       } else if (star.civLevel >= 2) {
-        if (!this.leaping) this.fireLeaderMessage(star, `Our civilization has advanced to ${TECH_LEVELS[star.civLevel]}.`);
+        if (!this.leaping) this.fireLeaderMessage(star, `Our civilization has advanced to ${eraTitle(star.civLevel)}.`);
       }
       // First Contact — fires exactly once when player reaches Space Age
       if (star.civLevel === 5 && !gameState.firstContactFired) {
@@ -3363,7 +3401,7 @@ export class BigBangEngine {
       }
     } else {
       if (this.rng.chance(0.3) && this.isStarKnownToPlayer(star))
-        this.onCivEvent?.(`${star.civName}: ${TECH_LEVELS[star.civLevel]}`);
+        this.onCivEvent?.(`${star.civName}: ${eraTitle(star.civLevel)}`);
       const relC = this.cultureFor(star);
       const relChance = Math.min(0.95, 0.65
         * (relC ? cultureMultiplier(relC.values.piety, 0.8) : 1));
@@ -3394,9 +3432,8 @@ export class BigBangEngine {
       }
       return;
     }
-    // The world was thrown back by something outside the nations (impact,
-    // war, a nearby supernova): they lose what they knew past it.
-    if (star.civLevel < this.nationEra) ns.setback(this.nationEra - star.civLevel, this.tick, 'a catastrophe threw the world back');
+    // Something outside the nations moved the world's era: they follow it.
+    this.reconcilePlayerEra(star);
     // Each nation's own curiosity sets its pace, so the culture factor is left out here.
     ns.step(grid, this.tick, this.civAdvanceRate(star, false));
     for (const d of ns.drainDiscoveries()) {
@@ -3425,6 +3462,47 @@ export class BigBangEngine {
   }
 
   private nationSub = 0;
+  /** Why the player's era last moved from outside its nations (named in their history). */
+  private eraCause: string | null = null;
+
+  /**
+   * The player's era and its nations are one record (#9, rule 7): the world
+   * stands in the age its most advanced nation has reached. When something
+   * outside the nations moves the era (a catastrophe, a won or lost war, a
+   * merged world, a Creative leap), the nations follow — they forget past a
+   * setback (setback) or learn up to a lift (catchUp) — and the era is then
+   * re-derived from them. Run by the nation step and at the end of every
+   * engine tick, so no view or sample ever sees them apart.
+   */
+  private reconcilePlayerEra(star: StarBody): void {
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded || !star.isPlayerStar || !star.hasLife || star.biologyPhase !== 'intelligent') return;
+    const top = TECH_LEVELS.length - 1;
+    const cause = this.eraCause;
+    this.eraCause = null;
+    if (star.civLevel < this.nationEra) {
+      ns.setback(this.nationEra - star.civLevel, this.tick, cause ?? 'a catastrophe threw the world back');
+    } else if (star.civLevel > Math.min(ns.maxEra, top)) {
+      ns.catchUp(star.civLevel, this.tick, cause ?? 'knowledge came from beyond the world');
+    }
+    // What the nations know is the era (a catch-up that ran out of things to learn settles lower).
+    const era = Math.min(ns.maxEra, top);
+    if (star.civLevel > era) star.civLevel = era;
+    while (star.civLevel < era) this.advanceCiv(star);
+    this.nationEra = star.civLevel;
+  }
+
+  /**
+   * Move a civilisation's era from outside its own learning (wars, absorption),
+   * naming why for the player's nations. Other stars' polities reconcile
+   * themselves from civLevel (StarPolities).
+   */
+  private shiftEra(star: StarBody, to: number, cause: string): void {
+    const level = Math.max(0, Math.min(TECH_LEVELS.length - 1, to));
+    if (level === star.civLevel) return;
+    star.civLevel = level;
+    if (star.isPlayerStar) { this.eraCause = cause; this.reconcilePlayerEra(star); }
+  }
 
   /**
    * 0 Early, 1 Middle, 2 Late: how far into its era a civilisation is — the
@@ -3445,8 +3523,18 @@ export class BigBangEngine {
 
   /** "Late Medieval", "Early Space Age"; plain "Primitive" before the first age. */
   eraNameOf(star: StarBody): string {
-    const name = TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)] ?? 'Primitive';
-    return star.civLevel < 1 ? name : `${SUB_ERA_NAMES[this.civSubOf(star)]} ${name}`;
+    return eraLabel(star.civLevel, this.civSubOf(star));
+  }
+
+  /**
+   * Where a world stands — formation, biology phase, era, and every label for
+   * it (Progression.ts). The one thing the views read (#9).
+   */
+  progressionOf(star: StarBody): Progression {
+    return progressionOf(star, {
+      sub: star.biologyPhase === 'intelligent' ? this.civSubOf(star) : 0,
+      forging: star.isPlayerStar && gameState.forge?.phase === 'draft',
+    });
   }
 
   /**
@@ -3918,7 +4006,7 @@ export class BigBangEngine {
     // Comparing against `base` itself fails closed — any replacement, even an
     // identical-looking one, is a different object.
     const seedAtCall = gameState.masterSeed;
-    void generateCulture(base, genome, star.civName, TECH_LEVELS[star.civLevel] ?? 'Primitive', gemini)
+    void generateCulture(base, genome, star.civName, eraTitle(star.civLevel), gemini)
       .then(result => {
         if (gameState.masterSeed === seedAtCall &&
             gameState.civilizations[star.id] === base) {
@@ -6249,12 +6337,6 @@ export class BigBangEngine {
     if (lp.biosphere < BIOSPHERE_REGROW_TO) lp.biosphere = Math.min(BIOSPHERE_REGROW_TO, Math.max(lp.biosphere, 0) + BIOSPHERE_REGROW);
   }
 
-  /** @deprecated Use nudgePlayerEvolution() */
-  nudgePlayerCivLevel(): void {
-    const ps = this.getPlayerStar();
-    if (ps && ps.civLevel < 8) ps.civLevel++;
-  }
-
   private advancePlayerPlanetDiscovery(star: StarBody): void {
     star.planets.forEach((p, i) => {
       // civLevel 1 (Ancient) → telescope on all own planets
@@ -6413,16 +6495,16 @@ export class BigBangEngine {
 
         if (attackerWon) {
           if (defender.civLevel > 0) {
-            defender.civLevel = Math.max(0, defender.civLevel - 1);
+            this.shiftEra(defender, defender.civLevel - 1, `a war lost to ${attacker.civName}`);
             this.invalidateCulture(defender, 'defeat');
           }
           if (war.attackerStrength > 0.75)
-            attacker.civLevel = Math.min(TECH_LEVELS.length - 1, attacker.civLevel + 1);
+            this.shiftEra(attacker, attacker.civLevel + 1, `the spoils of a war won against ${defender.civName}`);
         } else {
           if (attacker.civLevel > 0 && this.rng.chance(0.4))
-            attacker.civLevel = Math.max(0, attacker.civLevel - 1);
+            this.shiftEra(attacker, attacker.civLevel - 1, `a war lost to ${defender.civName}`);
           if (war.defenderStrength > 0.7 && this.rng.chance(0.3))
-            defender.civLevel = Math.min(TECH_LEVELS.length - 1, defender.civLevel + 1);
+            this.shiftEra(defender, defender.civLevel + 1, `the spoils of a war won against ${attacker.civName}`);
         }
 
         // P3: a clear victory may take one of the loser's worlds (Sovereignty.ts).
@@ -6593,7 +6675,7 @@ export class BigBangEngine {
         if (lifePlanet) {
           lifePlanet.biosphere = Math.max(0, lifePlanet.biosphere - 0.45);
           if (lifePlanet.biosphere < 0.1) {
-            if (target.civLevel > 0) target.civLevel = Math.max(0, target.civLevel - 2);
+            if (target.civLevel > 0) this.shiftEra(target, target.civLevel - 2, 'an asteroid struck the world');
             if (target.hasLife) lifePlanet.biosphere = 0.1;
             else lifePlanet.hasLife = false;
           }

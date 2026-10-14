@@ -11,7 +11,7 @@
  * Pure functions over a NationSystem.
  */
 import type { NationSystem, HistoryEntry } from './Nations';
-import { TECH_LEVELS } from './GameState';
+import { ageName } from './Progression';
 
 export interface CauseNode {
   entry: HistoryEntry;
@@ -96,6 +96,6 @@ export function yourHand(ns: NationSystem, id: number): HistoryEntry[] {
 /** "the Medieval age · 1.4 ages ago" (or "just now"). */
 export function whenOf(ns: NationSystem, e: HistoryEntry): string {
   const ago = ns.now - e.age;
-  const age = TECH_LEVELS[e.era] ? `the ${TECH_LEVELS[e.era]} age` : 'the dawn of the nations';
+  const age = Number.isInteger(e.era) && e.era >= 0 ? `the ${ageName(e.era)}` : 'the dawn of the nations';
   return `${age} · ${ago < 0.05 ? 'just now' : ago < 0.95 ? `${Math.round(ago * 10) / 10} of an age ago` : `${ago.toFixed(1)} ages ago`}`;
 }

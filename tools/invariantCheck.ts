@@ -123,6 +123,37 @@ rule({
 });
 
 rule({
+  // One source of truth (#9, #21): the player's era IS what its nations know.
+  // Wars, absorption, catastrophes and Creative leaps move the era from
+  // outside; the engine reconciles the nations the same tick.
+  name: "the player's era equals its nations' era",
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const ns = runtimeState.playerNations;
+    if (!ps || !ns?.isFounded || !ps.hasLife || ps.biologyPhase !== 'intelligent') return null;
+    const want = Math.min(ns.maxEra, TECH_LEVELS.length - 1);
+    if (ps.civLevel !== want) return `civLevel=${ps.civLevel}, nations' era=${ns.maxEra}`;
+    const p = (engine as any).progressionOf(ps);
+    if (p.era !== ps.civLevel || p.eraName !== (engine as any).eraNameOf(ps)) return `progression ${p.era} "${p.eraName}" vs era ${ps.civLevel} "${(engine as any).eraNameOf(ps)}"`;
+    return null;
+  },
+});
+
+rule({
+  // Every view reads one progression (#9): its stage matches the star, and
+  // its labels are the ones for that stage and era.
+  name: 'progression agrees with the star it describes',
+  check: ({ engine, stars }) => firstBad(stars.filter(s => !s.isDead), s => {
+    const p = (engine as any).progressionOf(s);
+    const stage = s.formationStage ? 'forming' : !s.hasLife ? 'lifeless' : s.biologyPhase !== 'intelligent' ? 'life' : 'civilization';
+    if (p.stage !== stage) return true;
+    if (stage === 'civilization' && (p.era !== s.civLevel || !p.eraName.endsWith(TECH_LEVELS[s.civLevel]) || !p.fullLabel.includes(p.eraName))) return true;
+    if (s.formationStage === 'magma' && p.worldDnaKnown) return true;     // #18
+    return false;
+  }, s => { const p = (engine as any).progressionOf(s); return `stage ${p.stage}, era ${p.era} "${p.eraName}", civLevel ${s.civLevel}, ${s.formationStage ?? s.biologyPhase}`; }),
+});
+
+rule({
   // Also run this one long (--ticks=250000): regressions that leave a stale
   // culture record are rare and late (#20).
   name: 'culture exists only for intelligent living civilisations',
@@ -761,6 +792,97 @@ for (const { seed, stats } of SEEDS) {
     if (step % 2 === 0 && ps.age % 2 === 0) ps.age -= 1;
     for (let i = 0; i < 4 && ps.civLevel === 0; i++) e.update();
     if (ps.civLevel < 1) throw new Error(`the first era never came (age ${ps.age}, step ${step}, next ${ps.nextEraAge})`);
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: the player's era and its nations stay one record (#9, #21) ────
+{
+  const r: Rule = { name: "scenario: a war won, a merged world, a catastrophe and Creative leaps keep era and nations one record", check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    resetGameState('Inv_progression');
+    gameState.skipFormation = true;
+    const e = new BigBangEngine(makeCanvas()) as any;
+    e.init(SEEDS[0].stats, 'inv_progression');
+    for (let i = 0; i < 2_100; i++) e.update();
+    const ps = e.getPlayerStar();
+    if (!e.leapToEra(2)) throw new Error('could not leap to the Medieval age');
+    const ns = () => runtimeState.playerNations!;
+    const agree = (when: string) => {
+      const p = e.progressionOf(ps);
+      if (ps.civLevel !== Math.min(ns().maxEra, TECH_LEVELS.length - 1)) throw new Error(`${when}: civLevel ${ps.civLevel} vs nations ${ns().maxEra}`);
+      if (p.era !== ps.civLevel || p.eraName !== e.eraNameOf(ps)) throw new Error(`${when}: progression "${p.eraName}" vs "${e.eraNameOf(ps)}"`);
+    };
+    agree('after the leap');
+    // The spoils of a war: the era jumps from outside; the nations learn up to it.
+    const before = ns().maxEra;
+    e.shiftEra(ps, ps.civLevel + 2, 'the spoils of a war won');
+    agree('after a war won');
+    if (!(ns().maxEra >= before + 2)) throw new Error(`nations did not learn up to the new era (${before} → ${ns().maxEra})`);
+    if (!ns().nations.some((n: any) => n.history.some((h: any) => h.because?.includes('the spoils of a war won')))) throw new Error('the nations do not remember why they learned');
+    // A raw write from outside (an old code path) is reconciled by the next tick.
+    ps.civLevel += 1;
+    e.update();
+    agree('one tick after a raw era write');
+    // A catastrophe: the era drops, the nations forget past it.
+    e.shiftEra(ps, ps.civLevel - 3, 'an asteroid struck the world');
+    agree('after a catastrophe');
+    // Creative leaps both ways.
+    e.leapToEra(6); agree('after a leap up');
+    e.leapToEra(1); agree('after a leap down');
+    for (let i = 0; i < 300; i++) e.update();
+    agree('300 ticks later');
+  } catch (err) { detail = (err as Error).message; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenario: the grid collision pass equals the all-pairs one (#116) ───────
+// The close-approach pass tests each star only against its grid neighbours
+// (it was all pairs, and the main cost of a long game). Crowd the stars so
+// many touch, then run the grid pass on one copy of the world and the old
+// all-pairs loop on another: the same merges, the same orbit drift.
+{
+  const r: Rule = { name: 'scenario: the grid collision pass matches the all-pairs pass on a crowded sky', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const CAP = 48, MERGE = 22;
+    const brute = (eng: any, active: any[]) => {
+      for (let i = 0; i < active.length; i++) for (let j = i + 1; j < active.length; j++) {
+        const a = active[i], b = active[j];
+        if (a.isDead || b.isDead) continue;
+        const dist = Math.hypot(b.x - a.x, b.y - a.y);
+        const contact = Math.max(MERGE, (a.radius + b.radius) * 1.15);
+        if (dist < contact) { eng.mergeStars(a, b); continue; }
+        if (dist < CAP && a.galaxyId != null && a.galaxyId === b.galaxyId && a.orbitRadius != null && b.orbitRadius != null) {
+          const mid = (a.orbitRadius + b.orbitRadius) * 0.5;
+          a.orbitRadius += (mid - a.orbitRadius) * 0.003;
+          b.orbitRadius += (mid - b.orbitRadius) * 0.003;
+        }
+      }
+    };
+    for (const k of [0.15, 0.3, 0.6]) {
+      resetGameState('Inv_grid');
+      const e = new BigBangEngine(makeCanvas()) as any;
+      e.init(SEEDS[0].stats, 'inv_grid');
+      for (let i = 0; i < 3_000; i++) e.update();
+      // Pull every star toward the middle: a crowded sky with many contacts.
+      const cx = WORLD_SIZE / 2, cy = WORLD_SIZE / 2;
+      for (const st of e.stars) { st.x = cx + (st.x - cx) * k; st.y = cy + (st.y - cy) * k; }
+      const snap = JSON.parse(JSON.stringify(e.serialize()));
+      const e2 = new BigBangEngine(makeCanvas()) as any;
+      e2.init(SEEDS[0].stats, 'inv_grid');
+      e2.loadState(JSON.parse(JSON.stringify(snap)));
+      e.loadState(JSON.parse(JSON.stringify(snap)));
+      const alive = (x: any) => x.stars.filter((st: any) => !st.isDead);
+      e.resolveCloseApproaches(alive(e));
+      brute(e2, alive(e2));
+      const a = JSON.stringify(e.serialize().stars ?? e.serialize()), b = JSON.stringify(e2.serialize().stars ?? e2.serialize());
+      const merged = alive(e2).length;
+      if (a !== b) { detail = `crowded x${k}: grid and all-pairs passes disagree (${alive(e).length} vs ${merged} stars left)`; break; }
+    }
   } catch (err) { detail = (err as Error).message; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
