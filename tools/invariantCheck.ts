@@ -110,6 +110,10 @@ rule({
       if (c && ['ocean', 'deep_ocean', 'shallow'].includes(c.biome)) return `cell ${i} burning on water`;
     }
     return null;
+  },
+});
+
+rule({
   // Earthquakes (#50): the recent list stays short and every quake is in range.
   name: 'home quakes are few and in range',
   check: ({ engine }) => {
@@ -1489,20 +1493,6 @@ for (const { seed, stats } of SEEDS) {
     elevation: 0.6, moisture: moist, temperature: 0.7, biome, fertility: 0.6, lifeDensity: 0.95,
     dominantSpeciesId: null, civId: null, river: 0, riverDir: -1, burn: 0,
   }))) as any;
-// ── Scenarios: earthquakes (#50) ────────────────────────────────────────────
-// Quakes start on faults, follow a small-many/large-few law, and great ones
-// may split the land (Quakes.ts).
-{
-  const { SeedRNG } = await import('../src/utils/SeedRNG');
-  const Q = await import('../src/simulation/Quakes');
-  const { classifyBiome, SEA_LEVEL: SEA } = await import('../src/simulation/PlanetGrid');
-  const N = 256;
-  // A plain at 0.55 with a scarp (a 0.08 step) running down column 128.
-  const scarp = () => Array.from({ length: N }, () => Array.from({ length: N }, (_, c) => {
-    const elevation = c < 128 ? 0.5 : 0.58;
-    return { elevation, moisture: 0.5, temperature: 0.5, biome: classifyBiome(elevation, 0.5, 0.5, 'rocky'), fertility: 0.5,
-      lifeDensity: 0.8, dominantSpeciesId: null, civId: c < 160 && c > 96 ? '0' : null, river: 0, riverDir: -1 };
-  })) as any;
   const run = (name: string, fn: () => string | null) => {
     const r: Rule = { name: `scenario: ${name}`, check: () => null };
     rules.push(r);
@@ -1548,6 +1538,30 @@ for (const { seed, stats } of SEEDS) {
     for (let i = 0; i < 16; i++) W.healScars(g);
     const left = g.flat().filter((c: any) => (c.burn ?? 0) > 0).length;
     return left ? `${left} cells still scarred after 16 generations` : null;
+  });
+}
+
+// ── Scenarios: earthquakes (#50) ────────────────────────────────────────────
+// Quakes start on faults, follow a small-many/large-few law, and great ones
+// may split the land (Quakes.ts).
+{
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const Q = await import('../src/simulation/Quakes');
+  const { classifyBiome, SEA_LEVEL: SEA } = await import('../src/simulation/PlanetGrid');
+  const N = 256;
+  // A plain at 0.55 with a scarp (a 0.08 step) running down column 128.
+  const scarp = () => Array.from({ length: N }, () => Array.from({ length: N }, (_, c) => {
+    const elevation = c < 128 ? 0.5 : 0.58;
+    return { elevation, moisture: 0.5, temperature: 0.5, biome: classifyBiome(elevation, 0.5, 0.5, 'rocky'), fertility: 0.5,
+      lifeDensity: 0.8, dominantSpeciesId: null, civId: c < 160 && c > 96 ? '0' : null, river: 0, riverDir: -1 };
+  })) as any;
+  const run = (name: string, fn: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = fn(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
   run('quakes: no fault, no quake', () => {
     const flat = scarp(); for (const row of flat) for (const c of row) c.elevation = 0.55;
     const rng = new SeedRNG(1);
@@ -1585,6 +1599,8 @@ for (const { seed, stats } of SEEDS) {
     const a = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5), b = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5);
     return JSON.stringify(a) === JSON.stringify(b) ? null : 'two runs differ';
   });
+}
+
 // ── Scenarios: lakes (#47) ──────────────────────────────────────────────────
 {
   const PG = await import('../src/simulation/PlanetGrid');
