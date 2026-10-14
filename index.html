@@ -4516,6 +4516,9 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .faith-deck .divine-action-btn:disabled,.faith-deck .divine-action-btn.faith-off{opacity:1;filter:grayscale(.8) brightness(.62)}
 .faith-deck .divine-action-btn:disabled:hover,.faith-deck .divine-action-btn.faith-off:hover{filter:grayscale(.6) brightness(.8)}
 .faith-deck .divine-action-btn:disabled .divine-action-cost,.faith-deck .faith-off .divine-action-cost{color:#9a7070}
+/* Off for a reason other than DP (#23): the price line names the reason */
+.divine-action-btn.has-why .divine-action-cost,.faith-deck .divine-action-btn.has-why .divine-action-cost{color:#b9a3d9;letter-spacing:1px}
+.ft-why{color:#ffb454;font-size:11px;margin:2px 0 6px}
 .faith-deck .divine-action-btn.selected,.faith-deck .faith-burning .faith-proc.faith-pick{
   border-color:#ffa04d;transform:translateY(-9px);opacity:1;filter:none;
   box-shadow:inset 0 0 0 1px #000,inset 0 0 0 3px rgba(255,150,70,.3),0 11px 0 #000,0 0 0 2px #ffa04d,0 0 22px rgba(255,140,60,.75);
