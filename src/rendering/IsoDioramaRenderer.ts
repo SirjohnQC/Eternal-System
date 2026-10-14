@@ -485,6 +485,12 @@ export class IsoDioramaRenderer {
   private preloadName: string | null = null;
   /** The planet's nations (borders + capital flags); null: none drawn. */
   private nationSource: (() => NationSystem | null) | null = null;
+  /** Set for a world other than home (refreshData): who lives there, instead of the star's own civilisation. */
+  private world: { civLevel: number; phase: string } | null = null;
+  /** The era of the people on the world in view. */
+  private civLevelHere(): number { return this.world ? this.world.civLevel : this.star?.civLevel ?? 0; }
+  /** The home world's nations — never drawn on another world. */
+  private nationsHere(): NationSystem | null { return this.world ? null : this.nationSource?.() ?? null; }
   private nationVer = -1;
   private nationEpoch = -1;
   private nationPick: Int32Array | null = null;
@@ -1060,7 +1066,10 @@ export class IsoDioramaRenderer {
     planet: Planet,
     star?: StarBody,
     planetIndex = 0,
+    /** A colony world (P4): its people's era, and no home nations drawn on it. Absent = the home world. */
+    world: { civLevel: number; phase: string } | null = null,
   ): void {
+    this.world       = world;
     this.rawGrid     = grid;
     this.grid        = grid;
     this.biosphere   = biosphere;
@@ -1549,7 +1558,7 @@ export class IsoDioramaRenderer {
       lush: this.lushFor(bio),
       extinctionPressure: bio?.extinctionPressure ?? 0,
       oxygenLevel: bio?.oxygenLevel ?? 0.5,
-      civLevel: this.star?.civLevel ?? 0,
+      civLevel: this.civLevelHere(),
       inNebula: this.inNebula(),
     });
   }
@@ -2516,7 +2525,7 @@ export class IsoDioramaRenderer {
    */
   private planTowns(geom = this.placeGeom): void {
     const grid = this.grid;
-    const civLevel = this.star?.civLevel ?? 0;
+    const civLevel = this.civLevelHere();
     if (!grid || this.planetType === 'gas' || this.forming) {
       if (this.townPlan.towns.length) { this.townPlan = emptyPlan(); this.townLift = []; this.townSig = ''; this.townVersion++; }
       return;
@@ -2558,7 +2567,7 @@ export class IsoDioramaRenderer {
       intelligent?.physicalTraits.bodyStructure ?? '', this.planetSeed, arch?.summary ?? ''].join('|');
     // Unchanged civilisation and no nations to look at: nothing to do. With
     // nations, the towns' owners and eras are compared once the sites are known.
-    if (sig === this.townSig && !this.nationSource?.()?.isFounded && this.townNationSig === '') return;
+    if (sig === this.townSig && !this.nationsHere()?.isFounded && this.townNationSig === '') return;
     if (spots.length === 0) {
       if (sig === this.townSig) return;
       this.townSig = sig; this.townNationSig = ''; this.townVersion++; this.buildingSprites.clear();
@@ -2593,7 +2602,7 @@ export class IsoDioramaRenderer {
     // Towns per country: each nation's best ground first (so every nation in
     // view has a town and a capital), then the best of what is left. A town
     // is built in its own nation's era and ways (Architecture.nationArch).
-    const ns = this.nationSource?.() ?? null;
+    const ns = this.nationsHere();
     const nations = ns?.isFounded ? ns : null;
     const ownerOf = (c: { row: number; col: number }) => nations ? nations.owner[c.row * GRID_SIZE + c.col] : -1;
     const sites: Site[] = [];
@@ -2807,7 +2816,7 @@ export class IsoDioramaRenderer {
   private updateNationOverlay(now: number): void {
     if (now < this.nationNext) return;
     this.nationNext = now + 250;
-    const ns = this.nationSource?.() ?? null;
+    const ns = this.nationsHere();
     const eng = this.cutaway;
     if (!ns || !ns.isFounded || !this.habitable || this.forming) {
       eng.groundOverlay = null; eng.lineOverlay = null;
@@ -2939,7 +2948,7 @@ export class IsoDioramaRenderer {
     list: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView) => void }>,
     at: (v: import('./FloraLayer').FloraView, x: number, y: number) => readonly [number, number],
   ): void {
-    const ns = this.nationSource?.() ?? null;
+    const ns = this.nationsHere();
     if (!ns || !ns.isFounded || !this.habitable || this.forming) return;
     this.nationSpots.forEach((spot, k) => {
       const n = ns.nations[k];
@@ -3090,7 +3099,7 @@ export class IsoDioramaRenderer {
 
     // Microbial life is not visible at this scale; showing creatures then would
     // misrepresent the simulation.
-    const phase = this.star?.biologyPhase;
+    const phase = this.world ? this.world.phase : this.star?.biologyPhase;
     if (phase === 'microbial' || this.forming) return;
 
     const byId = new Map<string, SpeciesGenome>();
@@ -3249,7 +3258,7 @@ export class IsoDioramaRenderer {
     // town centres; in the diorama their buildings are drawn by drawBuildings,
     // the legacy flat view still blits one small sprite per town.
     if (!this.habitable) this.planTowns(geom);
-    const civLevel = this.star?.civLevel ?? 0;
+    const civLevel = this.civLevelHere();
     let idx = 0;
     const genome = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? this.species[0] ?? null;
     for (const t of this.townPlan.towns) {

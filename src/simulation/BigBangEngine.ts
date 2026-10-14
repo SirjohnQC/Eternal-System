@@ -10,6 +10,7 @@ import {
   liveGeneration, type Colony, offshootsOf,
 } from './Colonies';
 import { worldEnv, type WorldFacts } from './Divergence';
+import { stampColony, worldGridSeed } from './ColonyWorld';
 import { type WorldHistoryState, type WorldEvent, recordWorldEvent, worldEvents } from './WorldHistory';
 import {
   rulerOf, ruledByPlayer, concernsPlayer, stepLoyalty, occupyColony, stepOccupation,
@@ -3932,6 +3933,43 @@ export class BigBangEngine {
     if (byPlayer || known(starId) || known(alsoStarId)) this.onCivEvent?.(line);
     const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
     if (byPlayer && ns) ns.worldEvent(this.tick, line, [cause]);
+  }
+
+  /** Surfaces of colony worlds being looked at, by site (derived, never saved; ColonyWorld.ts). */
+  private colonyGrids = new Map<string, { grid: PlanetGrid; sig: string }>();
+
+  /**
+   * What the planet view needs to draw a colony world (P4): its terrain from
+   * its own seed, with the colony's territory and people stamped on it,
+   * re-stamped whenever the colony changes; the era its people live in.
+   * Null for a world without a colony, a gas giant, or another people's
+   * occupied home world (that is their world, not a colony's surface).
+   */
+  colonyWorldView(starId: number, planetIndex: number): {
+    grid: PlanetGrid; species: SpeciesGenome[]; civLevel: number; colony: Colony; sig: string;
+  } | null {
+    const c = colonyAt(this.colonies, starId, planetIndex);
+    const star = this.stars.find(s => s.id === starId);
+    const planet = star?.planets[planetIndex];
+    if (!c || !star || !planet || planet.type === 'gas' || c.occupation?.homeWorld) return null;
+    const key = siteKey(starId, planetIndex);
+    let entry = this.colonyGrids.get(key);
+    if (!entry) {
+      entry = { grid: generatePlanetGrid(planet.type, worldGridSeed(starId, planetIndex), planet.dna ?? null), sig: '' };
+      this.colonyGrids.set(key, entry);
+      // Only the worlds being looked at are kept.
+      while (this.colonyGrids.size > 4) this.colonyGrids.delete(this.colonyGrids.keys().next().value!);
+    }
+    const species = c.lineage && !c.lineage.isExtinct ? [c.lineage] : [];
+    const sig = [c.id, Math.round(c.population * 50), c.status, c.generations, species.length].join('|');
+    if (entry.sig !== sig) {
+      stampColony(entry.grid, c.id, c.population);
+      assignDominantSpecies(entry.grid, species);
+      entry.sig = sig;
+    }
+    const ruler = this.colonyRulerStar(c);
+    const civLevel = ruler && ruler.hasLife ? ruler.civLevel : 3 + (c.tier ?? 3);
+    return { grid: entry.grid, species, civLevel, colony: c, sig };
   }
 
   /** The player's peoples on other worlds descended from a home species (Codex lineage, P4). */
