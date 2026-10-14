@@ -32,7 +32,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { formationHeat } from '../simulation/Formation';
-import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall } from '../simulation/PlanetGrid';
+import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
@@ -57,7 +57,8 @@ import {
 import { decalRebakeNeeded, defaultDecalScale, isMineralKind, isWoody, type DecalAtlas, type DecalKind } from './SurfaceDecals';
 import { loadDecalAtlas } from './DecalAtlasLoader';
 import { atmosphereForPlanet, type AtmosphereChannel } from '../simulation/PlanetGenome';
-import { buildClimate, type ClimateSources } from './weather/WeatherClimate';
+import { buildClimate, CELL_COLS, CELL_ROWS, type ClimateSources } from './weather/WeatherClimate';
+import { planEncounters, poseAt, type Encounter, type Pose } from './Encounters';
 import { sunFacing, moonShade } from './sky/SunLight';
 import { orbitSky, axialTilt, seasonZero, type SkyState } from './sky/OrbitSky';
 import { bakeBackdrop, backdropWidth, backdropOffset } from './sky/Backdrop';
@@ -95,6 +96,8 @@ function hash01(n: number, seed: number): number {
 /** Camera zoom where birds start to fade in over living worlds. */
 const BIRD_ZOOM = 1.4;
 const CREATURE_HOP_PERIOD = 2.4;
+/** How far (in disc radii) a hunter looks for prey and a rival for a quarrel (#112). */
+const ENCOUNTER_REACH = 0.22;
 /** Frames in a forged creature's motion loop. */
 const CREATURE_FRAMES = 6;
 /** A creature body from CreatureForge: its motion loop, drawn at `scale`. */
@@ -1212,37 +1215,12 @@ export class IsoDioramaRenderer {
   private computeFocus(): void {
     const grid = this.grid;
     if (!grid) { this.focusLat = 0; this.focusLon = 0; return; }
-
-    const STRIDE = 8;
-    const R = 3; // neighbourhood radius, in strided samples
-    let bestScore = -1, bestRow = GRID_SIZE >> 1, bestCol = 0;
-
-    for (let row = STRIDE * R; row < GRID_SIZE - STRIDE * R; row += STRIDE) {
-      // Weight toward mid-latitudes so the disc isn't centred on a polar ice cap.
-      const ny = row / (GRID_SIZE - 1);
-      const latWeight = 1 - Math.abs(ny - 0.5) * 1.4;
-      if (latWeight <= 0) continue;
-
-      for (let col = 0; col < GRID_SIZE; col += STRIDE) {
-        let score = 0;
-        for (let dr = -R; dr <= R; dr++) {
-          for (let dc = -R; dc <= R; dc++) {
-            const r2 = row + dr * STRIDE;
-            const c2 = (col + dc * STRIDE + GRID_SIZE) % GRID_SIZE;
-            const cell = grid[r2]?.[c2];
-            if (!cell) continue;
-            if (!isWater(cell.biome)) score += 1 + cell.fertility;
-          }
-        }
-        score *= latWeight;
-        if (score > bestScore) { bestScore = score; bestRow = row; bestCol = col; }
-      }
-    }
-
+    const { row: bestRow, col: bestCol } = faceOf(grid);
     // Grid row 0 = north pole → lat +90°, row N-1 = south pole → lat -90°.
     this.focusLat = (0.5 - bestRow / (GRID_SIZE - 1)) * Math.PI;
     this.focusLon = (bestCol / GRID_SIZE) * Math.PI * 2;
   }
+
 
   /**
    * Inverse azimuthal-equidistant projection.
@@ -1598,6 +1576,7 @@ export class IsoDioramaRenderer {
     // Towns first: their fields and roads are painted by the bake. The
     // geometry is the one the bake is about to lay out.
     if (this.habitable && this.rawGrid) this.grid = this.ventedGrid(this.rawGrid);
+    this.lastSimVentKey = this.simVentKey();
     this.planTowns(this.geomForBake());
     this.placeVentFx(this.geomForBake());
     const bio = this.biosphere;
@@ -1641,6 +1620,10 @@ export class IsoDioramaRenderer {
    * `includeCamera: false` when a settle re-bakes the camera set this frame.
    */
   private rebakeHabitableSurface(includeCamera = true): void {
+    // A volcano rose or died in the simulation: its cone is terrain, laid out
+    // by a full bake, not a repaint.
+    const vk = this.simVentKey();
+    if (vk !== this.lastSimVentKey) { this.lastSimVentKey = vk; this.bakeAll(true); return; }
     this.planTowns();
     const bio = this.biosphere;
     this.cutaway.updateSurfaceOpts({
@@ -2763,31 +2746,51 @@ export class IsoDioramaRenderer {
           const S = Math.max(1, Math.round(v.K));
           const forged = this.forgeSpriteFor(c, S);
           const t = this.elapsed;
+          // A hunt or a quarrel (#112) takes over where it is, or hides a caught prey.
+          const pose = this.poseOf(c, t);
+          if (pose?.hidden) return;
+          const jig = pose?.shake ? (Math.sin(t * 40) > 0 ? S : -S) : 0;
           if (!forged) {
-            // The speck (too small to forge) keeps the shared hop.
+            // The speck (too small to forge) keeps the shared hop; an encounter moves it.
             const hop = Math.sin((t / CREATURE_HOP_PERIOD) * Math.PI * 2 + c.phase) > 0.35 ? -S : 0;
-            const [X, Y] = at(v, c.wx, c.wy);
+            const [X, Y] = at(v, c.wx + (pose?.dx ?? 0), c.wy + (pose?.dy ?? 0));
             const sw = Math.round(c.w) * S, sh = Math.round(c.h) * S;
-            g.drawImage(c.sprite, Math.round(X - sw / 2), Math.round(Y - sh + hop), sw, sh);
+            g.drawImage(c.sprite, Math.round(X - sw / 2) + jig, Math.round(Y - sh + hop), sw, sh);
             return;
           }
           // Walkers wander near home at the speed their stride carries them;
           // flyers hover and drift; the rest hold their spot. While walking the
           // loop plays, while idle it rests on its first frame.
           const spr0 = forged.cvs[0], sw = Math.round(spr0.width * forged.scale), sh = Math.round(spr0.height * forged.scale);
-          const wd = this.wanderOf(c, t, sw / S, forged);
+          const wd0 = this.wanderOf(c, t, sw / S, forged);
+          const wd = pose?.takeover
+            ? { dx: pose.dx, dy: pose.dy, left: pose.left ?? wd0.left, moving: pose.moving, lift: wd0.lift }
+            : wd0;
           const [X, Y] = at(v, c.wx + wd.dx, c.wy + wd.dy);
           const spr = wd.moving || forged.rate <= 3 || c.genome.dna.locomotion !== 'walking'
             ? IsoDioramaRenderer.frameOf(forged, t, c.phase) : spr0;
           const foot = Math.round(forged.foot * forged.scale);
           const lift = Math.round(wd.lift * S);
-          const x0 = Math.round(X - sw / 2), y0 = Math.round(Y - sh + foot - lift);
+          const x0 = Math.round(X - sw / 2) + jig, y0 = Math.round(Y - sh + foot - lift);
           if (wd.left) {
             // Facing the way it walks: sprites face +x, so mirror for -x.
             g.save(); g.translate(x0 + sw, y0); g.scale(-1, 1); g.drawImage(spr, 0, 0, sw, sh); g.restore();
           } else {
             g.drawImage(spr, x0, y0, sw, sh);
           }
+        } });
+      }
+    }
+    // The dust of a catch or a scuffle, drawn among the creatures.
+    if (this.habitable) {
+      for (const e of this.encounters) {
+        const A = this.inhabitants[e.a];
+        if (A.submersion > 0) continue;
+        list.push({ wy: A.wy + 0.5, draw: (g, v) => {
+          const pf = poseAt(e, this.inhabitants, this.elapsed).puff;
+          if (!pf) return;
+          const [X, Y] = at(v, pf.x, pf.y);
+          this.drawPuff(g, X, Y, pf.age, Math.max(1, Math.round(v.K)));
         } });
       }
     }
@@ -3108,7 +3111,9 @@ export class IsoDioramaRenderer {
     // Deliberately sparse. The simulation marks almost every habitable cell as
     // inhabited, so drawing one sprite per qualifying cell tiled the whole
     // continent and read as wallpaper rather than as a living world.
-    const MAX_CREATURES = 42;
+    const MAX_CREATURES = 48;
+    /** Each species on the face shows at least this many (when it holds that much ground). */
+    const MIN_PER_SPECIES = 3;
     const MAX_SETTLEMENTS = 13;
 
     // On-screen size lives in SpeciesSprite.dioramaCreatureSprite (size class x
@@ -3149,7 +3154,13 @@ export class IsoDioramaRenderer {
             x: px, y: py - lift, sx: px, sy: py,
             fertility: cell.fertility, row: gp.row, col: gp.col,
           });
-        } else if (cell.dominantSpeciesId && cell.lifeDensity > 0.35) {
+        }
+        // Life goes on in settled country too — herds in the fields, the
+        // people themselves on the roads — just not inside the towns. Settled
+        // cells used to hold no creatures at all, so once a civilisation had
+        // settled nearly all its land (late eras) nothing walked the planet.
+        const inTown = cell.civId != null && this.habitable && this.townPlan.towns.length > 0 && keepClear(this.townPlan, px, py);
+        if (cell.dominantSpeciesId && cell.lifeDensity > 0.35 && !inTown) {
           // Test the elevation the SURFACE WAS DRAWN FROM, not the grid's own.
           // `rimFalloff` sinks the outer hemisphere so the projection reads as a
           // continent in an ocean, and the cells it sinks keep their land biome
@@ -3177,7 +3188,7 @@ export class IsoDioramaRenderer {
      * of an already-accepted point gives separated towns and scattered animals.
      */
     const scatter = <T extends { x: number; y: number }>(
-      arr: T[], max: number, minDist: number,
+      arr: T[], max: number, minDist: number, taken: Array<{ x: number; y: number }> = [],
     ): T[] => {
       const out: T[] = [];
       const d2 = minDist * minDist;
@@ -3195,12 +3206,33 @@ export class IsoDioramaRenderer {
           const ddx = got.x - cand.x, ddy = got.y - cand.y;
           if (ddx * ddx + ddy * ddy < d2) { ok = false; break; }
         }
+        if (ok) for (const got of taken) {
+          const ddx = got.x - cand.x, ddy = got.y - cand.y;
+          if (ddx * ddx + ddy * ddy < d2) { ok = false; break; }
+        }
         if (ok) out.push(cand);
       }
       return out;
     };
 
-    for (const spot of scatter(creatureSpots, MAX_CREATURES, rx * 0.075)) {
+    // Every species living on this face is seen (#112): the slots are shared
+    // by the square root of the ground each holds, at least a few each, so
+    // the dominant one no longer fills nearly every slot. Rarer species are
+    // placed first, so the spacing rule does not squeeze them out.
+    const bySpecies = new Map<string, typeof creatureSpots>();
+    for (const sp of creatureSpots) {
+      const l = bySpecies.get(sp.id);
+      if (l) l.push(sp); else bySpecies.set(sp.id, [sp]);
+    }
+    const groups = [...bySpecies.entries()].sort((a, b) => a[1].length - b[1].length || (a[0] < b[0] ? -1 : 1));
+    const root = groups.reduce((a, [, l]) => a + Math.sqrt(l.length), 0) || 1;
+    const chosen: typeof creatureSpots = [];
+    for (const [, l] of groups) {
+      const quota = Math.max(MIN_PER_SPECIES, Math.round(MAX_CREATURES * Math.sqrt(l.length) / root));
+      chosen.push(...scatter(l, quota, rx * 0.06, chosen));
+    }
+
+    for (const spot of chosen) {
       const genome = byId.get(spot.id);
       if (!genome) continue;
       // Perspective: things near the front of the disc read slightly larger.
@@ -3248,6 +3280,37 @@ export class IsoDioramaRenderer {
     // Painter's algorithm — back of the disc first.
     this.inhabitants.sort((a, b) => a.depth - b.depth);
     this.settlements.sort((a, b) => a.depth - b.depth);
+    // Who hunts whom and who quarrels, from the simulation's food web (#112).
+    this.encounters = planEncounters(this.inhabitants, rx * ENCOUNTER_REACH);
+    this.encounterOf = new Map();
+    for (const e of this.encounters) {
+      this.encounterOf.set(this.inhabitants[e.a], { e, side: 'a' });
+      this.encounterOf.set(this.inhabitants[e.b], { e, side: 'b' });
+    }
+  }
+
+  /** Hunts and quarrels among the creatures drawn (Encounters.ts, #112). */
+  private encounters: Encounter[] = [];
+  private encounterOf = new Map<object, { e: Encounter; side: 'a' | 'b' }>();
+
+  /** A creature's encounter pose at time t, or null when it has none. */
+  private poseOf(c: object, t: number): Pose | null {
+    const hit = this.encounterOf.get(c);
+    if (!hit) return null;
+    return poseAt(hit.e, this.inhabitants, t)[hit.side];
+  }
+
+  /** A dust burst where a hunter struck or rivals clashed: a few pixels flung out and settling. */
+  private drawPuff(g: CanvasRenderingContext2D, X: number, Y: number, age: number, S: number): void {
+    const n = 7, r = (2 + age * 7) * S;
+    g.save();
+    g.globalAlpha = Math.max(0, 0.85 * (1 - age));
+    g.fillStyle = 'rgb(214,198,170)';
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + 0.4;
+      g.fillRect(Math.round(X + Math.cos(a) * r), Math.round(Y - S * 2 + Math.sin(a) * r * 0.5 - age * 3 * S), S, S);
+    }
+    g.restore();
   }
 
   /** Blit creatures and settlements onto the top face. */
@@ -3397,10 +3460,15 @@ export class IsoDioramaRenderer {
     const prof = this.habitable
       ? volcanoProfile(this.planetType, this.planetSeed, this.forming ? this.star?.formationStage ?? null : null)
       : null;
-    const key = prof ? `${this.planetSeed}|${this.planetType}|${prof.count}|${prof.scale}|${prof.state}|${this.focusLat.toFixed(3)}|${this.focusLon.toFixed(3)}` : '';
+    // The simulation's own volcanoes (a volcano sign raised one, #111) are
+    // drawn as volcanoes too, so they are part of the key (rule 1).
+    const sim = this.habitable ? this.simVents(raw) : [];
+    const key = `${prof ? `${this.planetSeed}|${this.planetType}|${prof.count}|${prof.scale}|${prof.state}|${this.focusLat.toFixed(3)}|${this.focusLon.toFixed(3)}` : ''}|${sim.map(v => `${v.row},${v.col}`).join(';')}`;
     if (key !== this.ventKey) {
       this.ventKey = key;
-      this.vents = prof ? this.planVents(raw, prof) : [];
+      const planned = prof ? this.planVents(raw, prof) : [];
+      // A volcano from the simulation replaces a decorative one too close to it.
+      this.vents = [...sim, ...planned.filter(p => !sim.some(v => Math.hypot(v.dx - p.dx, v.dy - p.dy) < (p.R + v.R) / GRID_SIZE * 1.5))];
     }
     if (this.vents.length === 0) return raw;
     const out = raw.slice();
@@ -3431,6 +3499,47 @@ export class IsoDioramaRenderer {
       }
     }
     return out;
+  }
+
+  /**
+   * Volcanoes the simulation made (#111): an open volcanic vent on a local
+   * peak at least 0.70 high, on the visible face. A lava world is mostly
+   * volcanic ground and has its own planned vents, so it is left to those.
+   */
+  private simVents(grid: PlanetGrid): Vent[] {
+    if (this.planetType === 'lava' || this.forming) return [];
+    const out: Vent[] = [];
+    for (let row = 1; row < GRID_SIZE - 1 && out.length < 4; row++) {
+      for (let col = 0; col < GRID_SIZE && out.length < 4; col++) {
+        const cell = grid[row][col];
+        if (cell.biome !== 'volcanic' || cell.elevation < 0.7) continue;
+        let peak = true;
+        for (let dr = -1; dr <= 1 && peak; dr++) for (let dc = -1; dc <= 1; dc++) {
+          if ((dr || dc) && grid[row + dr][(col + dc + GRID_SIZE) % GRID_SIZE].elevation > cell.elevation) { peak = false; break; }
+        }
+        if (!peak) continue;
+        const d = this.gridToDisc(row, col);
+        if (!d || Math.hypot(d.dx, d.dy) > 0.7) continue;
+        if (out.some(v => Math.abs(v.row - row) < 6 && Math.abs(v.col - col) < 6)) continue;
+        out.push({ row, col, dx: d.dx, dy: d.dy, R: 8, base: Math.max(SEA_LEVEL, cell.elevation - 0.25), peak: Math.max(0.9, cell.elevation + 0.08), state: 'active', crater: null, flows: [] });
+      }
+    }
+    return out;
+  }
+
+  /** The simulation's volcanoes as a key: when it changes, the cones must be re-planned (a full bake). */
+  private simVentKey(): string {
+    return this.rawGrid && this.habitable ? this.simVents(this.rawGrid).map(v => `${v.row},${v.col}`).join(';') : '';
+  }
+  private lastSimVentKey = '';
+
+  /**
+   * A downpour where a rain sign fell (#111): heavy cloud and rain over that
+   * ground for a while. Only on worlds with weather.
+   */
+  forceDownpour(cell: { row: number; col: number }, seconds = 60): boolean {
+    if (!this.habitable) return false;
+    return this.cutaway.forceDownpour(Math.floor(cell.col / CELL_COLS), Math.floor(cell.row / CELL_ROWS), seconds);
   }
 
   private planVents(grid: PlanetGrid, prof: VolcanoProfile): Vent[] {
@@ -3608,9 +3717,12 @@ export class IsoDioramaRenderer {
       // Land animals on a cutaway world are drawn by the flora pass (see
       // pushTownProps), depth-sorted with the trees; swimmers stay here.
       if (this.habitable && c.submersion <= 0) continue;
+      // A hunt in the water (#112): moved, or gone if caught.
+      const pose = this.poseOf(c, t);
+      if (pose?.hidden) continue;
       // A small idle bob keeps the world alive without implying real movement.
       // The shared idle hop: one pixel (x S) up for the high half of the cycle.
-      const ax = this.wsx(c.wx), ay = this.wsy(c.wy);
+      const ax = this.wsx(c.wx + (pose?.dx ?? 0)) + (pose?.shake ? (Math.sin(t * 40) > 0 ? S : -S) : 0), ay = this.wsy(c.wy + (pose?.dy ?? 0));
       // Big enough on screen to show a body: the 3D-built creature at its true
       // screen resolution instead of the speck magnified x S.
       const forged = this.forgeSpriteFor(c, S);

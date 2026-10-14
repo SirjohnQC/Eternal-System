@@ -9,8 +9,8 @@ import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
 import { paintMoon, type MoonKindArt } from './rendering/MoonArt';
 import { moonSizeClass, moonSizeLabel, moonIsIrregular } from './simulation/MoonSize';
 import {
-  UniverseStats, PlanetDNA, DEFAULT_PLANET_DNA, GameStateData, gameState, TECH_LEVELS, CIV_COLORS,
-  BiologyPhase, BIO_PHASE_LABELS, BIO_PHASE_SEQUENCE, CIV_PHASE_LABELS, civLevelToPhase,
+  UniverseStats, PlanetDNA, DEFAULT_PLANET_DNA, GameStateData, gameState, CIV_COLORS,
+  BiologyPhase, BIO_PHASE_SEQUENCE,
   DNABranch, DEFAULT_DNA_BRANCH, CodexEntry, CODEX_MILESTONES,
 } from './simulation/GameState';
 import { SeedRNG } from './utils/SeedRNG';
@@ -28,7 +28,10 @@ import type { Civilization } from './simulation/Civilization';
 import { PixiBigBangRenderer } from './rendering/PixiBigBangRenderer';
 import { BigBangCinematic } from './simulation/BigBangCinematic';
 import { newForge } from './simulation/Forge';
-import { subEraOf, SUB_ERA_NAMES } from './simulation/Technology';
+import { subEraOf } from './simulation/Technology';
+import {
+  progressionOf, eraLabel, bioPhaseLabel, formationStageLabel, ERA_TITLES, type Progression,
+} from './simulation/Progression';
 import { runForge, forgeActive, forgeAwaitingDescent, forgeDescend } from './ui/ForgeUI';
 import { initUniverseMap, showDormantGalaxyCard, currentOverlay } from './ui/UniverseMapUI';
 import { IsoDioramaRenderer, type DivineEffectKind } from './rendering/IsoDioramaRenderer';
@@ -54,6 +57,7 @@ import {
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { colonyLook, type Colony } from './simulation/Colonies';
+import { colonyPeopleCard } from './simulation/ColonyWorld';
 import { generationsAgo } from './simulation/WorldHistory';
 import { orreryColor } from './rendering/OrreryPalette';
 import { BUILD_LABEL } from './buildInfo';
@@ -580,18 +584,14 @@ function startForgeIfDue(holdInSystem = false): void {
     const whisperer = new FallbackNarrator(`${gameState.masterSeed}_whisper`).generateGodName();
     gameState.forge = newForge(gameState.masterSeed, gameState.stats, ps.temperature, whisperer);
   }
-  const stageLabels: Record<string, string> = {
-    magma: 'Magma Ocean', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
-    atmosphere: 'Atmosphere Forming', ice_age: 'Ice Age', primordial: 'Primordial Ocean',
-  };
   runForge({
     shape: (destiny, stage, dna) => engine?.shapeForgedWorld(destiny, stage, dna),
     refreshWorld: () => refreshHomeWorldSurface(),
     openWorld: () => { void openPlanetView(); },
     stageChanged: (stage) => {
       const el = document.getElementById('civ-bar');
-      if (el) el.textContent = stageLabels[stage] ?? stage;
-      addFeedEntry(`Forging: ${stageLabels[stage] ?? stage}`, 'milestone');
+      if (el) el.textContent = formationStageLabel(stage);
+      addFeedEntry(`Forging: ${formationStageLabel(stage)}`, 'milestone');
       const ps2 = engine?.getPlayerStar();
       if (ps2) updateBottomBar(ps2);
     },
@@ -702,7 +702,12 @@ window.addEventListener('resize', updateViewInsets);
 
 /** "Late Medieval": a star's era with its sub-era (Early / Middle / Late). */
 function eraName(star: StarBody): string {
-  return engine?.eraNameOf(star) ?? TECH_LEVELS[Math.min(star.civLevel, TECH_LEVELS.length - 1)] ?? 'Primitive';
+  return progressionFor(star).eraName;
+}
+
+/** Where a world stands, and every label for it (Progression.ts, #9): the one thing the views read. */
+function progressionFor(star: StarBody): Progression {
+  return engine?.progressionOf(star) ?? progressionOf(star);
 }
 
 /** Attach a PixiBigBangRenderer to the given engine + canvas pair. */
@@ -855,7 +860,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
 
   // ── Biology / Phase callbacks ────────────────────────────────────────────
   eng.onBioPhaseAdvance = (phase) => {
-    const label = BIO_PHASE_LABELS[phase];
+    const label = bioPhaseLabel(phase);
     addFeedEntry(`Evolution: ${label} on ${gameState.playerPlanetName}`, 'milestone');
     updatePhaseBar();
     eng.clearPlanetTextureCache();
@@ -1272,9 +1277,20 @@ function homeDioramaLiveData(): void {
 function refreshColonyDiorama(): void {
   const site = _dioramaSite;
   if (!site || !engine || !_dioramaRenderer) return;
-  const v = engine.colonyWorldView(site.starId, site.planetIndex);
+  const v = engine.otherWorldView(site.starId, site.planetIndex);
   if (!v || v.sig === site.sig) return;
+  // Settled since it was opened (or its colony died out): a new surface, redrawn whole.
+  const settledChanged = (v.colony === null) !== site.sig.startsWith('landed|');
   site.sig = v.sig;
+  if (settledChanged) {
+    const star = engine.stars.find(s => s.id === site.starId);
+    const planet = star?.planets[site.planetIndex];
+    if (star && planet) {
+      _dioramaRenderer.refreshData(v.grid, { ...DEFAULT_BIOSPHERE }, v.species, planet, star, site.planetIndex,
+        { civLevel: v.civLevel, phase: v.colony ? 'intelligent' : 'none' });
+      return;
+    }
+  }
   _dioramaRenderer.setLiveData(v.species, { ...DEFAULT_BIOSPHERE });
   _dioramaRenderer.markSurfaceDirty();
 }
@@ -1297,8 +1313,9 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
   // under another planet's type and a double-click opened the homeworld's
   // surface map (#16).
   const isHomeView = target.isPlayerStar && planetIndex === homeIndex;
-  // A colony world is drawn as a diorama too, from its own derived surface (P4).
-  const colonyView = !isHomeView && engine ? engine.colonyWorldView(target.id, planetIndex) : null;
+  // A colony world is drawn as a diorama too, from its own derived surface (P4);
+  // so is a world your people have landed on in your own system, unsettled.
+  const colonyView = !isHomeView && engine ? engine.otherWorldView(target.id, planetIndex) : null;
   _dioramaSite = colonyView ? { starId: target.id, planetIndex, sig: colonyView.sig } : null;
 
   const overlay = document.getElementById('planet-overlay')!;
@@ -1341,7 +1358,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
 
     if (colonyView && planet) {
       _dioramaRenderer.refreshData(colonyView.grid, { ...DEFAULT_BIOSPHERE }, colonyView.species, planet, target, planetIndex,
-        { civLevel: colonyView.civLevel, phase: 'intelligent' });
+        { civLevel: colonyView.civLevel, phase: colonyView.colony ? 'intelligent' : 'none' });
     } else if (runtimeState.playerPlanetGrid && planet) {
       _dioramaRenderer.refreshData(
         runtimeState.playerPlanetGrid,
@@ -1644,7 +1661,7 @@ function showTileNation(target: TileRef): void {
   }
   const builds = nationArch(_dioramaRenderer?.townArch ?? null, { values: n.values, government: n.government, color: n.color, id: n.id }).summary;
   setText('pi-tile-nation-detail', [
-    `${n.era > 0 ? SUB_ERA_NAMES[subEraOf(n.techs, n.era)] + ' ' : ''}${TECH_LEVELS[n.era] ?? 'Primitive'} ${n.government.toLowerCase()} · ${n.ideology}`,
+    `${eraLabel(n.era, subEraOf(n.techs, n.era))} ${n.government.toLowerCase()} · ${n.ideology}`,
     `Builds ${builds}`,
     studying ? `Working on ${studying}` : '',
     dealings.length ? dealings.join('. ') + '.' : '',
@@ -1858,21 +1875,17 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     : simYears.toLocaleString() + ' yr';
   setText('pi-sim-age', ageStr);
 
-  // Civilization / Phase
-  if (star.formationStage) {
-    const stageNames: Record<string, string> = {
-      magma: 'Molten Formation', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
-      atmosphere: 'Atmosphere Forming', ice_age: 'Ice Age', primordial: 'Primordial Ocean',
-    };
-    setText('pi-era', stageNames[star.formationStage] ?? star.formationStage);
+  // Civilization / Phase — from the one progression (#9)
+  const prog = progressionFor(star);
+  if (prog.stage === 'forming') {
+    setText('pi-era', prog.phaseLabel);
     setText('pi-population', '—');
     setText('pi-biosphere', '0%');
     setStyle('pi-biosphere-bar', 'width', '0%');
-  } else if (star.hasLife && star.biologyPhase !== 'intelligent') {
+  } else if (prog.stage === 'life') {
     // Still in biology phase — show phase name
-    const phaseIdx = BIO_PHASE_SEQUENCE.indexOf(star.biologyPhase);
-    const phasePct = Math.round((phaseIdx / (BIO_PHASE_SEQUENCE.length - 1)) * 100);
-    setText('pi-era', BIO_PHASE_LABELS[star.biologyPhase]);
+    const phasePct = Math.round((prog.bioIndex / (BIO_PHASE_SEQUENCE.length - 1)) * 100);
+    setText('pi-era', prog.phaseLabel);
     setText('pi-population', '—');
     const biosphere = planet?.biosphere ?? 0;
     setText('pi-biosphere', Math.round(biosphere * 100) + '%');
@@ -1880,9 +1893,8 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     // Show phase progress in biosphere bar color
     const phaseSect = document.getElementById('pi-biosphere-bar');
     if (phaseSect) phaseSect.style.setProperty('background', `hsl(${140 + phasePct},70%,45%)`);
-  } else if (star.hasLife && star.biologyPhase === 'intelligent') {
-    const civPhase = civLevelToPhase(civLevel);
-    setText('pi-era', CIV_PHASE_LABELS[civPhase] + ` — ${eraName(star)}`);
+  } else if (prog.stage === 'civilization') {
+    setText('pi-era', prog.fullLabel);
     // How this civilisation builds (its architecture genome), once it does.
     const arch = star.isPlayerStar ? _dioramaRenderer?.townArch : null;
     setStyle('pi-arch-row', 'display', arch ? '' : 'none');
@@ -1940,13 +1952,14 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
 
   // DNA (player planet only)
   const dnaSection = document.getElementById('pi-dna-section');
-  if (dna && dnaSection) {
+  // The world's DNA is not shown until it is decided (#18): not while it is a
+  // magma ocean, nor while the Forge is drafting it.
+  const dnaKnown = !!dna && prog.worldDnaKnown;
+  if (dna && dnaKnown && dnaSection) {
     dnaSection.style.display = '';
-    // While the Forge runs, the world's DNA is not known yet.
-    const unformed = gameState.forge?.phase === 'draft';
-    setText('pi-dna-climate', unformed ? 'unformed' : dna.climate);
-    setText('pi-dna-oceans', unformed ? 'unformed' : dna.oceans.replace('_', ' '));
-    setText('pi-dna-chaos', unformed ? 'unformed' : dna.chaos);
+    setText('pi-dna-climate', dna.climate);
+    setText('pi-dna-oceans', dna.oceans.replace('_', ' '));
+    setText('pi-dna-chaos', dna.chaos);
   } else if (dnaSection) {
     dnaSection.style.display = 'none';
   }
@@ -1993,11 +2006,24 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     : (star.hasLife ? star.civName + 'ians' : '—');
 
   const iconEl = document.getElementById('pi-species-icon');
+  // A colony world: its people are the settlers, not the star's own life
+  // (a lifeless star, or natives on another planet) — P4.
+  const founderCiv = colony && !colony.byPlayer ? gameState.civilizations[colony.founderStarId] : undefined;
+  const colonyGenome = colony
+    ? (colony.lineage ?? (founderCiv ? genomeFromSummary(founderCiv.sourceGenome, `npc_${colony.founderStarId}`) : null))
+    : null;
+  const colonyCard = colony && engine
+    ? colonyPeopleCard(colony, colony.lineage?.name
+        ?? (colony.byPlayer ? engine.colonyFounderName(colony) : `${engine.colonyFounderName(colony)}ians`),
+        engine.colonyFounderName(colony))
+    : null;
   // Another world's people: draw them (their form follows their body plan).
   const npcCiv = !isPlayer && star.biologyPhase === 'intelligent' ? gameState.civilizations[star.id] : undefined;
-  const npcGenome = npcCiv ? genomeFromSummary(npcCiv.sourceGenome, `npc_${star.id}`) : null;
+  const npcGenome = colonyCard ? colonyGenome : npcCiv ? genomeFromSummary(npcCiv.sourceGenome, `npc_${star.id}`) : null;
   if (iconEl) {
-    const key = npcGenome ? `npc_${star.id}` : '';
+    // Keyed on the colony's look too, so a people that changes is redrawn.
+    const key = colonyCard && colony ? `colony_${colony.id}_${colony.stage ?? 'same'}_${colonyLook(colony)}`
+      : npcGenome ? `npc_${star.id}` : '';
     if (npcGenome) {
       if (iconEl.dataset['portrait'] !== key) {
         iconEl.textContent = '';
@@ -2008,16 +2034,16 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
       }
     } else {
       iconEl.dataset['portrait'] = '';
-      iconEl.textContent = star.hasLife ? SPECIES_ICONS[civLevel] : '—';
+      iconEl.textContent = colonyCard ? SPECIES_ICONS[7] : star.hasLife ? SPECIES_ICONS[civLevel] : '—';
     }
   }
-  setText('pi-species-name', speciesName);
+  setText('pi-species-name', colonyCard?.name ?? speciesName);
 
   let speciesDesc = 'No life detected on this world.';
   if (star.formationStage) {
     speciesDesc = 'Planet still in formation. Life has not yet emerged.';
   } else if (star.hasLife && star.biologyPhase !== 'intelligent') {
-    speciesDesc = `${BIO_PHASE_LABELS[star.biologyPhase]} · Evolving`;
+    speciesDesc = `${bioPhaseLabel(star.biologyPhase)} · Evolving`;
     if (isPlayer) speciesDesc += ` · Invest DNA points to guide development`;
   } else if (star.hasLife) {
     speciesDesc = `Emerged on ${displayName} · ${eraName(star)}`;
@@ -2025,12 +2051,13 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     if (form) speciesDesc = `A ${form} people · ${speciesDesc}`;
     if (dna) speciesDesc += ` · ${dna.climate} world`;
   }
+  if (colonyCard) speciesDesc = colonyCard.desc;
   setText('pi-species-desc', speciesDesc);
 
   // Tech track
   const track = document.getElementById('pi-tech-track');
   if (track) {
-    track.innerHTML = TECH_LEVELS.map((level, i) => {
+    track.innerHTML = ERA_TITLES.map((level, i) => {
       const cls = i < civLevel ? 'pi-tech-step reached' : i === civLevel ? 'pi-tech-step current' : 'pi-tech-step';
       const marker = i < civLevel ? '✓' : i === civLevel ? '▶' : '·';
       return `<div class="${cls}"><span style="width:14px;text-align:center;flex-shrink:0;">${marker}</span>${level}</div>`;
@@ -2042,7 +2069,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
 
   // DNA codex section
   const codexDnaSection = document.getElementById('pi-codex-dna-section');
-  if (dna && codexDnaSection) {
+  if (dna && dnaKnown && codexDnaSection) {
     codexDnaSection.style.display = '';
     const climateDesc: Record<string, string> = {
       temperate: 'Balanced seasons and moderate temperatures shape a world of great diversity.',
@@ -2381,7 +2408,8 @@ function buildStarPlanetList(star: StarBody): void {
       const typeLabel = planet.type.charAt(0).toUpperCase() + planet.type.slice(1);
       const bioStr = planet.biosphere > 0 ? ` · Biosphere ${Math.round(planet.biosphere * 100)}%` : '';
       const lifeStr = planet.hasLife ? 'Life confirmed' : 'Barren';
-      const badgeLabel = isHome ? 'HOME WORLD' : 'COLONIZED';
+      // Landed on is not settled: only a world with a colony is "colonized".
+      const badgeLabel = isHome ? 'HOME WORLD' : engine?.colonyAt(star.id, idx) ? 'COLONIZED' : 'LANDED';
       const badgeClass = isHome ? 'badge-home' : 'badge-landing';
 
       row.className = 'planet-row' + (isHome ? ' planet-row-home' : '');
@@ -2462,17 +2490,13 @@ function renderSegmentBar(elId: string, filled: number, totalSegs = 20): void {
 function updateBottomBar(star: { civName: string; civLevel: number; hasLife: boolean }): void {
   const el1 = document.getElementById('planet-name-bar');
   const el2 = document.getElementById('species-bar');
-  const el3 = document.getElementById('civ-bar');
   const planetLabel = gameState.playerPlanetName !== '—' ? gameState.playerPlanetName : star.civName + ' Prime';
   if (el1) el1.textContent = planetLabel.toUpperCase();
   const speciesLabel = gameState.playerSpeciesName
     ? gameState.playerSpeciesName.toUpperCase()
     : (star.hasLife ? 'DETECTED' : 'NONE');
   if (el2) el2.textContent = speciesLabel;
-  // Civ bar: show TECH_LEVELS only once intelligent
-  const ps = engine?.getPlayerStar();
-  const inBioPhase = ps && ps.biologyPhase !== 'intelligent';
-  if (el3) el3.textContent = inBioPhase ? '—' : (star.hasLife ? eraName(star as StarBody) : '—');
+  // The era chip (civ-bar) is drawn with the phase bar, from the same progression.
   updatePhaseBar();
 }
 
@@ -2644,29 +2668,33 @@ function updatePhaseBar(): void {
   const ps = engine?.getPlayerStar();
   if (!ps) return;
 
-  if (ps.formationDestiny && ps.formationStage) {
+  const prog = progressionFor(ps);
+  // The era chip beside it (#22): the same name as everywhere else, redrawn
+  // with the bar every few ticks so it follows the world (rule 1).
+  const civBar = document.getElementById('civ-bar');
+  if (civBar) civBar.textContent = prog.stage === 'civilization' ? prog.eraName : prog.stage === 'forming' ? prog.phaseLabel : '—';
+  if (ps.formationDestiny && prog.stage === 'forming') {
     // Still forming: the bar is the formation ladder, filled by progress.
-    phaseEl.textContent = `FORMING · ${FORMATION_STAGE_LABELS[ps.formationStage] ?? ps.formationStage}`.toUpperCase();
+    phaseEl.textContent = `FORMING · ${prog.phaseLabel}`.toUpperCase();
     phaseEl.style.color = '#ff9a4a';
     renderSegmentBar('phase-segs', (engine?.homeFormationFraction() ?? 0) * 12, 12);
     return;
   }
 
-  if (ps.biologyPhase !== 'intelligent') {
-    phaseEl.textContent = BIO_PHASE_LABELS[ps.biologyPhase].toUpperCase();
+  if (prog.stage !== 'civilization') {
+    phaseEl.textContent = (prog.stage === 'life' ? prog.phaseLabel : bioPhaseLabel(ps.biologyPhase)).toUpperCase();
     phaseEl.style.color = '#44cc88';
-    const phIdx = BIO_PHASE_SEQUENCE.indexOf(ps.biologyPhase);
-    renderSegmentBar('phase-segs', ((phIdx + 1) / BIO_PHASE_SEQUENCE.length) * 12, 12);
+    renderSegmentBar('phase-segs', (prog.stage === 'life' ? prog.fraction : 0) * 12, 12);
     // Show DNA panel if there are points to spend
     if (gameState.dnaPoints > 0) {
       document.getElementById('dna-panel')?.classList.add('visible');
     }
     updateDNAPanel();
   } else {
-    const phase = civLevelToPhase(ps.civLevel);
-    phaseEl.textContent = CIV_PHASE_LABELS[phase].toUpperCase();
+    phaseEl.textContent = prog.phaseLabel.toUpperCase();
+    phaseEl.title = prog.fullLabel;
     phaseEl.style.color = '';
-    renderSegmentBar('phase-segs', ((ps.civLevel + 1) / 10) * 12, 12);
+    renderSegmentBar('phase-segs', prog.fraction * 12, 12);
   }
 }
 
@@ -2688,7 +2716,7 @@ function updateDNAPanel(): void {
   // Phase badge + name + progress
   const phIdx = BIO_PHASE_SEQUENCE.indexOf(ps.biologyPhase);
   const progressPct = phIdx >= 0 ? Math.round((phIdx / (BIO_PHASE_SEQUENCE.length - 1)) * 100) : 100;
-  const phaseLabel = BIO_PHASE_LABELS[ps.biologyPhase] ?? 'Intelligent Species';
+  const phaseLabel = bioPhaseLabel(ps.biologyPhase);
   const phaseBadge = phaseLabel.split(' ')[0];
   const phEl = document.getElementById('el-phase-name');
   const phBadge = document.getElementById('el-phase-badge');
@@ -3322,10 +3350,6 @@ const DESTINY_LABELS: Record<DestinyType, string> = {
   ocean: 'ocean world', rocky: 'rocky world', ice: 'ice world', desert: 'desert world',
 };
 
-const FORMATION_STAGE_LABELS: Record<string, string> = {
-  magma: 'Magma Ocean', cooling: 'Cooling Crust', volcanic: 'Volcanic Era',
-  atmosphere: 'First Air', ice_age: 'Ice Age', primordial: 'Primordial Sea',
-};
 
 const FORMATION_STAGE_LINES: Record<string, string> = {
   cooling: 'The magma sea is skinning over. A dark crust floats on the fire.',
@@ -3352,7 +3376,7 @@ function wireEraLeap(): void {
   const sel = document.getElementById('era-leap') as HTMLSelectElement | null;
   if (!sel || sel.dataset['wired'] === '1') return;
   sel.dataset['wired'] = '1';
-  TECH_LEVELS.forEach((label, i) => {
+  ERA_TITLES.forEach((label, i) => {
     if (i === 0) return;
     const o = document.createElement('option');
     o.value = String(i); o.textContent = label;
@@ -3647,7 +3671,7 @@ function nudgeEvolution(): void {
   _dioramaRenderer?.playDivineEffect('nudge');
   const { outcome, mutationDesc } = engine?.nudgePlayerEvolution() ?? { outcome: 'none' as const };
   if (outcome === 'bio') {
-    const phaseLabel = BIO_PHASE_LABELS[ps.biologyPhase] ?? ps.biologyPhase;
+    const phaseLabel = bioPhaseLabel(ps.biologyPhase);
     if (mutationDesc) {
       addChatMessage(
         `Your divine will reaches into the helix of ${gameState.playerPlanetName}. ${mutationDesc}`,
@@ -3861,12 +3885,7 @@ function openTerraformModal(): void {
   container.innerHTML = '';
 
   for (const opt of info.options) {
-    const stageLabels: Record<string, string> = {
-      ice_age: 'Ice Age', atmosphere: 'Atmosphere Formation',
-      cooling: 'Cooling', primordial: 'Primordial Ocean',
-      magma: 'Magma', volcanic: 'Volcanic'
-    };
-    const stepsHtml = opt.stages.map(s => `<span style="color:#88ccff;font-size:10px">${stageLabels[s] ?? s}</span>`).join(' → ');
+    const stepsHtml = opt.stages.map(s => `<span style="color:#88ccff;font-size:10px">${formationStageLabel(s)}</span>`).join(' → ');
     const card = document.createElement('button');
     card.className = 'divine-action-btn';
     card.style.cssText = 'width:100%;text-align:left;padding:12px 14px';
@@ -5489,7 +5508,7 @@ function renderEvoLab(): void {
     const head = document.createElement('div');
     head.className = 'evo-tier-head' + (i === phIdx ? ' now' : '');
     head.innerHTML = `<span></span><span></span>`;
-    head.children[0].textContent = (BIO_PHASE_LABELS[ph] ?? ph).toUpperCase();
+    head.children[0].textContent = bioPhaseLabel(ph).toUpperCase();
     head.children[1].textContent = i > phIdx ? 'LOCKED' : i === phIdx ? 'NOW' : '';
     tier.appendChild(head);
     const grid = document.createElement('div');
@@ -5520,7 +5539,7 @@ function renderEvoLab(): void {
 
   // ── DNA, earnings, dex ─────────────────────────────────────────────────────
   set('evo-dna-points', String(gameState.dnaPoints));
-  set('evo-phase', ps ? (BIO_PHASE_LABELS[ps.biologyPhase] ?? ps.biologyPhase) : '—');
+  set('evo-phase', ps ? bioPhaseLabel(ps.biologyPhase) : '—');
   const earned = document.getElementById('evo-earned')!;
   earned.innerHTML = '';
   if (dnaEarnLog.length === 0) {
@@ -6029,7 +6048,9 @@ function showBodyCard(star: StarBody, planetIndex: number, moonIndex: number | n
         rows.push(['People', `${look} · ${stage === 'species' ? 'a new species' : stage}`]);
       }
     }
-    rows.push(['Survey', planet.discovery === 'landing' ? 'Settled' : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
+    // Landed on is not settled: only a world with a colony (or home) is "Settled".
+    const settled = isHome || !!engine?.colonyAt(star.id, planetIndex);
+    rows.push(['Survey', planet.discovery === 'landing' ? (settled ? 'Settled' : 'Landed') : planet.discovery === 'probe' ? 'Studied by satellite' : planet.discovery === 'telescope' ? 'Telescope only' : 'Unknown']);
   }
   const card = document.createElement('div');
   card.id = 'body-card';
@@ -6212,6 +6233,15 @@ initFaithHand({
   },
   tick: () => engine?.tick ?? 0,
   effect: (kind, cell) => _dioramaRenderer?.playDivineEffect(kind, cell),
+  // What a card did to the land, shown where it did it (#111). The works fall
+  // on the home world, the only world the diorama shows on this branch.
+  landChanged: (work, cell) => {
+    if (!_dioramaRenderer) return;
+    if (work === 'rains' && cell) _dioramaRenderer.forceDownpour(cell, 75);
+    if (work === 'volcano') _dioramaRenderer.playDivineEffect('smite', cell);
+    if (work === 'spread' || work === 'bounty') _dioramaRenderer.playDivineEffect('fertility', cell);
+    if (work === 'wither') _dioramaRenderer.playDivineEffect('sink', cell);
+  },
   host: faithHost,
   context: () => {
     const ps = engine?.getPlayerStar();

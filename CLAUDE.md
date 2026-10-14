@@ -28,6 +28,7 @@ npx vite --port 5173      # vite.config.ts defaults to port 3000 if --port is om
   - other params: `seed`, `year`, `ecc`, `archetype`, `phase`, `civLevel`,
     `pressure`, `oxygen`, `nebula=1`, `fx`, `fxCell`, `storm=<vortex>`, `nations=0` (hide countries),
     `colony=<0..1>` (a colony world at that population, P4; add `adapt=1` for a diverged people)
+    `settled=<0..1>` (that share of the land settled, e.g. 0.97 for a late era)
 
 Chromium is available for screenshots via Playwright (`executablePath: '/opt/pw-browsers/chromium'`).
 
@@ -61,7 +62,7 @@ npx esbuild tools/smokeTest.ts --bundle --platform=node --format=esm \
 ```
 
 - `smokeTest.ts` — whole-simulation "is everything still working" check; run after any sim change.
-- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars. `universeCheck.ts` — the universe's 3×3 sectors (2–5 galaxies each, random home, Entropy lumpiness, charting by tech, the universe map frame). `forgeCheck.ts` — the Forge (Fate Cards forging the home world: deck, determinism, pacing, steering, engine hold until the golden spark). `cinematicCheck.ts` — the Big Bang cinematic (timeline, same universe with or without it, skip/end handoff, camera on home before the black-gap zone).
+- `nationsCheck.ts`, `techCheck.ts`, `faithCardsCheck.ts`, `chronicleCheck.ts` — nations, technology, procedural Faith Cards (discovery, burning, omens vs an untouched twin), the causal Chronicle; `townsCheck.ts` — towns per country (each nation's architecture and era). `polityCheck.ts` — other stars' civilisations as agents, trade between stars. `universeCheck.ts` — the universe's 3×3 sectors (2–5 galaxies each, random home, Entropy lumpiness, charting by tech, the universe map frame). `forgeCheck.ts` — the Forge (Fate Cards forging the home world: deck, determinism, pacing, steering, engine hold until the golden spark). `cinematicCheck.ts` — the Big Bang cinematic (timeline, same universe with or without it, skip/end handoff, camera on home before the black-gap zone). `ecologyCheck.ts` — the living world's ecology (species per world, the food web, extinction pressure, the diorama's hunts and quarrels).
 - `*Check.ts` — targeted checks (weather, zoom, formation, settlement, moon, sky, ...);
   exit non-zero on failure. `weatherCheck` and `zoomCheck` want `node --expose-gc`.
 - `*Render.ts` — write PNGs for visual review (usually take `<out.png>` as the first arg).
@@ -86,11 +87,12 @@ Most playtest bugs trace back to one of these being broken. Follow them in new c
    but the cache must be keyed on the state it was built from and rebuilt when that
    state changes — never "built once on view entry". Things that only appear after
    leaving and re-entering a view are this rule broken (#8).
-2. **Progression is derived in one place.** Phase, era, tech label, culture unlocks and
-   card gates come from a single function over simulation state (#9). Don't add new
-   `TECH_LEVELS[...]`, `BIO_PHASE_LABELS[...]`, `CIV_PHASE_LABELS[...]` or
-   `civLevelToPhase(...)` lookups outside `src/simulation/` — there are ~20 already and
-   they drift apart.
+2. **Progression is derived in one place:** `src/simulation/Progression.ts`
+   (`engine.progressionOf(star)` in views). Stage, phase, era, sub-era and every label
+   for them come from it (#9). Don't read `TECH_LEVELS[...]`, `BIO_PHASE_LABELS[...]`,
+   `CIV_PHASE_LABELS[...]` or `civLevelToPhase(...)` anywhere else. The player's era
+   is what its nations know: move it from outside with `engine.shiftEra(star, to, cause)`,
+   never by writing `civLevel` (the engine reconciles the nations every tick).
 3. **Never assume the active planet is the homeworld.** Pass the star id and planet
    index explicitly. `isPlayerStar` means "owned by the player", not "being viewed"
    (#16, #17).

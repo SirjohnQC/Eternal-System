@@ -1,6 +1,14 @@
 @echo off
+rem Git rewrites this very file when it switches versions, and cmd reads a
+rem running .bat from disk line by line - so run from a copy in %TEMP%.
+if /i not "%~2"=="--from-temp" (
+  copy /y "%~f0" "%TEMP%\eternal-pull-claude.bat" >nul
+  set "ETERNAL_REPO=%~dp0"
+  call "%TEMP%\eternal-pull-claude.bat" "%~1" --from-temp
+  exit /b
+)
 setlocal EnableExtensions
-cd /d "%~dp0"
+cd /d "%ETERNAL_REPO%"
 
 rem ---------------------------------------------------------------------
 rem  Switch to and update a version of the game.
@@ -70,6 +78,16 @@ echo.
 echo Target: %TARGET%
 git --no-pager log -1 --format="  last commit: %%h %%s (%%cr)" "%TARGET%"
 
+rem Files the launcher itself dirties are not the player's work: npm install
+rem rewrites package-lock.json, and Windows line endings made the asset
+rem files show as modified. Put them back so they never block an update.
+git config core.autocrlf false
+git diff --quiet -- package-lock.json
+if errorlevel 1 (
+  echo  Restoring package-lock.json ^(rewritten by npm install, not your work^).
+  git checkout -- package-lock.json
+)
+
 rem Never switch or reset over uncommitted work.
 git diff --quiet
 if errorlevel 1 goto dirty
@@ -137,8 +155,9 @@ exit /b 0
 
 :dirty
 echo.
-echo You have uncommitted changes. Commit or stash them first:
-git --no-pager status --short
+echo  NOT UPDATED: you have uncommitted changes to these tracked files.
+echo  Commit or stash them first, or discard them with: git checkout -- ^<file^>
+git --no-pager status --short --untracked-files=no
 exit /b 1
 
 :failed

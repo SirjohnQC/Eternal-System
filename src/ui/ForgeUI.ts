@@ -21,6 +21,7 @@ import {
   FATE_BY_ID, FORGE_TARGET, COOLING_SECONDS, type ForgeState, type ForgedCard,
   forgeCard, rerollHand, forgeProgress, valueOf, destinyOf, planetDNAOf,
   beginCooling, coolingLeft, rollCradle, sparkTempo, forceHint,
+  DECREES, decreeWorld, forgeDestiny, letFateDecide,
 } from '../simulation/Forge';
 
 export interface ForgeDeps {
@@ -53,7 +54,7 @@ const st = (): ForgeState | null => gameState.forge;
 function syncWorld(force = false): void {
   const s = st();
   if (!s || !deps) return;
-  const destiny = s.outcome?.destiny ?? destinyOf(s.dna);
+  const destiny = forgeDestiny(s);
   const dna = s.outcome?.planetDNA ?? planetDNAOf(s.dna);
   const ladder = ladderOf(destiny);
   const stage = s.phase === 'draft'
@@ -113,6 +114,20 @@ function forgedStrip(s: ForgeState): string {
   }).join('')}</div>`;
 }
 
+/**
+ * Creative mode: the Decree row — pick the world's type outright (testing).
+ * Click the decreed card again to give the choice back to the forces.
+ */
+function decreeRow(s: ForgeState): string {
+  if (gameState.playMode !== 'creative') return '';
+  return `<div class="forge-decrees">
+    <span class="forge-decree-label">CREATIVE · DECREE THE WORLD</span>
+    ${DECREES.map(d => `<button class="forge-decree fate-${d.tone}${s.decree === d.destiny ? ' on' : ''}" data-destiny="${d.destiny}" title="${esc(d.text)}">
+      <img src="/assets/pixel/divine/cards/${d.icon}.png" alt="" width="20" height="20"/>${esc(d.name.replace('Decree: ', ''))}
+    </button>`).join('')}
+  </div>`;
+}
+
 function renderDraft(note = ''): void {
   const s = st();
   if (!s) return;
@@ -125,19 +140,53 @@ function renderDraft(note = ''): void {
       <div class="forge-sub">${esc(note || (first ? s.omen : 'Choose the next force. The others burn.'))}</div>
       ${meter(s)}
       ${forgedStrip(s)}
+      ${decreeRow(s)}
     </div>
     <div class="forge-foot">
       <div class="forge-hand">${s.hand.map(cardFace).join('')}</div>
-      <button class="forge-reroll" ${s.rerolls > 0 ? '' : 'disabled'}>LET THE FIRE TURN <span>(${s.rerolls})</span></button>
+      <div class="forge-actions">
+        <button class="forge-reroll" ${s.rerolls > 0 ? '' : 'disabled'}>LET THE FIRE TURN <span>(${s.rerolls})</span></button>
+        <button class="forge-reroll forge-fate" title="Fate forges the rest: a random world${s.decree ? ` (kept ${s.decree})` : ''}.">LET FATE DECIDE</button>
+      </div>
     </div>
     <div id="forge-flash"></div>`;
   r.querySelectorAll<HTMLButtonElement>('.fate-card').forEach(btn => {
     btn.addEventListener('click', () => pick(Number(btn.dataset['i'])));
   });
-  r.querySelector('.forge-reroll')?.addEventListener('click', () => {
+  r.querySelector('.forge-reroll:not(.forge-fate)')?.addEventListener('click', () => {
     if (!rerollHand(s)) return;
     renderDraft('The fire turns. New forces rise from it.');
   });
+  r.querySelector('.forge-fate')?.addEventListener('click', () => fateDecides());
+  r.querySelectorAll<HTMLButtonElement>('.forge-decree').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = btn.dataset['destiny'] as ForgeState['decree'];
+      const again = s.decree === d;
+      if (!decreeWorld(s, again ? null : d ?? null)) return;
+      syncWorld();
+      renderDraft(again ? 'The decree is lifted. The forces decide again.'
+        : `It will be ${d === 'ice' ? 'an' : 'a'} ${d === 'rocky' ? 'rocky' : d} world. The forces still shape the rest.`);
+    });
+  });
+}
+
+/** "Let fate decide": the rest of the forging played by fate, then the reveal. */
+function fateDecides(): void {
+  const s = st();
+  if (!s || !deps || picking || s.phase !== 'draft') return;
+  picking = true;
+  const r = root();
+  r.querySelectorAll<HTMLElement>('.fate-card').forEach(el => el.classList.add('fate-burned'));
+  const flash = document.getElementById('forge-flash');
+  if (flash) flash.className = 'fate-void on';
+  deps.chat('You step back from the forge. Fate takes the hammer.', 'god');
+  window.setTimeout(() => {
+    letFateDecide(s);
+    picking = false;
+    syncWorld();
+    if (s.phase === 'reveal') showReveal();
+    else renderDraft();
+  }, 650);
 }
 
 let picking = false;

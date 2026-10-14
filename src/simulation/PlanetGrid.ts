@@ -250,6 +250,10 @@ export function classifyBiome(
     if (elev < SEA_LEVEL - 0.20) return moist > 0.78 ? 'shallow' : 'beach';
     if (elev > 0.82) return 'mountain';
     if (moist < 0.42) return 'desert';
+    // Ground soaked far past what a desert world holds on its own (long rains,
+    // a sign: #111) blooms into oasis green. Under 1% of a dry world's land
+    // gets there unaided.
+    if (moist > 0.72) return 'grassland';
     return 'savanna';
   }
 
@@ -942,3 +946,60 @@ export function stepLifeSpread(
     }
   }
 }
+
+/**
+ * The face of a world: the side the planet view shows (the diorama is one
+ * hemisphere, centred here) — the land cell with the most land around it,
+ * kept off the poles. Pure over the grid, so the simulation can ask it too:
+ * divine works fall where the god is looking (DivineWorks, #111).
+ */
+export function faceOf(grid: PlanetGrid): { row: number; col: number } {
+  // Fixed for the life of a grid: worked out the first time it is asked for,
+  // so later changes to the land (rains, life spreading) never turn the
+  // world, and the view and the simulation always agree on it.
+  const known = FACES.get(grid);
+  if (known) return known;
+  const face = computeFace(grid);
+  FACES.set(grid, face);
+  return face;
+}
+const FACES = new WeakMap<PlanetGrid, { row: number; col: number }>();
+
+function computeFace(grid: PlanetGrid): { row: number; col: number } {
+  const STRIDE = 8;
+  const R = 3; // neighbourhood radius, in strided samples
+  let bestScore = -1, bestRow = GRID_SIZE >> 1, bestCol = 0;
+  for (let row = STRIDE * R; row < GRID_SIZE - STRIDE * R; row += STRIDE) {
+    // Weight toward mid-latitudes so the face isn't centred on a polar ice cap.
+    const ny = row / (GRID_SIZE - 1);
+    const latWeight = 1 - Math.abs(ny - 0.5) * 1.4;
+    if (latWeight <= 0) continue;
+    for (let col = 0; col < GRID_SIZE; col += STRIDE) {
+      let score = 0;
+      for (let dr = -R; dr <= R; dr++) {
+        for (let dc = -R; dc <= R; dc++) {
+          const r2 = row + dr * STRIDE;
+          const c2 = (col + dc * STRIDE + GRID_SIZE) % GRID_SIZE;
+          const cell = grid[r2]?.[c2];
+          if (!cell) continue;
+          if (!isWater(cell.biome)) score += 1 + cell.fertility;
+        }
+      }
+      score *= latWeight;
+      if (score > bestScore) { bestScore = score; bestRow = row; bestCol = col; }
+    }
+  }
+  return { row: bestRow, col: bestCol };
+}
+
+/** Great-circle angle (radians) between two cells of the world. */
+export function cellAngle(a: { row: number; col: number }, b: { row: number; col: number }): number {
+  const lat = (r: number) => (0.5 - r / (GRID_SIZE - 1)) * Math.PI;
+  const lon = (c: number) => (c / GRID_SIZE) * Math.PI * 2;
+  const p1 = lat(a.row), p2 = lat(b.row);
+  const cos = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos(lon(a.col) - lon(b.col));
+  return Math.acos(Math.max(-1, Math.min(1, cos)));
+}
+
+/** Within this angle of the face a place shows well on the planet view (its rim is at 90 degrees). */
+export const FACE_VIEW = (65 * Math.PI) / 180;

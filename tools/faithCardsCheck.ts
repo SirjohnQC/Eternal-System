@@ -9,7 +9,7 @@
  *   node_modules/.bin/esbuild tools/faithCardsCheck.ts --bundle --platform=node \
  *     --format=esm --outfile=/tmp/faith.mjs --log-level=error && node /tmp/faith.mjs
  */
-import { generatePlanetGrid, isHabitable, type PlanetGrid } from '../src/simulation/PlanetGrid';
+import { generatePlanetGrid, isHabitable, faceOf, cellAngle, FACE_VIEW, type PlanetGrid } from '../src/simulation/PlanetGrid';
 import { NationSystem, type Nation } from '../src/simulation/Nations';
 import { valuesFromGenome, type GenomeSummary } from '../src/simulation/Civilization';
 import {
@@ -273,6 +273,90 @@ const hostFor = (grid: PlanetGrid): DivineHost => ({ grid, planetType: 'ocean', 
   run(a, 0.1); run(b, 0.1);
   check('herds: the nations on that land eat better (an echo omen)', sum(a.ns, n => n.state.foodYield) > sum(b.ns, n => n.state.foodYield) * 1.05,
     `${sum(a.ns, n => n.state.foodYield).toFixed(0)} vs ${sum(b.ns, n => n.state.foodYield).toFixed(0)}`);
+}
+
+// ── 6b. Every card shows on the land (#111) ──────────────────────────────────
+// A card the player pays for must change the world they are looking at: a new
+// biome, height, life or settlement on enough ground to see, where it fell.
+console.log('Faith Cards: visible on the land (#111)');
+{
+  const look = (g: PlanetGrid) => g.map(row => row.map(c => `${c.biome}|${c.elevation.toFixed(3)}|${c.lifeDensity.toFixed(2)}|${c.civId ?? ''}`));
+  const diff = (a: string[][], b: string[][]) => { let n = 0; for (let r = 0; r < a.length; r++) for (let c = 0; c < a[r].length; c++) if (a[r][c] !== b[r][c]) n++; return n; };
+  const VISIBLE = 60;   // cells: a patch you can see on the diorama
+  const quiet: string[] = [];
+  const shown: string[] = [];
+  for (const a of ACTIONS) {
+    if (a.cosmic) continue;                         // the heavens: sight, meteors, seeding (done by the engine)
+    if (a.omen && !a.mark) continue;                // a sign on a people's temper (war drums, schism…): see below
+    if (a.work === 'awaken') continue;              // minds, not land: it shows in the people (the evolution engine)
+    const w = world(60 + ACTIONS.indexOf(a));
+    const before = look(w.grid);
+    const target = a.targets?.includes('strongest') ? 'strongest' : a.targets?.[0] ?? 'all';
+    const res = cast(w.ns, card([a.id], { target: target as FaithCard['target'] }), new SeedRNG(`vis_${a.id}`), w.t, hostFor(w.grid));
+    const n = diff(before, look(w.grid));
+    (n >= VISIBLE ? shown : quiet).push(`${a.id} ${n}`);
+    if (n >= VISIBLE && !res.works.some(x => x.changed > 0 && x.where)) quiet.push(`${a.id}: changed the land but says nowhere for the view to show it`);
+  }
+  check('every land, life and marked card visibly changes the world', quiet.length === 0, quiet.join(', ') || `${shown.length} cards`);
+  const social = ACTIONS.filter(a => a.omen && !a.mark).map(a => a.id);
+  console.log(`        (temper-only signs, no land mark yet: ${social.join(', ')})`);
+}
+{
+  // Rains: greener land with more life on it, and low land beside the water floods.
+  const w = world(71);
+  const [n] = resolveTarget(w.ns, 'strongest');
+  const tally = () => { let life = 0, water = 0, lush = 0;
+    for (const row of w.grid) for (const c of row) { life += c.lifeDensity; if (c.biome === 'shallow' || c.biome === 'ocean' || c.biome === 'deep_ocean') water++; if (c.biome === 'forest' || c.biome === 'jungle' || c.biome === 'grassland') lush++; }
+    return { life, water, lush }; };
+  const t0 = tally();
+  const res = cast(w.ns, card(['rains'], { target: 'strongest', magnitude: 3 }), new SeedRNG('vis_rain'), w.t, hostFor(w.grid));
+  const t1 = tally();
+  check('rains: life thickens on the land', t1.life > t0.life * 1.02, `${t0.life.toFixed(0)} -> ${t1.life.toFixed(0)}`);
+  check('rains: the land turns greener (grass, forest)', t1.lush > t0.lush, `${t0.lush} -> ${t1.lush} lush cells`);
+  check('rains: low land beside the water floods', t1.water > t0.water, `${t0.water} -> ${t1.water} water cells`);
+  check('rains: says where it fell (for the downpour)', !!res.works.find(x => x.work === 'rains')?.where, `${n.name}`);
+}
+{
+  // Volcano: a volcanic peak high enough to be drawn as a volcano, rich ground around it.
+  const w = world(72);
+  cast(w.ns, card(['volcano'], { target: 'strongest', magnitude: 2 }), new SeedRNG('vis_volc'), w.t, hostFor(w.grid));
+  let peaks = 0;
+  for (let r = 1; r < 255; r++) for (let c = 0; c < 256; c++) {
+    const cell = w.grid[r][c];
+    if (cell.biome !== 'volcanic' || cell.elevation < 0.7) continue;
+    let top = true;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) if ((dr || dc) && w.grid[r + dr][(c + dc + 256) % 256].elevation > cell.elevation) top = false;
+    if (top) peaks++;
+  }
+  check('volcano: raises an open volcanic peak (drawn as a volcano)', peaks >= 1, `${peaks} peak(s)`);
+}
+{
+  // Signs fall where the god is looking: a strike on a nation that has land on
+  // the world's face lands on the face, even when its capital is round the back.
+  let onFace = 0, tried = 0;
+  for (let seed = 80; seed < 92; seed++) {
+    const w = world(seed);
+    const face = faceOf(w.grid);
+    const [n] = resolveTarget(w.ns, 'strongest');
+    let hasFaceLand = false;
+    for (let i = 0; i < w.ns.owner.length; i += 7) if (w.ns.owner[i] === n.id && cellAngle({ row: (i / 256) | 0, col: i % 256 }, face) <= FACE_VIEW) { hasFaceLand = true; break; }
+    if (!hasFaceLand) continue;
+    tried++;
+    const res = cast(w.ns, card(['volcano'], { target: 'strongest' }), new SeedRNG(`face_${seed}`), w.t, hostFor(w.grid));
+    const at = res.works.find(x => x.work === 'volcano')?.where;
+    if (at && cellAngle(at, face) <= FACE_VIEW) onFace++;
+  }
+  check('a strike lands on the face of the world when the nation has land there', tried > 0 && onFace === tried, `${onFace}/${tried}`);
+}
+{
+  // A fertility sign: its people build on new ground.
+  const w = world(73);
+  const [n] = resolveTarget(w.ns, 'strongest');
+  let s0 = 0; for (const row of w.grid) for (const c of row) if (c.civId) s0++;
+  cast(w.ns, card(['fertility'], { target: 'strongest' }), new SeedRNG('vis_fert'), w.t, hostFor(w.grid));
+  let s1 = 0; for (const row of w.grid) for (const c of row) if (c.civId) s1++;
+  check('fertility: new settlements on the open land along its borders', s1 > s0 + 20, `${s0} -> ${s1} settled cells`);
+  check('fertility: in its history', w.ns.nations[n.id].history.some(h => h.what.includes('built on new ground')));
 }
 
 // ── 7. New nation omens ───────────────────────────────────────────────────────

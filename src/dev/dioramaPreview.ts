@@ -122,6 +122,17 @@ function rebuild(): void {
       if (wantCiv && isHabitable(cell.biome) && cell.fertility > 0.45) cell.civId = '0';
     }
   }
+  // ?settled=0..1: that share of the land settled, as a late-era world is
+  // (nearly all of it); the default is a middle-era share.
+  const settledShare = params.get('settled');
+  if (settledShare !== null && wantCiv) {
+    const share = Math.max(0, Math.min(1, Number(settledShare) || 0));
+    let k = 0;
+    for (const row of grid) for (const cell of row) {
+      if (!isHabitable(cell.biome)) continue;
+      cell.civId = ((k++ * 0.6180339887) % 1) < share ? '0' : null;
+    }
+  }
 
   // Run the REAL evolution engine so the creatures on screen come from evolved
   // genomes rather than hand-written stand-ins.

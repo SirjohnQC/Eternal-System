@@ -224,6 +224,12 @@ export interface ForgeState {
   whisperer: string;
   /** Where life woke (after the spark). */
   cradle: string | null;
+  /**
+   * Creative mode: the world type the player decreed (decreeWorld). Every
+   * force after it is kept inside that type's range. Absent in older saves
+   * and in Normal games = fate decides.
+   */
+  decree?: DestinyType | null;
 }
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
@@ -340,17 +346,37 @@ export function forgeCard(s: ForgeState, handIndex: number): void {
   const def = FATE_BY_ID[card.id];
   if (def.balance) for (const k of FORGE_PARAMS) s.dna[k] = s.dna[k] + (0.5 - s.dna[k]) * def.balance;
   if (!card.hidden) applyEffects(s.dna, def.effects);
+  holdDecree(s);
   s.played.push(card);
   s.points += valueOf(card);
   s.round++;
   if (s.points >= FORGE_TARGET) {
     s.hand = [];
     for (const c of s.played) if (c.hidden) applyEffects(s.dna, c.hidden.effects);
+    holdDecree(s);
     s.outcome = resolveForge(s);
     s.phase = 'reveal';
   } else {
     s.hand = deal(s);
   }
+}
+
+/**
+ * "Let fate decide": the rest of the forging is played for the player, one
+ * card from each hand chosen by fate (seeded from the forge and how far it
+ * got, so a reload decides the same). Ends at the reveal with a random world;
+ * a Creative decree still holds, so it is a random world of that type.
+ * Returns how many cards fate forged (0 if the forge is past the draft).
+ */
+export function letFateDecide(s: ForgeState): number {
+  if (s.phase !== 'draft') return 0;
+  const rng = new SeedRNG(`${s.seed}_fate_decides_${s.round}_${s.rerolls}`);
+  let n = 0;
+  while (s.phase === 'draft' && s.hand.length && n < 60) {
+    forgeCard(s, rng.nextInt(0, s.hand.length - 1));
+    n++;
+  }
+  return n;
 }
 
 /** Burn the whole hand for a new one (twice per forge). The fire turning stirs chaos. */
@@ -382,6 +408,65 @@ export function destinyOf(d: ForgeDNA): DestinyType {
   return best === ocean ? 'ocean' : best === ice ? 'ice' : 'desert';
 }
 
+// ─── Creative mode: decreeing the world's type ──────────────────────────────
+
+/**
+ * Creative mode's Decree cards: pick the home world's type outright, for
+ * testing (the terrain is still the seed's). Not part of the deck — never
+ * dealt — and shown only in Creative (ForgeUI). Each holds the hidden DNA
+ * inside a range where destinyOf() gives that type and planetDNAOf() agrees
+ * with it (an ocean decree is an ocean world, a desert decree is dry and hot),
+ * so every later card still pushes the world, just never out of its type.
+ */
+export interface DecreeDef {
+  destiny: DestinyType;
+  name: string;
+  text: string;
+  icon: string;
+  tone: ForgeTone;
+  /** [min, max] the decree holds each listed force to. */
+  bounds: Partial<Record<ForgeParam, [number, number]>>;
+}
+
+export const DECREES: readonly DecreeDef[] = [
+  { destiny: 'ocean', name: 'Decree: Ocean', text: 'Let the world drown, and keep its islands.',
+    icon: 'rains', tone: 'water', bounds: { water: [0.76, 1], cold: [0, 0.5] } },
+  { destiny: 'rocky', name: 'Decree: Rock', text: 'Stone plains, and seas that stay small.',
+    icon: 'quake', tone: 'stone', bounds: { water: [0.45, 0.58], heat: [0, 0.58], cold: [0, 0.58] } },
+  { destiny: 'ice', name: 'Decree: Ice', text: 'Let the cold close over everything.',
+    icon: 'ice_age', tone: 'ice', bounds: { cold: [0.86, 1], heat: [0, 0.48], water: [0.42, 0.7] } },
+  { destiny: 'desert', name: 'Decree: Desert', text: 'Dunes from pole to pole, and no rain.',
+    icon: 'drought', tone: 'fire', bounds: { water: [0, 0.2], heat: [0.7, 1], cold: [0, 0.5] } },
+];
+
+export const DECREE_BY_DESTINY = Object.fromEntries(DECREES.map(d => [d.destiny, d])) as Record<DestinyType, DecreeDef>;
+
+/** Keep the DNA inside the decreed type's range (no-op without a decree). */
+function holdDecree(s: ForgeState): void {
+  const def = s.decree ? DECREE_BY_DESTINY[s.decree] : null;
+  if (!def) return;
+  for (const [k, [lo, hi]] of Object.entries(def.bounds) as Array<[ForgeParam, [number, number]]>) {
+    s.dna[k] = Math.max(lo, Math.min(hi, s.dna[k]));
+  }
+}
+
+/**
+ * Creative mode: decree the world's type (null: let fate decide again).
+ * Only while drafting; costs no pick and no forging points. Returns false if
+ * the forge is past the draft.
+ */
+export function decreeWorld(s: ForgeState, destiny: DestinyType | null): boolean {
+  if (s.phase !== 'draft') return false;
+  s.decree = destiny;
+  holdDecree(s);
+  return true;
+}
+
+/** The world's type as the forge stands: the decree if there is one, else the forces. */
+export function forgeDestiny(s: ForgeState): DestinyType {
+  return s.outcome?.destiny ?? s.decree ?? destinyOf(s.dna);
+}
+
 export function planetDNAOf(d: ForgeDNA): PlanetDNA {
   const climate: PlanetDNA['climate'] = d.cold >= 0.6 ? 'frozen'
     : (d.heat - d.cold > 0.2 || (d.water < 0.32 && d.heat > 0.5)) ? 'desert' : 'temperate';
@@ -410,7 +495,7 @@ function band<T>(v: number, cuts: number[], words: T[]): T {
 
 export function resolveForge(s: ForgeState): ForgeOutcome {
   const d = s.dna;
-  const destiny = destinyOf(d);
+  const destiny = forgeDestiny(s);
   const unveiled = s.played.filter(c => c.hidden).map(c => c.hidden!);
   const gravity = band(d.mass, [0.3, 0.45, 0.6, 0.75], ['Feather-light', 'Gentle', 'Familiar', 'Heavy', 'Crushing']);
   const airWord = band(d.air, [0.3, 0.45, 0.65, 0.8], ['Thin', 'Light', 'Breathable-thick', 'Dense', 'Smothering']);

@@ -325,6 +325,71 @@ function fitness(g: SpeciesGenome, bio: PlanetBiosphere, bioPhase: string): numb
   return Math.max(0.05, f);
 }
 
+// ─── The food web (#112) ──────────────────────────────────────────────────────
+
+/** Land and water: whom a lineage can meet. Coastal life reaches both. */
+function realms(env: SpeciesGenome['dna']['environment']): { land: boolean; water: boolean } {
+  return env === 'coastal' ? { land: true, water: true }
+    : env === 'land' || env === 'aerial' ? { land: true, water: false }
+    : { land: false, water: true };
+}
+function meet(a: SpeciesGenome, b: SpeciesGenome): boolean {
+  const x = realms(a.dna.environment), y = realms(b.dna.environment);
+  return (x.land && y.land) || (x.water && y.water);
+}
+
+/**
+ * How much `hunter` feeds on `prey`, 0..1: grazers eat producers; hunters
+ * eat animals up to one size class bigger than themselves; omnivores take
+ * both, at less each. Only where the two can meet. Used by selection and by
+ * the views (who chases whom on the diorama).
+ */
+export function preysOn(hunter: SpeciesGenome, prey: SpeciesGenome): number {
+  if (hunter.id === prey.id || prey.isExtinct || !meet(hunter, prey)) return 0;
+  const animal = prey.dna.diet !== 'producer';
+  const reach = sizeIndex(hunter.physicalTraits.size) + 1 >= sizeIndex(prey.physicalTraits.size);
+  switch (hunter.dna.diet) {
+    case 'herbivore': return animal ? 0 : 1;
+    case 'carnivore': return animal && reach ? 1 : 0;
+    case 'omnivore':  return animal ? (reach && sizeIndex(prey.physicalTraits.size) < sizeIndex(hunter.physicalTraits.size) ? 0.5 : 0) : 0.5;
+    default:          return 0;
+  }
+}
+
+/** Room per level of the food web: total population each level can hold. */
+const LEVELS: Array<[ReadonlyArray<SpeciesGenome['dna']['diet']>, number]> = [
+  [['producer'], 1.0],
+  [['herbivore', 'decomposer'], 0.8],
+  [['carnivore', 'omnivore'], 0.6],
+];
+
+/** Food-web strengths: what eating adds, what being eaten takes, what hunger costs a hunter. */
+const FEED = 0.05, PREDATION = 0.045, HUNGER = 0.035;
+
+/**
+ * Growth from the food web: a lineage gains with what it can eat (relative
+ * to its own numbers) and loses to whatever eats it. A hunter with nothing
+ * to hunt starves; prey that flies or is large escapes more often.
+ */
+function trophicGrowth(sp: SpeciesGenome, active: SpeciesGenome[]): number {
+  let food = 0, eaten = 0;
+  for (const o of active) {
+    if (o.id === sp.id) continue;
+    food += preysOn(sp, o) * o.population;
+    eaten += preysOn(o, sp) * o.population;
+  }
+  const consumer = sp.dna.diet === 'herbivore' || sp.dna.diet === 'carnivore' || sp.dna.diet === 'omnivore';
+  let g = 0;
+  if (consumer) {
+    const fed = Math.min(1, food / (sp.population + 0.2));
+    g += FEED * fed;
+    if (sp.dna.diet === 'carnivore') g -= HUNGER * (1 - fed);
+  }
+  const escape = (sp.dna.locomotion === 'flying' ? 0.45 : 0) + sizeIndex(sp.physicalTraits.size) * 0.07;
+  g -= PREDATION * Math.min(1.2, eaten) * Math.max(0.2, 1 - escape);
+  return g;
+}
+
 /** Two species overlap when they want the same living. */
 function nicheOverlap(a: SpeciesGenome, b: SpeciesGenome): number {
   let o = 0;
@@ -465,9 +530,62 @@ function mutate(
  * immediate divergent mutations. Previously a child was a near-copy of its
  * parent, which is why populations stayed homogeneous.
  */
+type Env = SpeciesGenome['dna']['environment'];
+type DietT = SpeciesGenome['dna']['diet'];
+const ENV_NEXT: Record<Env, Env[]> = {
+  deep_sea: ['ocean'], ocean: ['deep_sea', 'coastal'], coastal: ['ocean', 'land'], land: ['coastal', 'aerial'], aerial: ['land'],
+};
+const DIET_NEXT: Record<DietT, DietT[]> = {
+  producer: ['herbivore'], herbivore: ['omnivore', 'carnivore'], omnivore: ['herbivore', 'carnivore'],
+  carnivore: ['omnivore'], decomposer: ['herbivore', 'omnivore'],
+};
+/** Chance a split heads for an open niche beside its parent's (#112). */
+const NICHE_SHIFT = 0.55;
+
+/**
+ * Ecological opportunity (#112): a lineage that splits tends to move into
+ * the emptiest way of life next to its parent's — the next realm over (sea,
+ * shore, land, air) and/or the next step on the food web — where it is not
+ * fighting its parent for the same food. A sister that shares its parent's
+ * niche usually loses to it; this is why worlds had kept only two to four
+ * species however many split off. Picks the least crowded neighbouring niche
+ * that has something to eat; returns false if none fits a coherent body.
+ */
+function moveToOpenNiche(child: SpeciesGenome, parent: SpeciesGenome, others: SpeciesGenome[], rng: SeedRNG): boolean {
+  const live = others.filter(o => !o.isExtinct);
+  const crowd = (env: Env, diet: DietT) => live.filter(o => o.dna.environment === env && o.dna.diet === diet).reduce((a, o) => a + o.population, 0);
+  const options: Array<{ env: Env; diet: DietT; c: number }> = [];
+  for (const env of [parent.dna.environment, ...ENV_NEXT[parent.dna.environment]]) {
+    for (const diet of [parent.dna.diet, ...DIET_NEXT[parent.dna.diet]]) {
+      if (env === parent.dna.environment && diet === parent.dna.diet) continue;
+      const probe = { ...child, dna: { ...child.dna, environment: env, diet } } as SpeciesGenome;
+      const eats = diet === 'producer' || diet === 'decomposer' || live.some(o => preysOn(probe, o) > 0);
+      if (!eats) continue;
+      options.push({ env, diet, c: crowd(env, diet) + rng.next() * 0.01 });
+    }
+  }
+  options.sort((a, b) => a.c - b.c);
+  const before = { dna: { ...child.dna }, physicalTraits: { ...child.physicalTraits } };
+  for (const o of options) {
+    const d = child.dna;
+    d.environment = o.env; d.diet = o.diet;
+    // The body follows the move: a hunter of the open sea swims, of the air flies.
+    if (o.diet !== 'producer' && d.metabolism === 'photosynthetic') d.metabolism = 'heterotrophic';
+    if (o.env === 'aerial') d.locomotion = 'flying';
+    if ((o.env === 'ocean' || o.env === 'deep_sea') && (d.locomotion === 'walking' || d.locomotion === 'flying')) d.locomotion = 'swimming';
+    if (o.env === 'land' && d.locomotion === 'swimming') d.locomotion = sizeIndex(child.physicalTraits.size) >= 2 ? 'walking' : 'crawling';
+    if (o.diet !== 'producer' && d.locomotion === 'stationary') d.locomotion = o.env === 'aerial' ? 'flying' : o.env === 'land' ? 'crawling' : 'swimming';
+    if (repair(child) && child.dna.environment === o.env && child.dna.diet === o.diet) return true;
+    child.dna = { ...before.dna };
+    child.physicalTraits = { ...before.physicalTraits };
+  }
+  return false;
+}
+
 function branchSpecies(
   parent: SpeciesGenome, tick: number, rng: SeedRNG,
   defs: BranchDef[], dnaInv: Record<string, number>, bioPhase: string,
+  others: SpeciesGenome[] = [],
 ): SpeciesGenome {
   const child: SpeciesGenome = {
     ...parent,
@@ -495,6 +613,7 @@ function branchSpecies(
   if (rng.chance(0.3)) {
     child.physicalTraits.sensorySystem = SENSORY[rng.nextInt(0, SENSORY.length - 1)];
   }
+  if (others.length && rng.chance(NICHE_SHIFT)) moveToOpenNiche(child, parent, others, rng);
 
   child.name = nameForGenome(child, rng);
   return child;
@@ -510,7 +629,8 @@ function updateBiosphere(
   const aerobic = active.filter(s => s.dna.respiration === 'aerobic').length;
   const land    = active.filter(s => s.dna.environment === 'land' || s.dna.environment === 'coastal' || s.dna.environment === 'aerial').length;
   const ocean   = active.filter(s => s.dna.environment === 'ocean' || s.dna.environment === 'deep_sea').length;
-  const totalPop = active.reduce((sum, s) => sum + s.population, 0);
+  // Read on the old single-pool scale (1.6), so density means what it did before the food web.
+  const totalPop = Math.min(1.6, active.reduce((sum, s) => sum + s.population, 0));
   const avgAgg = active.length > 0
     ? active.reduce((sum, s) => sum + s.dna.aggression, 0) / active.length : 0;
 
@@ -522,8 +642,14 @@ function updateBiosphere(
     oceanLife:          Math.min(1, bio.oceanLife + ocean * 0.012),
     landLife:           Math.min(1, bio.landLife  + land  * 0.012),
     biodiversity:       Math.min(10, active.length),
+    // Aggression is 0-10. Read raw, its pull (0.006 per point) outweighed the
+    // decay on almost any world, so pressure pinned at 1.0 by the microbial
+    // era and stayed there: a permanent 2%-a-step cull of every species, the
+    // reason worlds kept only two to four of them, and permanent storms (the
+    // weather reads it) (#112). Settles near 0.2 for an average world now,
+    // near 0.5 for a world of very aggressive species.
     extinctionPressure: Math.max(0, Math.min(1,
-      bio.extinctionPressure * 0.985 + avgAgg * 0.006 - density * 0.004)),
+      bio.extinctionPressure * 0.985 + (avgAgg / 10) * 0.009 - density * 0.004)),
   };
 }
 
@@ -575,13 +701,19 @@ export function stepEvolution(
     }
     if (active.length > 1) pressure /= (active.length - 1);
 
-    const growth = (f - 0.78) * 0.14 - pressure * 0.05;
+    const growth = (f - 0.78) * 0.14 - pressure * 0.05 + trophicGrowth(sp, active);
     sp.population = Math.max(0, Math.min(1.4, sp.population + growth));
   }
 
-  // Normalise so total population stays bounded and relative dominance is real.
-  const total = live().reduce((s, x) => s + x.population, 0);
-  if (total > 1.6) for (const sp of live()) sp.population *= 1.6 / total;
+  // Normalise so population stays bounded and relative dominance is real —
+  // per level of the food web (#112): plants, grazers and hunters each have
+  // their own room, so a hunter is not crowded out by the plants it lives on
+  // and different ways of life can stand side by side.
+  for (const [diets, cap] of LEVELS) {
+    const level = live().filter(x => diets.includes(x.dna.diet));
+    const total = level.reduce((s, x) => s + x.population, 0);
+    if (total > cap) for (const sp of level) sp.population *= cap / total;
+  }
   if (signature) {
     const sig = pool.find(s => s.id === signature.id && !s.isExtinct);
     if (sig && sig.population < SIGNATURE_POP_FLOOR) sig.population = SIGNATURE_POP_FLOOR;
@@ -620,7 +752,7 @@ export function stepEvolution(
   // ── 4. Speciation ─────────────────────────────────────────────────────────
   // At most one split per step. Allowing every lineage to split every step
   // produced churn rather than radiation.
-  const divergence = 0.07 + branchEffect(dnaInv, defs, 'divergence') * 0.16;
+  const divergence = 0.11 + branchEffect(dnaInv, defs, 'divergence') * 0.16;
   if (live().length < MAX_SPECIES) {
     const candidates = live().filter(sp => sp.population > 0.18);
     if (candidates.length > 0) {
@@ -629,7 +761,7 @@ export function stepEvolution(
       const chance = divergence * sp.population * (0.5 + sp.dna.adaptability / 12);
       if (rng.chance(chance)) {
 
-      const child = branchSpecies(sp, tick, rng, defs, dnaInv, bioPhase);
+      const child = branchSpecies(sp, tick, rng, defs, dnaInv, bioPhase, live());
       sp.population = Math.max(0.15, sp.population - child.population * 0.4);
       pool.push(child);
       events.push({

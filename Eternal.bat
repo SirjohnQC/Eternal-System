@@ -91,7 +91,18 @@ if errorlevel 1 (
   pause
   goto menu
 )
-call "%~dp0pull-claude.bat"
-echo.
-pause
-goto menu
+rem One block, read at once: the update may rewrite this file, so nothing
+rem after it is read from disk; the launcher restarts as the new version.
+(
+  call "%~dp0pull-claude.bat"
+  if errorlevel 1 (
+    echo.
+    echo  The update did not happen - see the message above. Still on the same version.
+  ) else (
+    echo.
+    echo  Restarting the launcher so it runs the updated version...
+  )
+  pause
+  start "" "%~f0"
+  exit
+)
