@@ -3165,7 +3165,13 @@ export class IsoDioramaRenderer {
             x: px, y: py - lift, sx: px, sy: py,
             fertility: cell.fertility, row: gp.row, col: gp.col,
           });
-        } else if (cell.dominantSpeciesId && cell.lifeDensity > 0.35) {
+        }
+        // Life goes on in settled country too — herds in the fields, the
+        // people themselves on the roads — just not inside the towns. Settled
+        // cells used to hold no creatures at all, so once a civilisation had
+        // settled nearly all its land (late eras) nothing walked the planet.
+        const inTown = cell.civId != null && this.habitable && this.townPlan.towns.length > 0 && keepClear(this.townPlan, px, py);
+        if (cell.dominantSpeciesId && cell.lifeDensity > 0.35 && !inTown) {
           // Test the elevation the SURFACE WAS DRAWN FROM, not the grid's own.
           // `rimFalloff` sinks the outer hemisphere so the projection reads as a
           // continent in an ocean, and the cells it sinks keep their land biome

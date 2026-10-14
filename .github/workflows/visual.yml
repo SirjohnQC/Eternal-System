@@ -50,7 +50,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.update
         run: |
           npm run test:visual -- --update
-          if git diff --quiet -- tools/visual/goldens; then
+          # status, not diff: a new scene's golden is an untracked file.
+          if [ -z "$(git status --porcelain -- tools/visual/goldens)" ]; then
             echo "Goldens unchanged."; exit 0
           fi
           git config user.name "github-actions[bot]"
