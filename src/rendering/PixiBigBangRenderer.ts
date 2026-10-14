@@ -14,6 +14,7 @@
  *   engine.onPixiFrame = (eng) => pixi.renderFrame(eng);
  */
 
+import { dashedLine, type ViewBox } from './lineClip';
 import { systemReach } from './viewCull';
 import { ruledByPlayer } from '../simulation/Sovereignty';
 import {
@@ -63,34 +64,6 @@ function cssToHex(css: string): number {
 }
 
 /** Draw N dashes along a straight line using Graphics lineTo segments. */
-function dashedLine(
-  g: Graphics,
-  x1: number, y1: number,
-  x2: number, y2: number,
-  dashLen: number,
-  gapLen: number,
-  color: number,
-  width: number,
-  alpha: number,
-): void {
-  const dx = x2 - x1, dy = y2 - y1;
-  const total = Math.sqrt(dx * dx + dy * dy);
-  if (total < 0.5) return;
-  const nx = dx / total, ny = dy / total;
-  let pos = 0;
-  let drawing = true;
-  while (pos < total) {
-    const segLen = Math.min(drawing ? dashLen : gapLen, total - pos);
-    const sx = x1 + nx * pos, sy = y1 + ny * pos;
-    const ex = sx + nx * segLen, ey = sy + ny * segLen;
-    if (drawing) {
-      g.moveTo(sx, sy).lineTo(ex, ey).stroke({ color, width, alpha });
-    }
-    pos += segLen;
-    drawing = !drawing;
-  }
-}
-
 /** Dotted orbit — discrete pixels; supports elliptical Kepler paths. */
 function pixelOrbit(
   g: Graphics,
@@ -131,6 +104,12 @@ function pixelPlanetOrbit(
 }
 
 /** Axis-aligned world-space half-extents of the camera frustum (+ padding). */
+/** The view as a box in world units, for lineClip. */
+function viewBox(camera: Camera): ViewBox {
+  const { halfW, halfH } = viewHalfExtents(camera);
+  return { x: camera.x, y: camera.y, halfW, halfH };
+}
+
 function viewHalfExtents(camera: Camera, padWorld = 0): { halfW: number; halfH: number } {
   const W = typeof window !== 'undefined' ? window.innerWidth : 1200;
   const H = typeof window !== 'undefined' ? window.innerHeight : 800;
@@ -1567,7 +1546,7 @@ export class PixiBigBangRenderer {
       const a = starMap.get(r.a), b = starMap.get(r.b);
       if (!a || !b) continue;
       const color = COLOR[r.goods] ?? 0xe8c066;
-      dashedLine(this.tradeLayer, a.x, a.y, b.x, b.y, 2 * px, 5 * px, color, 0.8 * px, 0.35);
+      dashedLine(this.tradeLayer, a.x, a.y, b.x, b.y, 2 * px, 5 * px, color, 0.8 * px, 0.35, viewBox(camera));
       // Ships: three on the lane, the laden ones heading for the receiver.
       const [from, to] = r.to === r.a ? [b, a] : [a, b];
       const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
@@ -1956,7 +1935,7 @@ export class PixiBigBangRenderer {
         this.fleetLayer,
         from.x, from.y, to.x, to.y,
         4 / camera.scale, 8 / camera.scale,
-        color, 0.8 / camera.scale, 0.3,
+        color, 0.8 / camera.scale, 0.3, viewBox(camera),
       );
 
       // Ship triangle at fleet position

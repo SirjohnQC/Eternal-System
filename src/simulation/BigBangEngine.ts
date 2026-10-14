@@ -4697,8 +4697,13 @@ export class BigBangEngine {
 
   /** Trade routes the player can see (both ends known), for the galaxy view. */
   visibleTradeRoutes(): TradeRoute[] {
-    const known = (id: number) => { const s = this.stars.find(x => x.id === id); return !!s && !s.isDead && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
-    return this.interstellar.routes.filter(r => known(r.a) && known(r.b));
+    const routes = this.interstellar.routes;
+    if (!routes.length) return routes;
+    // One lookup table per call, not a scan of every star per route end (#30).
+    const byId = new Map<number, StarBody>();
+    for (const s of this.stars) byId.set(s.id, s);
+    const known = (id: number) => { const s = byId.get(id); return !!s && !s.isDead && (s.isPlayerStar || this.isStarKnownToPlayer(s)); };
+    return routes.filter(r => known(r.a) && known(r.b));
   }
 
   cultureFor(star: StarBody): Civilization | null {
