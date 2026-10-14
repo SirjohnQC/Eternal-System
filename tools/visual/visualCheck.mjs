@@ -38,6 +38,8 @@ const SCENES = [
   { name: 'ice-world',            path: '/diorama-preview.html?type=ice&seed=7' },
   { name: 'gas-giant',            path: '/diorama-preview.html?type=gas&seed=7' },
   { name: 'ocean-primitive-life', path: '/diorama-preview.html?type=ocean&seed=7&phase=primitive&civLevel=0' },
+  // A late era with nearly all the land settled: creatures still walk outside the towns (playtest Oct 13).
+  { name: 'rocky-late-era-settled', path: '/diorama-preview.html?type=rocky&seed=3&phase=intelligent&civLevel=8&settled=0.97' },
 ];
 
 const VIEWPORT = { width: 960, height: 640 };
