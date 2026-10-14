@@ -22,6 +22,8 @@ const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
 const { gameState, BIO_PHASE_SEQUENCE, TECH_LEVELS } = await import('../src/simulation/GameState');
 const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
 const { UNIVERSE_RADIUS, WORLD_SIZE } = await import('../src/constants');
+const { systemReach } = await import('../src/rendering/viewCull');
+const { planetOffsetFromStar } = await import('../src/simulation/Orbit');
 const { runtimeState } = await import('../src/simulation/GameState');
 const { EVOLUTION_TICK_RATE } = await import('../src/simulation/EvolutionEngine');
 const { formationFaceType } = await import('../src/simulation/Formation');
@@ -81,6 +83,17 @@ rule({
   check: ({ stars }) => firstBad(stars,
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS + 1,
     s => `r=${Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2).toFixed(1)} > ${UNIVERSE_RADIUS}`),
+});
+
+rule({
+  // The system view culls a system by its star plus this reach; a planet
+  // outside it would vanish while on screen (#84).
+  name: 'every planet lies within its system\'s view reach',
+  check: ({ stars, engine }) => firstBad(stars.filter(s => !s.isDead && s.planets.length), s => {
+    const reach = systemReach(s);
+    const t = (engine as any).animTick ?? 0;
+    return s.planets.some((p: any) => Math.hypot(planetOffsetFromStar(p, t).x, planetOffsetFromStar(p, t).y) > reach + 0.5);
+  }, s => `star ${s.id}: reach ${systemReach(s).toFixed(1)}`),
 });
 
 rule({
