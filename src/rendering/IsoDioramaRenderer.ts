@@ -2828,10 +2828,15 @@ export class IsoDioramaRenderer {
    * land pixel beside land of another owner is a border.
    */
   private updateNationOverlay(now: number): void {
-    if (now < this.nationNext) return;
+    const eng = this.cutaway;
+    // The overlay is drawn through the pick buffer's geometry: when that
+    // changes (a rebake, a camera set swap), rebuild at once. Waiting for the
+    // 250 ms poll left the old overlay on the new ground: the borders flashed
+    // while moving, and on every passive rebake while standing still (#94).
+    const pickMoved = !!eng.groundOverlay && (eng.pickEpoch !== this.nationEpoch || eng.pick !== this.nationPick);
+    if (now < this.nationNext && !pickMoved) return;
     this.nationNext = now + 250;
     const ns = this.nationsHere();
-    const eng = this.cutaway;
     if (!ns || !ns.isFounded || !this.habitable || this.forming) {
       eng.groundOverlay = null; eng.lineOverlay = null;
       if (this.nationFlagVer !== -1) { this.nationFlagVer = -1; this.nationSpots = []; this.nationSpotKey = ''; this.pushTownProps(); }
