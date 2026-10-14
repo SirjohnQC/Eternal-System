@@ -4520,7 +4520,8 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 #tech-modal .tm-go:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .tech-card{--faith-accent:var(--cyan);--faith-glow:rgba(90,212,232,0.4)}
 .tech-card.affordable .divine-action-cost{color:var(--cyan)}
-#tech-modal .tm-worlds{display:flex;flex-direction:column;gap:6px;width:min(420px,calc(100vw - 64px))}
+#tech-modal .tm-worlds{display:flex;flex-direction:column;gap:6px;width:min(420px,calc(100vw - 64px));max-height:min(52vh,460px);overflow-y:auto;padding-right:4px}
+#tech-modal .tm-group{font-family:var(--font-pixel);font-size:9px;letter-spacing:3px;color:var(--dim);margin:6px 0 0}
 #tech-modal .tm-world{
   display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;text-align:left;
   background:rgba(90,212,232,0.04);border:1px solid rgba(90,212,232,0.2);padding:8px 12px;cursor:pointer;color:var(--text);

@@ -202,8 +202,15 @@ export interface Planet {
   destinyType?: DestinyType;
 }
 
-/** A world of the player's system the people could move to (the TP card "A New World"). */
+/** A world the people could move to (the TP card "A New World"). */
 export interface RelocationTarget {
+  starId: number;
+  /** The star's name. */
+  starName: string;
+  /** Another star than the people's own (Interstellar). */
+  otherStar: boolean;
+  /** From the people's star, world units. */
+  distance: number;
   planetIndex: number;
   name: string;
   type: Planet['type'];
@@ -216,6 +223,8 @@ export interface RelocationTarget {
 export const RELOCATE_TP = 10;
 /** The era from which a people can leave its world (Space Age). */
 export const RELOCATE_ERA = TECH_LEVELS.indexOf('Space Age');
+/** The era from which they can cross to another star (Interstellar). */
+export const RELOCATE_STAR_ERA = TECH_LEVELS.indexOf('Interstellar');
 
 // Moved to ./Orbit (pure) so renderers can place planets without the engine.
 export { planetOffsetFromStar } from './Orbit';
@@ -1898,30 +1907,46 @@ export class BigBangEngine {
   // ── A New World (TP card): the whole people moves (#40) ───────────────────
 
   /**
-   * Worlds of the player's own system the people could move to now: any
-   * ground to stand on (not gas, lava or a husk), however harsh — a Space Age
-   * people can live where an ark would not bother to land. Never a world
-   * another people holds or an ark in flight is bound for.
+   * Worlds the people could move to now. From the Space Age: worlds of their
+   * own system. From the Interstellar age: also worlds of any other star, as
+   * long as no people lives there (a star with intelligent life is a
+   * conquest, not a new home). An Interstellar people has charted the whole
+   * universe (Universe.chartedByTech) and its ships reach anywhere
+   * (StarPolities.reachOf), so every star counts as known. Any ground to stand on counts (not
+   * gas, lava or a husk), however harsh: a people that can make the crossing
+   * can live where an ark would not bother to land. Never a world another
+   * people holds or an ark in flight is bound for.
    */
   relocationTargets(): RelocationTarget[] {
     const ps = this.getPlayerStar();
     if (!ps || this.relocationBlock()) return [];
-    const home = this.homeIndexOf(ps);
     // A world another people holds, or one an ark is bound for, is not free.
     // The people's own outposts and colonies are: the settlers are absorbed.
-    const held = new Set<number>();
+    const held = new Set<string>();
     for (const c of this.colonies.colonies) {
-      if (c.starId === ps.id && !(c.byPlayer && ruledByPlayer(c) && !c.occupation)) held.add(c.planetIndex);
+      if (!(c.byPlayer && ruledByPlayer(c) && !c.occupation)) held.add(siteKey(c.starId, c.planetIndex));
     }
-    for (const f of this.fleets) if (f.ark && f.toStarId === ps.id) held.add(f.ark.planetIndex);
+    for (const f of this.fleets) if (f.ark) held.add(siteKey(f.toStarId, f.ark.planetIndex));
+    const stars = ps.civLevel >= RELOCATE_STAR_ERA
+      ? this.stars.filter(s => s === ps || (!s.isDead && !s.isPlayerStar && s.formationStage == null && !s.formationDestiny
+          && s.civLevel === 0 && s.biologyPhase !== 'intelligent'))
+      : [ps];
     const out: RelocationTarget[] = [];
-    ps.planets.forEach((p, i) => {
-      // Gas has no ground and lava none that holds: nothing to stand on.
-      if (i === home || p.type === 'gas' || p.type === 'lava' || p.isDead || held.has(i)) return;
-      const suitability = planetHabitability({ planetType: p.type as PlanetKind, orbitalRadius: p.orbitalRadius, starTemperature: ps.temperature });
-      out.push({ planetIndex: i, name: p.name, type: p.type, suitability, colony: !!colonyAt(this.colonies, ps.id, i) });
-    });
-    return out.sort((a, b) => b.suitability - a.suitability);
+    for (const s of stars) {
+      const home = s === ps ? this.homeIndexOf(ps) : -1;
+      const distance = Math.hypot(s.x - ps.x, s.y - ps.y);
+      s.planets.forEach((p, i) => {
+        // Gas has no ground and lava none that holds: nothing to stand on.
+        if (i === home || p.type === 'gas' || p.type === 'lava' || p.isDead || held.has(siteKey(s.id, i))) return;
+        const suitability = planetHabitability({ planetType: p.type as PlanetKind, orbitalRadius: p.orbitalRadius, starTemperature: s.temperature });
+        out.push({
+          starId: s.id, starName: s.civName, otherStar: s !== ps, distance,
+          planetIndex: i, name: p.name, type: p.type, suitability, colony: !!colonyAt(this.colonies, s.id, i),
+        });
+      });
+    }
+    // Your own system first, then the kindest worlds of other stars.
+    return out.sort((a, b) => Number(a.otherStar) - Number(b.otherStar) || b.suitability - a.suitability || a.distance - b.distance);
   }
 
   /** Why "A New World" cannot be played now, or null when it can. */
@@ -1935,17 +1960,19 @@ export class BigBangEngine {
   }
 
   /**
-   * Play "A New World": the whole people leaves its world for `planetIndex`
-   * in the same system, at a cost of RELOCATE_TP. They keep their era, their
-   * nations (each raises a new capital), their species and their faith; the
-   * old world is left to its wild life. Returns the line for the feed, or
-   * null when the move is refused (see relocationBlock / relocationTargets).
+   * Play "A New World": the whole people leaves its world for world
+   * `planetIndex` of star `starId`, at a cost of RELOCATE_TP. They keep their
+   * era, their nations (each raises a new capital), their species, faith and
+   * culture; the old world is left to its wild life. Crossing to another star
+   * makes it the player's star (`movePlayerStar`). Returns the line for the
+   * feed, or null when the move is refused (relocationBlock / relocationTargets).
    */
-  relocateHome(planetIndex: number): string | null {
-    const ps = this.getPlayerStar();
-    if (!ps || !this.relocationTargets().some(t => t.planetIndex === planetIndex)) return null;
-    const oldIndex = this.homeIndexOf(ps);
-    const oldPlanet = ps.planets[oldIndex], planet = ps.planets[planetIndex];
+  relocateHome(starId: number, planetIndex: number): string | null {
+    const from = this.getPlayerStar();
+    if (!from || !this.relocationTargets().some(t => t.starId === starId && t.planetIndex === planetIndex)) return null;
+    const to = this.stars.find(s => s.id === starId)!;
+    const oldIndex = this.homeIndexOf(from);
+    const oldPlanet = from.planets[oldIndex], planet = to.planets[planetIndex];
     const oldGrid = this.ensurePlayerGrid();
     let settledBefore = 0;
     if (oldGrid) for (const row of oldGrid) for (const c of row) if (c.civId != null && !isWater(c.biome)) settledBefore++;
@@ -1953,7 +1980,7 @@ export class BigBangEngine {
     gameState.techPoints -= RELOCATE_TP;   // the caller refreshes the TP chip
 
     // The people's own settlers there are absorbed into the arriving whole.
-    const absorbed = colonyAt(this.colonies, ps.id, planetIndex);
+    const absorbed = colonyAt(this.colonies, to.id, planetIndex);
     if (absorbed) this.colonies.colonies = this.colonies.colonies.filter(c => c !== absorbed);
 
     // Names: the old world keeps the name its people gave it; the new one is
@@ -1965,39 +1992,138 @@ export class BigBangEngine {
       oldPlanet.name = oldName;
       // "New Terra"; a second move from it is "New Terra II", not "New New Terra".
       const base = `New ${oldName.replace(/^(New )+/, '').replace(/ [IVX]+$/, '')}`;
-      const used = new Set(ps.planets.filter(p => p !== planet).map(p => p.name));
+      const used = new Set([...from.planets, ...to.planets].filter(p => p !== planet).map(p => p.name));
       const numerals = ['', ' II', ' III', ' IV', ' V', ' VI', ' VII', ' VIII'];
-      planet.name = numerals.map(n => base + n).find(n => !used.has(n)) ?? `${base} ${ps.planets.indexOf(planet) + 1}`;
+      planet.name = numerals.map(n => base + n).find(n => !used.has(n)) ?? `${base} ${to.planets.indexOf(planet) + 1}`;
     }
     gameState.playerPlanetName = planet.name;
 
     // The old world keeps its wild life; the new one now carries the people.
     planet.hasLife = true;
+    planet.isDead = false;
     planet.biosphere = Math.max(planet.biosphere, 0.3);
     planet.discovery = 'landing';
-    ps.homePlanetIndex = planetIndex;
-    ps.habitability = undefined;
+    if (to !== from) this.movePlayerStar(from, to);
+    to.homePlanetIndex = planetIndex;
+    to.habitability = undefined;
     gameState.playerPlanetDNA = planet.dna ? { ...planet.dna } : gameState.playerPlanetDNA;
-    gameState.homeMoved = { starId: ps.id, planetIndex, tick: this.tick };
+    gameState.homeMoved = { starId: to.id, planetIndex, tick: this.tick };
 
     // New ground: settle the landing, then let the nations raise new capitals.
     this.invalidatePlayerGrid();
     const grid = this.ensurePlayerGrid();
     if (grid) {
-      seedLanding(grid, Math.max(200, Math.min(8000, Math.round(settledBefore * 0.5))), String(ps.id));
+      seedLanding(grid, Math.max(200, Math.min(8000, Math.round(settledBefore * 0.5))), String(to.id));
       assignDominantSpecies(grid, gameState.playerSpecies);
       const ns = runtimeState.playerNations;
       if (ns?.isFounded) {
         ns.resettle(grid, this.tick, planet.name);
-        ns.worldEvent(this.tick, `The whole people left ${oldName} for ${planet.name}.`, ['a god spent what they had learned to carry them']);
+        ns.worldEvent(this.tick, `The whole people left ${oldName} for ${planet.name}${to !== from ? `, under another sun (${to.civName})` : ''}.`,
+          ['a god spent what they had learned to carry them']);
         for (const line of ns.drainNews()) this.onCivEvent?.(line);
       }
     }
     this.onPlayerWorldChanged?.();
     const Old = oldName.charAt(0).toUpperCase() + oldName.slice(1);
-    const line = `A NEW WORLD: your people have left ${oldName} for ${planet.name}. ${Old} is left to its wild things.`;
+    const line = to === from
+      ? `A NEW WORLD: your people have left ${oldName} for ${planet.name}. ${Old} is left to its wild things.`
+      : `A NEW WORLD: your people have crossed the dark to ${planet.name}, under the star ${to.civName}. ${Old} is left to its wild things.`;
     this.onCivEvent?.(line);
     return line;
+  }
+
+  /**
+   * The player's people now live at star `to`: everything that belonged to
+   * them moves with them, in one step (rule 7). `from` stays a living star
+   * whose life falls back to its animals.
+   *
+   * Moves: the player flag and id, the people's own star fields (era,
+   * biosphere, faith, DNA), their culture record, leaders and faction flag;
+   * their wars and the fleets besieging them (war fleets still flying at the
+   * old world turn back); their colonies
+   * (founder, ruler, occupier) and launch clock; other civilisations'
+   * attitudes and grudges toward them, and their trade routes.
+   */
+  private movePlayerStar(from: StarBody, to: StarBody): void {
+    const a = from.id, b = to.id;
+    const swap = (id: number) => (id === a ? b : id);
+
+    to.isPlayerStar = true;
+    from.isPlayerStar = false;
+    this.playerStarId = b;
+    gameState.playerStarId = b;
+
+    // The people and what they carry.
+    to.hasLife = true;
+    to.biologyPhase = 'intelligent';
+    to.bioPhaseProgress = from.bioPhaseProgress;
+    to.civLevel = from.civLevel;
+    to.explorationRadius = from.explorationRadius;
+    to.lifeArchetype = from.lifeArchetype ?? to.lifeArchetype;
+    to.bioTempo = from.bioTempo ?? to.bioTempo;
+    to.bioStalls = from.bioStalls;
+    to.lifeFirstTick = to.lifeFirstTick ?? this.tick;
+    to.religionName = from.religionName;
+    to.religionDevotion = from.religionDevotion;
+    to.dna = from.dna;
+    to.isNewSystem = false;
+    to.terraformStage = null;
+    to.terraformTargetType = null;
+
+    // What they leave: a living world whose cleverest life is its animals
+    // (a new people may rise there in time; it will be its own).
+    from.biologyPhase = 'complex';
+    from.bioPhaseProgress = 0;
+    from.civLevel = 0;
+    from.religionName = '';
+    from.religionDevotion = 0;
+    from.dna = this.generateNPCDNA();
+    from.terraformStage = null;
+    from.terraformTargetType = null;
+    from.habitability = undefined;
+
+    // Culture, leaders, flag.
+    const civ = gameState.civilizations[a];
+    delete gameState.civilizations[b];
+    if (civ) gameState.civilizations[b] = civ;
+    this.dropCulture(from);
+    for (const l of gameState.leaders) if (l.starId === a) l.starId = b;
+    if (gameState.factionFlags[a]) {
+      gameState.factionFlags[b] = gameState.factionFlags[a];
+      delete gameState.factionFlags[a];
+    }
+
+    // Wars follow the people; so do the fleets sent against them.
+    for (const w of this.activeWars) { w.attackerStarId = swap(w.attackerStarId); w.defenderStarId = swap(w.defenderStarId); }
+    for (const o of this.orbitalFleets) o.starId = swap(o.starId);
+    // A war fleet still in flight was aimed at the old world: it would find no
+    // one there, so it turns back (fleets fly a straight line between two
+    // stars; retargeting one mid-flight would make it jump).
+    this.fleets = this.fleets.filter(f => !(f.hostile && !f.ark && f.toStarId === a));
+
+    // Colonies they founded, rule or hold.
+    for (const c of this.colonies.colonies) {
+      if (c.byPlayer) c.founderStarId = swap(c.founderStarId);
+      if (c.rulerStarId !== undefined && c.rulerIsPlayer) c.rulerStarId = swap(c.rulerStarId);
+      if (c.occupation) {
+        if (c.occupation.byPlayer) c.occupation.byStarId = swap(c.occupation.byStarId);
+        if (c.occupation.prevByPlayer && c.occupation.prevRulerStarId != null) c.occupation.prevRulerStarId = swap(c.occupation.prevRulerStarId);
+      }
+    }
+    const last = this.colonies.lastLaunch[a];
+    if (last !== undefined) { this.colonies.lastLaunch[b] = last; delete this.colonies.lastLaunch[a]; }
+
+    // How the other civilisations see them, and their trade.
+    const rekey = (m: Record<number, number>) => {
+      if (m[a] !== undefined) { m[b] = m[a]; delete m[a]; }
+    };
+    for (const p of Object.values(this.interstellar.polities)) { rekey(p.attitude); rekey(p.grievance); }
+    for (const r of this.interstellar.routes) {
+      const x = swap(r.a), y = swap(r.b);
+      r.a = Math.min(x, y); r.b = Math.max(x, y); r.to = swap(r.to);
+    }
+    this.interstellar.routes = this.interstellar.routes.filter(r => r.a !== r.b);
+    delete this.interstellar.polities[b];
   }
 
   /** The home world's face changed: regenerate its grid on next use. */
@@ -5883,7 +6009,12 @@ export class BigBangEngine {
     return star.planets[this.homeIndexOf(star)];
   }
 
-  focusPlayerStar(deep = false): void {
+  /**
+   * Frame the home world. `snap` cuts straight there instead of gliding: after
+   * the people cross to another star the glide would cross thousands of
+   * units of empty space (a black screen for seconds).
+   */
+  focusPlayerStar(deep = false, snap = false): void {
     const ps = this.getPlayerStar();
     if (ps) {
       // Frame the home WORLD (the follow keeps it centred as it orbits).
@@ -5893,6 +6024,7 @@ export class BigBangEngine {
       const off = this.framingOffset();
       this.camera.tx = ps.x + o.x + off.dx;
       this.camera.ty = ps.y + o.y + off.dy;
+      if (snap) { this.camera.x = this.camera.tx; this.camera.y = this.camera.ty; this.camera.scale = this.camera.ts; }
       this.cameraFollowHome = true;
     }
   }
