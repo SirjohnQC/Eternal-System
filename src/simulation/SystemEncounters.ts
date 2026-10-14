@@ -62,8 +62,14 @@ export interface EncounterEvent {
   /** The other system (the captor, the star it fell into, the other world's star). */
   other: StarBody;
   planet: string;
+  /** Where that planet was in the host's roster (it was the last; removed or moved now). */
+  planetIndex: number;
   /** For collisions: the other planet's name. */
   otherPlanet?: string;
+  /** Shattered: where the other planet was in `other`'s roster (also removed). */
+  otherIndex?: number;
+  /** Captured: where the planet is now in `other`'s roster. */
+  toIndex?: number;
 }
 
 export interface EncounterWorld {
@@ -132,7 +138,7 @@ function tides(w: EncounterWorld, host: StarBody, intruder: StarBody, d: number,
   if (Math.abs(r - d) < corona && w.rng.chance(SWALLOW_HAZARD)) {
     host.planets.pop();
     debris(w, intruder.x, intruder.y, intruder.remnantKind === 'black_hole' ? [120, 90, 160] : [255, 170, 90], 0.55, 8);
-    out.push({ kind: 'swallowed', host, other: intruder, planet: p.name });
+    out.push({ kind: 'swallowed', host, other: intruder, planet: p.name, planetIndex: host.planets.length });
     return;
   }
   const engulf = (apoapsis(p) * TIDE_REACH - d) / (apoapsis(p) * TIDE_REACH);
@@ -143,7 +149,7 @@ function tides(w: EncounterWorld, host: StarBody, intruder: StarBody, d: number,
   if (ecc < LOOSE_ECC && w.rng.chance(0.7)) {
     p.eccentricity = Math.min(MAX_ECC, ecc + w.rng.nextFloat(0.08, 0.2));
     p.periapsisAngle = (p.periapsisAngle ?? 0) + w.rng.nextFloat(-0.6, 0.6);
-    out.push({ kind: 'perturbed', host, other: intruder, planet: p.name });
+    out.push({ kind: 'perturbed', host, other: intruder, planet: p.name, planetIndex: host.planets.length - 1 });
     return;
   }
   // The orbit gives way. A strong enough intruder keeps the planet.
@@ -153,12 +159,12 @@ function tides(w: EncounterWorld, host: StarBody, intruder: StarBody, d: number,
       host.planets.pop();
       const name = p.name;
       capture(w, intruder, p, d);
-      out.push({ kind: 'captured', host, other: intruder, planet: name });
+      out.push({ kind: 'captured', host, other: intruder, planet: name, planetIndex: host.planets.length, toIndex: intruder.planets.length - 1 });
       return;
     }
   }
   host.planets.pop();
-  out.push({ kind: 'ejected', host, other: intruder, planet: p.name });
+  out.push({ kind: 'ejected', host, other: intruder, planet: p.name, planetIndex: host.planets.length });
 }
 
 /** Give `p` a wide, eccentric orbit outside `captor`'s planets (the roster stays sorted outward). */
@@ -197,13 +203,13 @@ function collide(w: EncounterWorld, a: StarBody, b: StarBody, d: number, out: En
     if (big.type !== 'gas') { big.type = 'lava'; big.color = '#c8461e'; }
     big.eccentricity = Math.min(MAX_ECC, (big.eccentricity ?? 0) + 0.1);
     debris(w, cx, cy, [255, 120, 60], 0.5, 10);
-    out.push({ kind: 'absorbed', host: small === p ? a : b, other: small === p ? b : a, planet: small.name, otherPlanet: big.name });
+    out.push({ kind: 'absorbed', host: small === p ? a : b, other: small === p ? b : a, planet: small.name, planetIndex: (small === p ? a : b).planets.length, otherPlanet: big.name });
     return;
   }
   a.planets.pop();
   b.planets.pop();
   debris(w, cx, cy, [150, 140, 125], 0.6, 16);
-  out.push({ kind: 'shattered', host: a, other: b, planet: p.name, otherPlanet: q.name });
+  out.push({ kind: 'shattered', host: a, other: b, planet: p.name, planetIndex: a.planets.length, otherPlanet: q.name, otherIndex: b.planets.length });
 }
 
 function debris(w: EncounterWorld, x: number, y: number, [r, g, b]: number[], alpha: number, maxRadius: number): void {

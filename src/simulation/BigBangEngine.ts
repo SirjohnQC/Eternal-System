@@ -11,7 +11,7 @@ import {
 } from './Colonies';
 import { worldEnv, type WorldFacts } from './Divergence';
 import { stampColony, worldGridSeed } from './ColonyWorld';
-import { type WorldHistoryState, type WorldEvent, recordWorldEvent, worldEvents } from './WorldHistory';
+import { type WorldHistoryState, type WorldEvent, recordWorldEvent, worldEvents, worldKey } from './WorldHistory';
 import {
   rulerOf, ruledByPlayer, concernsPlayer, stepLoyalty, occupyColony, stepOccupation,
   endOccupation, conquestChance, HOLD_START,
@@ -2551,9 +2551,33 @@ export class BigBangEngine {
     });
     for (const e of events) {
       this.encounterTally[e.kind] = (this.encounterTally[e.kind] ?? 0) + 1;
+      this.carryWorldHistory(e);
       // The roster changed: habitability is re-derived from what is left.
       if (e.kind !== 'perturbed') { e.host.habitability = undefined; e.other.habitability = undefined; }
       if (e.host.isPlayerStar || e.other.isPlayerStar) this.reportEncounter(e);
+    }
+  }
+
+  /**
+   * World history is keyed by star and planet index (WorldHistory.ts), and an
+   * encounter removes a roster's last planet or appends a captured one. A
+   * world that is gone takes its log with it, so a world captured later into
+   * the same slot does not inherit it; a captured world keeps its own log at
+   * its new star, with one more line.
+   */
+  private carryWorldHistory(e: EncounterEvent): void {
+    const h = this.worldHistory;
+    const from = worldKey(e.host.id, e.planetIndex);
+    if (e.kind === 'captured' && e.toIndex != null) {
+      const log = h[from];
+      delete h[from];
+      const to = worldKey(e.other.id, e.toIndex);
+      delete h[to];
+      if (log) h[to] = log;
+      if (log) recordWorldEvent(h, e.other.id, e.toIndex, { tick: this.tick, text: `Torn from ${e.host.civName} by ${e.other.civName}'s pull; it circles a new sun now.`, cause: 'two systems passed through each other' });
+    } else if (e.kind !== 'perturbed') {
+      delete h[from];
+      if (e.otherIndex != null) delete h[worldKey(e.other.id, e.otherIndex)];
     }
   }
 
