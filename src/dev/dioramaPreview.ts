@@ -3,6 +3,8 @@
  * Served at /diorama-preview.html — lets the diorama be iterated on without
  * replaying a full game. Not imported by the game bundle.
  */
+import { emptyFire, stepFire, fuelOf, drynessOf, type FireState } from '../simulation/Wildfire';
+import type { PlanetGrid } from '../simulation/PlanetGrid';
 import { VX_NAMES } from '../rendering/weather/WeatherEvents';
 import { IsoDioramaRenderer } from '../rendering/IsoDioramaRenderer';
 import { generatePlanetGrid, isHabitable, isWater, GRID_SIZE } from '../simulation/PlanetGrid';
@@ -221,8 +223,34 @@ function rebuild(): void {
     (window as any).__gallery?.(people, star.civLevel);
     return;
   }
+  if (params.get('fire')) startPreviewFires(grid);
   renderer.refreshData(grid, bio, species, planet, star, 0);
   (window as any).__gallery?.(species, star.civLevel);
+}
+
+// ?fire=1 — wildfires (#51): a few fires lit on fuelled, dryish land, spreading
+// live (one step every 0.6 s) so the flames, smoke and char can be looked at.
+let previewFire: FireState | null = null;
+let previewFireTimer = 0;
+function startPreviewFires(grid: PlanetGrid): void {
+  const st = emptyFire();
+  const rng = new SeedRNG(seed * 31 + 7);
+  for (let tries = 0; tries < 4000 && st.cells.length < 6; tries++) {
+    const row = rng.nextInt(40, GRID_SIZE - 41), col = rng.nextInt(0, GRID_SIZE - 1);
+    const c = grid[row][col];
+    if (fuelOf(c) > 0.3 && drynessOf(c) > 0.15) { st.cells.push(row * GRID_SIZE + col); st.left.push(3); }
+  }
+  st.wind = [0, 1];
+  // Dry the land a little so the preview burns at a watchable pace.
+  for (const row of grid) for (const c of row) c.moisture *= 0.7;
+  previewFire = st;
+  renderer.setFireSource(() => previewFire?.cells ?? null);
+  clearInterval(previewFireTimer);
+  previewFireTimer = window.setInterval(() => {
+    if (!previewFire?.cells.length) return;
+    stepFire(previewFire, grid, rng);
+    renderer.markSurfaceDirty();
+  }, 600);
 }
 
 await renderer.init(stage);
