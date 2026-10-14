@@ -1530,6 +1530,32 @@ function applyTileAction(action: TileAction, target: TileRef): void {
   }
 }
 
+/** Enable a tile power only when it can be paid for and does something here. */
+function setTileActionState(btn: HTMLButtonElement, action: TileAction, cell: GridCell): void {
+  const affordable = gameState.divinePoints >= action.cost;
+  const applicable = action.enabled(cell);
+  btn.disabled = !affordable || !applicable;
+  btn.title = !applicable ? 'No effect here'
+            : !affordable ? 'Needs ' + action.cost + ' Divine Power'
+            : '';
+}
+
+/**
+ * Keep the open tile panel's powers in step with DP (#19): they were set once
+ * when the tile was picked, so after spending DP elsewhere a 12 DP power still
+ * looked available at 7 DP (and did nothing when clicked).
+ */
+function refreshTileActionButtons(): void {
+  const grid = runtimeState.playerPlanetGrid;
+  if (!selectedTile || !grid) return;
+  const cell = grid[selectedTile.row]?.[selectedTile.col];
+  if (!cell) return;
+  document.querySelectorAll<HTMLButtonElement>('#pi-tile-actions .pi-tile-btn').forEach(btn => {
+    const action = TILE_ACTIONS.find(a => a.id === btn.dataset['act']);
+    if (action) setTileActionState(btn, action, cell);
+  });
+}
+
 function buildTileActionButtons(cell: GridCell, target: TileRef): void {
   const wrap = document.getElementById('pi-tile-actions');
   if (!wrap) return;
@@ -1538,18 +1564,14 @@ function buildTileActionButtons(cell: GridCell, target: TileRef): void {
   for (const action of TILE_ACTIONS) {
     const btn = document.createElement('button');
     btn.className = 'pi-tile-btn';
+    btn.dataset['act'] = action.id;
     const cost = document.createElement('span');
     cost.className = 'cost';
     cost.textContent = action.cost + ' DP';
     btn.textContent = action.label;
     btn.appendChild(cost);
 
-    const affordable = gameState.divinePoints >= action.cost;
-    const applicable = action.enabled(cell);
-    btn.disabled = !affordable || !applicable;
-    btn.title = !applicable ? 'No effect here'
-              : !affordable ? 'Needs ' + action.cost + ' Divine Power'
-              : '';
+    setTileActionState(btn, action, cell);
 
     btn.addEventListener('click', () => {
       if (gameState.divinePoints < action.cost) return;
@@ -3628,6 +3650,7 @@ function updateDivineActions(): void {
   }
   updateSmiteButton();
   refreshFaithHand();
+  refreshTileActionButtons();
 
   // Send Meteor — always in Faith deck (mockup); afford only with a valid target
   const meteorBtn = document.getElementById('send-meteor-btn') as HTMLButtonElement | null;
