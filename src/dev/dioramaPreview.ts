@@ -3,8 +3,9 @@
  * Served at /diorama-preview.html — lets the diorama be iterated on without
  * replaying a full game. Not imported by the game bundle.
  */
-import { emptyFire, stepFire, fuelOf, drynessOf, type FireState } from '../simulation/Wildfire';
 import type { PlanetGrid } from '../simulation/PlanetGrid';
+import { quake } from '../simulation/Quakes';
+import { emptyFire, stepFire, fuelOf, drynessOf, type FireState } from '../simulation/Wildfire';
 import { VX_NAMES } from '../rendering/weather/WeatherEvents';
 import { IsoDioramaRenderer } from '../rendering/IsoDioramaRenderer';
 import { generatePlanetGrid, isHabitable, isWater, GRID_SIZE } from '../simulation/PlanetGrid';
@@ -237,6 +238,29 @@ function rebuild(): void {
   if (params.get('fire')) startPreviewFires(grid);
   renderer.refreshData(grid, bio, species, planet, star, 0);
   (window as any).__gallery?.(species, star.civLevel);
+  if (params.get('quake')) startPreviewQuakes(grid);
+}
+
+// ?quake=8.5 — earthquakes (#50) of that magnitude every 8 s on a fault, so
+// the shake, the dust ring and (7.8+, sometimes) a new rift can be looked at.
+let previewQuakeTimer = 0;
+function startPreviewQuakes(grid: PlanetGrid): void {
+  const mag = Math.max(4.5, Math.min(9, Number(params.get('quake')) || 7));
+  const rng = new SeedRNG(seed * 17 + 3);
+  clearInterval(previewQuakeTimer);
+  const shake = () => {
+    // On the face the preview shows, so the ring and the rift can be seen.
+    const onFace = (r: number, c: number) => {
+      const d = (renderer as unknown as { gridToDisc(r: number, c: number): { dx: number; dy: number } | null }).gridToDisc(r, c);
+      return !!d && Math.hypot(d.dx, d.dy) < 0.75;
+    };
+    const q = quake(grid, rng, 0, type, mag, onFace);
+    if (!q) return;
+    renderer.playQuake(q.at, q.magnitude, q.rift);
+    if (q.rift.length) renderer.markSurfaceDirty(true);
+  };
+  setTimeout(shake, 3000);
+  previewQuakeTimer = window.setInterval(shake, 8000);
 }
 
 // ?fire=1 — wildfires (#51): a few fires lit on fuelled, dryish land, spreading
