@@ -398,6 +398,7 @@ const OCEAN_PALETTE: CutawayPalette = {
     deep_ocean: rgb(18, 48, 88),
     ocean:      rgb(35, 95, 160),
     shallow:    rgb(70, 150, 220),
+    lake:       rgb(65, 146, 176),
     beach:      rgb(215, 200, 145),
     plains:     rgb(128, 168, 80),
     grassland:  rgb(52, 125, 60),
@@ -438,6 +439,7 @@ const ROCKY_PALETTE: CutawayPalette = {
     deep_ocean: rgb(22, 54, 92),
     ocean:      rgb(40, 90, 140),
     shallow:    rgb(75, 145, 200),
+    lake:       rgb(68, 141, 160),
     beach:      rgb(214, 192, 140),
     plains:     rgb(152, 166, 96),
     grassland:  rgb(118, 152, 78),
@@ -477,6 +479,7 @@ const ICE_PALETTE: CutawayPalette = {
     deep_ocean: rgb(40, 90, 130),
     ocean:      rgb(70, 140, 185),
     shallow:    rgb(130, 190, 220),
+    lake:       rgb(111, 183, 176),
     beach:      rgb(200, 220, 230),
     plains:     rgb(180, 210, 225),
     grassland:  rgb(150, 185, 200),
@@ -516,6 +519,7 @@ const LAVA_PALETTE: CutawayPalette = {
     deep_ocean: rgb(80, 20, 10),
     ocean:      rgb(140, 35, 12),
     shallow:    rgb(200, 60, 18),
+    lake:       rgb(166, 63, 14),
     beach:      rgb(90, 40, 28),
     plains:     rgb(70, 32, 22),
     grassland:  rgb(60, 28, 18),
@@ -555,6 +559,7 @@ const GAS_PALETTE: CutawayPalette = {
     deep_ocean: rgb(120, 90, 60),
     ocean:      rgb(180, 140, 90),
     shallow:    rgb(210, 170, 110),
+    lake:       rgb(174, 164, 88),
     beach:      rgb(190, 155, 120),
     plains:     rgb(170, 130, 85),
     grassland:  rgb(150, 115, 75),
@@ -594,6 +599,7 @@ const TOXIC_PALETTE: CutawayPalette = {
     deep_ocean: rgb(28, 72, 28),
     ocean:      rgb(48, 130, 40),
     shallow:    rgb(90, 180, 55),
+    lake:       rgb(80, 174, 44),
     beach:      rgb(160, 175, 70),
     plains:     rgb(120, 150, 55),
     grassland:  rgb(70, 140, 45),
@@ -633,6 +639,7 @@ const CRYSTAL_PALETTE: CutawayPalette = {
     deep_ocean: rgb(40, 20, 80),
     ocean:      rgb(70, 40, 130),
     shallow:    rgb(120, 70, 180),
+    lake:       rgb(104, 72, 144),
     beach:      rgb(180, 140, 200),
     plains:     rgb(150, 80, 170),
     grassland:  rgb(130, 60, 160),
@@ -672,6 +679,7 @@ const DESERT_PALETTE: CutawayPalette = {
     deep_ocean: rgb(50, 70, 90),
     ocean:      rgb(70, 100, 120),
     shallow:    rgb(110, 140, 150),
+    lake:       rgb(96, 137, 120),
     beach:      rgb(220, 195, 140),
     plains:     rgb(210, 175, 110),
     grassland:  rgb(124, 146, 72),   // oasis: a desert world blooms only where it is soaked (#111)
@@ -711,6 +719,7 @@ const STORM_PALETTE: CutawayPalette = {
     deep_ocean: rgb(18, 22, 40),
     ocean:      rgb(30, 38, 60),
     shallow:    rgb(50, 55, 80),
+    lake:       rgb(49, 59, 64),
     beach:      rgb(70, 65, 75),
     plains:     rgb(55, 50, 60),
     grassland:  rgb(45, 55, 48),
@@ -750,6 +759,7 @@ const CARBON_PALETTE: CutawayPalette = {
     deep_ocean: rgb(12, 18, 28),
     ocean:      rgb(20, 28, 40),
     shallow:    rgb(35, 45, 55),
+    lake:       rgb(37, 49, 44),
     beach:      rgb(50, 50, 52),
     plains:     rgb(38, 38, 40),
     grassland:  rgb(32, 36, 34),
@@ -790,6 +800,7 @@ const MECH_PALETTE: CutawayPalette = {
     deep_ocean: rgb(14, 40, 52),
     ocean:      rgb(24, 70, 84),
     shallow:    rgb(50, 120, 130),
+    lake:       rgb(49, 118, 104),
     beach:      rgb(120, 118, 112),
     plains:     rgb(118, 124, 132),
     grassland:  rgb(96, 104, 112),
@@ -1272,8 +1283,12 @@ export function* surfaceSteps(
           && biome === 'mountain' && cell.elevation > PAINTER_SNOW_ELEVATION) biome = 'snow';
       // Volcano cones (the renderer's vented grid) keep their basalt.
       if (cell.biome === 'volcanic' && !isWater(biome)) biome = 'volcanic';
+      // A lake (#47) is still water above the sea: drawn as its own flat
+      // surface at its level (the ground was flattened to it), not as the
+      // sea's fluid layer, which only lies at sea level.
+      if (cell.biome === 'lake' && !isWater(biome)) biome = 'lake';
 
-      if (isWater(biome)) {
+      if (isWater(biome) && biome !== 'lake') {
         if (inCanvas) {
           if (occ) occ[idx] = 1;
           if (pick) pick[idx] = gp.row * GRID_SIZE + gp.col + 1;
@@ -1290,7 +1305,11 @@ export function* surfaceSteps(
       const base = opts.barren && opts.planetType !== 'mechanical' ? barrenGround(biome, cell.elevation, cell.moisture) : pal.biome[biome];
       let br = base.r, bg = base.g, bb = base.b;
 
-      if (!opts.barren && opts.planetType !== 'mechanical' && biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
+      if (biome === 'lake') {
+        // Still water: a faint ripple dither and a lighter rim toward the shore.
+        const rip = hash1(Math.floor(world.wx(px) * 3) * 5 + Math.floor(world.wy(py) * 3) * 23, seed + 47) < 0.12;
+        if (rip) { br = Math.min(255, br + 26); bg = Math.min(255, bg + 28); bb = Math.min(255, bb + 30); }
+      } else if (!opts.barren && opts.planetType !== 'mechanical' && biome !== 'mountain' && biome !== 'snow' && biome !== 'tundra'
                  && biome !== 'volcanic' && biome !== 'beach') {
         // Vegetation responds to the living biosphere, gated on the cell's own
         // fertility so deserts and savanna still read as themselves.

@@ -97,6 +97,17 @@ rule({
 });
 
 rule({
+  // Earthquakes (#50): the recent list stays short and every quake is in range.
+  name: 'home quakes are few and in range',
+  check: ({ engine }) => {
+    const qs = (engine as any).quakes ?? [];
+    if (qs.length > 6) return `${qs.length} quakes kept`;
+    const bad = qs.find((q: any) => !(q.magnitude >= 4 && q.magnitude <= 9) || !(q.at >= 0 && q.at < 65536));
+    return bad ? `quake ${JSON.stringify(bad).slice(0, 80)}` : null;
+  },
+});
+
+rule({
   // Wildfire (#51): the burning set stays bounded, in the grid, and on land.
   name: 'home fires are bounded and burn on land',
   check: ({ engine }) => {
@@ -1470,6 +1481,105 @@ for (const { seed, stats } of SEEDS) {
     else if (mean > 0.75) detail = `mean mirror score ${mean.toFixed(2)} over ${scores.length} worlds (> 0.75)`;
   } catch (err) { detail = `threw: ${(err as Error).message}`; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenarios: lakes (#47) ──────────────────────────────────────────────────
+{
+  const PG = await import('../src/simulation/PlanetGrid');
+  const r: Rule = { name: 'scenario: lakes sit flat in basins above the sea, on worlds that can hold them', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    let lakesSeen = 0;
+    for (const type of ['rocky', 'toxic', 'storm', 'crystal', 'desert', 'lava', 'ice']) {
+      for (let k = 0; k < 4 && !detail; k++) {
+        const g = PG.generatePlanetGrid(type, 1000 + k * 7919, null);
+        let lakeCells = 0, land = 0;
+        for (const row of g) for (const c of row) {
+          if (c.elevation >= PG.SEA_LEVEL) land++;
+          if (c.biome !== 'lake') continue;
+          lakeCells++;
+          if (!c.lake || Math.abs(c.elevation - c.lake) > 1e-6) { detail = `${type}: a lake cell off its surface level`; break; }
+          if (c.elevation < PG.SEA_LEVEL) { detail = `${type}: a lake below the sea`; break; }
+          if (c.fertility !== 0) { detail = `${type}: a fertile lake cell`; break; }
+          if (c.river > 0) { detail = `${type}: a river through a lake`; break; }
+        }
+        if (detail) break;
+        if (['desert', 'lava', 'ice'].includes(type) && lakeCells) detail = `${type}: ${lakeCells} lake cells on a world that holds none`;
+        else if (lakeCells > land * 0.031) detail = `${type}: lakes cover ${lakeCells} of ${land} land cells`;
+        lakesSeen += lakeCells;
+      }
+      if (detail) break;
+    }
+    if (!detail && lakesSeen === 0) detail = 'no lakes on any wet world';
+    if (!detail) {
+      const c: any = { elevation: 0.6, lake: 0.6, moisture: 0.5, temperature: 0.5, biome: 'lake' };
+      if (PG.reclassify(c, 'rocky') !== 'lake') detail = 'reclassify dropped an untouched lake';
+      c.elevation = 0.7;
+      if (PG.reclassify(c, 'rocky') === 'lake') detail = 'raised ground stayed a lake';
+    }
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenarios: earthquakes (#50) ────────────────────────────────────────────
+// Quakes start on faults, follow a small-many/large-few law, and great ones
+// may split the land (Quakes.ts).
+{
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const Q = await import('../src/simulation/Quakes');
+  const { classifyBiome, SEA_LEVEL: SEA } = await import('../src/simulation/PlanetGrid');
+  const N = 256;
+  // A plain at 0.55 with a scarp (a 0.08 step) running down column 128.
+  const scarp = () => Array.from({ length: N }, () => Array.from({ length: N }, (_, c) => {
+    const elevation = c < 128 ? 0.5 : 0.58;
+    return { elevation, moisture: 0.5, temperature: 0.5, biome: classifyBiome(elevation, 0.5, 0.5, 'rocky'), fertility: 0.5,
+      lifeDensity: 0.8, dominantSpeciesId: null, civId: c < 160 && c > 96 ? '0' : null, river: 0, riverDir: -1 };
+  })) as any;
+  const run = (name: string, fn: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = fn(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  run('quakes: no fault, no quake', () => {
+    const flat = scarp(); for (const row of flat) for (const c of row) c.elevation = 0.55;
+    const rng = new SeedRNG(1);
+    for (let i = 0; i < 50; i++) if (Q.quake(flat, rng, 0, 'rocky')) return 'a quake on flat ground';
+    return null;
+  });
+  run('quakes: most are small, few are great', () => {
+    const rng = new SeedRNG(2), g = scarp(); let n = 0, felt = 0, great = 0;
+    for (let i = 0; i < 1500; i++) {
+      const q = Q.quake(g, rng, 0, 'rocky');
+      if (!q) continue;
+      n++; if (q.magnitude >= 6) felt++; if (q.magnitude >= 7.8) great++;
+      if (q.magnitude < 4 || q.magnitude > 9) return `magnitude ${q.magnitude}`;
+    }
+    const f = felt / n, gr = great / n;
+    return f < 0.15 || f > 0.4 || gr > 0.15 ? `felt ${(f * 100).toFixed(0)}%, great ${(gr * 100).toFixed(0)}% of ${n}` : null;
+  });
+  run('quakes: a great quake may split the land, and the land stays consistent', () => {
+    const rng = new SeedRNG(3);
+    for (let i = 0; i < 30; i++) {
+      const g = scarp();
+      const q = Q.quake(g, rng, 0, 'rocky', 9);
+      if (!q || !q.rift.length) continue;
+      for (const idx of q.rift) {
+        const c = g[(idx / N) | 0][idx % N];
+        if (c.elevation <= SEA && c.civId != null) return 'a drowned rift cell is still settled';
+        if (c.biome !== classifyBiome(c.elevation, c.moisture, c.temperature, 'rocky')) return 'a rift cell kept its old biome';
+      }
+      if (q.flooded !== q.rift.some(idx => g[(idx / N) | 0][idx % N].elevation <= SEA)) return 'flooded flag disagrees with the land';
+      return null;
+    }
+    return 'no rift in 30 magnitude-9 quakes';
+  });
+  run('quakes: same seed, same quake', () => {
+    const a = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5), b = Q.quake(scarp(), new SeedRNG(4), 0, 'rocky', 8.5);
+    return JSON.stringify(a) === JSON.stringify(b) ? null : 'two runs differ';
+  });
 }
 
 // ── Scenarios: wildfire (#51) ───────────────────────────────────────────────

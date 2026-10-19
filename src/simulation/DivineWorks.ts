@@ -10,7 +10,7 @@
  *
  * Pure functions over a PlanetGrid and species genomes. Deterministic.
  */
-import { GRID_SIZE, classifyBiome, isHabitable, isWater, faceOf, cellAngle, FACE_VIEW, type PlanetGrid, type GridCell } from './PlanetGrid';
+import { GRID_SIZE, reclassify, isHabitable, isWater, faceOf, cellAngle, FACE_VIEW, type PlanetGrid, type GridCell } from './PlanetGrid';
 import type { NationSystem } from './Nations';
 import type { SpeciesGenome } from './SpeciesGenome';
 
@@ -119,7 +119,7 @@ export function regionCells(grid: PlanetGrid, ns: NationSystem | null, region: R
 
 /** Reclassify a cell after its elevation, moisture or temperature changed. */
 function settle(c: GridCell, planetType: string): void {
-  c.biome = classifyBiome(c.elevation, c.moisture, c.temperature, planetType);
+  c.biome = reclassify(c, planetType);
   if (!isHabitable(c.biome)) { c.fertility = 0; c.lifeDensity = 0; }
   if (isWater(c.biome)) c.civId = null;
 }
