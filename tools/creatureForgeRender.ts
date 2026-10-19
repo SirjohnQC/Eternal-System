@@ -85,7 +85,8 @@ const img = new Uint8ClampedArray(W * H * 4);
 for (let i = 0; i < W * H; i++) { const c = ((i % W) / CELL | 0) + ((i / W / CELL) | 0); const v = c % 2 ? 26 : 20; img[i * 4] = v; img[i * 4 + 1] = v + 6; img[i * 4 + 2] = v + 4; img[i * 4 + 3] = 255; }
 const t0 = Date.now();
 all.forEach(([, g], k) => {
-  const f = forgeCreature(g, PX);
+  // Showcase thinkers are drawn as their world's people (People.ts), upright.
+  const f = forgeCreature(g, PX, g.dna.intelligence >= 6);
   const cx = (k % COLS) * CELL + ((CELL - f.width) >> 1), cy = ((k / COLS) | 0) * CELL + (CELL - f.height) - 2;
   for (let y = 0; y < f.height; y++) for (let x = 0; x < f.width; x++) {
     const s = (y * f.width + x) * 4, a = f.data[s + 3] / 255;
