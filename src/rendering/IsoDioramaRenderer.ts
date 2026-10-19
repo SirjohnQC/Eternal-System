@@ -491,6 +491,8 @@ export class IsoDioramaRenderer {
   private civLevelHere(): number { return this.world ? this.world.civLevel : this.star?.civLevel ?? 0; }
   /** The home world's nations — never drawn on another world. */
   private nationsHere(): NationSystem | null { return this.world ? null : this.nationSource?.() ?? null; }
+  /** The quake shaking the view now (#50), or null. Face points in base px. */
+  private quake: { x: number; y: number; mag: number; t0: number; rift: Array<{ x: number; y: number }> } | null = null;
   /** The home world's burning cells (Wildfire.ts, #51); null: no fires drawn. */
   private fireSource: (() => readonly number[] | null) | null = null;
   /** Burning cells as face points (base px), rebuilt when the fire or the view changes. */
@@ -2821,6 +2823,68 @@ export class IsoDioramaRenderer {
    * Where the planet's nations come from (a live getter, as the engine
    * founds them later in the game). Borders and capital flags follow it.
    */
+  /**
+   * A quake on the home world (#50): the view shakes for a moment (harder and
+   * longer the greater it is), a dust ring runs out from the epicentre and
+   * dust rises along a fresh rift. Ignored while another world is shown.
+   */
+  playQuake(at: number, magnitude: number, rift: readonly number[]): void {
+    if (this.world || !this.habitable || magnitude < 4.5) return;
+    const pg = this.placeGeom;
+    const toFace = (idx: number): { x: number; y: number } | null => {
+      const row = (idx / GRID_SIZE) | 0, col = idx % GRID_SIZE;
+      const d = this.gridToDisc(row, col);
+      if (!d || Math.hypot(d.dx, d.dy) > 0.97) return null;
+      const cell = this.grid?.[row]?.[col];
+      return { x: pg.cx + d.dx * pg.rx, y: pg.cy + d.dy * pg.ry - (cell ? this.liftAtCell(cell, Math.hypot(d.dx, d.dy)) : 0) };
+    };
+    const c = toFace(at);
+    const pts: Array<{ x: number; y: number }> = [];
+    for (let i = 0; i < rift.length; i += Math.max(1, Math.ceil(rift.length / 60))) { const p = toFace(rift[i]); if (p) pts.push(p); }
+    // An epicentre over the horizon still shakes the view, without its ring.
+    this.quake = { x: c?.x ?? NaN, y: c?.y ?? NaN, mag: magnitude, t0: this.elapsed, rift: pts };
+  }
+
+  /** How long the current quake shakes, s. */
+  private quakeLen(mag: number): number { return 0.8 + (mag - 4) * 0.6; }
+
+  /** Screen shake for this frame, px (0, 0 when still). */
+  private quakeShake(): [number, number] {
+    const q = this.quake;
+    if (!q) return [0, 0];
+    const age = this.elapsed - q.t0, len = this.quakeLen(q.mag);
+    if (age > len) { this.quake = null; return [0, 0]; }
+    const amp = (q.mag - 4) * 0.9 * Math.pow(1 - age / len, 1.5) * Math.max(1, this.camZoom * 0.6);
+    return [Math.round(Math.sin(age * 61) * amp), Math.round(Math.sin(age * 47 + 1.3) * amp * 0.6)];
+  }
+
+  /** The quake's dust: a ring running out from the epicentre, dust over the rift. */
+  private drawQuakeFx(g: CanvasRenderingContext2D): void {
+    const q = this.quake;
+    if (!q) return;
+    const age = this.elapsed - q.t0, len = this.quakeLen(q.mag) + 2;
+    if (age > len) return;
+    const k = this.camZoom, S = Math.max(1, Math.round(k)), bob = this.cutaway.drawGeom.bob;
+    const fade = 1 - age / len;
+    g.save();
+    if (Number.isFinite(q.x)) {
+      const x = this.wsx(q.x), y = this.wsy(q.y + bob);
+      const r = (6 + age * (q.mag - 3) * 9) * k;
+      g.globalAlpha = 0.55 * fade;
+      g.strokeStyle = '#9a7a5c';
+      g.lineWidth = S;
+      g.beginPath(); g.ellipse(x, y, r, r * (this.ry / Math.max(1, this.rx)), 0, 0, Math.PI * 2); g.stroke();
+    }
+    for (let i = 0; i < q.rift.length; i++) {
+      const p = q.rift[i], up = ((age * 0.6 + i * 0.13) % 1);
+      const sz = Math.max(S, Math.round((1 + up * 2.5) * k));
+      g.globalAlpha = 0.5 * fade * (1 - up);
+      g.fillStyle = '#8c7458';
+      g.fillRect(Math.round(this.wsx(p.x) - sz / 2), Math.round(this.wsy(p.y + bob) - up * 10 * k - sz / 2), sz, sz);
+    }
+    g.restore();
+  }
+
   /** Where the home world's fires come from (a live getter; the engine owns them). */
   setFireSource(fn: (() => readonly number[] | null) | null): void {
     this.fireSource = fn;
@@ -3942,6 +4006,7 @@ export class IsoDioramaRenderer {
           this.drawCityLights(g, this.elapsed);
           this.drawVentFx(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
+          this.drawQuakeFx(g);
           this.drawFires(g, this.elapsed);
           this.drawBirds(g, this.elapsed);
           if (this.meteor.active) this.meteor.drawSurface(g, this.updateStrikeView());
@@ -3955,7 +4020,9 @@ export class IsoDioramaRenderer {
           this.drawMoons(g, this.elapsed * (Math.PI * 2 / 60), true);
         },
       });
-      this.displayCtx.drawImage(this.buf, 0, 0);
+      const [jx, jy] = this.quakeShake();
+      if (jx || jy) this.displayCtx.clearRect(0, 0, this.displayCtx.canvas.width, this.displayCtx.canvas.height);
+      this.displayCtx.drawImage(this.buf, jx, jy);
       return;
     }
 
