@@ -1804,20 +1804,10 @@ export function* crustSteps(
           c = shade(sea, light + (facetCol ? 0.20 : 0));
         }
       } else {
-        // Land at the rim: strata riddled with caverns.
+        // Land at the rim: solid strata (no caverns: they read as holes).
         const t = clamp01(depth / wallH);
         const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
-        const n = noise2(wx / 7, depth / k / 4, seed + 541);
-        // Water worlds keep a clean cliff face; caverns are for land worlds.
-        const inner = opts.planetType !== 'ocean' && opts.planetType !== 'gas' && depth > 1.5 * k && depth < wallH - 1.5 * k;
-        if (inner && n > 0.66) {
-          // Cavern: near-black, the odd crystal glint in the dark.
-          c = hash1(fwx * 61 + wy * 97, seed + 547) > 0.985 ? pal.facet : shade(pal.strata[pal.strata.length - 1], 0.32);
-        } else if (inner && n > 0.60) {
-          c = shade(pal.strata[stripe], light * 0.62);
-        } else {
-          c = shade(pal.strata[stripe], light);
-        }
+        c = shade(pal.strata[stripe], light);
       }
       g.fillStyle = css(c);
       g.fillRect(x, y, 1, 1);
