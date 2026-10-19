@@ -59,3 +59,12 @@ Animal test sheet (not wired): `5ddb03aa-d442-428e-8700-5ecbb2e5cc67`.
 | sun | still `e11e65e8-e729-4f1c-8b49-4059abdd6fa2`, boil animation `9784528f-2dc5-4229-9ced-4ad71d13b6a5` | `SunArt.paintSunBody` takes each pixel's step (0–4) from the frame's luminance; the star's own palette colours it |
 | islets | `2056734f-212e-4067-873a-d8ada1858ede` | living worlds' floating shards under the rim |
 | hangings | `a4713fd2-7737-42ee-b29a-3fc7a7b19891` | under the keel: `living` roots/vines/moss; `rock`, `ice`, `crystal`, `lava`, `dead` by world |
+
+## The disc's skirt (front wall)
+
+| Sheet | SpriteCook asset ID | Use |
+|---|---|---|
+| skirt-earth | `170bfdf7-795d-42f1-850a-5a7b3ebcee16` | land columns of the wall: grass lip, soil, pebbles, rock strata (seamless, trimmed to the lip) |
+| skirt-water | `9fc536ff-9416-44ff-b683-a4cf455453b6` | sea columns: surface foam, light rays, bubbles, sandy floor (trimmed to the surface) |
+
+One texel per world px, the texture's height fitted to the wall. Rocky and ocean worlds keep the colours (water blended a third toward the world's sea); other worlds map the texture's light and dark onto their own strata and sea.

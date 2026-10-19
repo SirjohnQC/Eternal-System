@@ -41,7 +41,7 @@ import {
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import { FloraLayer, type FloraView } from './FloraLayer';
-import { spriteFor, type OverrideSprite } from './SpriteOverride';
+import { spriteFor, skirtTexture, type OverrideSprite } from './SpriteOverride';
 import { WX_NX, WX_NY, type ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
@@ -1726,6 +1726,21 @@ export function* crustSteps(
   let iters = 0;
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
+  // With the hand-made textures (?sprites=1) the wall is a tiling cliff or
+  // sea cross-section, one texel per world px, shaded for the disc's curve.
+  // Earth-coloured worlds keep the textures' colours; the others map their
+  // light and dark onto their own rock and sea.
+  const texH = Math.max(4, Math.round(wall / k));
+  const texEarth = opts.planetType === 'gas' ? null : skirtTexture('skirt-earth', texH);
+  const texSea = opts.planetType === 'gas' ? null : skirtTexture('skirt-water', texH);
+  const rawTex = opts.planetType === 'rocky' || opts.planetType === 'ocean';
+  const texel = (t: OverrideSprite, fx: number, depth: number, wallH: number): RGB | null => {
+    const tx = ((fx % t.width) + t.width) % t.width;
+    const ty = Math.min(t.height - 1, Math.max(0, Math.floor(depth / wallH * t.height)));
+    const i = (ty * t.width + tx) * 4;
+    return t.data[i + 3] ? rgb(t.data[i], t.data[i + 1], t.data[i + 2]) : null;
+  };
+  const lumOf = (c: RGB) => (0.3 * c.r + 0.55 * c.g + 0.15 * c.b) / 255;
   for (let x = rimX0; x <= rimX1; x++) {
     const i = x - rimX0;
     const wx = world.wx(x);
@@ -1759,7 +1774,17 @@ export function* crustSteps(
       const wy = Math.floor(depth / k);
       let c: RGB;
       // Under land the sea still rings the rim: a thin water lip on top.
-      if (water || depth < 2 * k) {
+      const tSea = (water || depth < 2 * k) && texSea ? texel(texSea, fwx, depth, wallH) : null;
+      const tEarth = !(water || depth < 2 * k) && texEarth ? texel(texEarth, fwx, depth, wallH) : null;
+      if (tSea) {
+        const sea = (() => { const t = clamp01(depth / wallH); return rgb(mix(pal.waterLip.r, pal.waterDeep.r, t), mix(pal.waterLip.g, pal.waterDeep.g, t), mix(pal.waterLip.b, pal.waterDeep.b, t)); })();
+        // Blended a third toward the world's own sea, so the wall matches the water on top.
+        const raw = rgb(mix(tSea.r, sea.r, 0.35), mix(tSea.g, sea.g, 0.35), mix(tSea.b, sea.b, 0.35));
+        c = shade(rawTex ? raw : shade(sea, 0.55 + 0.9 * lumOf(tSea)), light);
+      } else if (tEarth) {
+        const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(clamp01(depth / wallH) * 3));
+        c = shade(rawTex ? tEarth : shade(pal.strata[stripe], 0.5 + 1.0 * lumOf(tEarth)), light);
+      } else if (water || depth < 2 * k) {
         const t = clamp01(depth / wallH);
         const sea = rgb(
           mix(pal.waterLip.r, pal.waterDeep.r, t),

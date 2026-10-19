@@ -142,6 +142,17 @@ export function spriteFor(name: string, tags: string[], seed: number, tw: number
   return sheets.size ? pick(name, tags, seed, tw, tint) : null;
 }
 
+/**
+ * A tiling wall texture (sheet `name`, one frame) shrunk to `h` px tall with
+ * its width in proportion; null without the sheet.
+ */
+export function skirtTexture(name: string, h: number): OverrideSprite | null {
+  const sheet = sheets.get(name);
+  if (!sheet || !sheet.frames.length) return null;
+  const f = sheet.frames[0], H = Math.max(2, Math.min(f.h, Math.round(h)));
+  return frameAt(name, sheet, 0, Math.max(2, Math.round(f.w * H / f.h)), undefined, H);
+}
+
 /** Normalised luminance range of each sheet frame (for quantising onto a game palette). */
 const lumRange = new Map<string, [number, number]>();
 
