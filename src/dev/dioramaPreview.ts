@@ -24,8 +24,15 @@ import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 import { stampColony } from '../simulation/ColonyWorld';
 
+import { loadSpriteOverrides } from '../rendering/SpriteAtlasLoader';
+
+// Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
+await loadSpriteOverrides();
+
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
+// Dev hook for screenshot scripts: the renderer (e.g. its town architecture).
+Object.assign(window, { previewRenderer: renderer });
 let nations: NationSystem | null = null;
 renderer.setNationSource(() => nations);
 
@@ -161,6 +168,10 @@ function rebuild(): void {
       bio = r.updatedBiosphere;
     }
   }
+  // ?body=exoskeletal|shelled|gelatinous|cartilaginous|filamentous|… gives the
+  // thinking species that body, so each architecture family can be looked at.
+  const body = params.get('body');
+  if (body) species = species.map(sp => sp.dna.intelligence >= 3 ? { ...sp, physicalTraits: { ...sp.physicalTraits, bodyStructure: body } } : sp);
   assignDominantSpecies(grid, species);
 
   const star = makeStar();

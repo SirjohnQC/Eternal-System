@@ -1,0 +1,131 @@
+{
+ "name": "kit-walls",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 0,
+   "w": 25,
+   "h": 28,
+   "tag": "wall",
+   "label": "timber plaster"
+  },
+  {
+   "i": 1,
+   "x": 27,
+   "y": 0,
+   "w": 26,
+   "h": 28,
+   "tag": "wall",
+   "label": "grey stone"
+  },
+  {
+   "i": 2,
+   "x": 55,
+   "y": 0,
+   "w": 26,
+   "h": 28,
+   "tag": "wall",
+   "label": "red brick"
+  },
+  {
+   "i": 3,
+   "x": 83,
+   "y": 0,
+   "w": 25,
+   "h": 28,
+   "tag": "wall",
+   "label": "logs"
+  },
+  {
+   "i": 4,
+   "x": 110,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "adobe"
+  },
+  {
+   "i": 5,
+   "x": 137,
+   "y": 1,
+   "w": 26,
+   "h": 27,
+   "tag": "wall",
+   "label": "whitewash"
+  },
+  {
+   "i": 6,
+   "x": 165,
+   "y": 0,
+   "w": 27,
+   "h": 28,
+   "tag": "wall",
+   "label": "dark stone"
+  },
+  {
+   "i": 7,
+   "x": 194,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "planks"
+  },
+  {
+   "i": 8,
+   "x": 221,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "adobe 2"
+  },
+  {
+   "i": 9,
+   "x": 248,
+   "y": 1,
+   "w": 26,
+   "h": 27,
+   "tag": "wall",
+   "label": "whitewash 2"
+  },
+  {
+   "i": 10,
+   "x": 276,
+   "y": 0,
+   "w": 27,
+   "h": 28,
+   "tag": "wall",
+   "label": "dark stone 2"
+  },
+  {
+   "i": 11,
+   "x": 305,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "planks 2"
+  },
+  {
+   "i": 12,
+   "x": 332,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "timber plaster 2"
+  },
+  {
+   "i": 13,
+   "x": 359,
+   "y": 1,
+   "w": 25,
+   "h": 27,
+   "tag": "wall",
+   "label": "planks 3"
+  }
+ ]
+}
