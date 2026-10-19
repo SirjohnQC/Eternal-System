@@ -75,6 +75,61 @@ function hashStr(s: string): number {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
+/**
+ * Look genes: how ONE species differs from every other of its body plan —
+ * proportions, colour drift, horns, crests, extra eyes, back features and
+ * pattern. Rendering only (no simulation state): rolled from the species id,
+ * and about half inherited from its ancestor's roll, so a lineage keeps a
+ * family look while its branches drift apart.
+ */
+export interface Morph {
+  /** -1..1: hue drift (scaled per palette), saturation and lightness nudges. */
+  hue: number; sat: number; lum: number;
+  /** Body length (x), girth (y above the hips, z) and leg length (y below). */
+  len: number; girth: number; leg: number;
+  /** 0 none · 1 straight pair · 2 curled pair · 3 nose horn · 4 antlers. */
+  horn: number;
+  /** 0 none · 1 fin crest · 2 plume · 3 ear tufts · 4 frill. */
+  crest: number;
+  /** Extra eye pairs above the first (0–2). */
+  eyes: number;
+  /** 0 none · 1 plates · 2 sail · 3 bumps. */
+  back: number;
+  /** 0 plain · 1 stripes · 2 spots · 3 saddle · 4 bands · 5 mottle · 6 checks. */
+  pattern: number;
+  /** Marking hue offset, degrees. */
+  markHue: number;
+  /** 0..1: picks an alternative body plan where the genome allows two. */
+  alt: number;
+}
+
+function rollMorph(seed: number): number[] {
+  return Array.from({ length: 14 }, (_, i) => hash3(seed, i, 71, 13));
+}
+
+export function morphOf(g: { id: string; ancestorId?: string | null }): Morph {
+  const own = rollMorph(hashStr(g.id));
+  const anc = g.ancestorId ? rollMorph(hashStr(g.ancestorId)) : own;
+  // Continuous genes blend toward the ancestor; discrete ones are inherited
+  // or mutated whole.
+  const c = (i: number) => anc[i] * 0.5 + own[i] * 0.5;
+  const d = (i: number) => (hash3(hashStr(g.id), i, 5, 77) < 0.45 ? anc[i] : own[i]);
+  const pickN = (v: number, n: number) => Math.min(n - 1, Math.floor(v * n));
+  const r = (v: number, lo: number, hi: number) => lo + v * (hi - lo);
+  return {
+    hue: r(c(0), -1, 1), sat: r(c(1), -1, 1), lum: r(c(2), -1, 1),
+    len: r(c(3), 0.82, 1.3), girth: r(c(4), 0.82, 1.25), leg: r(c(5), 0.72, 1.4),
+    // Most species bear no horn or crest; a third do.
+    horn: d(6) < 0.62 ? 0 : 1 + pickN((d(6) - 0.62) / 0.38, 4),
+    crest: d(7) < 0.6 ? 0 : 1 + pickN((d(7) - 0.6) / 0.4, 4),
+    eyes: d(8) < 0.85 ? 0 : d(8) < 0.96 ? 1 : 2,
+    back: d(9) < 0.55 ? 0 : 1 + pickN((d(9) - 0.55) / 0.45, 3),
+    pattern: pickN(d(10), 7),
+    markHue: r(c(11), -70, 70),
+    alt: d(12),
+  };
+}
+
 export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647 + seed * 1442695041) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
@@ -84,8 +139,12 @@ export function hash3(x: number, y: number, z: number, seed: number): number {
 function buildPalette(g: SpeciesGenome, seed: number): Ramp[] {
   const env = ENV_TONE[g.dna.environment] ?? ENV_TONE.land;
   const jit = (hash3(seed, 1, 2, 3) - 0.5) * 16;
-  const H = (META_HUE[g.dna.metabolism] ?? 30) + env.dh + jit;
-  let S = env.s, L = env.l + (hash3(seed, 4, 5, 6) - 0.5) * 0.06;
+  // Look genes: a species' colour drifts well away from its metabolism's
+  // hue (plants less, so they stay plant-coloured).
+  const mo = morphOf(g);
+  const drift = mo.hue * (g.dna.metabolism === 'photosynthetic' ? 32 : 75);
+  const H = (META_HUE[g.dna.metabolism] ?? 30) + env.dh + jit + drift;
+  let S = Math.max(0.15, Math.min(0.9, env.s + mo.sat * 0.18)), L = env.l + (hash3(seed, 4, 5, 6) - 0.5) * 0.06 + mo.lum * 0.1;
   if (g.dna.diet === 'decomposer') S *= 0.7;
   // A colony people's skin follows its world's light (Divergence.ts):
   // harsher light darker, dim light paler and a little washed out.
@@ -98,9 +157,10 @@ function buildPalette(g: SpeciesGenome, seed: number): Ramp[] {
   r[PRIMARY] = ramp(H, S, L, a);
   r[BELLY] = ramp(toward(H, 48, 30), S * 0.45, Math.min(0.8, L + 0.2), a);
   // Markings: a shifted, darker hue, so stripes and spots read at a glance.
-  r[MARK] = ramp(H + (g.dna.diet === 'carnivore' ? -18 : 22), Math.min(1, S * 1.1), L - 0.14, a);
+  r[MARK] = ramp(H + mo.markHue, Math.min(1, S * 1.15), L - 0.14, a);
   r[ACCENT] = ramp(H + 165 * (hash3(seed, 7, 8, 9) < 0.5 ? 1 : -1) * 0.35 + 20, Math.min(0.9, S * 1.1), Math.min(0.72, L + 0.06), a);
-  r[SHELL] = ramp(toward(H, 35, 50), S * 0.5, Math.min(0.75, L + 0.12));
+  // Shells take the species' colour too, turned by its marking hue.
+  r[SHELL] = ramp(H + mo.markHue * 0.6, Math.max(0.2, S * 0.62), Math.min(0.75, L + 0.12));
   r[BONE] = ramp(44, 0.32, 0.8);
   r[LEAF] = ramp(112, 0.5, 0.42);
   r[GLOW] = ramp(172, 0.85, 0.66);
@@ -150,6 +210,8 @@ export class Body {
   dots: Dot[] = [];
   /** Centre of a coiled shell, for its spiral banding. */
   shell: V3 | null = null;
+  /** Leg-length factor the plan asks of the look-gene warp (a tortoise's stubby legs). */
+  legK = 1;
   group(side = 0, blend = 0.06, noPattern = false, facet = false): number {
     this.groups.push({ side, blend, noPattern, facet });
     return this.groups.length - 1;
@@ -284,6 +346,13 @@ interface Traits {
   aggr: number; intel: number;
   sense: string; mobility: string; body: string;
   deep: boolean;
+  /** The species' look genes. */
+  m: Morph;
+}
+
+/** A colony that moves wears a colony's lumpy, mottled hide on its walker's or swimmer's body. */
+function colonyHide(g: SpeciesGenome, m: Morph): Morph {
+  return g.physicalTraits.bodyStructure === 'colonial' && g.dna.locomotion !== 'stationary' ? { ...m, back: 3, pattern: 5 } : m;
 }
 
 function traitsOf(g: SpeciesGenome): Traits {
@@ -299,6 +368,7 @@ function traitsOf(g: SpeciesGenome): Traits {
     sense: g.physicalTraits.sensorySystem, mobility: g.physicalTraits.mobilityType,
     body: g.physicalTraits.bodyStructure,
     deep: g.dna.environment === 'deep_sea',
+    m: colonyHide(g, morphOf(g)),
   };
 }
 
@@ -346,13 +416,65 @@ function headParts(B: Body, t: Traits, h: V3, hr: number, gHead: number, gNear: 
         hr * 0.32, hr * 0.06, BONE, s > 0 ? gNear : gFar);
     }
   }
+  // Look genes: horns, crests, extra eyes.
+  const m = t.m;
+  if (t.aggr < 8 && m.horn) {
+    if (m.horn === 3) {
+      B.cone([hx + hr * 0.9, hy + hr * 0.1, 0], [hx + hr * 1.35, hy + hr * 1.0, 0], hr * 0.22, hr * 0.03, BONE, gHead);
+    } else for (const s of [1, -1]) {
+      const g = s > 0 ? gNear : gFar;
+      if (m.horn === 1) {
+        B.cone([hx - hr * 0.1, hy + hr * 0.7, s * hr * 0.45], [hx - hr * 0.35, hy + hr * 1.8, s * hr * 0.6], hr * 0.2, hr * 0.03, BONE, g);
+      } else if (m.horn === 2) {
+        B.chain([[hx - hr * 0.1, hy + hr * 0.6, s * hr * 0.5], [hx - hr * 0.8, hy + hr * 1.1, s * hr * 0.9],
+                 [hx - hr * 0.9, hy + hr * 0.3, s * hr * 1.0], [hx - hr * 0.4, hy - hr * 0.1, s * hr * 0.95]], hr * 0.24, hr * 0.06, BONE, g);
+      } else {
+        // Antlers: a beam with two tines.
+        const base: V3 = [hx - hr * 0.2, hy + hr * 0.7, s * hr * 0.4], top: V3 = [hx - hr * 0.7, hy + hr * 2.2, s * hr * 0.9];
+        B.cone(base, top, hr * 0.12, hr * 0.05, BONE, g);
+        B.cone([hx - hr * 0.4, hy + hr * 1.4, s * hr * 0.6], [hx + hr * 0.2, hy + hr * 2.0, s * hr * 0.75], hr * 0.07, hr * 0.03, BONE, g);
+        B.cone([hx - hr * 0.6, hy + hr * 1.9, s * hr * 0.8], [hx - hr * 1.2, hy + hr * 2.5, s * hr * 0.9], hr * 0.06, hr * 0.03, BONE, g);
+      }
+    }
+  }
+  if (m.crest === 1) {
+    B.tri([hx + hr * 0.3, hy + hr * 0.8, 0], [hx - hr * 1.1, hy + hr * 1.9, 0], [hx - hr * 0.9, hy + hr * 0.6, 0], hr * 0.07, ACCENT, gHead);
+  } else if (m.crest === 2) {
+    for (let i = 0; i < 3; i++) {
+      B.chain([[hx - hr * 0.1, hy + hr * 0.8, 0], [hx - hr * (0.5 + i * 0.3), hy + hr * (1.8 - i * 0.2), (i - 1) * hr * 0.3],
+               [hx - hr * (1.1 + i * 0.4), hy + hr * (2.0 - i * 0.35), (i - 1) * hr * 0.4]], hr * 0.1, hr * 0.04, ACCENT, gHead);
+    }
+  } else if (m.crest === 3) {
+    for (const s of [1, -1]) {
+      B.cone([hx - hr * 0.2, hy + hr * 0.7, s * hr * 0.55], [hx - hr * 0.45, hy + hr * 1.55, s * hr * 0.75], hr * 0.28, hr * 0.04, PRIMARY, s > 0 ? gNear : gFar);
+    }
+  } else if (m.crest === 4) {
+    // A frill fanning out behind the head.
+    for (const s of [1, -1]) {
+      B.tri([hx - hr * 0.3, hy + hr * 0.2, s * hr * 0.4], [hx - hr * 1.1, hy + hr * 1.5, s * hr * 1.2], [hx - hr * 1.2, hy - hr * 0.5, s * hr * 1.1], hr * 0.06, ACCENT, s > 0 ? gNear : gFar);
+    }
+  }
   const style = eyeStyle(t);
   const eyeSize = style === 'compound' ? 1.4 : style === 'vision' ? 1.1 : 0.8;
   B.eyes.push({ p: [hx + hr * 0.55, hy + hr * 0.35, hr * 0.62], style, size: eyeSize * (t.intel >= 6 ? 1.1 : 1) });
+  for (let i = 1; i <= m.eyes; i++) {
+    B.eyes.push({ p: [hx + hr * (0.45 - i * 0.22), hy + hr * (0.35 + i * 0.32), hr * 0.6], style, size: eyeSize * 0.75 });
+  }
 }
 
 /** Dorsal spikes along a line at y above x0..x1 (aggression). */
 function spikes(B: Body, t: Traits, x0: number, x1: number, yAt: (x: number) => number, g: number): void {
+  // Look genes: plates, a sail or bumps along the back of calmer species.
+  if (t.aggr < 5 && t.m.back) {
+    const n = t.m.back === 2 ? 1 : 4;
+    for (let i = 0; i < n; i++) {
+      const x = x0 + (x1 - x0) * (i + 0.5) / n, y = yAt(x);
+      if (t.m.back === 1) B.tri([x - 0.05, y - 0.02, 0], [x + 0.05, y - 0.02, 0], [x, y + 0.1, 0], 0.012, SHELL, g);
+      else if (t.m.back === 2) B.tri([x0, y - 0.02, 0], [x1, yAt(x1) - 0.02, 0], [(x0 + x1) / 2 - 0.05, y + 0.22, 0], 0.012, ACCENT, g);
+      else B.ell([x, y, 0], [0.045, 0.03, 0.04], MARK, g);
+    }
+    return;
+  }
   if (t.aggr < 5) return;
   const n = t.aggr >= 8 ? 5 : 4;
   for (let i = 0; i < n; i++) {
@@ -395,6 +517,17 @@ function planQuadruped(B: Body, t: Traits): void {
   const tw = 0.04 * sw(0.25);
   B.chain([[-0.36, 0.06, 0], [-0.52, 0.13 + tw * 0.5, 0], [-0.66, 0.1 + tw, 0]], 0.06 * k, 0.018, PRIMARY, gBody);
   spikes(B, t, -0.3, 0.28, x => 0.15 * k + 0.02 * Math.cos(x * 4), gBody);
+}
+
+/** A shelled walker: a low quadruped under a domed, plated carapace. */
+function planTortoise(B: Body, t: Traits): void {
+  const lt: Traits = { ...t, m: { ...t.m, back: 0 }, aggr: Math.min(t.aggr, 4) };
+  planQuadruped(B, lt);
+  B.legK = 0.55;
+  const g = B.group(0, 0.05, true);
+  const k = t.bulk;
+  B.ell([-0.02, 0.1 * k, 0], [0.42, 0.22 * k, 0.24 * k], SHELL, g);
+  B.ell([-0.02, 0.24 * k, 0], [0.28, 0.08 * k, 0.16 * k], SHELL, g);
 }
 
 function planBiped(B: Body, t: Traits): void {
@@ -505,12 +638,12 @@ function planSnail(B: Body, t: Traits): void {
   const gBody = B.group(0, 0.06, true), gShell = B.group(0, 0.02), gFar = B.group(-1, 0.02), gNear = B.group(1, 0.02);
   // The foot stretches forward and gathers back.
   const st = 0.03 * sw();
-  B.ell([0.02 + st, -0.38, 0], [0.42 + st, 0.08, 0.13 * k], BELLY, gBody);
-  B.cone([0.3 + st, -0.36, 0], [0.44 + st * 1.5, -0.24, 0], 0.08, 0.07, BELLY, gBody);
+  B.ell([0.02 + st, -0.38, 0], [0.42 + st, 0.08, 0.13 * k], PRIMARY, gBody);
+  B.cone([0.3 + st, -0.36, 0], [0.44 + st * 1.5, -0.24, 0], 0.08, 0.07, PRIMARY, gBody);
   B.ell([-0.06, -0.12, 0], [0.24 * k, 0.24 * k, 0.17 * k], SHELL, gShell);
   B.shell = [-0.06, -0.12, 0];
   for (const [s, g] of [[-1, gFar], [1, gNear]] as Array<[number, number]>) {
-    B.cone([0.44 + st * 1.5, -0.22, s * 0.04], [0.5 + st * 1.5 + 0.02 * sw(0.25 * s), -0.04, s * 0.06], 0.02, 0.015, BELLY, g);
+    B.cone([0.44 + st * 1.5, -0.22, s * 0.04], [0.5 + st * 1.5 + 0.02 * sw(0.25 * s), -0.04, s * 0.06], 0.02, 0.015, PRIMARY, g);
   }
   B.eyes.push({ p: [0.5 + st * 1.5, -0.03, 0.08], style: eyeStyle(t), size: 0.8 });
   spikes(B, t, -0.2, 0.1, x => -0.12 + 0.24 * k * Math.sqrt(Math.max(0, 1 - ((x + 0.06) / (0.24 * k)) ** 2)), gShell);
@@ -1093,12 +1226,48 @@ export function sapientFormOf(g: SpeciesGenome): string | null {
   return 'humanoid';
 }
 
+/**
+ * Look genes: stretch a built body — length along x, girth above the hips
+ * and across (z), legs below. A continuous warp of space, so every joint
+ * stays joined; radii follow it.
+ */
+function warpBody(B: Body, m: Morph): Body {
+  const gy = Math.sqrt(m.girth);
+  const leg = m.leg * B.legK;
+  const W = (p: V3): V3 => [p[0] * m.len, p[1] >= 0 ? p[1] * gy : p[1] * leg, p[2] * m.girth];
+  const rs = Math.sqrt(m.girth);
+  for (const pr of B.prims) {
+    const a0 = pr.a, b0 = pr.b, c0 = pr.c;
+    pr.a = W(a0); pr.b = pr.kind === ELL ? pr.a : W(b0); pr.c = pr.kind === ELL ? pr.a : W(c0);
+    if (pr.kind === ELL) pr.r = [pr.r[0] * m.len, pr.r[1] * (a0[1] >= 0 ? gy : 1), pr.r[2] * m.girth];
+    else if (pr.kind === CONE) pr.r = [pr.r[0] * rs, pr.r[1] * rs, 0];
+    pr.bc = W(pr.bc);
+    pr.br *= Math.max(m.len, leg, m.girth);
+  }
+  for (const e of B.eyes) e.p = W(e.p);
+  for (const d of B.dots) d.p = W(d.p);
+  if (B.shell) B.shell = W(B.shell);
+  return B;
+}
+
 function planFor(g: SpeciesGenome, t: Traits): Body {
+  return warpBody(planRaw(g, t), t.m);
+}
+
+function planRaw(g: SpeciesGenome, t: Traits): Body {
   const B = new Body();
   const loc = g.dna.locomotion, body = t.body;
+  // How it moves decides the plan first; a body type only takes over where it
+  // shapes the whole animal. A colony that walks or flies is drawn as a
+  // walker or flier with a colony's lumpy, mottled hide, not as a blob, and a
+  // radial animal that walks is many-legged rather than a starfish (#112).
+  const sessile = loc === 'stationary';
   if (body === 'single-celled') planCell(B, t);
-  else if (body === 'colonial') planColony(B, t);
-  else if (body === 'radial' && loc !== 'flying') planStar(B, t);
+  else if (body === 'colonial' && (sessile || (loc === 'crawling' && t.m.alt < 0.3))) planColony(B, t);
+  else if (body === 'radial' && (sessile || (loc === 'crawling' && t.m.alt < 0.5))) planStar(B, t);
+  else if (body === 'radial' && loc === 'swimming') planJelly(B, t);
+  else if (body === 'radial' && loc === 'flying') planBalloon(B, t);
+  else if (body === 'radial') planInsectWalker(B, t, t.m.alt < 0.5 ? 4 : 5);
   else if (body === 'gelatinous' && loc !== 'walking' && loc !== 'flying') planJelly(B, t);
   else if (loc === 'flying') {
     if (t.mobility === 'gas bladders') planBalloon(B, t);
@@ -1115,7 +1284,8 @@ function planFor(g: SpeciesGenome, t: Traits): Body {
     else if (body === 'exoskeletal' || body === 'segmented') planInsectWalker(B, t, 3);
     else planQuadruped(B, t);
   } else if (loc === 'crawling') {
-    if (body === 'shelled') planSnail(B, t);
+    if (body === 'shelled' && t.m.alt >= 0.5) planTortoise(B, t);
+    else if (body === 'shelled') planSnail(B, t);
     else if (body === 'exoskeletal') planCrab(B, t);
     else if (body === 'filamentous') planWorm(B, t);
     else planCrawler(B, t);
@@ -1437,6 +1607,19 @@ function forgePose(g: SpeciesGenome, t: Traits, B: Body, px: number, frame?: [nu
 
 /** Body-anchored markings by diet: stripes on hunters, spots on grazers, mottling on the rest. */
 function markAt(g: SpeciesGenome, t: Traits, w: V3): boolean {
+  // Look genes choose the pattern; the diet's own (below) is the fallback.
+  switch (t.m.pattern) {
+    case 0: return false;                                                              // plain
+    case 1: return Math.sin(w[0] * (26 + t.m.len * 10) + w[1] * 8) > 0.55;                // stripes
+    case 2: {                                                                          // spots
+      const cx = Math.floor(w[0] * 14), cy = Math.floor(w[1] * 14), cz = Math.floor(w[2] * 14);
+      return hash3(cx, cy, cz, t.seed) > 0.7 && (w[0] * 14 - cx - 0.5) ** 2 + (w[1] * 14 - cy - 0.5) ** 2 < 0.16;
+    }
+    case 3: return w[1] > 0.1 && Math.abs(w[0]) < 0.2;                                   // saddle
+    case 4: return Math.sin(w[0] * 18) > 0.7;                                            // bands
+    case 5: return hash3(Math.floor(w[0] * 9), Math.floor(w[1] * 9), Math.floor(w[2] * 9), t.seed) > 0.62; // mottle
+    default: break;                                                                    // the diet's own
+  }
   const pick = t.seed % 4;
   if (t.carn) return Math.sin(w[0] * 34 + w[1] * 8) > 0.55;                                   // stripes
   if (t.herb) {                                                                              // spots
