@@ -1353,6 +1353,14 @@ export function* surfaceSteps(
           river = 0; fall = false;
         }
       }
+      // A fire's scar (Wildfire.ts): charred ground, dithered so it reads as
+      // burnt patches with stubs of the old cover showing, fading as it heals.
+      const burn = cell.burn ?? 0;
+      if (burn > 0.05 && river < 2) {
+        const keep = hash1(Math.floor(world.wx(px) * 2) * 11 + Math.floor(world.wy(py) * 2) * 17, seed + 31) < burn * 0.9;
+        const m = keep ? 0.82 * burn : 0.35 * burn;
+        br = br * (1 - m) + 38 * m; bg = bg * (1 - m) + 32 * m; bb = bb * (1 - m) + 28 * m;
+      }
       if (river === 1) {
         // Wet ground: darker and a touch greener/bluer, not a drawn outline.
         br = br * 0.72; bg = bg * 0.80; bb = bb * 0.84 + 6;

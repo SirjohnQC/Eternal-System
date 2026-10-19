@@ -1,0 +1,59 @@
+{
+ "name": "medieval",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 0,
+   "w": 61,
+   "h": 65,
+   "tag": "timber",
+   "label": "timber-framed house"
+  },
+  {
+   "i": 1,
+   "x": 63,
+   "y": 6,
+   "w": 62,
+   "h": 59,
+   "tag": "stone",
+   "label": "stone cottage"
+  },
+  {
+   "i": 2,
+   "x": 127,
+   "y": 0,
+   "w": 47,
+   "h": 65,
+   "tag": "chapel",
+   "label": "chapel"
+  },
+  {
+   "i": 3,
+   "x": 176,
+   "y": 1,
+   "w": 37,
+   "h": 64,
+   "tag": "tower",
+   "label": "watchtower"
+  },
+  {
+   "i": 4,
+   "x": 215,
+   "y": 6,
+   "w": 62,
+   "h": 59,
+   "tag": "mill",
+   "label": "watermill"
+  },
+  {
+   "i": 5,
+   "x": 279,
+   "y": 0,
+   "w": 65,
+   "h": 65,
+   "tag": "hall",
+   "label": "market hall"
+  }
+ ]
+}

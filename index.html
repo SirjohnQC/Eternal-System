@@ -2248,9 +2248,9 @@ body.hud-reveal #game-hud > *{transition:opacity 1.4s ease}
 ═══════════════════════════════════════════════════════════════ */
 #planet-overlay{
   display:none;
-  /* Between the game's left rail and bottom status bar, so the player's
-     tools stay on screen in the planet view too. */
-  position:fixed;inset:0 0 var(--status) var(--rail);z-index:200;
+  /* Between the top bar, the game's left rail and the bottom status bar, so
+     the player's tools and DP / TP / DNA stay on screen in the planet view too. */
+  position:fixed;inset:var(--top) 0 var(--status) var(--rail);z-index:200;
   background:#000008;
   flex-direction:column;
 }

@@ -109,6 +109,11 @@ export interface GridCell {
   riverDir:     number;
   /** Surface level of the lake this cell lies under (#47); 0/absent: none. */
   lake?:        number;
+  /**
+   * 0..1: a fire's scar (Wildfire.ts). Charred ground, life cut back, fields
+   * bearing less; fades over a few generations. 0/absent: never burnt.
+   */
+  burn?:        number;
 }
 
 export type PlanetGrid = GridCell[][];
@@ -123,7 +128,7 @@ export const GRID_GENERATOR = 3; // 2: continents no longer mirrored (#104); 3: 
 /** Every field of a cell, saved where it differs from the generated world (#77). */
 export const SAVED_GRID_FIELDS = [
   'elevation', 'moisture', 'temperature', 'biome', 'fertility', 'lifeDensity',
-  'dominantSpeciesId', 'civId', 'river', 'riverDir', 'lake',
+  'dominantSpeciesId', 'civId', 'river', 'riverDir', 'lake', 'burn',
 ] as const;
 
 /**
@@ -1015,6 +1020,7 @@ export function generatePlanetGrid(
         civId:             null,
         river:             0,
         riverDir:          -1,
+        burn:              0,
       };
     }
   }

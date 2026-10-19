@@ -1373,7 +1373,8 @@ export class NationSystem {
       if (o < 0) continue;
       const cell = grid[(i / GRID_SIZE) | 0][i % GRID_SIZE];
       land[o]++;
-      food[o] += (FERTILE[cell.biome] ?? 0) * cell.fertility * FOOD_PER_FERTILE * (cell.river > 0.5 ? 1.3 : 1);
+      // A fire's scar bears less until it heals (Wildfire.ts).
+      food[o] += (FERTILE[cell.biome] ?? 0) * cell.fertility * FOOD_PER_FERTILE * (cell.river > 0.5 ? 1.3 : 1) * (1 - 0.6 * (cell.burn ?? 0));
       mats[o] += MATERIAL[cell.biome] ?? 0.1;   // fieldstone and clay anywhere
       live[o] += isHabitable(cell.biome) ? cell.lifeDensity : 0;
     }

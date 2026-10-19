@@ -19,6 +19,7 @@ import {
   Body, Camera3, renderBody, ramp, toward, hash3, GLOW,
   type Ramp, type RGB, type V3, type ForgedSprite,
 } from './CreatureForge';
+import { floraOverride } from './SpriteOverride';
 
 export type FloraKind =
   | 'conifer' | 'broadleaf' | 'palm' | 'bush' | 'grass' | 'scrub' | 'cactus' | 'mushroom'
@@ -317,6 +318,8 @@ export interface FloraSprite extends ForgedSprite {
 }
 
 export function forgeFlora(kind: FloraKind, variant: number, px: number, planetType: string, ground: RGB): FloraSprite {
+  const sheet = floraOverride(kind, variant, px, planetType);
+  if (sheet) return sheet;
   const v = ((variant % FLORA_VARIANTS) + FLORA_VARIANTS) % FLORA_VARIANTS + 1;
   const B = planFor(kind, v);
   const pal = palette(planetType, ground, v);
