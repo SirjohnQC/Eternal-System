@@ -41,6 +41,7 @@ import {
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import { FloraLayer, type FloraView } from './FloraLayer';
+import { spriteFor, skirtTexture, type OverrideSprite } from './SpriteOverride';
 import { WX_NX, WX_NY, type ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
@@ -1744,6 +1745,35 @@ export function* crustSteps(
   let iters = 0;
 
   // ── Sheer front wall ──────────────────────────────────────────────────────
+  // With the hand-made textures (?sprites=1) the wall is a tiling cliff or
+  // sea cross-section, one texel per world px, shaded for the disc's curve.
+  // Earth-coloured worlds keep the textures' colours; the others map their
+  // light and dark onto their own rock and sea.
+  const texH = Math.max(4, Math.round(wall / k));
+  const texEarth = opts.planetType === 'gas' ? null : skirtTexture('skirt-earth', texH);
+  const texSea = opts.planetType === 'gas' ? null : skirtTexture('skirt-water', texH);
+  const rawTex = opts.planetType === 'rocky' || opts.planetType === 'ocean';
+  const texel = (t: OverrideSprite, fx: number, depth: number, wallH: number): RGB | null => {
+    const tx = ((fx % t.width) + t.width) % t.width;
+    const ty = Math.min(t.height - 1, Math.max(0, Math.floor(depth / wallH * t.height)));
+    const i = (ty * t.width + tx) * 4;
+    return t.data[i + 3] ? rgb(t.data[i], t.data[i + 1], t.data[i + 2]) : null;
+  };
+  const lumOf = (c: RGB) => (0.3 * c.r + 0.55 * c.g + 0.15 * c.b) / 255;
+  // One material all round: the skirt is sea if most of the rim is sea, else
+  // cliff. Switching per column left hard-edged rectangles wherever a
+  // continent reached the rim. (rimWater below still marks the real sea
+  // edge, for the falls.)
+  let seaCols = 0;
+  {
+    const hasOcc = opts.occupancy && opts.occupancy.length === VW * VH;
+    for (let x = rimX0; x <= rimX1; x++) {
+      const fx = (x - cx) / rx;
+      const fy = Math.max(0, Math.min(VH - 1, Math.floor(cyTop + Math.sqrt(Math.max(0, 1 - fx * fx)) * ry)));
+      if (!hasOcc || opts.occupancy![fy * VW + x] !== 0) seaCols++;
+    }
+  }
+  const seaSkirt = seaCols * 2 >= cols;
   for (let x = rimX0; x <= rimX1; x++) {
     const i = x - rimX0;
     const wx = world.wx(x);
@@ -1754,8 +1784,8 @@ export function* crustSteps(
     wallBottom[i] = bottomY;
     const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
-    const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
-    rimWater[i] = water ? 1 : 0;
+    rimWater[i] = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0 ? 1 : 0;
+    const water = seaSkirt;
     // Facet stripe every 14 WORLD px, 1 screen px wide.
     const wk = Math.round(wx * k), period = 14 * k;
     const facetCol = ((wk % period) + period) % period < 1;
@@ -1777,7 +1807,17 @@ export function* crustSteps(
       const wy = Math.floor(depth / k);
       let c: RGB;
       // Under land the sea still rings the rim: a thin water lip on top.
-      if (water || depth < 2 * k) {
+      const tSea = (water || depth < 2 * k) && texSea ? texel(texSea, fwx, depth, wallH) : null;
+      const tEarth = !(water || depth < 2 * k) && texEarth ? texel(texEarth, fwx, depth, wallH) : null;
+      if (tSea) {
+        const sea = (() => { const t = clamp01(depth / wallH); return rgb(mix(pal.waterLip.r, pal.waterDeep.r, t), mix(pal.waterLip.g, pal.waterDeep.g, t), mix(pal.waterLip.b, pal.waterDeep.b, t)); })();
+        // Blended a third toward the world's own sea, so the wall matches the water on top.
+        const raw = rgb(mix(tSea.r, sea.r, 0.35), mix(tSea.g, sea.g, 0.35), mix(tSea.b, sea.b, 0.35));
+        c = shade(rawTex ? raw : shade(sea, 0.55 + 0.9 * lumOf(tSea)), light);
+      } else if (tEarth) {
+        const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(clamp01(depth / wallH) * 3));
+        c = shade(rawTex ? tEarth : shade(pal.strata[stripe], 0.5 + 1.0 * lumOf(tEarth)), light);
+      } else if (water || depth < 2 * k) {
         const t = clamp01(depth / wallH);
         const sea = rgb(
           mix(pal.waterLip.r, pal.waterDeep.r, t),
@@ -1797,20 +1837,10 @@ export function* crustSteps(
           c = shade(sea, light + (facetCol ? 0.20 : 0));
         }
       } else {
-        // Land at the rim: strata riddled with caverns.
+        // Land at the rim: solid strata (no caverns: they read as holes).
         const t = clamp01(depth / wallH);
         const stripe = Math.min(pal.strata.length - 1, 1 + Math.floor(t * 3));
-        const n = noise2(wx / 7, depth / k / 4, seed + 541);
-        // Water worlds keep a clean cliff face; caverns are for land worlds.
-        const inner = opts.planetType !== 'ocean' && opts.planetType !== 'gas' && depth > 1.5 * k && depth < wallH - 1.5 * k;
-        if (inner && n > 0.66) {
-          // Cavern: near-black, the odd crystal glint in the dark.
-          c = hash1(fwx * 61 + wy * 97, seed + 547) > 0.985 ? pal.facet : shade(pal.strata[pal.strata.length - 1], 0.32);
-        } else if (inner && n > 0.60) {
-          c = shade(pal.strata[stripe], light * 0.62);
-        } else {
-          c = shade(pal.strata[stripe], light);
-        }
+        c = shade(pal.strata[stripe], light);
       }
       g.fillStyle = css(c);
       g.fillRect(x, y, 1, 1);
@@ -1957,6 +1987,45 @@ export function* crustSteps(
     yield;
   }
 
+  // A hand-made sprite (SpriteOverride, ?sprites=1), its top-left at (x, y).
+  const stampSpr = (spr: OverrideSprite, x: number, y: number) => {
+    const X = Math.round(x), Y = Math.round(y);
+    for (let py = 0; py < spr.height; py++) {
+      const yy = Y + py;
+      if (yy < 0 || yy >= VH) continue;
+      for (let px = 0; px < spr.width; px++) {
+        const i = (py * spr.width + px) * 4;
+        if (!spr.data[i + 3]) continue;
+        const xx = X + px;
+        if (xx < rimX0 || xx > rimX1) continue;
+        g.fillStyle = `rgb(${spr.data[i]},${spr.data[i + 1]},${spr.data[i + 2]})`;
+        g.fillRect(xx, yy, 1, 1);
+        iters++;
+      }
+    }
+  };
+  const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
+  const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
+
+  // ── Hanging details ───────────────────────────────────────────────────────
+  // With the hand-made sheets: roots, vines and moss under a living world's
+  // keel; stalactites, icicles, crystals or lava drips under the others.
+  const hangTag = life ? 'living' : opts.planetType === 'ice' ? 'ice' : opts.planetType === 'crystal' ? 'crystal'
+    : opts.planetType === 'lava' ? 'lava' : hash1(3, seed + 611) < 0.5 ? 'rock' : 'dead';
+  if (opts.planetType !== 'gas' && spriteFor('hangings', [hangTag], 0, 4)) {
+    const hangW = Math.max(6, baseRx * 0.08);
+    for (let c = Math.floor(ox0 / hangW) - 1; c <= Math.floor(ox1 / hangW) + 1; c++) {
+      if (hash1(c * 29 + 3, seed + 621) < 0.4) continue;
+      const hx = (c + 0.2 + hash1(c * 31, seed + 623) * 0.6) * hangW;
+      if (Math.abs(hx / baseRx) > 0.9) continue;
+      const sx = cx + hx * k, j = Math.round(sx) - P0;
+      if (j < 0 || j >= pcols) continue;
+      const tw = Math.max(3, Math.round((3 + hash1(c * 37, seed + 627) * 4) * k));
+      const spr = spriteFor('hangings', [hangTag], (c * 7919 + seed) >>> 0, tw);
+      if (spr) stampSpr(spr, sx - spr.width / 2, wallBottom[j] + prof[j] - Math.max(1, Math.round(k)));
+    }
+  }
+
   // ── Floating shards ───────────────────────────────────────────────────────
   // Small chunks torn off the keel drift beneath the shallow outer peaks:
   // grassy (or bare) top, an inverted point below. Never deeper than crustH,
@@ -1964,8 +2033,6 @@ export function* crustSteps(
   const shardW = Math.max(8, baseRx * (0.14 + hash1(5, seed + 601) * 0.14));
   // How many break off varies per world: a few, or a swarm.
   const shardSkip = 0.25 + hash1(6, seed + 601) * 0.55;
-  const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
-  const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
   for (let c = Math.floor(ox0 / shardW) - 1; c <= Math.floor(ox1 / shardW) + 1; c++) {
     if (hash1(c * 61 + 9, seed + 71) < shardSkip) continue;
     const scx = (c + 0.25 + hash1(c * 43, seed + 73) * 0.5) * shardW;    // world x
@@ -1984,6 +2051,9 @@ export function* crustSteps(
     // One anchor row for the whole shard (the wall's ridge must not shear it),
     // and whole world cells filled edge to edge, so no zoom leaves gaps.
     const topY = wallBottom[j] + yTopW * k;
+    // A living world's shards are hand-made floating islets when the sheet is loaded.
+    const islet = life ? spriteFor('islets', ['islet'], (c * 104729 + seed) >>> 0, Math.round((hgt + 2) * k * 1.6)) : null;
+    if (islet) { stampSpr(islet, sx - islet.width / 2, topY); continue; }
     for (let dx = -half; dx <= half; dx++) {
       const span = Math.max(1, Math.round(hgt * (1 - Math.abs(dx) / (half + 1))));
       const X0 = Math.max(rimX0, Math.round(sx + dx * k)), X1 = Math.min(rimX1 + 1, Math.round(sx + (dx + 1) * k));

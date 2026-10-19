@@ -10,6 +10,7 @@
  * pixel rays plus limb prominences — drawn as a separate layer so callers can
  * spin and pulse it without re-baking the disc.
  */
+import { sunStep } from './SpriteOverride';
 
 export type RGB3 = readonly [number, number, number];
 
@@ -132,6 +133,14 @@ export function paintSunBody(
       // a sprite, without the dark ring that reads as a planet's shadow.
       if (Math.sqrt(r2) > R - 1) level = Math.min(level, 1.5);
       let idx = level < 1 ? 0 : level > 4 ? 4 : Math.floor(level);
+      // The hand-made sun (?sprites=1): its boiling surface sets the step;
+      // the star's own palette still colours it, and its rim stays.
+      const hand = sunStep(opts.phase ?? 0, dx / R, dy / R);
+      if (hand !== null) {
+        idx = Math.sqrt(r2) > R - 1 ? Math.min(hand, 1) : hand;
+        over(d, (y * W + x) * 4, pal[idx], alpha);
+        continue;
+      }
       for (const [sx, sy, sr] of spots) {
         const q = Math.hypot(dx - sx, dy - sy);
         if (q < sr * 0.55) { idx = 0; break; }

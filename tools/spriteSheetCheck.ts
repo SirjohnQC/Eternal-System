@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { PNG } from 'pngjs';
 
 const DIR = 'public/assets/sprites';
-const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons',
+const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons', 'islets', 'hangings', 'sun', 'skirt-earth', 'skirt-water',
   ...['humanoid', 'simian', 'reptilian', 'avian', 'insectoid', 'cephaloid', 'mycoid', 'crystalline'].map(f => `people-${f}`)];
 let failed = 0;
 const fail = (m: string) => { console.error('FAIL ' + m); failed++; };
