@@ -97,6 +97,23 @@ rule({
 });
 
 rule({
+  // Wildfire (#51): the burning set stays bounded, in the grid, and on land.
+  name: 'home fires are bounded and burn on land',
+  check: ({ engine }) => {
+    const st = (engine as any).fires;
+    if (!st) return null;
+    if (st.cells.length > 4000 || st.cells.length !== st.left.length) return `${st.cells.length} burning, ${st.left.length} timers`;
+    const g = (runtimeState as any).playerPlanetGrid;
+    for (const i of st.cells) {
+      if (!(i >= 0 && i < 65536)) return `cell ${i} out of the grid`;
+      const c = g?.[(i / 256) | 0]?.[i % 256];
+      if (c && ['ocean', 'deep_ocean', 'shallow'].includes(c.biome)) return `cell ${i} burning on water`;
+    }
+    return null;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,
@@ -1453,6 +1470,64 @@ for (const { seed, stats } of SEEDS) {
     else if (mean > 0.75) detail = `mean mirror score ${mean.toFixed(2)} over ${scores.length} worlds (> 0.75)`;
   } catch (err) { detail = `threw: ${(err as Error).message}`; }
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
+// ── Scenarios: wildfire (#51) ───────────────────────────────────────────────
+// Fires start, spread and end from the land's own state (Wildfire.ts).
+{
+  const { SeedRNG } = await import('../src/utils/SeedRNG');
+  const W = await import('../src/simulation/Wildfire');
+  const N = 256;
+  const land = (moist: number, biome = 'forest') => Array.from({ length: N }, () => Array.from({ length: N }, () => ({
+    elevation: 0.6, moisture: moist, temperature: 0.7, biome, fertility: 0.6, lifeDensity: 0.95,
+    dominantSpeciesId: null, civId: null, river: 0, riverDir: -1, burn: 0,
+  }))) as any;
+  const run = (name: string, fn: () => string | null) => {
+    const r: Rule = { name: `scenario: ${name}`, check: () => null };
+    rules.push(r);
+    let detail: string | null;
+    try { detail = fn(); } catch (err) { detail = `threw: ${(err as Error).message}`; }
+    if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+  };
+  const burnFrom = (g: any, seed: number) => {
+    const st = W.emptyFire(); st.cells.push(128 * N + 128); st.left.push(3);
+    const rng = new SeedRNG(seed); let steps = 0, peak = 0;
+    while (st.cells.length && steps < 500) { W.stepFire(st, g, rng); steps++; peak = Math.max(peak, st.cells.length); }
+    return { st, steps, peak };
+  };
+  run('wildfire: wet land does not catch or carry a fire', () => {
+    const g = land(0.8), st = W.emptyFire(), rng = new SeedRNG(3);
+    for (let i = 0; i < 400; i++) if (W.trySpark(st, g, rng, { era: 3, living: true }) >= 0) return 'a spark caught on wet land';
+    const { st: f } = burnFrom(g, 5);
+    return f.burnt > 20 ? `a forced fire burnt ${f.burnt} wet cells` : null;
+  });
+  run('wildfire: a dry forest fire spreads, then always burns out, leaving scars', () => {
+    const g = land(0.15), { st, steps, peak } = burnFrom(g, 7);
+    if (st.cells.length) return `still burning after ${steps} steps`;
+    if (st.burnt < 300) return `only ${st.burnt} cells burnt in dry forest`;
+    if (peak > W.MAX_BURNING) return `${peak} cells burning at once (cap ${W.MAX_BURNING})`;
+    const scarred = g.flat().filter((c: any) => c.burn > 0.9);
+    if (scarred.length < st.burnt) return `${scarred.length} scars for ${st.burnt} burnt cells`;
+    if (scarred.some((c: any) => c.lifeDensity > 0.2)) return 'life on a burnt cell was not cut back';
+    return null;
+  });
+  run('wildfire: water stops a fire', () => {
+    const g = land(0.15);
+    for (let r = 0; r < N; r++) for (const c of [140, 141, 142]) { g[r][c].biome = 'ocean'; g[r][c].elevation = 0.3; }
+    burnFrom(g, 9);
+    const beyond = g.flat().filter((c: any, i: number) => i % N > 142 && c.burn > 0).length;
+    return beyond ? `${beyond} cells burnt across the water` : null;
+  });
+  run('wildfire: same seed, same fire (deterministic)', () => {
+    const a = burnFrom(land(0.2), 11).st.burnt, b = burnFrom(land(0.2), 11).st.burnt;
+    return a === b ? null : `${a} vs ${b} cells`;
+  });
+  run('wildfire: scars heal within a few generations', () => {
+    const g = land(0.15); burnFrom(g, 13);
+    for (let i = 0; i < 16; i++) W.healScars(g);
+    const left = g.flat().filter((c: any) => (c.burn ?? 0) > 0).length;
+    return left ? `${left} cells still scarred after 16 generations` : null;
+  });
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────
