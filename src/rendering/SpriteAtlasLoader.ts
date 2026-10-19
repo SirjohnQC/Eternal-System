@@ -5,7 +5,7 @@
  */
 import { registerSheet, type SheetFrame } from './SpriteOverride';
 
-const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons',
+const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons', 'islets', 'hangings', 'sun',
   ...['humanoid', 'simian', 'reptilian', 'avian', 'insectoid', 'cephaloid', 'mycoid', 'crystalline'].map(f => `people-${f}`)];
 
 export function spritesRequested(): boolean {

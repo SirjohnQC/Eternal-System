@@ -51,3 +51,11 @@ One upright people per form (CreatureForge `peopleFormOf`), cut from sheet `7f1c
 | people-crystalline | `c1da7458-1fa7-491d-a5bd-24e4edb24abc` | `fcc65967-1bfa-4dc5-90d7-e76c1fe6aa33` |
 
 Animal test sheet (not wired): `5ddb03aa-d442-428e-8700-5ecbb2e5cc67`.
+
+## Sun and the disc's underside
+
+| Sheet | SpriteCook asset ID | Use |
+|---|---|---|
+| sun | still `e11e65e8-e729-4f1c-8b49-4059abdd6fa2`, boil animation `9784528f-2dc5-4229-9ced-4ad71d13b6a5` | `SunArt.paintSunBody` takes each pixel's step (0–4) from the frame's luminance; the star's own palette colours it |
+| islets | `2056734f-212e-4067-873a-d8ada1858ede` | living worlds' floating shards under the rim |
+| hangings | `a4713fd2-7737-42ee-b29a-3fc7a7b19891` | under the keel: `living` roots/vines/moss; `rock`, `ice`, `crystal`, `lava`, `dead` by world |

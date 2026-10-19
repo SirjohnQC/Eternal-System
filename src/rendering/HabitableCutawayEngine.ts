@@ -41,6 +41,7 @@ import {
 } from './SurfaceDecals';
 import { applyCamera, identityCamera, isIdentity, type Camera } from './ZoomCamera';
 import { FloraLayer, type FloraView } from './FloraLayer';
+import { spriteFor, type OverrideSprite } from './SpriteOverride';
 import { WX_NX, WX_NY, type ClimateSources } from './weather/WeatherClimate';
 import { WeatherSim, WX_DT, WX_WARMUP } from './weather/WeatherSim';
 import { WeatherPainter, buildWeatherLut, weatherLutSteps, WEATHER_PMAX } from './weather/WeatherPainter';
@@ -1938,6 +1939,45 @@ export function* crustSteps(
     yield;
   }
 
+  // A hand-made sprite (SpriteOverride, ?sprites=1), its top-left at (x, y).
+  const stampSpr = (spr: OverrideSprite, x: number, y: number) => {
+    const X = Math.round(x), Y = Math.round(y);
+    for (let py = 0; py < spr.height; py++) {
+      const yy = Y + py;
+      if (yy < 0 || yy >= VH) continue;
+      for (let px = 0; px < spr.width; px++) {
+        const i = (py * spr.width + px) * 4;
+        if (!spr.data[i + 3]) continue;
+        const xx = X + px;
+        if (xx < rimX0 || xx > rimX1) continue;
+        g.fillStyle = `rgb(${spr.data[i]},${spr.data[i + 1]},${spr.data[i + 2]})`;
+        g.fillRect(xx, yy, 1, 1);
+        iters++;
+      }
+    }
+  };
+  const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
+  const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
+
+  // ── Hanging details ───────────────────────────────────────────────────────
+  // With the hand-made sheets: roots, vines and moss under a living world's
+  // keel; stalactites, icicles, crystals or lava drips under the others.
+  const hangTag = life ? 'living' : opts.planetType === 'ice' ? 'ice' : opts.planetType === 'crystal' ? 'crystal'
+    : opts.planetType === 'lava' ? 'lava' : hash1(3, seed + 611) < 0.5 ? 'rock' : 'dead';
+  if (opts.planetType !== 'gas' && spriteFor('hangings', [hangTag], 0, 4)) {
+    const hangW = Math.max(6, baseRx * 0.08);
+    for (let c = Math.floor(ox0 / hangW) - 1; c <= Math.floor(ox1 / hangW) + 1; c++) {
+      if (hash1(c * 29 + 3, seed + 621) < 0.4) continue;
+      const hx = (c + 0.2 + hash1(c * 31, seed + 623) * 0.6) * hangW;
+      if (Math.abs(hx / baseRx) > 0.9) continue;
+      const sx = cx + hx * k, j = Math.round(sx) - P0;
+      if (j < 0 || j >= pcols) continue;
+      const tw = Math.max(3, Math.round((3 + hash1(c * 37, seed + 627) * 4) * k));
+      const spr = spriteFor('hangings', [hangTag], (c * 7919 + seed) >>> 0, tw);
+      if (spr) stampSpr(spr, sx - spr.width / 2, wallBottom[j] + prof[j] - Math.max(1, Math.round(k)));
+    }
+  }
+
   // ── Floating shards ───────────────────────────────────────────────────────
   // Small chunks torn off the keel drift beneath the shallow outer peaks:
   // grassy (or bare) top, an inverted point below. Never deeper than crustH,
@@ -1945,8 +1985,6 @@ export function* crustSteps(
   const shardW = Math.max(8, baseRx * (0.14 + hash1(5, seed + 601) * 0.14));
   // How many break off varies per world: a few, or a swarm.
   const shardSkip = 0.25 + hash1(6, seed + 601) * 0.55;
-  const ox0 = Math.floor(world.wx(rimX0)) - Math.round(world.wx(cx));
-  const ox1 = Math.floor(world.wx(rimX1)) - Math.round(world.wx(cx));
   for (let c = Math.floor(ox0 / shardW) - 1; c <= Math.floor(ox1 / shardW) + 1; c++) {
     if (hash1(c * 61 + 9, seed + 71) < shardSkip) continue;
     const scx = (c + 0.25 + hash1(c * 43, seed + 73) * 0.5) * shardW;    // world x
@@ -1965,6 +2003,9 @@ export function* crustSteps(
     // One anchor row for the whole shard (the wall's ridge must not shear it),
     // and whole world cells filled edge to edge, so no zoom leaves gaps.
     const topY = wallBottom[j] + yTopW * k;
+    // A living world's shards are hand-made floating islets when the sheet is loaded.
+    const islet = life ? spriteFor('islets', ['islet'], (c * 104729 + seed) >>> 0, Math.round((hgt + 2) * k * 1.6)) : null;
+    if (islet) { stampSpr(islet, sx - islet.width / 2, topY); continue; }
     for (let dx = -half; dx <= half; dx++) {
       const span = Math.max(1, Math.round(hgt * (1 - Math.abs(dx) / (half + 1))));
       const X0 = Math.max(rimX0, Math.round(sx + dx * k)), X1 = Math.min(rimX1 + 1, Math.round(sx + (dx + 1) * k));

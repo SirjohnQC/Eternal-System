@@ -137,6 +137,46 @@ function recolour(px: Uint8ClampedArray, sheet: Sheet, f: SheetFrame, t: Tint): 
   }
 }
 
+/** A sprite tagged `tags` from sheet `name`, picked by `seed`, about `tw` px wide; null without that sheet. */
+export function spriteFor(name: string, tags: string[], seed: number, tw: number, tint?: Tint): OverrideSprite | null {
+  return sheets.size ? pick(name, tags, seed, tw, tint) : null;
+}
+
+/** Normalised luminance range of each sheet frame (for quantising onto a game palette). */
+const lumRange = new Map<string, [number, number]>();
+
+/**
+ * The hand-made sun (sheet `sun`, an animated disc): the palette step 0..4
+ * at (u, v) in −1..1 across the disc for animation `phase` 0..1, by the
+ * frame's own luminance, so the game keeps each star's palette. Null
+ * without the sheet, or outside the drawn disc.
+ */
+export function sunStep(phase: number, u: number, v: number): number | null {
+  const sheet = sheets.get('sun');
+  if (!sheet || !sheet.frames.length) return null;
+  const n = sheet.frames.length;
+  const fi = ((Math.floor(phase * n) % n) + n) % n, f = sheet.frames[fi];
+  const x = Math.floor(f.x + (u * 0.5 + 0.5) * (f.w - 1) + 0.5), y = Math.floor(f.y + (v * 0.5 + 0.5) * (f.h - 1) + 0.5);
+  if (x < f.x || y < f.y || x >= f.x + f.w || y >= f.y + f.h) return null;
+  const i = (y * sheet.width + x) * 4;
+  if (sheet.data[i + 3] < 128) return null;
+  const lum = (r: number, g: number, b: number) => 0.3 * r + 0.55 * g + 0.15 * b;
+  let rg = lumRange.get(`sun:${fi}`);
+  if (!rg) {
+    let lo = 255, hi = 0;
+    for (let yy = f.y; yy < f.y + f.h; yy++) for (let xx = f.x; xx < f.x + f.w; xx++) {
+      const j = (yy * sheet.width + xx) * 4;
+      if (sheet.data[j + 3] < 128) continue;
+      const l = lum(sheet.data[j], sheet.data[j + 1], sheet.data[j + 2]);
+      lo = Math.min(lo, l); hi = Math.max(hi, l);
+    }
+    rg = [lo, Math.max(lo + 1, hi)];
+    lumRange.set(`sun:${fi}`, rg);
+  }
+  const t = (lum(sheet.data[i], sheet.data[i + 1], sheet.data[i + 2]) - rg[0]) / (rg[1] - rg[0]);
+  return t < 0.18 ? 0 : t < 0.42 ? 1 : t < 0.64 ? 2 : t < 0.84 ? 3 : 4;
+}
+
 /**
  * A people's walk cycle from its hand-made sheet (`people-<form>`: frames
  * cropped to one shared box), `n` frames picked evenly round the loop, about

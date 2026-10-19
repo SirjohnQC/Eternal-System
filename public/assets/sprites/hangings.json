@@ -1,0 +1,95 @@
+{
+ "name": "hangings",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 0,
+   "w": 39,
+   "h": 73,
+   "tag": "living",
+   "label": "tangled roots"
+  },
+  {
+   "i": 1,
+   "x": 41,
+   "y": 0,
+   "w": 31,
+   "h": 73,
+   "tag": "living",
+   "label": "leafy vines"
+  },
+  {
+   "i": 2,
+   "x": 74,
+   "y": 6,
+   "w": 34,
+   "h": 67,
+   "tag": "living",
+   "label": "moss curtain"
+  },
+  {
+   "i": 3,
+   "x": 110,
+   "y": 6,
+   "w": 36,
+   "h": 67,
+   "tag": "living",
+   "label": "roots with glowing mushrooms"
+  },
+  {
+   "i": 4,
+   "x": 148,
+   "y": 0,
+   "w": 31,
+   "h": 73,
+   "tag": "living",
+   "label": "flowering vines"
+  },
+  {
+   "i": 5,
+   "x": 181,
+   "y": 15,
+   "w": 37,
+   "h": 58,
+   "tag": "rock",
+   "label": "stalactites"
+  },
+  {
+   "i": 6,
+   "x": 220,
+   "y": 7,
+   "w": 31,
+   "h": 66,
+   "tag": "ice",
+   "label": "icicles"
+  },
+  {
+   "i": 7,
+   "x": 253,
+   "y": 23,
+   "w": 33,
+   "h": 50,
+   "tag": "crystal",
+   "label": "violet crystals"
+  },
+  {
+   "i": 8,
+   "x": 288,
+   "y": 3,
+   "w": 33,
+   "h": 70,
+   "tag": "lava",
+   "label": "lava drip"
+  },
+  {
+   "i": 9,
+   "x": 323,
+   "y": 5,
+   "w": 32,
+   "h": 68,
+   "tag": "dead",
+   "label": "dead roots"
+  }
+ ]
+}

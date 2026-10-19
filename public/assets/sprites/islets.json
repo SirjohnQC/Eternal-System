@@ -1,0 +1,86 @@
+{
+ "name": "islets",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 0,
+   "w": 29,
+   "h": 54,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 1,
+   "x": 31,
+   "y": 18,
+   "w": 60,
+   "h": 36,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 2,
+   "x": 93,
+   "y": 17,
+   "w": 55,
+   "h": 37,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 3,
+   "x": 150,
+   "y": 37,
+   "w": 19,
+   "h": 17,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 4,
+   "x": 171,
+   "y": 11,
+   "w": 42,
+   "h": 43,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 5,
+   "x": 215,
+   "y": 7,
+   "w": 45,
+   "h": 47,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 6,
+   "x": 262,
+   "y": 39,
+   "w": 17,
+   "h": 15,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 7,
+   "x": 281,
+   "y": 2,
+   "w": 48,
+   "h": 52,
+   "tag": "islet",
+   "label": "floating islet"
+  },
+  {
+   "i": 8,
+   "x": 331,
+   "y": 5,
+   "w": 45,
+   "h": 49,
+   "tag": "islet",
+   "label": "floating islet"
+  }
+ ]
+}
