@@ -1,0 +1,77 @@
+{
+ "name": "kit-roofs",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 0,
+   "w": 46,
+   "h": 57,
+   "tag": "gable",
+   "label": "red tile"
+  },
+  {
+   "i": 1,
+   "x": 48,
+   "y": 0,
+   "w": 46,
+   "h": 57,
+   "tag": "gable",
+   "label": "slate"
+  },
+  {
+   "i": 2,
+   "x": 96,
+   "y": 1,
+   "w": 46,
+   "h": 56,
+   "tag": "gable",
+   "label": "thatch"
+  },
+  {
+   "i": 3,
+   "x": 144,
+   "y": 1,
+   "w": 46,
+   "h": 56,
+   "tag": "gable",
+   "label": "shingle hip"
+  },
+  {
+   "i": 4,
+   "x": 192,
+   "y": 12,
+   "w": 46,
+   "h": 45,
+   "tag": "dome",
+   "label": "copper dome"
+  },
+  {
+   "i": 5,
+   "x": 240,
+   "y": 8,
+   "w": 38,
+   "h": 49,
+   "tag": "cone",
+   "label": "cone cap"
+  },
+  {
+   "i": 6,
+   "x": 280,
+   "y": 10,
+   "w": 48,
+   "h": 47,
+   "tag": "flat",
+   "label": "parapet"
+  },
+  {
+   "i": 7,
+   "x": 330,
+   "y": 8,
+   "w": 44,
+   "h": 49,
+   "tag": "gable",
+   "label": "dormer gable"
+  }
+ ]
+}

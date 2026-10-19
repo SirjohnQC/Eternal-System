@@ -5,7 +5,7 @@
  */
 import { registerSheet, type SheetFrame } from './SpriteOverride';
 
-const SHEETS = ['huts', 'medieval', 'trees'];
+const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons'];
 
 export function spritesRequested(): boolean {
   return new URLSearchParams(location.search).get('sprites') === '1';
