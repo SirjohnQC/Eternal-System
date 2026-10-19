@@ -75,6 +75,10 @@ import { flagCanvas } from './rendering/NationFlagArt';
 import { MenuScene } from './ui/MenuScene';
 import { UiSound, wireUiSounds } from './audio/UiSound';
 import { D20View, setDiceActive } from './ui/D20';
+import { loadSpriteOverrides } from './rendering/SpriteAtlasLoader';
+
+// Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
+void loadSpriteOverrides();
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -1462,6 +1466,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       // Live binding: a new game replaces `engine`, and its animTick restarts.
       _dioramaRenderer.setClock(() => engine?.currentAnimTick ?? 0);
       _dioramaRenderer.setNationSource(() => runtimeState.playerNations);
+      _dioramaRenderer.setFireSource(() => engine?.fires.cells ?? null);
     }
 
     if (colonyView && planet) {

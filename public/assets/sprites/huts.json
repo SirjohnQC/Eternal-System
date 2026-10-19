@@ -1,0 +1,86 @@
+{
+ "name": "huts",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 12,
+   "w": 66,
+   "h": 66,
+   "tag": "round",
+   "label": "round hut"
+  },
+  {
+   "i": 1,
+   "x": 68,
+   "y": 5,
+   "w": 78,
+   "h": 73,
+   "tag": "long",
+   "label": "longhouse"
+  },
+  {
+   "i": 2,
+   "x": 148,
+   "y": 21,
+   "w": 65,
+   "h": 57,
+   "tag": "adobe",
+   "label": "adobe"
+  },
+  {
+   "i": 3,
+   "x": 215,
+   "y": 16,
+   "w": 65,
+   "h": 62,
+   "tag": "round",
+   "label": "round hut 2"
+  },
+  {
+   "i": 4,
+   "x": 282,
+   "y": 17,
+   "w": 68,
+   "h": 61,
+   "tag": "gable",
+   "label": "gable hut"
+  },
+  {
+   "i": 5,
+   "x": 352,
+   "y": 23,
+   "w": 66,
+   "h": 55,
+   "tag": "adobe",
+   "label": "adobe 2"
+  },
+  {
+   "i": 6,
+   "x": 420,
+   "y": 0,
+   "w": 68,
+   "h": 78,
+   "tag": "stilts",
+   "label": "granary on stilts"
+  },
+  {
+   "i": 7,
+   "x": 490,
+   "y": 23,
+   "w": 69,
+   "h": 55,
+   "tag": "shrine",
+   "label": "shrine + totem"
+  },
+  {
+   "i": 8,
+   "x": 561,
+   "y": 15,
+   "w": 74,
+   "h": 63,
+   "tag": "tent",
+   "label": "hide tent + fire"
+  }
+ ]
+}

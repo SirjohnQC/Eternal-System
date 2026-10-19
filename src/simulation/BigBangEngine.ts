@@ -54,6 +54,7 @@ import {
   type EvolutionEvent,
 } from './EvolutionEngine';
 import { tryQuake, restlessness, quakePlace, QUAKE_EVERY, type Quake } from './Quakes';
+import { emptyFire, trySpark, stepFire, healScars, placeWords, FIRE_STEP, IGNITE_EVERY, type FireState } from './Wildfire';
 import { stepLifeSpread, generatePlanetGrid, seedLanding, isWater, diffGrid, applyGridEdits, GRID_GENERATOR, type PlanetGrid, type GridEdits } from './PlanetGrid';
 import { assignDominantSpecies } from './SpeciesDistribution';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
@@ -565,6 +566,8 @@ export interface EngineSnapshot {
   /** Colonies on other worlds (Colonies.ts). Optional: older saves have none. */
   colonies?: ColonyState;
   worldHistory?: WorldHistoryState;
+  /** Fires burning on the home world (Wildfire.ts). Optional: older saves have none. */
+  fires?: FireState;
   /**
    * The home world's surface as the simulation left it: life spread, civ
    * territory, divine land edits (#77). Stored as changes against the
@@ -1874,6 +1877,8 @@ export class BigBangEngine {
   quakes: Quake[] = [];
   /** A quake shook the home world: the view shakes, raises dust, shows a rift. */
   onPlayerQuake?: (q: Quake) => void;
+  /** Fires on the home world's surface (#51, Wildfire.ts). */
+  fires: FireState = emptyFire();
   /** Surface changes from a loaded save, applied when that grid is next built (#77). */
   private pendingGridEdits: { starId: number; planetIndex: number; edits: GridEdits; generator?: number } | null = null;
 
@@ -2458,6 +2463,37 @@ export class BigBangEngine {
   invalidatePlayerGrid(): void {
     runtimeState.playerPlanetGrid = null;
     this.playerGridFor = null;
+    // Fires are cells of that grid: a new face starts without them.
+    this.fires = emptyFire();
+  }
+
+  /**
+   * Wildfire on the home world (#51): a spark may catch every IGNITE_EVERY
+   * ticks, a fire spreads every FIRE_STEP. When one burns out, a large one is
+   * news, told as what was seen. Only once the surface exists (it is built at
+   * the first generation step with life).
+   */
+  private stepWildfire(star: StarBody): void {
+    if (this.tick % FIRE_STEP !== 0) return;
+    const grid = runtimeState.playerPlanetGrid;
+    const f = this.playerGridFor;
+    if (!grid || !f || f.starId !== star.id || !star.hasLife) return;
+    const st = this.fires;
+    if (!st.cells.length) {
+      if (this.tick % IGNITE_EVERY !== 0) return;
+      const era = this.progressionOf(star).era;
+      trySpark(st, grid, this.rng.fork(`spark_${this.tick}`), { era, living: star.hasLife });
+      if (st.cells.length) this.onPlayerWorldChanged?.();
+      return;
+    }
+    const first = st.cells[0];
+    stepFire(st, grid, this.rng.fork(`fire_${this.tick}`));
+    this.onPlayerWorldChanged?.();
+    if (!st.cells.length && st.burnt >= 60) {
+      const big = st.burnt >= 600 ? 'a great swath of it' : st.burnt >= 200 ? 'a wide stretch of it' : 'part of it';
+      this.onCivEvent?.(`Smoke hung over ${placeWords(grid, first)} for days. When it cleared, ${big} was ash.` +
+        (st.settled >= 10 ? ' The fire reached the people\'s land.' : ''));
+    }
   }
 
   /**
@@ -3293,6 +3329,8 @@ export class BigBangEngine {
 
       // ── Earthquakes on the home world (#50) ─────────────────────────────────
       if (star.isPlayerStar) this.stepQuakes(star);
+      // ── Wildfire on the home world (#51) ────────────────────────────────────
+      if (star.isPlayerStar) this.stepWildfire(star);
 
       // ── Planet surface: life spread, territory, species ranges ──────────────
       // This used to live inside the pre-intelligence branch, so the moment a
@@ -3302,6 +3340,7 @@ export class BigBangEngine {
       // had a civilisation worth looking at.
       const homeGrid = star.isPlayerStar && shouldStepEvolution(this.tick) ? this.ensurePlayerGrid() : null;
       if (homeGrid) {
+        healScars(homeGrid);
         const spreadRate = Math.max(0.1, this.playerEffect('bioResilience'));
         const civIdToStamp = star.civLevel >= 1 ? String(star.id) : null;
         stepLifeSpread(homeGrid, star.biologyPhase, spreadRate, civIdToStamp);
@@ -7986,6 +8025,7 @@ export class BigBangEngine {
       interstellar: this.interstellar,
       colonies: this.colonies,
       worldHistory: this.worldHistory,
+      fires: this.fires,
       playerGrid: this.savedPlayerGrid(),
     };
   }
@@ -7997,6 +8037,8 @@ export class BigBangEngine {
     // Changes made against another generator's terrain would land on the wrong
     // ground: drop them, and the surface regenerates as it did before #77.
     this.pendingGridEdits = snap.playerGrid && (snap.playerGrid.generator ?? 1) === GRID_GENERATOR ? snap.playerGrid : null;
+    // Fires only make sense on the surface they burn on: keep them with it.
+    this.fires = this.pendingGridEdits && snap.fires ? snap.fires : emptyFire();
     this.phase = snap.phase;
     this.stars = snap.stars;
     // Saves written before the genome existed have no genomeSeed. Derive it

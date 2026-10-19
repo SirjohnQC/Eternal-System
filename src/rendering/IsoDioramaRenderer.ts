@@ -493,6 +493,11 @@ export class IsoDioramaRenderer {
   private nationsHere(): NationSystem | null { return this.world ? null : this.nationSource?.() ?? null; }
   /** The quake shaking the view now (#50), or null. Face points in base px. */
   private quake: { x: number; y: number; mag: number; t0: number; rift: Array<{ x: number; y: number }> } | null = null;
+  /** The home world's burning cells (Wildfire.ts, #51); null: no fires drawn. */
+  private fireSource: (() => readonly number[] | null) | null = null;
+  /** Burning cells as face points (base px), rebuilt when the fire or the view changes. */
+  private firePts: Array<{ x: number; y: number; ph: number }> = [];
+  private fireKey = '';
   private nationVer = -1;
   private nationEpoch = -1;
   private nationPick: Int32Array | null = null;
@@ -2880,6 +2885,78 @@ export class IsoDioramaRenderer {
     g.restore();
   }
 
+  /** Where the home world's fires come from (a live getter; the engine owns them). */
+  setFireSource(fn: (() => readonly number[] | null) | null): void {
+    this.fireSource = fn;
+    this.fireKey = '';
+  }
+
+  /**
+   * Fires on the face (#51): flickering flame pixels on burning cells and
+   * smoke rising and drifting off them. Drawn from the engine's fire cells
+   * every frame (rule 1); the cell-to-face mapping is cached per fire state
+   * and view, and at most ~160 cells are drawn however large the fire.
+   */
+  private drawFires(g: CanvasRenderingContext2D, t: number): void {
+    const cells = this.world || !this.habitable ? null : this.fireSource?.();
+    if (!cells || !cells.length) { this.firePts = []; this.fireKey = ''; return; }
+    const key = `${cells.length}|${cells[0]}|${cells[cells.length - 1]}|${this.focusLat}|${this.focusLon}|${this.VW}`;
+    if (key !== this.fireKey) {
+      this.fireKey = key;
+      const pg = this.placeGeom, grid = this.grid;
+      const stride = Math.max(1, Math.ceil(cells.length / 160));
+      this.firePts = [];
+      for (let i = 0; i < cells.length; i += stride) {
+        const row = (cells[i] / GRID_SIZE) | 0, col = cells[i] % GRID_SIZE;
+        const d = this.gridToDisc(row, col);
+        if (!d) continue;
+        const r = Math.hypot(d.dx, d.dy);
+        if (r > 0.95) continue;
+        const cell = grid?.[row]?.[col];
+        const lift = cell ? this.liftAtCell(cell, r) : 0;
+        this.firePts.push({ x: pg.cx + d.dx * pg.rx, y: pg.cy + d.dy * pg.ry - lift, ph: ((cells[i] * 2654435761) >>> 0) / 4294967296 });
+      }
+    }
+    if (!this.firePts.length) return;
+    const k = this.camZoom, S = Math.max(1, Math.round(k));
+    const bob = this.cutaway.drawGeom.bob;
+    g.save();
+    // Smoke first, behind the flames: grey puffs rising and leaning away.
+    for (const p of this.firePts) {
+      const x = this.wsx(p.x), y = this.wsy(p.y + bob);
+      for (let j = 0; j < 2; j++) {
+        const age = ((t * 0.18 + p.ph + j * 0.5) % 1);
+        const sz = Math.max(2 * S, Math.round((2 + age * 3) * k));
+        g.globalAlpha = 0.55 * (1 - age);
+        const gr = Math.round(48 + age * 70);
+        g.fillStyle = `rgb(${gr},${gr - 3},${gr - 6})`;
+        g.fillRect(Math.round(x + (age * 9 + Math.sin(age * 5 + p.ph * 9) * 1.5) * k - sz / 2), Math.round(y - (2 + age * 22) * k - sz / 2), sz, sz);
+      }
+    }
+    g.globalAlpha = 1;
+    // Glow on the ground round each fire, then the flames: a flickering
+    // tongue, hottest at the root, at least 2 px wide so it reads from afar.
+    g.globalCompositeOperation = 'lighter';
+    g.fillStyle = 'rgba(255,110,30,0.22)';
+    for (const p of this.firePts) {
+      const x = Math.round(this.wsx(p.x)), y = Math.round(this.wsy(p.y + bob));
+      g.fillRect(x - 3 * S, y - 2 * S, 6 * S, 3 * S);
+    }
+    g.globalCompositeOperation = 'source-over';
+    const W = Math.max(2, S * 2);
+    for (const p of this.firePts) {
+      const x = Math.round(this.wsx(p.x)), y = Math.round(this.wsy(p.y + bob));
+      const f = Math.floor(t * 9 + p.ph * 7) % 3;
+      g.fillStyle = 'rgb(200,52,18)';
+      g.fillRect(x - W, y - S, W * 2, S);
+      g.fillStyle = 'rgb(255,120,30)';
+      g.fillRect(x - W / 2 - (f === 1 ? S : 0), y - 2 * S - (f === 2 ? S : 0), W, 2 * S);
+      g.fillStyle = f === 0 ? 'rgb(255,226,120)' : 'rgb(255,186,60)';
+      g.fillRect(x - S / 2, y - 3 * S - (f === 0 ? S : 0), Math.max(1, S), S + (f === 0 ? S : 0));
+    }
+    g.restore();
+  }
+
   setNationSource(fn: (() => NationSystem | null) | null): void {
     this.nationSource = fn;
     this.nationVer = -1; this.nationFlagVer = -1; this.nationNext = 0;
@@ -3930,6 +4007,7 @@ export class IsoDioramaRenderer {
           this.drawVentFx(g, this.elapsed);
           this.drawInhabitants(g, this.elapsed);
           this.drawQuakeFx(g);
+          this.drawFires(g, this.elapsed);
           this.drawBirds(g, this.elapsed);
           if (this.meteor.active) this.meteor.drawSurface(g, this.updateStrikeView());
         },
