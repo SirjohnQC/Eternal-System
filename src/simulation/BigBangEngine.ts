@@ -1,4 +1,5 @@
 import { NationSystem, type Nation } from './Nations';
+import { peopleOf } from './People';
 import {
   emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
@@ -4158,7 +4159,7 @@ export class BigBangEngine {
     if (!ns) ns = runtimeState.playerNations = new NationSystem((star.id * 2654435761 + this.tick0Seed) >>> 0);
     if (!ns.isFounded) {
       const civ = this.cultureFor(star);
-      const lead = gameState.playerSpecies.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+      const lead = peopleOf(gameState.playerSpecies);
       const genome = civ?.sourceGenome ?? (lead ? summariseGenome(lead) : null);
       if (!genome) return;
       ns.found(grid, civ?.values ?? valuesFromGenome(genome), genome, this.tick);

@@ -76,6 +76,7 @@ import { MenuScene } from './ui/MenuScene';
 import { UiSound, wireUiSounds } from './audio/UiSound';
 import { D20View, setDiceActive } from './ui/D20';
 import { loadSpriteOverrides } from './rendering/SpriteAtlasLoader';
+import { peopleOf } from './simulation/People';
 
 // Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
 void loadSpriteOverrides();
@@ -1938,7 +1939,7 @@ function buildLineageSection(star: StarBody, planetIndex: number, isHome: boolea
     const row = document.createElement('div');
     row.className = child ? 'pi-lineage-row' : 'pi-lineage-root';
     row.innerHTML = `<div class="pi-lineage-art"></div><div><div class="pi-lineage-name">${esc(name)}</div><div class="pi-lineage-desc">${esc(desc)}</div></div>`;
-    if (g) { try { row.firstElementChild!.appendChild(bakeCreaturePortrait(g, 40)); } catch { /* portrait is decoration */ } }
+    if (g) { try { row.firstElementChild!.appendChild(bakeCreaturePortrait(g, 40, isPeople(g))); } catch { /* portrait is decoration */ } }
     return row;
   };
   const stageWords = (c: Colony) => {
@@ -2167,7 +2168,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     if (npcGenome) {
       if (iconEl.dataset['portrait'] !== key) {
         iconEl.textContent = '';
-        const c = creatureCanvas(npcGenome, 40);
+        const c = creatureCanvas(npcGenome, 40, true);
         c.style.imageRendering = 'pixelated';
         iconEl.appendChild(c);
         iconEl.dataset['portrait'] = key;
@@ -5538,8 +5539,13 @@ function genomeFromSummary(g: GenomeSummary, id: string): SpeciesGenome {
   } as SpeciesGenome;
 }
 
-function creatureCanvas(g: SpeciesGenome, px: number): HTMLCanvasElement {
-  return bakeCreaturePortrait(g, px);
+/** Is `g` the home world's people (People.ts), drawn standing upright? */
+function isPeople(g: SpeciesGenome): boolean {
+  return peopleOf(gameState.playerSpecies, 3)?.id === g.id;
+}
+
+function creatureCanvas(g: SpeciesGenome, px: number, people = isPeople(g)): HTMLCanvasElement {
+  return bakeCreaturePortrait(g, px, people);
 }
 
 /** DNA awards this session, newest first — the lab's "how did I earn this". */
@@ -6022,7 +6028,7 @@ function renderSpeciesDetail(sp: SpeciesGenome): void {
   // The portrait is the same baked sprite the world draws, so the record shows
   // the actual creature rather than an illustration of one.
   const port = document.getElementById('cx-portrait');
-  if (port) port.appendChild(bakeCreatureSprite(sp, 8));
+  if (port) port.appendChild(bakeCreatureSprite(sp, 8, isPeople(sp)));
 }
 
 /**

@@ -819,10 +819,10 @@ const PORTRAIT_PX: Record<SpeciesSize, number> = {
  * scaled by an integer so it stays crisp. `scale` keeps its old meaning of
  * roughly how large the panel wants it.
  */
-export function bakeCreatureSprite(g: SpeciesGenome, scale = 1): HTMLCanvasElement {
+export function bakeCreatureSprite(g: SpeciesGenome, scale = 1, people = false): HTMLCanvasElement {
   if (scale <= 1) return dioramaCreatureSprite(g, 'intelligent', 0.5);
   const n = PORTRAIT_PX[g.physicalTraits.size] ?? 12;
-  return bakeCreaturePortrait(g, (n + 2) * Math.max(2, Math.round(scale * 0.8)));
+  return bakeCreaturePortrait(g, (n + 2) * Math.max(2, Math.round(scale * 0.8)), people);
 }
 
 const portraitCache = new Map<string, HTMLCanvasElement>();
@@ -832,13 +832,13 @@ const portraitCache = new Map<string, HTMLCanvasElement>();
  * `px` screen pixels: rendered at up to PORTRAIT_MAX logical pixels, then
  * scaled by a whole number so the pixel art stays crisp.
  */
-export function bakeCreaturePortrait(g: SpeciesGenome, px: number): HTMLCanvasElement {
+export function bakeCreaturePortrait(g: SpeciesGenome, px: number, people = false): HTMLCanvasElement {
   const up = Math.max(1, Math.ceil(px / PORTRAIT_MAX));
   const logical = Math.max(16, Math.round(px / up));
-  const key = creatureKey(g, logical, up) + '|forge';
+  const key = creatureKey(g, logical, up) + '|forge' + (people ? '|p' : '');
   const hit = portraitCache.get(key);
   if (hit) return hit;
-  const f = forgeCreature(g, logical);
+  const f = forgeCreature(g, logical, people);
   const cv = document.createElement('canvas');
   cv.width = f.width * up; cv.height = f.height * up;
   const c = cv.getContext('2d');
@@ -860,13 +860,13 @@ export function bakeCreaturePortrait(g: SpeciesGenome, px: number): HTMLCanvasEl
  * rendered straight at that size, above it at up to PORTRAIT_MAX logical px
  * and scaled by a whole number, like a portrait.
  */
-export function bakeCreatureFrames(g: SpeciesGenome, px: number, n = 4): HTMLCanvasElement[] {
+export function bakeCreatureFrames(g: SpeciesGenome, px: number, n = 4, people = false): HTMLCanvasElement[] {
   const up = px < 16 ? 1 : Math.max(1, Math.ceil(px / PORTRAIT_MAX));
   const logical = px < 16 ? px : Math.max(16, Math.round(px / up));
-  const key = creatureKey(g, logical, up) + '|frames' + n;
+  const key = creatureKey(g, logical, up) + '|frames' + n + (people ? '|p' : '');
   const hit = framesCache.get(key);
   if (hit) return hit;
-  const out = forgeCreatureFrames(g, logical, n).map(f => {
+  const out = forgeCreatureFrames(g, logical, n, people).map(f => {
     const cv = document.createElement('canvas');
     cv.width = f.width * up; cv.height = f.height * up;
     const c = cv.getContext('2d');

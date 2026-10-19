@@ -137,6 +137,22 @@ function recolour(px: Uint8ClampedArray, sheet: Sheet, f: SheetFrame, t: Tint): 
   }
 }
 
+/**
+ * A people's walk cycle from its hand-made sheet (`people-<form>`: frames
+ * cropped to one shared box), `n` frames picked evenly round the loop, about
+ * `targetH` px tall, recoloured to the species. Null without a sheet: the
+ * forge draws the people.
+ */
+export function peopleFrames(form: string, tint: Tint | undefined, targetH: number, n: number): OverrideSprite[] | null {
+  const name = `people-${form}`, sheet = sheets.get(name);
+  if (!sheet || !sheet.frames.length) return null;
+  const f0 = sheet.frames[0];
+  const H = Math.max(4, Math.min(f0.h, Math.round(targetH)));
+  const W = Math.max(2, Math.round(f0.w * H / f0.h));
+  return Array.from({ length: Math.max(1, n) }, (_, k) =>
+    frameAt(name, sheet, Math.floor(k * sheet.frames.length / Math.max(1, n)), W, tint, H));
+}
+
 /** Species architecture families with their own sheets (Architecture.ts ShapeFamily, minus 'box'). */
 const FAMILIES = new Set(['hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved']);
 

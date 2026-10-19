@@ -24,6 +24,7 @@ import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 import { stampColony } from '../simulation/ColonyWorld';
+import { peopleOf } from '../simulation/People';
 
 import { loadSpriteOverrides } from '../rendering/SpriteAtlasLoader';
 
@@ -172,7 +173,8 @@ function rebuild(): void {
   // ?body=exoskeletal|shelled|gelatinous|cartilaginous|filamentous|… gives the
   // thinking species that body, so each architecture family can be looked at.
   const body = params.get('body');
-  if (body) species = species.map(sp => sp.dna.intelligence >= 3 ? { ...sp, physicalTraits: { ...sp.physicalTraits, bodyStructure: body } } : sp);
+  const ppl = peopleOf(species, 3);
+  if (body && ppl) species = species.map(sp => sp.id === ppl.id ? { ...sp, physicalTraits: { ...sp.physicalTraits, bodyStructure: body } } : sp);
   assignDominantSpecies(grid, species);
 
   const star = makeStar();
@@ -205,7 +207,7 @@ function rebuild(): void {
   // Nations, as BigBangEngine founds them once a civilisation stands
   // (?nations=0 hides them). Stepped a while so their pressures have moved.
   nations = null;
-  const lead = species.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+  const lead = peopleOf(species);
   if (!formation && star.civLevel >= 1 && lead && params.get('nations') !== '0') {
     const ns = new NationSystem(seed);
     const g = summariseGenome(lead);
@@ -221,7 +223,7 @@ function rebuild(): void {
   // nations. ?adapt=1 gives them a diverged look (darker, stockier, shaggy).
   const colonyPop = params.get('colony');
   if (colonyPop !== null && !formation) {
-    const lead = species.filter(sp => !sp.isExtinct).sort((a, b) => b.dna.intelligence - a.dna.intelligence)[0];
+    const lead = peopleOf(species);
     const people: SpeciesGenome[] = lead ? [{
       ...lead, name: `${lead.name} of ${planet.name}`,
       dna: { ...lead.dna, environment: 'land' },
