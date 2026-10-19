@@ -1483,6 +1483,45 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenarios: lakes (#47) ──────────────────────────────────────────────────
+{
+  const PG = await import('../src/simulation/PlanetGrid');
+  const r: Rule = { name: 'scenario: lakes sit flat in basins above the sea, on worlds that can hold them', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    let lakesSeen = 0;
+    for (const type of ['rocky', 'toxic', 'storm', 'crystal', 'desert', 'lava', 'ice']) {
+      for (let k = 0; k < 4 && !detail; k++) {
+        const g = PG.generatePlanetGrid(type, 1000 + k * 7919, null);
+        let lakeCells = 0, land = 0;
+        for (const row of g) for (const c of row) {
+          if (c.elevation >= PG.SEA_LEVEL) land++;
+          if (c.biome !== 'lake') continue;
+          lakeCells++;
+          if (!c.lake || Math.abs(c.elevation - c.lake) > 1e-6) { detail = `${type}: a lake cell off its surface level`; break; }
+          if (c.elevation < PG.SEA_LEVEL) { detail = `${type}: a lake below the sea`; break; }
+          if (c.fertility !== 0) { detail = `${type}: a fertile lake cell`; break; }
+          if (c.river > 0) { detail = `${type}: a river through a lake`; break; }
+        }
+        if (detail) break;
+        if (['desert', 'lava', 'ice'].includes(type) && lakeCells) detail = `${type}: ${lakeCells} lake cells on a world that holds none`;
+        else if (lakeCells > land * 0.031) detail = `${type}: lakes cover ${lakeCells} of ${land} land cells`;
+        lakesSeen += lakeCells;
+      }
+      if (detail) break;
+    }
+    if (!detail && lakesSeen === 0) detail = 'no lakes on any wet world';
+    if (!detail) {
+      const c: any = { elevation: 0.6, lake: 0.6, moisture: 0.5, temperature: 0.5, biome: 'lake' };
+      if (PG.reclassify(c, 'rocky') !== 'lake') detail = 'reclassify dropped an untouched lake';
+      c.elevation = 0.7;
+      if (PG.reclassify(c, 'rocky') === 'lake') detail = 'raised ground stayed a lake';
+    }
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Scenarios: earthquakes (#50) ────────────────────────────────────────────
 // Quakes start on faults, follow a small-many/large-few law, and great ones
 // may split the land (Quakes.ts).
