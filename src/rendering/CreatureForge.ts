@@ -15,6 +15,7 @@
  * planet are only a few pixels tall and keep the hand-placed pixel baker.
  */
 import type { SpeciesGenome, Metabolism, Environment } from '../simulation/SpeciesGenome';
+import { peopleFrames, type Tint } from './SpriteOverride';
 
 export type V3 = [number, number, number];
 
@@ -1234,6 +1235,28 @@ function planSapient(B: Body, t: Traits, g: SpeciesGenome): void {
   }
 }
 
+/** The upright form a species would take as a people (whatever its intelligence). */
+export function peopleFormOf(g: SpeciesGenome): string {
+  return sapientForm(g.physicalTraits.bodyStructure, hashStr(g.id), g.dna.locomotion === 'flying' || g.physicalTraits.mobilityType.includes('wing'),
+    g.dna.aggression, g.dna.metabolism === 'photosynthetic');
+}
+
+/** The species' body colour (its palette's main hue and saturation), to tint hand-made sprites. */
+export function creatureTint(g: SpeciesGenome): Tint {
+  const env = ENV_TONE[g.dna.environment] ?? ENV_TONE.land;
+  const seed = hashStr(g.id), mo = morphOf(g);
+  const jit = (hash3(seed, 1, 2, 3) - 0.5) * 16;
+  const drift = mo.hue * (g.dna.metabolism === 'photosynthetic' ? 32 : 75);
+  const hue = (((META_HUE[g.dna.metabolism] ?? 30) + env.dh + jit + drift) % 360 + 360) % 360;
+  return { hue, sat: Math.max(0.15, Math.min(0.9, env.s + mo.sat * 0.18)) };
+}
+
+/** A people's walk from its hand-made sheet, when one is loaded (SpriteOverride). */
+function peopleSprites(g: SpeciesGenome, px: number, n: number): ForgedSprite[] | null {
+  const fr = peopleFrames(peopleFormOf(g), creatureTint(g), px, n);
+  return fr ? fr.map(f => ({ width: f.width, height: f.height, data: f.data })) : null;
+}
+
 /** The sapient form's name, for the UI ("an insectoid people"). */
 export function sapientFormOf(g: SpeciesGenome): string | null {
   if (g.dna.intelligence < 6) return null;
@@ -1522,6 +1545,7 @@ export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREA
  * included). Deterministic per genome.
  */
 export function forgeCreature(g: SpeciesGenome, px: number, people = false): ForgedSprite {
+  if (people) { const s = peopleSprites(g, px, 1); if (s) return s[0]; }
   MOVING = false; PH = 0;
   const t = traitsOf(g, people);
   return forgePose(g, t, planFor(g, t), px);
@@ -1533,6 +1557,7 @@ export function forgeCreature(g: SpeciesGenome, px: number, people = false): For
  * play back without jitter. Frame k is phase k / n.
  */
 export function forgeCreatureFrames(g: SpeciesGenome, px: number, n = 4, people = false): ForgedSprite[] {
+  if (people) { const s = peopleSprites(g, px, n); if (s) return s; }
   const t = traitsOf(g, people);
   const bodies: Body[] = [];
   MOVING = true;

@@ -3518,7 +3518,9 @@ export class IsoDioramaRenderer {
   private wanderOf(c: { genome: SpeciesGenome; phase: number; gx: number; gy: number; submersion: number }, t: number, bodyLen: number, f: ForgedBody):
     { dx: number; dy: number; left: boolean; moving: boolean; lift: number } {
     const loc = c.genome.dna.locomotion;
-    const flyer = loc === 'flying', walker = loc === 'walking' || loc === 'crawling';
+    // The world's people walk, whatever its lineage once did (People.ts).
+    const people = peopleOf(this.species, 3)?.id === c.genome.id;
+    const flyer = !people && loc === 'flying', walker = people || loc === 'walking' || loc === 'crawling';
     // A land walker only picks wander points on land; one over the sea becomes
     // "back home" (#25: two-legged peoples strolled out onto the water).
     const landBound = walker && this.habitable && c.submersion === 0 && !inhabitsWater(c.genome);
