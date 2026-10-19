@@ -1741,6 +1741,20 @@ export function* crustSteps(
     return t.data[i + 3] ? rgb(t.data[i], t.data[i + 1], t.data[i + 2]) : null;
   };
   const lumOf = (c: RGB) => (0.3 * c.r + 0.55 * c.g + 0.15 * c.b) / 255;
+  // One material all round: the skirt is sea if most of the rim is sea, else
+  // cliff. Switching per column left hard-edged rectangles wherever a
+  // continent reached the rim. (rimWater below still marks the real sea
+  // edge, for the falls.)
+  let seaCols = 0;
+  {
+    const hasOcc = opts.occupancy && opts.occupancy.length === VW * VH;
+    for (let x = rimX0; x <= rimX1; x++) {
+      const fx = (x - cx) / rx;
+      const fy = Math.max(0, Math.min(VH - 1, Math.floor(cyTop + Math.sqrt(Math.max(0, 1 - fx * fx)) * ry)));
+      if (!hasOcc || opts.occupancy![fy * VW + x] !== 0) seaCols++;
+    }
+  }
+  const seaSkirt = seaCols * 2 >= cols;
   for (let x = rimX0; x <= rimX1; x++) {
     const i = x - rimX0;
     const wx = world.wx(x);
@@ -1751,8 +1765,8 @@ export function* crustSteps(
     wallBottom[i] = bottomY;
     const rimY = Math.max(0, Math.min(VH - 1, Math.floor(frontY)));
     const hasOccupancy = opts.occupancy && opts.occupancy.length === VW * VH;
-    const water = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0;
-    rimWater[i] = water ? 1 : 0;
+    rimWater[i] = !hasOccupancy || opts.occupancy![rimY * VW + x] !== 0 ? 1 : 0;
+    const water = seaSkirt;
     // Facet stripe every 14 WORLD px, 1 screen px wide.
     const wk = Math.round(wx * k), period = 14 * k;
     const facetCol = ((wk % period) + period) % period < 1;
