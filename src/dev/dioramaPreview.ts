@@ -22,6 +22,11 @@ import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
 import { stampColony } from '../simulation/ColonyWorld';
 
+import { loadSpriteOverrides } from '../rendering/SpriteAtlasLoader';
+
+// Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
+await loadSpriteOverrides();
+
 const stage = document.getElementById('stage')!;
 const renderer = new IsoDioramaRenderer();
 let nations: NationSystem | null = null;

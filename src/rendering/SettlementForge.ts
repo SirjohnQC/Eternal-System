@@ -17,6 +17,7 @@
 import { ramp, type Ramp, type RGB } from './CreatureForge';
 import { SQUASH, type Building, type Era } from './SettlementPlan';
 import type { ArchGenome } from './Architecture';
+import { buildingOverride } from './SpriteOverride';
 
 export interface BuildingSprite {
   width: number; height: number; data: Uint8ClampedArray;
@@ -119,6 +120,8 @@ class Px {
  * at least 1). Long walls get detail only once there are pixels for it.
  */
 export function paintBuilding(b: Building, S: number, st: TownStyle): BuildingSprite {
+  const sheet = buildingOverride(b, S, st.era);
+  if (sheet) return sheet;
   const W = Math.max(1, Math.round(b.w * S));
   const D = Math.max(1, Math.round(b.d * S * SQUASH));
   const H = Math.max(1, Math.round(b.h * S));
