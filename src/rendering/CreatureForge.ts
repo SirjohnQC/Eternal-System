@@ -346,8 +346,10 @@ interface Traits {
   aggr: number; intel: number;
   sense: string; mobility: string; body: string;
   deep: boolean;
-  /** The species' look genes. */
+  /** The look genes. */
   m: Morph;
+  /** This is the world's people (People.ts): drawn standing upright. */
+  people: boolean;
 }
 
 /** A colony that moves wears a colony's lumpy, mottled hide on its walker's or swimmer's body. */
@@ -355,7 +357,7 @@ function colonyHide(g: SpeciesGenome, m: Morph): Morph {
   return g.physicalTraits.bodyStructure === 'colonial' && g.dna.locomotion !== 'stationary' ? { ...m, back: 3, pattern: 5 } : m;
 }
 
-function traitsOf(g: SpeciesGenome): Traits {
+function traitsOf(g: SpeciesGenome, people = false): Traits {
   const SIZE_BULK: Record<string, number> = { microscopic: 0.85, tiny: 0.9, small: 0.95, medium: 1, large: 1.12, massive: 1.25 };
   return {
     // Colony adaptations (Divergence.ts): gravity sets size, cold adds bulk.
@@ -369,6 +371,7 @@ function traitsOf(g: SpeciesGenome): Traits {
     body: g.physicalTraits.bodyStructure,
     deep: g.dna.environment === 'deep_sea',
     m: colonyHide(g, morphOf(g)),
+    people,
   };
 }
 
@@ -1195,35 +1198,53 @@ function planMechanoid(B: Body, t: Traits): void {
 }
 
 /** Which people a walking, thinking lineage becomes (see Sapient forms). */
-function planSapient(B: Body, t: Traits): void {
-  const b = t.body;
-  if (b === 'mechanical') return planMechanoid(B, t);
-  if (b === 'crystalline') return planCrystalline(B, t);
-  if (b === 'exoskeletal' || b === 'segmented') return planInsectoid(B, t);
-  if (b === 'gelatinous' || b === 'radial' || b === 'cartilaginous' || b === 'shelled') return planCephaloid(B, t);
-  if (b === 'filamentous' || b === 'colonial') return planMycoid(B, t);
-  // Vertebrates: humanoid, reptilian or avian, by lineage.
-  const r = hash3(t.seed, 5, 5, 5);
-  if (t.mobility.includes('wing') || r < 0.2) return planAvian(B, t);
-  if (r < 0.42 || t.aggr >= 8) return planReptilian(B, t);
-  if (r < 0.68) return planSimian(B, t);
-  return planHumanoid(B, t);
+/**
+ * Which upright people a thinking species is. Everything that builds a
+ * civilisation stands and walks; most peoples are human-like (humanoid,
+ * simian, reptilian, avian), with insectoid, cephaloid, mycoid, crystalline
+ * and mechanoid peoples where the body plainly calls for them.
+ */
+function sapientForm(body: string, seed: number, flies: boolean, aggr: number, photo: boolean): string {
+  if (body === 'mechanical') return 'mechanoid';
+  if (body === 'crystalline') return 'crystalline';
+  if (body === 'exoskeletal' || body === 'segmented') return 'insectoid';
+  if (body === 'gelatinous' || body === 'radial') return 'cephaloid';
+  if (body === 'filamentous' || photo) return 'mycoid';
+  if (body === 'shelled') return 'reptilian';
+  // Vertebrates, cartilaginous and colonial bodies: the human-like peoples.
+  if (flies) return 'avian';
+  const r = hash3(seed, 5, 5, 5);
+  if (r < 0.12) return 'avian';
+  if (r < 0.34 || aggr >= 9) return 'reptilian';
+  if (r < 0.54) return 'simian';
+  return 'humanoid';
+}
+
+function planSapient(B: Body, t: Traits, g: SpeciesGenome): void {
+  switch (sapientForm(t.body, t.seed, g.dna.locomotion === 'flying' || t.mobility.includes('wing'), t.aggr, g.dna.metabolism === 'photosynthetic')) {
+    case 'mechanoid': return planMechanoid(B, t);
+    case 'crystalline': return planCrystalline(B, t);
+    case 'insectoid': return planInsectoid(B, t);
+    case 'cephaloid': return planCephaloid(B, t);
+    case 'mycoid': return planMycoid(B, t);
+    case 'avian': return planAvian(B, t);
+    case 'reptilian': return planReptilian(B, t);
+    case 'simian': return planSimian(B, t);
+    default: return planHumanoid(B, t);
+  }
 }
 
 /** The sapient form's name, for the UI ("an insectoid people"). */
 export function sapientFormOf(g: SpeciesGenome): string | null {
   if (g.dna.intelligence < 6) return null;
-  const b = g.physicalTraits.bodyStructure;
-  if (b === 'mechanical') return 'mechanoid';
-  if (b === 'crystalline') return 'crystalline';
-  if (b === 'exoskeletal' || b === 'segmented') return 'insectoid';
-  if (b === 'gelatinous' || b === 'radial' || b === 'cartilaginous' || b === 'shelled') return 'cephaloid';
-  if (b === 'filamentous' || b === 'colonial') return 'mycoid';
-  const r = hash3(hashStr(g.id), 5, 5, 5);
-  if (g.physicalTraits.mobilityType.includes('wing') || r < 0.2) return 'avian';
-  if (r < 0.42 || g.dna.aggression >= 8) return 'reptilian';
-  if (r < 0.68) return 'simian';
-  return 'humanoid';
+  return sapientForm(g.physicalTraits.bodyStructure, hashStr(g.id), g.dna.locomotion === 'flying' || g.physicalTraits.mobilityType.includes('wing'),
+    g.dna.aggression, g.dna.metabolism === 'photosynthetic');
+}
+
+/** A low-slung four-legged walker: lizards, salamanders, crawling beasts. */
+function planLowBeast(B: Body, t: Traits): void {
+  planQuadruped(B, t);
+  B.legK = 0.5;
 }
 
 /**
@@ -1262,6 +1283,16 @@ function planRaw(g: SpeciesGenome, t: Traits): Body {
   // walker or flier with a colony's lumpy, mottled hide, not as a blob, and a
   // radial animal that walks is many-legged rather than a starfish (#112).
   const sessile = loc === 'stationary';
+  // The world's people (People.ts) stands upright and walks, whatever its
+  // lineage did before (a clever flier is a winged bird-folk, not a
+  // butterfly). Every other species is drawn as the animal it is.
+  if (t.people && body !== 'single-celled') { planSapient(B, t, g); return B; }
+  // Bodies with a frame that crawl on land are low four-legged beasts.
+  const landish = g.dna.environment === 'land' || g.dna.environment === 'coastal';
+  const framed = body === 'vertebrate' || body === 'cartilaginous' || body === 'colonial';
+  if (landish && framed && (loc === 'crawling' || (sessile && !t.producer)) && g.physicalTraits.size !== 'microscopic' && g.physicalTraits.size !== 'tiny') {
+    planLowBeast(B, t); return B;
+  }
   if (body === 'single-celled') planCell(B, t);
   else if (body === 'colonial' && (sessile || (loc === 'crawling' && t.m.alt < 0.3))) planColony(B, t);
   else if (body === 'radial' && (sessile || (loc === 'crawling' && t.m.alt < 0.5))) planStar(B, t);
@@ -1278,10 +1309,8 @@ function planRaw(g: SpeciesGenome, t: Traits): Body {
     else if (t.mobility === 'undulating fringe') planRay(B, t);
     else if (body === 'filamentous' || body === 'segmented') planWorm(B, t);
     else planFish(B, t);
-  } else if (loc === 'walking' || (t.intel >= 6 && (body === 'mechanical' || body === 'crystalline'))) {
-    // A thinking walker stands up as one of the sapient forms.
-    if (t.intel >= 6) planSapient(B, t);
-    else if (body === 'exoskeletal' || body === 'segmented') planInsectWalker(B, t, 3);
+  } else if (loc === 'walking') {
+    if (body === 'exoskeletal' || body === 'segmented') planInsectWalker(B, t, 3);
     else planQuadruped(B, t);
   } else if (loc === 'crawling') {
     if (body === 'shelled' && t.m.alt >= 0.5) planTortoise(B, t);
@@ -1492,9 +1521,9 @@ export function renderBody(B: Body, pal: Ramp[], px: number, cam: Camera3 = CREA
  * Render a genome to RGBA with the long edge about `px` pixels (outline
  * included). Deterministic per genome.
  */
-export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
+export function forgeCreature(g: SpeciesGenome, px: number, people = false): ForgedSprite {
   MOVING = false; PH = 0;
-  const t = traitsOf(g);
+  const t = traitsOf(g, people);
   return forgePose(g, t, planFor(g, t), px);
 }
 
@@ -1503,8 +1532,8 @@ export function forgeCreature(g: SpeciesGenome, px: number): ForgedSprite {
  * motion (gait, wingbeat, tail sweep, pulse…), all in one frame box so they
  * play back without jitter. Frame k is phase k / n.
  */
-export function forgeCreatureFrames(g: SpeciesGenome, px: number, n = 4): ForgedSprite[] {
-  const t = traitsOf(g);
+export function forgeCreatureFrames(g: SpeciesGenome, px: number, n = 4, people = false): ForgedSprite[] {
+  const t = traitsOf(g, people);
   const bodies: Body[] = [];
   MOVING = true;
   try {

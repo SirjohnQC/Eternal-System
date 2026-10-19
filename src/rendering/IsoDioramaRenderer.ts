@@ -39,6 +39,7 @@ import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATURE_SIZE_PX } from './SpeciesSprite';
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan, type Site } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
+import { peopleOf } from '../simulation/People';
 import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { MeteorStrike, type StrikeView } from './MeteorStrike';
@@ -2569,7 +2570,7 @@ export class IsoDioramaRenderer {
         if (cell.civId != null) spots.push({ x: px, y: py, row: gp.row, col: gp.col, fertility: cell.fertility });
       }
     }
-    const intelligent = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? null;
+    const intelligent = peopleOf(this.species, 3);
     const env = intelligent?.dna.environment ?? 'land';
     const aquatic = env === 'ocean' || env === 'deep_sea';
     // How this civilisation builds: its body, habitat, ways and world, plus
@@ -3356,7 +3357,7 @@ export class IsoDioramaRenderer {
     if (!this.habitable) this.planTowns(geom);
     const civLevel = this.civLevelHere();
     let idx = 0;
-    const genome = this.species.find(sp => !sp.isExtinct && sp.dna.intelligence >= 3) ?? this.species[0] ?? null;
+    const genome = peopleOf(this.species, 3) ?? this.species[0] ?? null;
     for (const t of this.townPlan.towns) {
       const sprite = bakeSettlementSprite(genome, civLevel, idx++, 1);
       const ly = t.y - this.liftAtFace(t.x, t.y, geom);
@@ -3465,8 +3466,10 @@ export class IsoDioramaRenderer {
     const target = Math.round(Math.min(Math.max(c.w, c.h), nominal) * S);
     if (target < FORGE_MIN_PX) return null;
     const gn = c.genome, d = gn.dna, p = gn.physicalTraits;
+    // The world's people stands upright; every other species is an animal.
+    const people = peopleOf(this.species, 3)?.id === gn.id;
     const body = [gn.id, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
-      p.size, p.bodyStructure, p.mobilityType, p.sensorySystem].join('|');
+      p.size, p.bodyStructure, p.mobilityType, p.sensorySystem, people ? 'p' : ''].join('|');
     const key = `${target}|${body}`;
     const hit = this.forgeSprites.get(key);
     if (hit) return hit;
@@ -3479,7 +3482,7 @@ export class IsoDioramaRenderer {
     }
     this.forgeBudget--;
     // Its own motion (legs, wings, fins, pulse): a loop of frames in one box.
-    const cvs = bakeCreatureFrames(gn, target, CREATURE_FRAMES);
+    const cvs = bakeCreatureFrames(gn, target, CREATURE_FRAMES, people);
     // Transparent rows under the lowest opaque pixel over the whole loop: the
     // planted feet of the stride sit on the anchor.
     let foot = Infinity;
