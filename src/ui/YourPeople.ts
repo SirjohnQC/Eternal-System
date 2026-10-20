@@ -15,6 +15,7 @@ import {
   symptomsOf, activityOf, ACTIVITY_WORDS, natureOf, beliefsOf, shapedBy, headingOf, beatsSince, plural,
 } from '../simulation/PeopleStory';
 import { openChronicle } from './ChronicleUI';
+import { openLedger, worldMetrics, type WorldMetric } from './LedgerUI';
 
 export interface YourPeopleDeps {
   /** The player's own lineage now (the Evolution Lab's specimen). */
@@ -61,6 +62,7 @@ export function openYourPeople(): void {
       if (!t) return;
       if (t.dataset.act === 'close') closeYourPeople();
       else if (t.dataset.act === 'lab') { closeYourPeople(); deps?.openLab(); }
+      else if (t.dataset.act === 'ledger') { closeYourPeople(); openLedger(); }
       else if (t.dataset.entry) openChronicle({ entry: Number(t.dataset.entry) });
     });
     document.addEventListener('keydown', e => { if (e.key === 'Escape') closeYourPeople(); });
@@ -88,7 +90,8 @@ function render(): void {
   const beliefs = beliefsOf(ns);
   const beats = beatsSince(ns, new Set(), 0.5, 3);
   const forms = gameState.speciesForms;
-  const sig = [sp?.id, sp?.name, forms.length, deps.phaseLabel(), activity, gameState.dnaPoints,
+  const metrics = ns?.isFounded ? worldMetrics(ns) : [];
+  const sig = [metrics.map(m => m.value + m.delta).join(','),sp?.id, sp?.name, forms.length, deps.phaseLabel(), activity, gameState.dnaPoints,
     symptoms.map(s => s.text).join('|'), beliefs.map(b => b.text).join('|'), beats.map(b => b.entry.id).join(',')].join('#');
   if (sig === lastSig) return;
   lastSig = sig;
@@ -123,6 +126,10 @@ function render(): void {
       ${beats.length ? `<div class="yp-h">What came of your signs</div><div class="yp-list">${beats.map(b =>
         `<button type="button" class="yp-beat link" data-entry="${b.entry.id}">${esc(b.entry.what)}</button>`).join('')}</div>` : ''}
     </section>
+    ${metrics.length ? `<section class="yp-world">
+      <div class="yp-h">Their world <button type="button" class="yp-link" data-act="ledger">FULL LEDGER</button></div>
+      <div class="yp-tiles">${metrics.map(statTile).join('')}</div>
+    </section>` : ''}
     <section class="yp-lineage">
       <div class="yp-h">Their lineage</div>
       <div class="yp-strip"></div>
@@ -148,6 +155,25 @@ function copyOf(src: HTMLCanvasElement): HTMLCanvasElement {
   c.width = src.width; c.height = src.height;
   c.getContext('2d')?.drawImage(src, 0, 0);
   return c;
+}
+
+/** A ledger number in the panel's own look: label, value, change in a generation, a small line of its history. */
+function statTile(m: WorldMetric): string {
+  return `<div class="yp-tile"><div class="yp-tile-k">${esc(m.label)}</div><div class="yp-tile-v">${esc(m.value)}</div>
+    <div class="yp-tile-d ${m.tone}">${m.delta ? `${m.arrow} ${esc(m.delta)}` : '—'}</div>${sparkline(m.vals, m.tone)}</div>`;
+}
+
+function sparkline(vals: number[], tone: WorldMetric['tone']): string {
+  if (vals.length < 2) return '<div class="yp-spark empty"></div>';
+  const W = 120, H = 22, P = 2;
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1e-9) { hi += 0.5; lo -= 0.5; }
+  const x = (i: number) => P + (i / (vals.length - 1)) * (W - 2 * P);
+  const y = (v: number) => H - P - ((v - lo) / (hi - lo)) * (H - 2 * P);
+  const d = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const col = tone === 'good' ? '#5dcc8a' : tone === 'bad' ? '#ff7a5c' : '#c8a96e';
+  return `<svg class="yp-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${d}" fill="none" stroke="${col}" stroke-opacity="0.8" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -184,6 +210,18 @@ const YP_CSS = `
 #your-people .link:hover{border-color:var(--gold,#c8a96e)}
 #your-people .link:focus-visible,#your-people .yp-btn:focus-visible{outline:2px solid var(--gold,#c8a96e);outline-offset:1px}
 #your-people .yp-beat::before{content:'↳ ';color:var(--gold,#c8a96e)}
+#your-people .yp-world{grid-column:1/-1}
+#your-people .yp-h{display:flex;justify-content:space-between;align-items:center}
+#your-people .yp-link{font:inherit;font-size:10px;letter-spacing:1px;color:var(--gold,#c8a96e);background:none;border:1px solid rgba(200,169,110,.4);padding:2px 6px;cursor:pointer}
+#your-people .yp-link:hover{border-color:var(--gold,#c8a96e)}
+#your-people .yp-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:6px;margin-top:6px}
+#your-people .yp-tile{background:#0d0919;border:1px solid rgba(200,169,110,.15);padding:6px 8px}
+#your-people .yp-tile-k{font-size:10px;letter-spacing:1px;color:#a99a80}
+#your-people .yp-tile-v{font-size:16px;color:#f3e6c4;margin-top:2px}
+#your-people .yp-tile-d{font-size:10px;color:#a99a80;margin-top:1px}
+#your-people .yp-tile-d.good{color:#5dcc8a} #your-people .yp-tile-d.bad{color:#ff7a5c}
+#your-people .yp-spark{display:block;width:100%;height:22px;margin-top:3px}
+#your-people .yp-spark.empty{height:22px}
 #your-people .yp-lineage{grid-column:1/-1}
 #your-people .yp-strip{display:flex;gap:8px;overflow-x:auto;padding:6px 2px}
 #your-people .yp-form{font:inherit;flex:0 0 150px;text-align:center;background:#0d0919;border:1px solid rgba(200,169,110,.2);padding:6px;color:#cdbfa6}

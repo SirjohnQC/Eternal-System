@@ -56,8 +56,8 @@ const METRICS: Metric[] = [
 ];
 
 /** One value per sample for the selected view (the world folds the nations together). */
-function series(ns: NationSystem, m: Metric): number[] {
-  if (view !== 'world') return (ns.ledger[view] ?? []).filter(s => !s.fallen).map(m.read);
+function series(ns: NationSystem, m: Metric, v: 'world' | number = view): number[] {
+  if (v !== 'world') return (ns.ledger[v] ?? []).filter(s => !s.fallen).map(m.read);
   const logs = ns.ledger.filter((l, k) => l && !ns.nations[k]?.fallen);
   const len = Math.min(...logs.map(l => l.length));
   if (!isFinite(len) || len <= 0) return [];
@@ -89,6 +89,34 @@ function spark(vals: number[], key: string): string {
     <circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}" r="2.6" fill="var(--lg-accent)" stroke="var(--lg-surface)" stroke-width="1.2"/>
     <line class="lg-cross" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--lg-grid)" stroke-width="1" vector-effect="non-scaling-stroke" style="display:none"/>
   </svg>`;
+}
+
+/** One of the world's numbers, as the People panel shows it. */
+export interface WorldMetric {
+  key: string; label: string; value: string;
+  /** "+12% in a generation", or '' before there is a generation of history. */
+  delta: string;
+  arrow: '▲' | '▼' | '■';
+  tone: 'good' | 'bad' | 'neutral';
+  /** The history, oldest first (for a sparkline). */
+  vals: number[];
+}
+
+/** The world's numbers (every nation folded together), the same the ledger shows. */
+export function worldMetrics(ns: NationSystem): WorldMetric[] {
+  return METRICS.map(m => {
+    const vals = series(ns, m, 'world');
+    const now = vals[vals.length - 1], then = vals[Math.max(0, vals.length - 1 - GEN)];
+    const has = vals.length > 1;
+    const dir = !has || Math.abs(now - then) < 1e-6 ? 'flat' : now > then ? 'up' : 'down';
+    return {
+      key: m.key, label: m.label, value: now == null ? '—' : m.show(now),
+      delta: has ? m.delta(now, then) : '',
+      arrow: dir === 'up' ? '▲' : dir === 'down' ? '▼' : '■',
+      tone: m.good === 'none' || dir === 'flat' ? 'neutral' : dir === m.good ? 'good' : 'bad',
+      vals,
+    };
+  });
 }
 
 function tile(ns: NationSystem, m: Metric): string {
