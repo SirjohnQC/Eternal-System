@@ -260,6 +260,68 @@ export function rollUniverseMutations(seed: string): string[] {
 
 // ─── State queries ───────────────────────────────────────────────────────────
 
+// ─── Evolution answers the world (species design, pillar C) ─────────────────
+
+/** What presses on the people (PeopleStory's symptom kinds). */
+export type PressureKind =
+  | 'hunger' | 'crowding' | 'scarcity' | 'unrest' | 'pollution' | 'war'
+  | 'extinction' | 'air' | 'crowded_life';
+
+/** Which pressures each mutation answers: the body the world is selecting for. */
+export const ANSWERS: Record<string, readonly PressureKind[]> = {
+  chloroplasts: ['hunger', 'air'], engulfing: ['hunger', 'crowded_life'], vent_chemistry: ['air', 'hunger'],
+  flagellum: ['crowded_life', 'extinction'], oxygen: ['air'], eyespot: ['crowded_life', 'extinction'],
+  colony: ['extinction', 'unrest'], shell: ['extinction', 'war', 'pollution'], segments: ['extinction'],
+  jelly: ['crowded_life'], growth: ['war', 'crowded_life'], crawling_foot: ['crowding', 'crowded_life'],
+  gut: ['hunger', 'pollution'], backbone: ['extinction', 'war'], exoskeleton: ['war', 'pollution', 'extinction'],
+  fins: ['crowding', 'hunger'], legs: ['crowding', 'hunger'], wings: ['crowding', 'crowded_life'],
+  camera_eyes: ['crowded_life', 'war'], compound_eyes: ['crowded_life', 'war'], echolocation: ['crowded_life'],
+  grazing_jaws: ['hunger'], hunting_jaws: ['hunger', 'war'], venom: ['war', 'crowded_life'],
+  big_brain: ['scarcity', 'unrest'], pack_bonds: ['war', 'unrest', 'extinction'], hands: ['scarcity', 'hunger'],
+  gigantism: ['war'], slow_ageing: ['crowding', 'pollution'], language: ['unrest', 'scarcity'],
+  toolmaking: ['scarcity', 'hunger'], star_sense: ['crowding'],
+};
+
+/** Answering mutations cost this share of their price (decision 3: a gentle nudge). */
+export const ANSWER_DISCOUNT = 0.8;
+
+/** The first present pressure (worst first) that `id` answers, or null. */
+export function answersFor(id: string, present: readonly PressureKind[]): PressureKind | null {
+  const a = ANSWERS[id];
+  if (!a) return null;
+  return present.find(k => a.includes(k)) ?? null;
+}
+
+/** What a mutation costs now: cheaper when it answers what the people face. */
+export function mutationPrice(def: MutationDef, present: readonly PressureKind[] = []): number {
+  return answersFor(def.id, present) ? Math.max(1, Math.min(def.cost - 1, Math.round(def.cost * ANSWER_DISCOUNT))) : def.cost;
+}
+
+/** A pressure as a stretch of the people's history ("the hungry years"). */
+export const PRESSURE_TIMES: Record<PressureKind, string> = {
+  hunger: 'the hungry years', crowding: 'the crowding', scarcity: 'the years of want', unrest: 'the strife',
+  pollution: 'the fouled land', war: 'the wars', extinction: 'the dying times', air: 'the thin air',
+  crowded_life: 'the struggle for every niche',
+};
+
+/** Why a gift came, in the world's words ("the hungry years favoured …"). */
+export function giftReason(id: string, present: readonly PressureKind[]): string {
+  const k = answersFor(id, present);
+  const label = (MUTATION_BY_ID[id]?.label ?? id).toLowerCase();
+  const WHY: Record<PressureKind, string> = {
+    hunger: 'the hungry years favoured those with',
+    crowding: 'crowding favoured those with',
+    scarcity: 'want favoured those with',
+    unrest: 'strife favoured those with',
+    pollution: 'the fouled land favoured those with',
+    war: 'the wars favoured those with',
+    extinction: 'the dying times favoured those with',
+    air: 'the thin air favoured those with',
+    crowded_life: 'the struggle for every niche favoured those with',
+  };
+  return k ? `${WHY[k]} ${label}` : `a chance change in the blood: ${label}`;
+}
+
 export type CardStatus = 'owned' | 'queued' | 'available' | 'locked';
 
 export interface CardState {
@@ -268,6 +330,10 @@ export interface CardState {
   /** Why it is locked, or why it cannot be afforded. */
   reason: string | null;
   affordable: boolean;
+  /** What it costs now (cheaper when it answers a present pressure). */
+  price: number;
+  /** The present pressure it answers, if any. */
+  answers: PressureKind | null;
 }
 
 export interface MutationContext {
@@ -277,6 +343,8 @@ export interface MutationContext {
   queued: readonly string[];
   offered: readonly string[];
   points: number;
+  /** What presses on the people now, worst first (absent: none). */
+  pressures?: readonly PressureKind[];
 }
 
 const phaseIdx = (p: BiologyPhase) => BIO_PHASE_SEQUENCE.indexOf(p);
@@ -303,8 +371,9 @@ export function cardStates(ctx: MutationContext): CardState[] {
       } else reason = def.blockedBy?.(preview) ?? null;
       if (reason) status = 'locked';
     }
-    const affordable = ctx.points >= def.cost;
-    out.push({ def, status, reason, affordable });
+    const present = ctx.pressures ?? [];
+    const price = mutationPrice(def, present);
+    out.push({ def, status, reason, affordable: ctx.points >= price, price, answers: answersFor(def.id, present) });
   }
   return out;
 }

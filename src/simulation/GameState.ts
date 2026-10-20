@@ -213,6 +213,10 @@ export interface GameStateData {
   mutationQueue: string[];
   /** Queued cards that arrived as spontaneous mutations (free; no refund). */
   mutationGifts: string[];
+  /** DNA paid for each queued card (answering cards cost less); absent in older saves = list price. */
+  mutationPaid?: Record<string, number>;
+  /** Why each spontaneous card came, in the world's words (species design C). */
+  mutationGiftWhy?: Record<string, string>;
   /** Cards this universe offers (core plus the rolled optional ones). */
   offeredMutations: string[];
   /** Each evolution's result: the dex. Form 1 is the founding organism. */
@@ -234,6 +238,8 @@ export interface SpeciesForm {
   genome: SpeciesGenome;
   /** Cards applied to reach this form (empty for the founding form). */
   mutations: string[];
+  /** The pressure its changes answered when it evolved ("the hungry years"); absent in older saves. */
+  why?: string;
 }
 
 /** Runtime-only planet grid — NOT serialized. Regenerated on load from seed. */

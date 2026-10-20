@@ -7,7 +7,7 @@ import { openChronicle } from './ui/ChronicleUI';
 import { openLedger } from './ui/LedgerUI';
 import { openNationsOverview } from './ui/NationsOverview';
 import { initYourPeople, openYourPeople, peopleName } from './ui/YourPeople';
-import { beatsSince, plural } from './simulation/PeopleStory';
+import { beatsSince, plural, pressureKinds, symptomsOf as peopleSymptoms, headingOf, natureOf } from './simulation/PeopleStory';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
@@ -58,7 +58,7 @@ import { assignDominantSpecies } from './simulation/SpeciesDistribution';
 import { initPlayerSpecies, stepEvolution } from './simulation/EvolutionEngine';
 import { clearSpriteCaches, bakeCreatureSprite, bakeCreaturePortrait } from './rendering/SpeciesSprite';
 import {
-  cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD,
+  cardStates, MUTATION_BY_ID, previewGenome, queueReady, EVOLVE_THRESHOLD, PRESSURE_TIMES,
 } from './simulation/Mutations';
 import { runtimeState } from './simulation/GameState';
 import { colonyLook, type Colony } from './simulation/Colonies';
@@ -5556,6 +5556,19 @@ function isPeople(g: SpeciesGenome): boolean {
   return peopleOf(gameState.playerSpecies, 3)?.id === g.id;
 }
 
+/** A creature as a dark silhouette with a pale rim: what it will become, unseen. */
+function silhouetteOf(src: HTMLCanvasElement): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const x = c.getContext('2d')!;
+  x.drawImage(src, 0, 0);
+  x.globalCompositeOperation = 'source-in';
+  x.fillStyle = '#1a1430';
+  x.fillRect(0, 0, c.width, c.height);
+  c.style.filter = 'drop-shadow(0 0 3px rgba(125,255,180,0.55))';
+  return c;
+}
+
 function creatureCanvas(g: SpeciesGenome, px: number, people = isPeople(g)): HTMLCanvasElement {
   return bakeCreaturePortrait(g, px, people);
 }
@@ -5572,6 +5585,8 @@ function mutationContext() {
     queued: gameState.mutationQueue,
     offered: gameState.offeredMutations,
     points: gameState.dnaPoints,
+    // What presses on the people: answering cards glow and cost less (species design C).
+    pressures: pressureKinds(runtimeState.playerNations ?? null, gameState.playerBiosphere),
   };
 }
 
@@ -5579,7 +5594,8 @@ function mutationContext() {
 function queueMutation(id: string): void {
   const st = cardStates(mutationContext()).find(c => c.def.id === id);
   if (!st || st.status !== 'available' || !st.affordable) return;
-  gameState.dnaPoints -= st.def.cost;
+  gameState.dnaPoints -= st.price;
+  (gameState.mutationPaid ??= {})[id] = st.price;
   gameState.mutationQueue.push(id);
   AudioManager.playSfx('ui_click');
   refreshEvolutionUI();
@@ -5591,8 +5607,9 @@ function unqueueMutation(id: string): void {
   gameState.mutationQueue.splice(i, 1);
   // A spontaneous card was free: removing it refunds nothing.
   const gi = gameState.mutationGifts.indexOf(id);
-  if (gi >= 0) gameState.mutationGifts.splice(gi, 1);
-  else gameState.dnaPoints += MUTATION_BY_ID[id]?.cost ?? 0;
+  if (gi >= 0) { gameState.mutationGifts.splice(gi, 1); delete gameState.mutationGiftWhy?.[id]; }
+  else gameState.dnaPoints += gameState.mutationPaid?.[id] ?? MUTATION_BY_ID[id]?.cost ?? 0;
+  delete gameState.mutationPaid?.[id];
   // Cards that needed this one cannot stay queued without it.
   for (let guard = 0; guard < 8; guard++) {
     const bad = gameState.mutationQueue.find(q => {
@@ -5639,10 +5656,12 @@ function renderEvoLab(): void {
       `${WHERE[sp.dna.environment] ?? 'in the ' + sp.dna.environment.replace(/_/g, ' ')}`);
     const stats = document.getElementById('evo-specimen-stats')!;
     stats.innerHTML = '';
+    // Stats as words, not /10 (species design C).
+    const [mind, kin, temper, reach] = natureOf(sp);
     const rows: Array<[string, string]> = [
-      ['INTELLECT', `${sp.dna.intelligence}/10`], ['SOCIAL', `${sp.dna.social}/10`],
-      ['AGGRESSION', `${sp.dna.aggression}/10`], ['ADAPTABILITY', `${sp.dna.adaptability}/10`],
-      ['SENSES', sp.physicalTraits.sensorySystem], ['DOMINANCE', `${(sp.population * 100).toFixed(0)}%`],
+      ['MIND', mind], ['WITH OTHERS', kin], ['TEMPER', temper], ['IN NEW LANDS', reach],
+      ['SENSES', sp.physicalTraits.sensorySystem],
+      ['HOLD ON THE WORLD', sp.population > 0.6 ? 'they rule it' : sp.population > 0.35 ? 'strong' : sp.population > 0.15 ? 'a foothold' : 'barely holding on'],
     ];
     for (const [k, v] of rows) {
       const d = document.createElement('div');
@@ -5666,7 +5685,9 @@ function renderEvoLab(): void {
   if (sp && queue.length > 0) {
     const nt = document.getElementById('evo-next-tank')!;
     nt.innerHTML = '';
-    nt.appendChild(creatureCanvas(previewGenome(sp, queue), 84));
+    // The next form stays a silhouette until EVOLVE (species design C, #36).
+    nt.appendChild(silhouetteOf(creatureCanvas(previewGenome(sp, queue), 84)));
+    nt.title = 'What they will become is hidden until they evolve.';
     const chips = document.getElementById('evo-queue')!;
     chips.innerHTML = '';
     for (const id of queue) {
@@ -5676,10 +5697,28 @@ function renderEvoLab(): void {
       const gift = gameState.mutationGifts.includes(id);
       b.className = 'evo-qchip' + (gift ? ' gift' : '');
       b.textContent = `${def.glyph} ${def.label} ✕`;
-      b.title = gift ? 'A spontaneous mutation (free). Click to discard.' : `Click to un-queue (refunds ${def.cost} DNA)`;
+      const why = gameState.mutationGiftWhy?.[id];
+      b.title = gift ? `A spontaneous mutation (free)${why ? `: ${why}` : ''}. Click to discard.`
+        : `Click to un-queue (refunds ${gameState.mutationPaid?.[id] ?? def.cost} DNA)`;
       b.addEventListener('click', () => unqueueMutation(id));
       chips.appendChild(b);
     }
+  }
+  // Gifts explained: what in the world brought each one.
+  let gifts = document.getElementById('evo-gift-why');
+  if (!gifts) {
+    gifts = document.createElement('div');
+    gifts.id = 'evo-gift-why';
+    document.getElementById('evo-queue')?.after(gifts);
+  }
+  gifts.innerHTML = '';
+  for (const id of queue) {
+    const why = gameState.mutationGifts.includes(id) ? gameState.mutationGiftWhy?.[id] : undefined;
+    if (!why) continue;
+    const d = document.createElement('div');
+    d.className = 'evo-gift-line';
+    d.textContent = `✦ ${why.charAt(0).toUpperCase() + why.slice(1)}.`;
+    gifts.appendChild(d);
   }
   const evolveBtn = document.getElementById('evo-evolve-btn') as HTMLButtonElement;
   const ready = !!sp && queueReady(queue);
@@ -5692,6 +5731,24 @@ function renderEvoLab(): void {
   // ── Mutation tree, by phase ────────────────────────────────────────────────
   const tree = document.getElementById('evo-tree')!;
   tree.innerHTML = '';
+  // What the people face, beside the tree (species design C): the cards that
+  // answer it glow and cost less.
+  {
+    const syms = peopleSymptoms(runtimeState.playerNations ?? null, gameState.playerBiosphere, 3);
+    const face = document.createElement('div');
+    face.className = 'evo-face';
+    face.innerHTML = '<div class="evo-face-h">WHAT YOUR PEOPLE FACE</div><div class="evo-face-list"></div><div class="evo-face-head"></div>';
+    const list = face.querySelector('.evo-face-list')!;
+    if (!syms.length) list.textContent = 'Nothing presses hard on them now.';
+    for (const sy of syms) {
+      const d = document.createElement('div');
+      d.className = `evo-face-sym s${sy.severity}`;
+      d.textContent = sy.text.charAt(0).toUpperCase() + sy.text.slice(1);
+      list.appendChild(d);
+    }
+    face.querySelector('.evo-face-head')!.textContent = headingOf(syms);
+    tree.appendChild(face);
+  }
   const states = cardStates(ctx);
   const phIdx = BIO_PHASE_SEQUENCE.indexOf(ctx.phase);
   BIO_PHASE_SEQUENCE.forEach((ph, i) => {
@@ -5709,16 +5766,23 @@ function renderEvoLab(): void {
     for (const c of cards) {
       const b = document.createElement('button');
       const poor = c.status === 'available' && !c.affordable;
-      b.className = `evo-card ${c.status}` + (c.def.major ? ' major' : '') + (poor ? ' poor' : '');
+      const answers = c.status === 'available' && c.answers;
+      b.className = `evo-card ${c.status}` + (c.def.major ? ' major' : '') + (poor ? ' poor' : '') + (answers ? ' answers' : '');
       b.innerHTML = `<div class="c-top"><span class="c-glyph"></span><span class="c-name"></span><span class="c-cost"></span></div>`
         + `<div class="c-blurb"></div><div class="c-tag"></div>`;
       b.querySelector('.c-glyph')!.textContent = c.def.glyph;
       b.querySelector('.c-name')!.textContent = c.def.label;
       b.querySelector('.c-cost')!.textContent =
-        c.status === 'owned' ? '✓' : c.status === 'queued' ? 'QUEUED' : `${c.def.cost}`;
+        c.status === 'owned' ? '✓' : c.status === 'queued' ? 'QUEUED' : `${c.price}`;
+      if (answers && c.price < c.def.cost) {
+        const was = document.createElement('s');
+        was.textContent = String(c.def.cost);
+        b.querySelector('.c-cost')!.prepend(was, ' ');
+      }
       b.querySelector('.c-blurb')!.textContent = c.def.blurb;
       const tag = c.status === 'locked' ? (c.reason ?? '')
-        : poor ? `Needs ${c.def.cost - gameState.dnaPoints} more DNA`
+        : poor ? `Needs ${c.price - gameState.dnaPoints} more DNA`
+        : answers ? `Answers ${PRESSURE_TIMES[c.answers!]}`
         : c.def.group ? `Fork: pick one ${c.def.group} path` : '';
       b.querySelector('.c-tag')!.textContent = tag;
       b.disabled = c.status === 'owned' || c.status === 'locked' || poor;

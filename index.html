@@ -3931,6 +3931,18 @@ input[type="range"], select, label[for],
 .evo-card.locked{ opacity:0.35; cursor:not-allowed; filter:grayscale(0.5); }
 .evo-card.poor{ opacity:0.6; cursor:not-allowed; }
 .evo-card.poor .c-cost{ color:#ff8a6a; }
+/* Evolution answers the world (species design C) */
+.evo-face{ border:1px solid rgba(255,154,92,0.35); border-radius:5px; padding:7px 9px; background:rgba(60,30,20,0.25); }
+.evo-face-h{ color:#ffb27a; font-size:9px; letter-spacing:2.5px; margin-bottom:4px; }
+.evo-face-list{ display:flex; flex-direction:column; gap:2px; font-size:10px; color:var(--phos); }
+.evo-face-sym::before{ content:'● '; color:#e0b84f; }
+.evo-face-sym.s2::before{ color:#ff9a5c; } .evo-face-sym.s3::before{ color:#ff5c5c; }
+.evo-face-head{ font-size:10px; color:#a8d8ff; font-style:italic; margin-top:4px; }
+.evo-card.answers{ border-color:#ffb27a; box-shadow:0 0 0 1px rgba(255,178,122,0.35), 0 0 10px rgba(255,178,122,0.25); }
+.evo-card.answers .c-tag{ color:#ffb27a; opacity:1; }
+.evo-card .c-cost s{ color:var(--phos-dim); opacity:0.7; }
+#evo-gift-why{ display:flex; flex-direction:column; gap:2px; margin-top:5px; }
+.evo-gift-line{ font-size:10px; color:#c8a0ff; font-style:italic; }
 
 #evo-dna-big{ text-align:center; margin:2px 0 8px; }
 #evo-dna-big b{ font-size:34px; color:#ffe08a; font-weight:normal; text-shadow:0 0 12px rgba(255,224,138,0.4); }

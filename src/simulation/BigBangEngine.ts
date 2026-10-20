@@ -77,8 +77,9 @@ import {
 import { generateCulture } from '../ai/CultureGenerator';
 import {
   rollUniverseMutations, lockedTraits, mutationEffect, cardStates, cloneGenome,
-  queueReady, applyMutation, genomeDiff,
+  queueReady, applyMutation, genomeDiff, answersFor, giftReason, PRESSURE_TIMES,
 } from './Mutations';
+import { pressureKinds } from './PeopleStory';
 import { nameForGenome } from './SpeciesNaming';
 import {
   type DestinyType, rollDestiny, rollFormationBudget, stageDuration, nextStage,
@@ -1256,6 +1257,8 @@ export class BigBangEngine {
     gameState.mutationsOwned = [];
     gameState.mutationQueue = [];
     gameState.mutationGifts = [];
+    gameState.mutationPaid = {};
+    gameState.mutationGiftWhy = {};
     gameState.speciesForms = [];
     gameState.signatureBiomes = [];
     gameState.offeredMutations = rollUniverseMutations(seed);
@@ -3586,8 +3589,14 @@ export class BigBangEngine {
     sig.name = name;
     gameState.mutationsOwned.push(...queue);
     gameState.mutationQueue = [];
+    gameState.mutationPaid = {};
+    gameState.mutationGiftWhy = {};
     const form = gameState.speciesForms.length + 1;
-    gameState.speciesForms.push({ form, name, tick: this.tick, genome: cloneGenome(sig), mutations: queue });
+    // What the world was selecting for, if the changes answered it (species design C).
+    const present = pressureKinds(runtimeState.playerNations ?? null, gameState.playerBiosphere);
+    const answered = queue.map(id => answersFor(id, present)).find(k => !!k);
+    gameState.speciesForms.push({ form, name, tick: this.tick, genome: cloneGenome(sig), mutations: queue,
+      ...(answered ? { why: PRESSURE_TIMES[answered] } : {}) });
     return { before, after: cloneGenome(sig), diff: genomeDiff(before, sig), form, cards: queue };
   }
 
@@ -3623,15 +3632,24 @@ export class BigBangEngine {
       }
     }
     // A surprise: a free card drops into the queue.
+    // A surprise that is not quite random (species design C): the world
+    // selects, so a change that answers what presses on the people is three
+    // times as likely, and the gift remembers why it came.
     if (this.rng.chance(SPONTANEOUS_MUTATION_CHANCE)) {
+      const present = pressureKinds(runtimeState.playerNations ?? null, gameState.playerBiosphere);
       const open = cardStates({
         genome: sig, phase, owned: gameState.mutationsOwned, queued: gameState.mutationQueue,
-        offered: gameState.offeredMutations, points: Infinity,
+        offered: gameState.offeredMutations, points: Infinity, pressures: present,
       }).filter(c => c.status === 'available');
       if (open.length > 0) {
-        const pick = open[this.rng.nextInt(0, open.length - 1)].def.id;
+        const weights = open.map(c => c.answers ? 3 : 1);
+        let r = this.rng.next() * weights.reduce((a, b) => a + b, 0);
+        let k = 0;
+        while (k < open.length - 1 && (r -= weights[k]) >= 0) k++;
+        const pick = open[k].def.id;
         gameState.mutationQueue.push(pick);
         gameState.mutationGifts.push(pick);
+        (gameState.mutationGiftWhy ??= {})[pick] = giftReason(pick, present);
         this.onSpontaneousMutation?.(pick);
       }
     }

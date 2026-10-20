@@ -18,6 +18,10 @@ import {
 } from '../src/simulation/PeopleStory';
 import { DEFAULT_BIOSPHERE, createPrimordialSpecies } from '../src/simulation/SpeciesGenome';
 import { SeedRNG } from '../src/utils/SeedRNG';
+import {
+  MUTATIONS, MUTATION_BY_ID, ANSWERS, answersFor, mutationPrice, giftReason, cardStates, PRESSURE_TIMES,
+} from '../src/simulation/Mutations';
+import { pressureKinds } from '../src/simulation/PeopleStory';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -68,7 +72,7 @@ console.log('Your People: symptoms and activity');
   const pre = symptomsOf(null, { ...DEFAULT_BIOSPHERE, extinctionPressure: 0.8, oxygenLevel: 0.02 });
   check('before nations, the living world speaks', pre.some(x => x.kind === 'extinction') && pre.some(x => x.kind === 'air'), pre.map(x => x.text).join(' | '));
   check('nature is words', natureOf(createPrimordialSpecies(0)).length === 4);
-  check('plural names', plural('Selsul Runner') === 'Selsul Runners' && plural('Velari') === 'Velaris' && plural('Kith') === 'Kiths' && plural('Moss') === 'Moss');
+  check('plural names', plural('Selsul Runner') === 'Selsul Runners' && plural('Velari') === 'Velari' && plural('Kith') === 'Kiths' && plural('Moss') === 'Moss');
 }
 
 console.log('Your People: beliefs, lineage and beats');
@@ -108,17 +112,41 @@ console.log('Your People: cards speak of them');
   const w = world(51);
   const kin = card(['awaken'], { target: 'kin' });
   const k = personalize(describe(kin), targetTextOf(kin), 'Velari', []);
-  check('the kin target names your people', /your Velaris/.test(k), k);
+  check('the kin target names your people', /your Velari\b/.test(k), k);
   const hungry = card(['harvest'], { target: 'hungriest' });
   const falls = resolveTarget(w.ns, 'hungriest');
   const h = personalize(describe(hungry), targetTextOf(hungry), 'Velari', falls);
   check('a nation target names the nation it would fall on', h.includes(falls[0].name), h);
   const all = card(['harvest'], { target: 'all' });
-  check('every nation is every nation of your people', /every nation of the Velaris/.test(personalize(describe(all), targetTextOf(all), 'Velari', [])));
+  check('every nation is every nation of your people', /every nation of the Velari\b/.test(personalize(describe(all), targetTextOf(all), 'Velari', [])));
   const wilds = card(['harvest'], { target: 'wilds' });
   let same = true;
   try { same = personalize(describe(wilds), targetTextOf(wilds), 'Velari', []) === describe(wilds); } catch { same = true; }
   check('other targets are left as they are', same);
+}
+
+
+console.log('Evolution answers the world');
+{
+  check('every mutation says what it answers', MUTATIONS.every(m => (ANSWERS[m.id]?.length ?? 0) > 0), MUTATIONS.filter(m => !ANSWERS[m.id]).map(m => m.id).join(','));
+  check('every answer names a real mutation', Object.keys(ANSWERS).every(id => !!MUTATION_BY_ID[id]));
+  const gut = MUTATION_BY_ID['gut'];
+  check('an answering card costs less', mutationPrice(gut, ['hunger']) < gut.cost, `${mutationPrice(gut, ['hunger'])} vs ${gut.cost}`);
+  check('a nudge, not a gift (at most 25% off, never free)', mutationPrice(gut, ['hunger']) >= Math.max(1, Math.floor(gut.cost * 0.75)));
+  check('a card that answers nothing costs full price', mutationPrice(gut, ['war']) === gut.cost);
+  check('the worst pressure it answers is named', answersFor('exoskeleton', ['war', 'pollution']) === 'war');
+  check('a gift says what brought it', /^the hungry years favoured those with gut symbionts$/.test(giftReason('gut', ['hunger'])), giftReason('gut', ['hunger']));
+  check('a gift with no cause is chance', /chance/.test(giftReason('gut', ['war'])));
+  const ctx = { genome: createPrimordialSpecies(0), phase: 'microbial' as const, owned: [], queued: [], offered: MUTATIONS.map(m => m.id), points: 0 };
+  const priced = cardStates({ ...ctx, pressures: ['air'] }).find(c => c.def.id === 'oxygen')!;
+  check('card states carry price and the pressure', priced.answers === 'air' && priced.price < priced.def.cost, `${priced.price}/${priced.def.cost}`);
+  const afford = cardStates({ ...ctx, points: priced.price, pressures: ['air'] }).find(c => c.def.id === 'oxygen')!;
+  check('affordable at the answering price', afford.affordable);
+  check('without pressures nothing changes', cardStates(ctx).every(c => c.price === c.def.cost && c.answers === null));
+  const pk = pressureKinds(null, { ...DEFAULT_BIOSPHERE, extinctionPressure: 0.8, oxygenLevel: 0.02 });
+  check('pressure kinds come worst first, without repeats', pk[0] === 'extinction' && new Set(pk).size === pk.length, pk.join(','));
+  const f = { form: 3, name: 'X', tick: 5, genome: createPrimordialSpecies(0), mutations: ['gut'], why: PRESSURE_TIMES.hunger };
+  check('a form remembers what it answered', shapedBy(f, 0, null, id => id).text === 'the hungry years');
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');
