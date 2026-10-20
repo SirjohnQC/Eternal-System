@@ -22,6 +22,8 @@ import {
   MUTATIONS, MUTATION_BY_ID, ANSWERS, answersFor, mutationPrice, giftReason, cardStates, PRESSURE_TIMES,
 } from '../src/simulation/Mutations';
 import { pressureKinds } from '../src/simulation/PeopleStory';
+import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSpan } from '../src/simulation/SpeciesCatalog';
+import type { SpeciesGenome } from '../src/simulation/SpeciesGenome';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -147,6 +149,38 @@ console.log('Evolution answers the world');
   check('pressure kinds come worst first, without repeats', pk[0] === 'extinction' && new Set(pk).size === pk.length, pk.join(','));
   const f = { form: 3, name: 'X', tick: 5, genome: createPrimordialSpecies(0), mutations: ['gut'], why: PRESSURE_TIMES.hunger };
   check('a form remembers what it answered', shapedBy(f, 0, null, id => id).text === 'the hungry years');
+}
+
+console.log('Species catalogue');
+{
+  const base = createPrimordialSpecies(0);
+  const mk = (id: string, over: (g: SpeciesGenome) => void, anc: string | null = null): SpeciesGenome => {
+    const g: SpeciesGenome = JSON.parse(JSON.stringify(base));
+    g.id = id; g.name = id; g.ancestorId = anc; g.physicalTraits.bodyStructure = 'vertebrate';
+    g.dna.environment = 'land'; g.dna.locomotion = 'walking'; g.physicalTraits.size = 'medium'; over(g); return g;
+  };
+  const you = mk('you', g => { g.dna.diet = 'omnivore'; g.population = 0.4; });
+  const branch = mk('branch', g => { g.dna.diet = 'omnivore'; g.population = 0.1; }, 'you');
+  const wolf = mk('wolf', g => { g.dna.diet = 'carnivore'; g.physicalTraits.size = 'large'; g.population = 0.2; });
+  const deer = mk('deer', g => { g.dna.diet = 'herbivore'; g.physicalTraits.size = 'small'; g.population = 0.3; });
+  const kelp = mk('kelp', g => { g.dna.diet = 'producer'; g.dna.environment = 'ocean'; g.dna.locomotion = 'stationary'; g.population = 0.5; });
+  const gone = mk('gone', g => { g.isExtinct = true; g.extinct = { tick: 500, cause: 'outcompeted', by: 'you' }; g.originTick = 100; });
+  const old = mk('old', g => { g.isExtinct = true; });
+  const pool = [kelp, wolf, deer, branch, you, gone, old];
+  check('relations: predator, prey, branch, yours', relationTo(wolf, you, pool) === 'predator' && relationTo(deer, you, pool) === 'prey'
+    && relationTo(branch, you, pool) === 'branch' && relationTo(you, you, pool) === 'yours');
+  check('a sea plant is no threat to land folk', relationTo(kelp, you, pool) === 'harmless', relationTo(kelp, you, pool));
+  const c = censusOf(pool, 'you');
+  check('the census counts living, extinct and branches', c.living === 5 && c.extinct === 2 && c.branches === 1 && c.ever === 7, JSON.stringify(c));
+  const rows = livingRows(pool, 'you');
+  check('yours first, its branch right under it', rows[0].g.id === 'you' && rows[1].g.id === 'branch' && rows[1].depth === 1, rows.map(r => r.g.id).join(','));
+  check('every living lineage listed once', rows.length === 5 && new Set(rows.map(r => r.g.id)).size === 5);
+  check('shares add up to the whole', Math.abs(rows.reduce((a, r) => a + r.share, 0) - 1) < 1e-9);
+  check('the archive lists the dead, latest first', archiveRows(pool).map(g => g.id).join(',') === 'gone,old');
+  check('a death names its killer', deathOf(gone, pool, 'you') === 'outcompeted by your you', deathOf(gone, pool, 'you') ?? '');
+  check('older deaths are honest about it', /before anyone kept records/.test(deathOf(old, pool, 'you') ?? ''));
+  check('kinds are words', kindOf(wolf) === 'hunter' && kindOf(kelp) === 'ocean plant' && kindOf(base) !== '', `${kindOf(wolf)} / ${kindOf(kelp)} / ${kindOf(base)}`);
+  check('spans in years', yearsSpan(400) === '4K years' && yearsSpan(5) === '50 years');
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');

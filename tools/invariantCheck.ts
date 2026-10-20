@@ -1498,6 +1498,44 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: one world, few minds (playtest Oct 20) ────────────────────────
+// Every lineage shared the phase's intelligence ceiling, so by the intelligent
+// phase nearly all of them were minds. Past MIND_CAP only the player's lineage
+// and one rival may climb. Extinctions record when and why (the archive).
+{
+  const r: Rule = { name: 'scenario: at most two minds per world; extinctions say why', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const EE = await import('../src/simulation/EvolutionEngine');
+    const { DEFAULT_BIOSPHERE } = await import('../src/simulation/SpeciesGenome');
+    const { generateBranchSet, emptyInvestment } = await import('../src/simulation/DnaBranches');
+    const { SeedRNG } = await import('../src/utils/SeedRNG');
+    const LADDER = ['microbial', 'multicellular', 'complex', 'primitive', 'intelligent'];
+    let worst = 0, extinct = 0, recorded = 0, sigMind = 0;
+    for (let seed = 1; seed <= 6 && !detail; seed++) {
+      const rng = new SeedRNG(`minds_${seed}`);
+      const defs = generateBranchSet(new SeedRNG(`b_${seed}`));
+      const dna = emptyInvestment(defs);
+      let species = [EE.createFoundingSpecies(0, rng)];
+      const sigId = species[0].id;
+      let bio = { ...DEFAULT_BIOSPHERE };
+      for (let p = 0; p < LADDER.length; p++) for (let i = 0; i < 160; i++) {
+        const res = EE.stepEvolution(LADDER[p], dna, species, bio, rng, (p * 160 + i) * 2000, defs, { id: sigId, locked: new Set() });
+        species = res.updatedSpecies; bio = res.updatedBiosphere;
+      }
+      const minds = species.filter(s => !s.isExtinct && s.dna.intelligence > EE.MIND_CAP).length;
+      worst = Math.max(worst, minds);
+      if ((species.find(s => s.id === sigId)?.dna.intelligence ?? 0) > EE.MIND_CAP) sigMind++;
+      for (const s of species) if (s.isExtinct) { extinct++; if (s.extinct && s.extinct.tick >= 0) recorded++; }
+    }
+    if (worst > 2) detail = `${worst} minds on one world (> 2)`;
+    else if (extinct && recorded !== extinct) detail = `${extinct - recorded} of ${extinct} extinctions have no record`;
+    else if (sigMind === 0) detail = 'the player\'s lineage never became a mind';
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Scenario: landforms are not rounded (playtest Oct 19) ──────────────────
 // Mountains came out as round caps (a whole massif above the mountain line)
 // and coasts as smooth blobs. Measured over 24 worlds: share of mountain cells

@@ -7,6 +7,7 @@ import { openChronicle } from './ui/ChronicleUI';
 import { openLedger } from './ui/LedgerUI';
 import { openNationsOverview } from './ui/NationsOverview';
 import { initYourPeople, openYourPeople, peopleName } from './ui/YourPeople';
+import { initSpeciesScreen, openSpeciesScreen } from './ui/SpeciesScreen';
 import { beatsSince, plural, pressureKinds, symptomsOf as peopleSymptoms, headingOf, natureOf } from './simulation/PeopleStory';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
@@ -2940,7 +2941,7 @@ function updateDNAPanel(): void {
   if (commitBtn) {
     commitBtn.disabled = false;
     commitBtn.classList.toggle('ready', ready);
-    commitBtn.textContent = ready ? '◈ EVOLVE READY ◈' : 'YOUR PEOPLE';
+    commitBtn.textContent = ready ? '◈ EVOLVE READY ◈' : 'SPECIES';
   }
 }
 
@@ -4979,9 +4980,9 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // DNA Lab — commit button opens species traits modal
-  // Ready to evolve: straight to the lab; otherwise the people first.
+  // Ready to evolve: straight to the lab; otherwise the Species screen.
   document.getElementById('el-commit-btn')?.addEventListener('click', (e) =>
-    (e.currentTarget as HTMLElement).classList.contains('ready') ? openEvoLab() : openYourPeople());
+    (e.currentTarget as HTMLElement).classList.contains('ready') ? openEvoLab() : openSpeciesScreen('evolution'));
 
   // Species traits modal (close + evolve wired internally)
   wireTraitsModal();
@@ -5980,20 +5981,29 @@ function initEvoLab(): void {
     specimen: labSpecimen,
     portrait: (g, px) => creatureCanvas(g, px),
     mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
-    openLab: openEvoLab,
+    openLab: () => openSpeciesScreen('living'),
     phaseLabel: () => { const ps = engine?.getPlayerStar(); return ps ? progressionFor(ps).phaseLabel : '—'; },
   });
+  // Species: the planet's biology, the lab, the extinct (playtest Oct 20).
+  initSpeciesScreen({
+    yours: labSpecimen,
+    portrait: (g, px) => creatureCanvas(g, px),
+    mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
+    openLab: openEvoLab,
+    tick: () => gameState.tick,
+  });
   document.getElementById('rail-people')?.addEventListener('click', openYourPeople);
+  document.getElementById('rail-species')?.addEventListener('click', () => openSpeciesScreen('living'));
   setInterval(announceBeats, 3000);
   document.getElementById('evo-close-btn')?.addEventListener('click', closeEvoLab);
   document.getElementById('evo-lab-overlay')?.addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeEvoLab();
   });
   // The DNA panel's header opens the full lab.
-  document.getElementById('dna-panel-title')?.addEventListener('click', openYourPeople);
+  document.getElementById('dna-panel-title')?.addEventListener('click', () => openSpeciesScreen('evolution'));
   document.getElementById('evo-evolve-btn')?.addEventListener('click', evolveNow);
-  document.getElementById('el-open-lab-btn')?.addEventListener('click', openYourPeople);
-  document.getElementById('dna-display')?.addEventListener('click', openYourPeople);
+  document.getElementById('el-open-lab-btn')?.addEventListener('click', () => openSpeciesScreen('evolution'));
+  document.getElementById('dna-display')?.addEventListener('click', () => openSpeciesScreen('evolution'));
   document.getElementById('tech-display')?.addEventListener('click', openTechCards);
 }
 

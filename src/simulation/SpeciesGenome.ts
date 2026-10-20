@@ -14,6 +14,8 @@ export interface SpeciesGenome {
   originTick:  number;
   population:  number;        // 0–1 relative dominance
   isExtinct:   boolean;
+  /** How it died (the Species archive); absent for the living and in older saves. */
+  extinct?:    { tick: number; cause: 'outcompeted' | 'catastrophe'; by?: string };
   ancestorId:  string | null; // speciation tree
 
   dna: {
