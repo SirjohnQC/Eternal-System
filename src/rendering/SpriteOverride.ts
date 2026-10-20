@@ -65,6 +65,24 @@ function frameAt(sheetName: string, sheet: Sheet, fi: number, tw: number, tint?:
     }
   }
   if (tint) recolour(out, sheet, f, tint);
+  // A ground line or contact shadow along the art's base shrinks into a solid
+  // dark bar under the sprite (playtest: "a black line underneath"). Drop any
+  // bottom row that is mostly near-black and spans most of the width.
+  for (let pass = 0; pass < 2 && H > 3; pass++) {
+    const y = H - 1;
+    let n = 0, dark = 0;
+    for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      if (!out[o + 3]) continue;
+      n++;
+      if (out[o] * 0.3 + out[o + 1] * 0.55 + out[o + 2] * 0.15 < 48) dark++;
+    }
+    if (n < W * 0.5 || dark < n * 0.6) break;
+    for (let x = 0; x < W; x++) out[(y * W + x) * 4 + 3] = 0;
+    // The sprite keeps its height; its base is now the row above.
+    for (let yy = H - 1; yy > 0; yy--) out.copyWithin(yy * W * 4, (yy - 1) * W * 4, yy * W * 4);
+    out.fill(0, 0, W * 4);
+  }
   const s: OverrideSprite = { width: W, height: H, data: out, footX: Math.floor(W / 2), footY: H - 1 };
   cache.set(key, s);
   return s;
@@ -214,7 +232,8 @@ const FAMILIES = new Set(['hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'ca
  */
 export function buildingOverride(b: Building, S: number, era: number, tint?: Tint): OverrideSprite | null {
   if (!sheets.size) return null;
-  const tw = Math.max(3, Math.round(b.w * S * 1.35));
+  // Bigger than the old 1.35: a sprite town keeps fewer buildings, each clearer.
+  const tw = Math.max(3, Math.round(b.w * S * 1.7));
   // A species' own shape family: its sheet, the row for its age, its colour.
   if (FAMILIES.has(b.kind) && sheets.has(b.kind)) {
     const age = era <= 1 ? 'age0' : era <= 4 ? 'age1' : 'age2';

@@ -40,6 +40,7 @@ import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATU
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan, type Site } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { peopleOf } from '../simulation/People';
+import { spriteOverridesActive } from './SpriteOverride';
 import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { MeteorStrike, type StrikeView } from './MeteorStrike';
@@ -2746,7 +2747,25 @@ export class IsoDioramaRenderer {
     const list: Array<{ wy: number; draw: (g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView) => void }> = [];
     const at = (v: import('./FloraLayer').FloraView, x: number, y: number) =>
       [(x - v.fx) * v.K + v.W / 2, (y - v.fy) * v.K + v.H / 2 + v.bob] as const;
+    // With hand-made sheets a town is fewer, bigger buildings (playtest Oct
+    // 19: packed shoulder to shoulder at 10-15 px they read as a green heap).
+    // Biggest first (landmarks), then any building clear of those kept.
+    const keep = new Set<number>();
+    if (spriteOverridesActive()) {
+      const bs = this.townPlan.buildings;
+      const order = bs.map((_, i) => i).sort((a, b) => bs[b].w - bs[a].w || a - b);
+      for (const i of order) {
+        const b = bs[i];
+        let clear = true;
+        for (const j of keep) {
+          const o = bs[j], gap = (b.w + o.w) * 0.85;
+          if (Math.abs(b.x - o.x) < gap && Math.abs(b.y - o.y) < gap * SQUASH) { clear = false; break; }
+        }
+        if (clear) keep.add(i);
+      }
+    }
     this.townPlan.buildings.forEach((b, i) => {
+      if (keep.size && !keep.has(i)) return;
       const wy = b.y - (this.townLift[i] ?? 0);
       list.push({ wy, draw: (g, v) => {
         const t0 = this.buildingBorn[i] ?? -Infinity;
@@ -3300,6 +3319,10 @@ export class IsoDioramaRenderer {
     // phase x depth); the sprite is baked at exactly that size and blitted 1:1.
 
     const creatureSpots: Array<{ x: number; y: number; gy: number; row: number; col: number; id: string; onWater: boolean }> = [];
+    // The world's people (People.ts) walk their own settled country — the
+    // fields and roads round the towns — whoever dominates the wild there.
+    const peopleId = peopleOf(this.species, 3)?.id ?? null;
+    const peopleSpots: typeof creatureSpots = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
       fertility: number; row: number; col: number;
@@ -3341,6 +3364,9 @@ export class IsoDioramaRenderer {
         // cells used to hold no creatures at all, so once a civilisation had
         // settled nearly all its land (late eras) nothing walked the planet.
         const inTown = cell.civId != null && this.habitable && this.townPlan.towns.length > 0 && keepClear(this.townPlan, px, py);
+        if (peopleId && byId.has(peopleId) && cell.civId != null && onLand && !inTown) {
+          peopleSpots.push({ x: px, y: py - lift, gy: py, row: gp.row, col: gp.col, id: peopleId, onWater: false });
+        }
         if (cell.dominantSpeciesId && cell.lifeDensity > 0.35 && !inTown) {
           // Test the elevation the SURFACE WAS DRAWN FROM, not the grid's own.
           // `rimFalloff` sinks the outer hemisphere so the projection reads as a
@@ -3400,16 +3426,25 @@ export class IsoDioramaRenderer {
     // by the square root of the ground each holds, at least a few each, so
     // the dominant one no longer fills nearly every slot. Rarer species are
     // placed first, so the spacing rule does not squeeze them out.
+    // Your people first, a third of the slots, round their towns (playtest
+    // Oct 19: they held little wild ground, so they got the minimum of three
+    // and the planet seemed to belong to its animals).
+    const chosen: typeof creatureSpots = [];
+    if (peopleId) {
+      const own = [...peopleSpots, ...creatureSpots.filter(c => c.id === peopleId)];
+      chosen.push(...scatter(own, Math.round(MAX_CREATURES * 0.35), rx * 0.05, chosen));
+    }
     const bySpecies = new Map<string, typeof creatureSpots>();
     for (const sp of creatureSpots) {
+      if (peopleId && sp.id === peopleId && chosen.length) continue;
       const l = bySpecies.get(sp.id);
       if (l) l.push(sp); else bySpecies.set(sp.id, [sp]);
     }
     const groups = [...bySpecies.entries()].sort((a, b) => a[1].length - b[1].length || (a[0] < b[0] ? -1 : 1));
     const root = groups.reduce((a, [, l]) => a + Math.sqrt(l.length), 0) || 1;
-    const chosen: typeof creatureSpots = [];
+    const animalSlots = MAX_CREATURES - chosen.length;
     for (const [, l] of groups) {
-      const quota = Math.max(MIN_PER_SPECIES, Math.round(MAX_CREATURES * Math.sqrt(l.length) / root));
+      const quota = Math.max(MIN_PER_SPECIES, Math.round(animalSlots * Math.sqrt(l.length) / root));
       chosen.push(...scatter(l, quota, rx * 0.06, chosen));
     }
 
