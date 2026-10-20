@@ -935,6 +935,26 @@ export function tintRiver(
 // ─── Grid generation ─────────────────────────────────────────────────────────
 
 /**
+ * Mountains as ranges, not round caps (playtest Oct 19). Once sea level is
+ * set, height above the uplands line is scaled by the crest field: crests keep
+ * it, the ground between them sinks toward the uplands, so a massif breaks
+ * into chains with passes and valleys. Runs after `calibrateSeas` because the
+ * calibration shift decides which ground ends up high; sculpting before it
+ * left every massif whole. Sea level is untouched (only ground above UPLAND).
+ */
+function carveRanges(grid: PlanetGrid, ridge: Float32Array): void {
+  const UPLAND = 0.66;
+  for (let row = 0; row < GRID_SIZE; row++) {
+    for (let col = 0; col < GRID_SIZE; col++) {
+      const c = grid[row][col];
+      if (c.elevation <= UPLAND) continue;
+      const r = ridge[row * GRID_SIZE + col];
+      c.elevation = UPLAND + (c.elevation - UPLAND) * Math.min(1.15, 0.22 + r * 1.1);
+    }
+  }
+}
+
+/**
  * Generate a full planet grid from a deterministic seed.
  * Safe to call multiple times with the same arguments — always returns
  * the identical grid.
@@ -968,6 +988,9 @@ export function generatePlanetGrid(
 
   const grid: PlanetGrid = [];
   const shape = archetype === undefined ? structureFor(planetType, seed) : null;
+  /** Crest field per cell (0 valley … 1 crest), for shaping the ranges once
+   *  sea level is known. */
+  const ridge = new Float32Array(GRID_SIZE * GRID_SIZE);
 
   for (let row = 0; row < GRID_SIZE; row++) {
     grid[row] = [];
@@ -979,13 +1002,48 @@ export function generatePlanetGrid(
     for (let col = 0; col < GRID_SIZE; col++) {
       const nx = col / GRID_SIZE;               // wraps (0 == 1)
 
+      // Domain warp (playtest Oct 19: continents, mountains and isles read as
+      // rounded blobs). Every layout is sampled at bent coordinates — a broad
+      // swirl plus a finer one — so coasts run ragged into peninsulas and
+      // bays. The bend itself wraps in x (fbmWrapX on nx), so no seam.
+      const wxo = (fbmWrapX(nx * 2, ny * 2, elevSeed ^ 0x3a7, 2, nx, 4) - 0.5) * 0.46
+                + (fbmWrapX(nx * 6, ny * 6, elevSeed ^ 0x5c1, 6, nx, 3) - 0.5) * 0.2
+                + (fbmWrapX(nx * 16, ny * 16, elevSeed ^ 0x4e5, 16, nx, 2) - 0.5) * 0.06;
+      const wyo = (fbmWrapX(nx * 2 + 7, ny * 2, elevSeed ^ 0x1f3, 2, nx, 4) - 0.5) * 0.34
+                + (fbmWrapX(nx * 6 + 3, ny * 6, elevSeed ^ 0x6d9, 6, nx, 3) - 0.5) * 0.15
+                + (fbmWrapX(nx * 16 + 5, ny * 16, elevSeed ^ 0x2a1, 16, nx, 2) - 0.5) * 0.05;
+      const ux = (((nx + wxo) % 1) + 1) % 1;
+      const uy = Math.max(0, Math.min(1, ny + wyo));
+
       let elev: number;
-      if (archetype) elev = elevationFor(archetype, nx, ny, elevSeed);
-      else if (shape === 'continents') elev = continentsElevation(nx, ny, elevSeed);
-      else if (shape === 'discs') elev = discsElevation(nx, ny, elevSeed);
-      else if (shape === 'archipelago' || shape === 'supercontinent' || shape === 'hemispheric') elev = elevationFor(shape, nx, ny, elevSeed);
-      else if (shape === 'canyon') elev = canyonElevation(nx, ny, elevSeed);
-      else elev = fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
+      if (archetype) elev = elevationFor(archetype, ux, uy, elevSeed);
+      else if (shape === 'continents') elev = continentsElevation(ux, uy, elevSeed);
+      else if (shape === 'discs') elev = discsElevation(ux, uy, elevSeed);
+      else if (shape === 'archipelago' || shape === 'supercontinent' || shape === 'hemispheric') elev = elevationFor(shape, ux, uy, elevSeed);
+      else if (shape === 'canyon') elev = canyonElevation(ux, uy, elevSeed);
+      else elev = fbmWrapX(ux * 4, uy * 4, elevSeed, 4, ux);
+      // A fine fractal fringe where land meets sea: capes, coves, skerries.
+      const coast = 1 - Math.min(1, Math.abs(elev - SEA_LEVEL) / 0.06);
+      if (coast > 0) elev += (fbmWrapX(nx * 24, ny * 24, elevSeed ^ 0x71d, 24, nx, 3) - 0.5) * 0.07 * coast;
+      // Relief: inland the height no longer just climbs with distance from
+      // the sea (that drew mountains as rings that copy the coast). Ridged
+      // noise lays crests in chains, a broad field raises and sinks whole
+      // uplands, and high ground is sharpened further. Only land is touched,
+      // so it can cut lakes and inlets but never raise land from the sea.
+      const land = Math.max(0, Math.min(1, (elev - SEA_LEVEL) / 0.05));
+      if (land > 0) {
+        // Ridged noise, narrowed: fbm clusters around 0.5, so a plain
+        // `1 - |2v - 1|` sits near 1 almost everywhere and lifts the land
+        // evenly. Cut narrow, it draws crest lines with valleys between.
+        const crest = (v: number, k: number): number => Math.max(0, 1 - Math.abs(2 * v - 1) * k);
+        const r = Math.max(
+          crest(fbmWrapX(ux * 6, uy * 6, elevSeed ^ 0x2b9, 6, ux, 4), 6.5),
+          crest(fbmWrapX(ux * 11 + 4, uy * 11, elevSeed ^ 0x3c7, 11, ux, 3), 7) * 0.75);
+        const up = fbmWrapX(ux * 3, uy * 3, elevSeed ^ 0x6b3, 3, ux, 3) - 0.5;
+        const high = Math.max(0, Math.min(1, (elev - SEA_LEVEL - 0.06) / 0.12));
+        elev += ((r - 0.3) * (0.12 + 0.1 * high) + up * 0.12) * land;
+        ridge[row * GRID_SIZE + col] = r;
+      }
       // Coastal fade at poles (makes ice caps at very high latitudes)
       const poleFade = Math.pow(1 - latTemp, 3) * 0.3;
       elev = Math.max(0, Math.min(1, elev - oceanBias * 0.3 + poleFade));
@@ -1033,6 +1091,7 @@ export function generatePlanetGrid(
   }
 
   calibrateSeas(grid, planetType, params.oceanCoverage);
+  carveRanges(grid, ridge);
   layRainShadow(grid, planetType);
   for (const row of grid) {
     for (const cell of row) {

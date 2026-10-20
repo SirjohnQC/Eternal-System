@@ -1498,6 +1498,44 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: landforms are not rounded (playtest Oct 19) ──────────────────
+// Mountains came out as round caps (a whole massif above the mountain line)
+// and coasts as smooth blobs. Measured over 24 worlds: share of mountain cells
+// with mountain all around them was 0.68 (now ~0.31); coast cells per
+// sqrt(land) 8.2 (now ~9.0).
+{
+  const r: Rule = { name: 'scenario: mountains run in ranges and coasts are ragged', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const { generatePlanetGrid, SEA_LEVEL } = await import('../src/simulation/PlanetGrid');
+    const N = 256; let mi = 0, mc = 0, rag = 0, rn = 0;
+    for (const type of ['rocky', 'ocean', 'desert', 'toxic']) for (let k = 0; k < 6; k++) {
+      const g = generatePlanetGrid(type, 1000 + k * 7919, null);
+      const at = (rr: number, cc: number) => g[Math.max(0, Math.min(N - 1, rr))][(cc + N) % N];
+      const isLand = (rr: number, cc: number) => at(rr, cc).elevation >= SEA_LEVEL;
+      const isMtn = (rr: number, cc: number) => at(rr, cc).biome === 'mountain';
+      let mtn = 0, inner = 0, land = 0, coast = 0;
+      for (let row = 1; row < N - 1; row++) for (let col = 0; col < N; col++) {
+        if (isLand(row, col)) {
+          land++;
+          if (!isLand(row - 1, col) || !isLand(row + 1, col) || !isLand(row, col - 1) || !isLand(row, col + 1)) coast++;
+        }
+        if (!isMtn(row, col)) continue;
+        mtn++;
+        if ([[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [0, -2], [0, 2]].every(([dr, dc]) => isMtn(row + dr, col + dc))) inner++;
+      }
+      if (mtn > 200) { mi += inner / mtn; mc++; }
+      if (land > 500) { rag += coast / Math.sqrt(land); rn++; }
+    }
+    const interior = mi / Math.max(1, mc), ragged = rag / Math.max(1, rn);
+    if (mc < 10) detail = `only ${mc} worlds with mountains sampled`;
+    else if (interior > 0.5) detail = `mountains are round caps: interior share ${interior.toFixed(2)} (> 0.5)`;
+    else if (ragged < 8.6) detail = `coasts are smooth: ${ragged.toFixed(2)} coast cells per sqrt(land) (< 8.6)`;
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Scenarios: lakes (#47) ──────────────────────────────────────────────────
 {
   const PG = await import('../src/simulation/PlanetGrid');
