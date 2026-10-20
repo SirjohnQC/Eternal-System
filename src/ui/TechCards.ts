@@ -46,11 +46,13 @@ function modal(title: string, sub: string, body: string, footer: string, wide = 
   m.addEventListener('click', e => { if (e.target === m) close(); });
   document.body.appendChild(m);
   m.querySelectorAll<HTMLElement>('[data-act="close"]').forEach(b => b.addEventListener('click', close));
-  m.querySelector<HTMLElement>('[data-act="back"]')?.addEventListener('click', openTechCards);
+  // BACK returns to the technology screen underneath (it stays open).
+  m.querySelector<HTMLElement>('[data-act="back"]')?.addEventListener('click', close);
   return m;
 }
 
-/** A card face (the hand and the detail use the same face). */
+/** A card face (the hand, the detail and the technology screen use the same face). */
+export function techCardFace(v: View, big = false): string { return face(v, big); }
 function face(v: View, big = false): string {
   const off = !!v.block;
   return `<button class="divine-action-btn faith-proc${big ? ' faith-proc-big' : ''} tech-card${off ? ' faith-off' : ' affordable'}" data-card="${v.card.id}">
@@ -89,6 +91,12 @@ export function openTechCards(): void {
     const v = views.find(x => x.card.id === el.dataset['card']);
     if (v) detail(v);
   }));
+}
+
+/** Open one card's detail (play it from there) by id. */
+export function openTechCardDetail(id: string): void {
+  const v = deps?.engine()?.techCardViews().find(x => x.card.id === id);
+  if (v) detail(v);
 }
 
 /** One card: what it does, its price, who it acts on; play it from here. */

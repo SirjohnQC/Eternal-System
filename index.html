@@ -3080,6 +3080,13 @@ input[type="range"], select, label[for],
     </div>
   </div>
 
+  <!-- TP DECK: the second deck, once the people have nations (ui/TechScreen.ts) -->
+  <div class="tech-deck" id="tech-deck" style="display:none">
+    <div class="faith-deck-label">TECHNOLOGY</div>
+    <button class="td-pile" type="button" title="Technology: what your people know, and the cards it opens">
+      <span class="td-icon">⚙</span><span class="td-tp">0 TP</span><span class="td-n">no cards yet</span>
+    </button>
+  </div>
   <!-- FAITH DECK — exact mockup structure -->
   <div class="faith-deck folded">
     <div class="faith-deck-label">FAITH <span class="fold-mark">▸</span></div>
@@ -4340,6 +4347,21 @@ body.events-collapsed .events-tab{display:block}
 #events-tab-count{color:var(--teal);padding-top:6px}
 
 /* ── FAITH DECK ── */
+/* The TP deck: a pile left of the Faith deck (TP rework). */
+.tech-deck{position:fixed;left:calc(var(--rail) + 18px);bottom:calc(var(--status) + 6px);z-index:44;display:flex;flex-direction:column;align-items:center}
+body:has(#planet-overlay[style*="flex"]) .tech-deck{z-index:211;bottom:calc(var(--status) + 14px)}
+body.forging .tech-deck,body.umap-cosmos .tech-deck{display:none !important}
+.tech-deck .faith-deck-label{color:#8fd8ff;text-shadow:0 0 12px rgba(120,200,255,.4)}
+.td-pile{position:relative;width:96px;height:128px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+  font:inherit;color:#d8eefc;background:linear-gradient(170deg,#132233,#0a1018);border:2px solid #4c8fb8;
+  box-shadow:4px -4px 0 -1px #0d1824,4px -4px 0 1px #2e5a78,8px -8px 0 -1px #0d1824,8px -8px 0 1px #23455c,0 0 14px rgba(90,170,230,.25)}
+.td-pile:hover{transform:translateY(-4px)}
+.tech-deck.ready .td-pile{border-color:#8fd8ff;animation:tdPulse 1.8s ease-in-out infinite}
+@keyframes tdPulse{0%,100%{box-shadow:4px -4px 0 -1px #0d1824,4px -4px 0 1px #2e5a78,8px -8px 0 -1px #0d1824,8px -8px 0 1px #23455c,0 0 10px rgba(90,170,230,.3)}
+  50%{box-shadow:4px -4px 0 -1px #0d1824,4px -4px 0 1px #2e5a78,8px -8px 0 -1px #0d1824,8px -8px 0 1px #23455c,0 0 24px rgba(140,210,255,.7)}}
+.td-icon{font-size:26px;color:#8fd8ff}
+.td-tp{font-family:var(--font-pixel);font-size:14px;color:#bfe9ff}
+.td-n{font-size:9px;letter-spacing:1px;color:#8aa9bf;text-align:center;padding:0 4px}
 .faith-deck{
   position:fixed;left:var(--rail);right:var(--events);bottom:var(--status);
   z-index:43;display:flex;flex-direction:column;align-items:center;
