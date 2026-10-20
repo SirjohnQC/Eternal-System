@@ -16,7 +16,7 @@ import { assignDominantSpecies } from '../simulation/SpeciesDistribution';
 import { generateBranchSet, emptyInvestment } from '../simulation/DnaBranches';
 import { bakeCreaturePortrait, bakeSettlementSprite } from '../rendering/SpeciesSprite';
 import { SeedRNG } from '../utils/SeedRNG';
-import type { Planet, StarBody } from '../simulation/BigBangEngine';
+import type { Planet, StarBody, BigBangEngine } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
 import { installZoomBench } from './zoomBench';
 import { NationSystem } from '../simulation/Nations';
@@ -24,6 +24,9 @@ import { runtimeState, gameState } from '../simulation/GameState';
 import { openNationsOverview } from '../ui/NationsOverview';
 import { initYourPeople, openYourPeople } from '../ui/YourPeople';
 import { initSpeciesScreen, openSpeciesScreen } from '../ui/SpeciesScreen';
+import { initTechScreen, openTechScreen } from '../ui/TechScreen';
+import { TECH_CARDS } from '../simulation/TechCards';
+import { TECH_BY_ID } from '../simulation/Technology';
 import { MUTATIONS, cardStates, queueReady, previewGenome, EVOLVE_THRESHOLD } from '../simulation/Mutations';
 import { pressureKinds } from '../simulation/PeopleStory';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
@@ -266,6 +269,20 @@ function rebuild(): void {
       },
     });
     openSpeciesScreen(spTab === 'archive' || spTab === 'evolution' ? spTab : 'living');
+  }
+  // ?tech=1 opens the technology screen on this world's nations (the cards
+  // as the engine would list them; playing is the game's).
+  if (params.get('tech') === '1' && nations) {
+    runtimeState.playerNations = nations;
+    gameState.techPoints = 9;
+    const known = new Set(nations.nations.filter(n => !n.fallen).flatMap(n => n.techs));
+    const views = () => TECH_CARDS.map(card => {
+      const unlocked = card.needs.tech ? known.has(card.needs.tech) : (card.needs.era ?? 9) <= star.civLevel;
+      return { card, unlocked, price: card.cost, block: unlocked && card.cost > gameState.techPoints ? `It takes ${card.cost} TP.` : null,
+        acts: [], age: card.needs.era ?? TECH_BY_ID[card.needs.tech!]?.era ?? 1 };
+    });
+    initTechScreen({ engine: () => ({ techCardViews: views }) as unknown as BigBangEngine });
+    openTechScreen();
   }
   // ?people=1 opens "Your People" on this world (its forms: the founder, then
   // the people), with a sign cast a generation ago so beliefs and beats show.

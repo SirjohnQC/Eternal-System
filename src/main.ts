@@ -1,6 +1,7 @@
 import { BigBangEngine, StarBody, Planet, EngineSnapshot, type ZoomTier } from './simulation/BigBangEngine';
 import { initFaithHand, refresh as refreshFaithHand, showWhy } from './ui/FaithHand';
-import { initTechCards, openTechCards } from './ui/TechCards';
+import { initTechCards } from './ui/TechCards';
+import { initTechScreen, openTechScreen, refreshTechDeck } from './ui/TechScreen';
 import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
@@ -6019,7 +6020,11 @@ function initEvoLab(): void {
   document.getElementById('evo-evolve-btn')?.addEventListener('click', evolveNow);
   document.getElementById('el-open-lab-btn')?.addEventListener('click', () => openSpeciesScreen('evolution'));
   document.getElementById('dna-display')?.addEventListener('click', () => openSpeciesScreen('evolution'));
-  document.getElementById('tech-display')?.addEventListener('click', openTechCards);
+  // TP: the technology screen (tree, cards, study), from the TP chip or the TP deck.
+  initTechScreen({ engine: () => engine });
+  document.getElementById('tech-display')?.addEventListener('click', openTechScreen);
+  document.querySelector('#tech-deck .td-pile')?.addEventListener('click', openTechScreen);
+  setInterval(refreshTechDeck, 1000);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

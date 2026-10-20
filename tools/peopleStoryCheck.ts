@@ -25,6 +25,8 @@ import {
 import { pressureKinds } from '../src/simulation/PeopleStory';
 import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSpan } from '../src/simulation/SpeciesCatalog';
 import type { SpeciesGenome } from '../src/simulation/SpeciesGenome';
+import { TECHS, TECH_BY_ID } from '../src/simulation/Technology';
+import { TECH_CARDS } from '../src/simulation/TechCards';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -195,6 +197,14 @@ console.log('Evolution: trade-offs');
   const g = cloneGenome(createPrimordialSpecies(0)); g.dna.adaptability = 5;
   applyMutation(g, 'fins');
   check('a trait drawback lands on the body', g.dna.adaptability === 4, String(g.dna.adaptability));
+}
+
+console.log('Technology tree (the TP screen draws it)');
+{
+  check('every prerequisite is a technology', TECHS.every(t => t.requires.every(r => !!TECH_BY_ID[r])));
+  check('nothing needs a later age', TECHS.every(t => t.requires.every(r => TECH_BY_ID[r].era <= t.era)));
+  check('every tech card names a real technology', TECH_CARDS.every(c => !c.needs.tech || !!TECH_BY_ID[c.needs.tech]));
+  check('every card opens from the tree or an age', TECH_CARDS.every(c => !!c.needs.tech || c.needs.era != null));
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');
