@@ -4474,59 +4474,6 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 .faith-proc-big .faith-icon{width:48px;height:48px}
 @keyframes faithRise{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:none}}
 /* ── The World Ledger (src/ui/LedgerUI.ts) ── */
-/* ── Nations overview (double-click the world) ── */
-#nations-ov{position:fixed;inset:0;z-index:304;display:none;align-items:center;justify-content:center;
-  background:radial-gradient(ellipse at center,rgba(14,7,30,0.72),rgba(0,0,0,0.85))}
-#nations-ov.open{display:flex}
-#nations-ov .nv-frame{width:min(1020px,calc(100vw - 32px));max-height:calc(100vh - 48px);display:flex;flex-direction:column;
-  background:#120d1f;border:2px solid #6b5537;outline:1px solid #2a1f14;box-shadow:0 0 0 4px #1a1209,0 12px 40px rgba(0,0,0,.7)}
-#nations-ov .nv-top{text-align:center;padding:10px;font-family:var(--font-display);letter-spacing:4px;color:var(--gold);
-  font-size:17px;border-bottom:1px solid rgba(200,169,110,.3);background:linear-gradient(#1c1430,#140e22)}
-#nations-ov .nv-body{display:grid;grid-template-columns:200px 1fr 260px;gap:10px;padding:10px;overflow:auto;min-height:0}
-#nations-ov .nv-col{display:flex;flex-direction:column;gap:8px;min-width:0}
-#nations-ov .nv-h{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#e8dcc4;
-  padding:4px 8px;background:#1b1530;border:1px solid rgba(200,169,110,.25)}
-#nations-ov .nv-list{background:#0d0919;border:1px solid rgba(200,169,110,.2);padding:6px}
-#nations-ov .nv-nation{display:flex;align-items:center;gap:8px;text-align:left;padding:7px 8px;font:inherit;font-size:12px;
-  color:#cdbfa6;background:#171126;border:1px solid rgba(200,169,110,.18);cursor:pointer}
-#nations-ov .nv-nation.on{color:#f3e6c4;border-color:#7bd88f;background:#1d2a22;box-shadow:inset 0 0 0 1px rgba(123,216,143,.4)}
-#nations-ov .nv-nation:focus-visible,#nations-ov .nv-btn:focus-visible,#nations-ov .nv-link:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
-#nations-ov .nv-flag{display:inline-block;width:14px;height:10px;border:1px solid rgba(0,0,0,.6);flex:0 0 auto}
-#nations-ov .nv-flag.big{width:30px;height:22px}
-#nations-ov .nv-title{display:flex;gap:10px;align-items:center;padding:6px 8px;background:#1b1530;border:1px solid rgba(200,169,110,.25)}
-#nations-ov .nv-name{font-family:var(--font-display);font-size:16px;color:#f3e6c4;letter-spacing:1px}
-#nations-ov .nv-sub{font-size:11px;color:#a99a80}
-#nations-ov .nv-panel{background:#0d0919;border:1px solid rgba(200,169,110,.2)}
-#nations-ov .nv-map{display:block;width:100%;height:auto;image-rendering:pixelated}
-#nations-ov .nv-link{font:inherit;font-size:10px;letter-spacing:1px;color:var(--gold);background:none;border:1px solid rgba(200,169,110,.4);padding:2px 6px;cursor:pointer}
-#nations-ov .nv-species{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:8px}
-#nations-ov .nv-sp{text-align:center;font-size:11px;color:#cdbfa6}
-#nations-ov .nv-sp-art{height:50px;display:flex;align-items:flex-end;justify-content:center}
-#nations-ov .nv-sp-art canvas,#nations-ov .nv-m-art canvas{image-rendering:pixelated;max-height:100%;max-width:100%}
-#nations-ov .nv-sp-name{color:#f3e6c4;margin-top:2px}
-#nations-ov .nv-sp-kind{font-size:10px;color:#a99a80;min-height:26px}
-#nations-ov .nv-res{display:grid;grid-template-columns:repeat(3,1fr);gap:6px 12px;padding:8px}
-#nations-ov .nv-r-k{font-size:11px;color:#a99a80}
-#nations-ov .nv-r-v{font-size:13px;color:#e8dcc4}
-#nations-ov .nv-bar{height:4px;background:#2a2238;margin-top:3px}
-#nations-ov .nv-bar span{display:block;height:100%;background:#c8a96e}
-#nations-ov .nv-bar.good span,#nations-ov .nv-sp .nv-bar span{background:#5dcc8a}
-#nations-ov .nv-bar.mid span{background:#e0b84f}
-#nations-ov .nv-bar.bad span{background:#ff7a5c}
-#nations-ov b.good{color:#5dcc8a;font-weight:normal} #nations-ov b.mid{color:#e0b84f;font-weight:normal} #nations-ov b.bad{color:#ff7a5c;font-weight:normal}
-#nations-ov .nv-r-v.good{color:#7fe0a4} #nations-ov .nv-r-v.bad{color:#ff9a80}
-#nations-ov .nv-m{display:flex;gap:8px;padding:8px;background:#0d0919;border:1px solid rgba(200,169,110,.2)}
-#nations-ov .nv-m-art{width:64px;height:72px;flex:0 0 64px;display:flex;align-items:flex-end;justify-content:center;
-  background:linear-gradient(#2a3b2e,#141d17);border:2px solid #6b5537}
-#nations-ov .nv-m-txt{min-width:0;font-size:11px;color:#cdbfa6;flex:1}
-#nations-ov .nv-m-name{font-size:12px;color:#f3e6c4}
-#nations-ov .nv-m-role{margin-top:3px;color:#f3e6c4;font-size:12px}
-#nations-ov .nv-m-role span{color:var(--gold);margin-right:5px}
-#nations-ov .nv-foot{display:flex;justify-content:space-between;padding:8px 10px;border-top:1px solid rgba(200,169,110,.25)}
-#nations-ov .nv-btn{font:inherit;font-size:12px;letter-spacing:2px;color:#e8dcc4;background:#1b1530;border:1px solid rgba(200,169,110,.4);padding:7px 26px;cursor:pointer}
-#nations-ov .nv-btn:hover,#nations-ov .nv-nation:hover{border-color:var(--gold)}
-#nations-ov .nv-empty{grid-column:1/-1;padding:40px;text-align:center;color:#a99a80}
-@media (max-width:760px){#nations-ov .nv-body{grid-template-columns:1fr}}
 #ledger{position:fixed;inset:0;z-index:305;display:none;align-items:center;justify-content:center;
   background:radial-gradient(ellipse at center,rgba(14,7,30,0.88),rgba(0,0,0,0.94));
   --lg-surface:#0d0919;--lg-line:#9a8bb3;--lg-accent:var(--gold2);--lg-grid:rgba(200,169,110,.45);
