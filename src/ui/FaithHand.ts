@@ -16,10 +16,12 @@
 import { gameState, runtimeState } from '../simulation/GameState';
 import {
   discover, forge, cast, castable, signalsOf, describe, anatomy, isBane, iconOf, scopeOf, spanOf,
-  priceNow, wearOf, noteUse, ACTION_BY_ID,
+  priceNow, wearOf, noteUse, ACTION_BY_ID, targetTextOf, resolveTarget,
   type FaithCard, type ForgeKind, type ActionId, type DivineHost, type WorldContext,
 } from '../simulation/FaithCards';
 import { SeedRNG } from '../utils/SeedRNG';
+import { personalize } from '../simulation/PeopleStory';
+import { peopleOf } from '../simulation/People';
 import type { DivineEffectKind } from '../rendering/IsoDioramaRenderer';
 import type { WorkId } from '../simulation/DivineWorks';
 
@@ -88,6 +90,18 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
 }
 
+/**
+ * A card's description spoken of the player's own people (species design,
+ * pillar D.4): "your Velari", or the nation it would fall on right now.
+ */
+function say(c: FaithCard): string {
+  const ns = nationsOf();
+  const people = gameState.playerSpeciesName || peopleOf(gameState.playerSpecies)?.name || '';
+  let falls: ReturnType<typeof resolveTarget> = [];
+  try { falls = ns?.isFounded ? resolveTarget(ns, c.target) : []; } catch { falls = []; }
+  return people ? personalize(describe(c), targetTextOf(c), people, falls) : describe(c);
+}
+
 /** Card face markup (same chrome as the fixed deck). */
 function face(c: FaithCard, big = false): string {
   const tone = toneOf(c), price = priceOfNow(c), up = price > c.cost;
@@ -96,7 +110,7 @@ function face(c: FaithCard, big = false): string {
     <span class="divine-action-name">${esc(c.name)}</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/${iconOf(c)}.png" alt="" width="32" height="32"/></span>
     <span class="fc-meta"><span class="fc-pips">${[1, 2, 3].map(i => `<i${i <= c.magnitude ? ' class="on"' : ''}></i>`).join('')}</span>${esc(spanOf(c))}</span>
-    <span class="divine-action-desc">${esc(describe(c))}</span>
+    <span class="divine-action-desc">${esc(say(c))}</span>
     ${c.sides.length ? `<span class="faith-proc-side">${c.sides.length === 1 ? '1 price' : `${c.sides.length} prices`}</span>` : ''}
     ${c.forged ? `<span class="faith-proc-forged">${'✦'.repeat(Math.min(3, c.forged))}</span>` : ''}
     <span class="divine-action-cost${up ? ' fc-up' : ''}">✦ ${price} DP${up ? ' ▲' : ''}</span>
@@ -107,7 +121,7 @@ function tipFor(c: FaithCard): string {
   const why = deps ? castable(c, nationsOf(), deps.host()) : null;
   return `<div class="ft-name">${esc(c.name)}</div>
     ${why ? `<div class="ft-why">⊘ ${esc(why)}</div>` : ''}
-    <div class="ft-desc">${esc(describe(c))}</div>
+    <div class="ft-desc">${esc(say(c))}</div>
     <table>${anatomy(c).map(([k, v]) => `<tr><th>${k}</th><td>${esc(v)}</td></tr>`).join('')}</table>
     <div class="ft-origin">${esc(c.origin)}</div>
     <div class="ft-cost">✦ ${priceOfNow(c)} DP to cast${markup(c) ? ` <span class="ft-up">(${c.cost} base; ${esc(markup(c))})</span>` : ''}</div>`;

@@ -24,6 +24,8 @@ import { openLedger } from './LedgerUI';
 let chosen = 0;
 let timer: ReturnType<typeof setInterval> | null = null;
 let onSurfaceMap: ((at: { row: number; col: number } | null) => void) | null = null;
+/** The cell double-clicked, for the surface map before there are nations. */
+let lastHit: { row: number; col: number } | null = null;
 
 const esc = (s: string) => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
 const pct = (v: number) => `${Math.round(Math.max(0, v) * 100)}%`;
@@ -216,7 +218,14 @@ function render(force = false): void {
   const ns = runtimeState.playerNations, grid = runtimeState.playerPlanetGrid;
   const body = box.querySelector<HTMLElement>('.nv-body')!;
   if (!ns?.isFounded || !grid) {
-    body.innerHTML = '<div class="nv-empty">Your people have not yet founded nations. Their council meets when they do.</div>';
+    // Before nations: say so, and keep the surface map one click away.
+    if (body.querySelector('.nv-empty')) return;   // already shown; don't rebuild under the cursor
+    body.innerHTML = `<div class="nv-empty">Your people have not yet founded nations. Their council meets when they do.
+      <br><br><button class="nv-link" data-act="map" type="button">SURFACE MAP</button></div>`;
+    body.querySelector<HTMLElement>('[data-act="map"]')?.addEventListener('click', () => {
+      closeNationsOverview();
+      onSurfaceMap?.(lastHit);
+    });
     return;
   }
   const live = ns.nations.filter(n => !n.fallen);
@@ -360,8 +369,9 @@ function ensureStyles(): void {
   document.head.appendChild(st);
 }
 
-export function openNationsOverview(nationId?: number | null, surfaceMap?: (at: { row: number; col: number } | null) => void): void {
+export function openNationsOverview(nationId?: number | null, surfaceMap?: (at: { row: number; col: number } | null) => void, at: { row: number; col: number } | null = null): void {
   if (surfaceMap) onSurfaceMap = surfaceMap;
+  lastHit = at;
   ensureStyles();
   let box = document.getElementById('nations-ov');
   if (!box) {
