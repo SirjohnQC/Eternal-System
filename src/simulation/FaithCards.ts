@@ -363,6 +363,9 @@ export function describe(c: FaithCard): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** The words a card's description uses for its target ("the hungriest nation"). */
+export function targetTextOf(c: FaithCard): string { return TARGET_BY_ID[c.target].text; }
+
 /** The short reach/length shown on the card face. */
 export function spanOf(c: FaithCard): string {
   const sc = c.actions.map(a => ACTION_BY_ID[a].scope);

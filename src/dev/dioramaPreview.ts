@@ -22,6 +22,7 @@ import { installZoomBench } from './zoomBench';
 import { NationSystem } from '../simulation/Nations';
 import { runtimeState, gameState } from '../simulation/GameState';
 import { openNationsOverview } from '../ui/NationsOverview';
+import { initYourPeople, openYourPeople } from '../ui/YourPeople';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
@@ -232,6 +233,27 @@ function rebuild(): void {
     runtimeState.playerPlanetGrid = grid;
     gameState.playerSpecies = species;
     if (params.get('ov') === '1') openNationsOverview(nations.nations[0]?.id ?? null);
+  }
+  // ?people=1 opens "Your People" on this world (its forms: the founder, then
+  // the people), with a sign cast a generation ago so beliefs and beats show.
+  if (params.get('people') === '1' && lead) {
+    gameState.playerSpecies = species;
+    gameState.speciesForms = [
+      { form: 1, name: species[0].name, tick: 0, genome: species[0], mutations: [] },
+      { form: 2, name: lead.name, tick: 1, genome: lead, mutations: ['fur'] },
+    ];
+    if (nations) {
+      runtimeState.playerNations = nations;
+      const hungry = nations.nations.find(n => !n.fallen);
+      if (hungry) nations.record(hungry.id, 1, `${hungry.name} moved its villages to the new river.`, ['the long rain'],
+        [nations.remark(1, 'You cast THE LONG RAIN.', ['rain'])]);
+    }
+    initYourPeople({
+      specimen: () => lead,
+      portrait: (g, px) => bakeCreaturePortrait(g, px, g.id === lead.id),
+      mutationLabel: id => id, openLab: () => {}, phaseLabel: () => 'Intelligent',
+    });
+    openYourPeople();
   }
   // ?colony=0..1 shows a COLONY world (expansion P4) the way main.ts draws one:
   // the world's own terrain, the settlers' territory stamped on it at that

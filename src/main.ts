@@ -6,6 +6,8 @@ import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
 import { openLedger } from './ui/LedgerUI';
 import { openNationsOverview } from './ui/NationsOverview';
+import { initYourPeople, openYourPeople, peopleName } from './ui/YourPeople';
+import { beatsSince, plural } from './simulation/PeopleStory';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
@@ -1837,19 +1839,17 @@ function attachTileInteraction(mount: HTMLElement): void {
   // Double-click opens the full surface map, centred on what was clicked. The
   // diorama only ever shows one hemisphere; this is the way to the other half.
   // Double-click opens the nations overview, on the nation clicked (playtest
-  // Oct 19); its territory panel keeps the surface map one button away.
-  // Before nations are founded, it opens the surface map as it always did.
+  // Oct 19); the surface map is one button away in it. Before nations exist
+  // it says so and offers the surface map (playtest Oct 20: it should always
+  // be the overview).
   mount.addEventListener('dblclick', (e) => {
     e.preventDefault();
     if (_dioramaSite) return;   // the home world's
     AudioManager.playSfx('ui_click');
     const hit = _dioramaRenderer?.pickTile(e.clientX, e.clientY) ?? null;
     const ns = runtimeState.playerNations;
-    if (ns?.isFounded) {
-      openNationsOverview(hit ? ns.nationAt(hit.row, hit.col)?.id ?? null : null, at => openPlanetMap(at));
-    } else {
-      openPlanetMap(hit);
-    }
+    const nationId = ns?.isFounded && hit ? ns.nationAt(hit.row, hit.col)?.id ?? null : null;
+    openNationsOverview(nationId, at => openPlanetMap(at), hit);
   });
 }
 
@@ -2940,7 +2940,7 @@ function updateDNAPanel(): void {
   if (commitBtn) {
     commitBtn.disabled = false;
     commitBtn.classList.toggle('ready', ready);
-    commitBtn.textContent = ready ? '◈ EVOLVE READY ◈' : 'OPEN EVOLUTION LAB';
+    commitBtn.textContent = ready ? '◈ EVOLVE READY ◈' : 'YOUR PEOPLE';
   }
 }
 
@@ -4979,7 +4979,9 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // DNA Lab — commit button opens species traits modal
-  document.getElementById('el-commit-btn')?.addEventListener('click', openEvoLab);
+  // Ready to evolve: straight to the lab; otherwise the people first.
+  document.getElementById('el-commit-btn')?.addEventListener('click', (e) =>
+    (e.currentTarget as HTMLElement).classList.contains('ready') ? openEvoLab() : openYourPeople());
 
   // Species traits modal (close + evolve wired internally)
   wireTraitsModal();
@@ -5879,16 +5881,55 @@ function closeEvoLab(): void {
   document.getElementById('evo-lab-overlay')?.classList.remove('active');
 }
 
+/**
+ * Consequence beats (species design, pillar D.3): a generation or more after a
+ * cast, what the people did that links back to it is told as news about them,
+ * with the Chronicle one click away. Never "your card caused X". Entries that
+ * already existed when the nations were loaded or founded are not re-told.
+ */
+let _beatSeen: Set<number> | null = null;
+let _beatNations: unknown = null;
+function announceBeats(): void {
+  const ns = runtimeState.playerNations;
+  if (!ns?.isFounded) return;
+  if (ns !== _beatNations || !_beatSeen) {
+    _beatNations = ns;
+    _beatSeen = new Set(ns.chronicle.map(e => e.id));
+    return;
+  }
+  for (const b of beatsSince(ns, _beatSeen, 0.5, 2).reverse()) {
+    _beatSeen.add(b.entry.id);
+    const text = `${b.entry.what}`;
+    addFeedEntry(escHtml(text), 'milestone');
+    showToast('milestone', `${plural(peopleName(labSpecimen()))}: ${text}`, 9000);
+    const t = document.getElementById('toast-container')?.lastElementChild as HTMLElement | null;
+    if (t) { t.style.cursor = 'pointer'; t.title = 'Open the Chronicle: why did this happen?'; t.addEventListener('click', () => openChronicle({ entry: b.entry.id })); }
+  }
+  // Entries that are not beats yet stay unseen, so they can become one later.
+}
+const escHtml = (s: string) => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]!));
+
 function initEvoLab(): void {
+  // "Your People" is the species entry; the lab opens from it (species
+  // design, decision 1).
+  initYourPeople({
+    specimen: labSpecimen,
+    portrait: (g, px) => creatureCanvas(g, px),
+    mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
+    openLab: openEvoLab,
+    phaseLabel: () => { const ps = engine?.getPlayerStar(); return ps ? progressionFor(ps).phaseLabel : '—'; },
+  });
+  document.getElementById('rail-people')?.addEventListener('click', openYourPeople);
+  setInterval(announceBeats, 3000);
   document.getElementById('evo-close-btn')?.addEventListener('click', closeEvoLab);
   document.getElementById('evo-lab-overlay')?.addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closeEvoLab();
   });
   // The DNA panel's header opens the full lab.
-  document.getElementById('dna-panel-title')?.addEventListener('click', openEvoLab);
+  document.getElementById('dna-panel-title')?.addEventListener('click', openYourPeople);
   document.getElementById('evo-evolve-btn')?.addEventListener('click', evolveNow);
-  document.getElementById('el-open-lab-btn')?.addEventListener('click', openEvoLab);
-  document.getElementById('dna-display')?.addEventListener('click', openEvoLab);
+  document.getElementById('el-open-lab-btn')?.addEventListener('click', openYourPeople);
+  document.getElementById('dna-display')?.addEventListener('click', openYourPeople);
   document.getElementById('tech-display')?.addEventListener('click', openTechCards);
 }
 
