@@ -248,7 +248,8 @@ export const MUTATION_BY_ID: Record<string, MutationDef> =
   Object.fromEntries(MUTATIONS.map(m => [m.id, m]));
 
 /** How many queued cards trigger an evolution (a major card alone also does). */
-export const EVOLVE_THRESHOLD = 2;
+/** Cards a form needs before it can evolve (a major card evolves alone). Was 2: evolving came too easily (#35). */
+export const EVOLVE_THRESHOLD = 3;
 
 // ─── Universe roll ───────────────────────────────────────────────────────────
 
@@ -259,6 +260,54 @@ export function rollUniverseMutations(seed: string): string[] {
 }
 
 // ─── State queries ───────────────────────────────────────────────────────────
+
+// ─── Trade-offs (evolution rework, tracker #35) ─────────────────────────────
+
+/**
+ * What each mutation costs the body besides DNA: one drawback, shown before it
+ * is taken. `effects` subtract from the same effect kinds the gains feed;
+ * `dna` nudges a trait when the form evolves.
+ */
+export interface Drawback {
+  text: string;
+  effects?: Partial<Record<EffectKind, number>>;
+  dna?: Partial<Record<'intelligence' | 'social' | 'aggression' | 'adaptability', number>>;
+}
+
+export const DRAWBACKS: Record<string, Drawback> = {
+  chloroplasts: { text: 'Tied to the light: slow to move', effects: { mobility: -0.1 } },
+  engulfing: { text: 'Always hungry', effects: { bioResilience: -0.05 } },
+  vent_chemistry: { text: 'Bound to the vents', effects: { mobility: -0.1 } },
+  flagellum: { text: 'Swimming burns what it eats', effects: { bioResilience: -0.05 } },
+  oxygen: { text: 'Choked where the air is thin', effects: { bioResilience: -0.05 } },
+  eyespot: { text: 'Drawn to the light, and to danger', effects: { bioResilience: -0.03 } },
+  colony: { text: 'Cells that can no longer live alone', dna: { adaptability: -1 } },
+  shell: { text: 'Heavy: slow to move', effects: { mobility: -0.15 } },
+  segments: { text: 'More body to feed', effects: { bioResilience: -0.05 } },
+  jelly: { text: 'Soft and easily torn', effects: { bioResilience: -0.1 } },
+  growth: { text: 'Fewer young, longer to grow', effects: { divergence: -0.1 } },
+  crawling_foot: { text: 'Bound to the ground it creeps on', effects: { divergence: -0.05 } },
+  gut: { text: 'A slow, heavy gut', effects: { mobility: -0.05 } },
+  backbone: { text: 'Slow to grow up', effects: { divergence: -0.1 } },
+  exoskeleton: { text: 'Must moult to grow; it caps its size', effects: { bodySize: -0.15 } },
+  fins: { text: 'Helpless out of water', dna: { adaptability: -1 } },
+  legs: { text: 'Leaves the safety of the water', effects: { bioResilience: -0.05 } },
+  wings: { text: 'Light, hollow bones: fragile', effects: { bodySize: -0.2 } },
+  camera_eyes: { text: 'Blind in the dark', effects: { bioResilience: -0.03 } },
+  compound_eyes: { text: 'Sees movement, not detail', effects: { intellectGrowth: -0.05 } },
+  echolocation: { text: 'Every call gives it away', effects: { bioResilience: -0.05 } },
+  grazing_jaws: { text: 'Hostage to the pastures', dna: { adaptability: -1 } },
+  hunting_jaws: { text: 'Must kill to eat', dna: { social: -1 } },
+  venom: { text: 'Costly to make', effects: { bioResilience: -0.05 } },
+  big_brain: { text: 'A hungry brain and a long childhood', effects: { divergence: -0.1, bioResilience: -0.05 } },
+  pack_bonds: { text: 'Lost without the pack', dna: { adaptability: -1 } },
+  hands: { text: 'Feet that no longer run', effects: { mobility: -0.1 } },
+  gigantism: { text: 'Few young, and much food for each', effects: { divergence: -0.15 } },
+  slow_ageing: { text: 'Slow to breed', effects: { divergence: -0.15 } },
+  language: { text: 'Words carry lies and quarrels', dna: { aggression: 1 } },
+  toolmaking: { text: 'Soft hands that need their tools', effects: { bioResilience: -0.05 } },
+  star_sense: { text: 'Restless: always looking away', dna: { social: -1 } },
+};
 
 // ─── Evolution answers the world (species design, pillar C) ─────────────────
 
@@ -383,6 +432,11 @@ export function applyMutation(g: SpeciesGenome, id: string): void {
   const def = MUTATION_BY_ID[id];
   if (!def) return;
   def.apply(g);
+  // The trade-off rides along (evolution rework).
+  const dd = DRAWBACKS[id]?.dna;
+  if (dd) for (const k of ['intelligence', 'social', 'aggression', 'adaptability'] as const) {
+    if (dd[k]) g.dna[k] = Math.max(0, Math.min(10, g.dna[k] + dd[k]!));
+  }
   repair(g);
 }
 
@@ -416,8 +470,8 @@ export function lockedTraits(owned: readonly string[]): Set<LockableTrait> {
 /** Sum of an effect over owned cards, capped like a fully-invested branch. */
 export function mutationEffect(owned: readonly string[], kind: EffectKind): number {
   let t = 0;
-  for (const id of owned) t += MUTATION_BY_ID[id]?.effects[kind] ?? 0;
-  return Math.min(1.2, t);
+  for (const id of owned) t += (MUTATION_BY_ID[id]?.effects[kind] ?? 0) + (DRAWBACKS[id]?.effects?.[kind] ?? 0);
+  return Math.max(-0.3, Math.min(1.2, t));
 }
 
 /** Readable differences between two forms, for the evolution reveal. */

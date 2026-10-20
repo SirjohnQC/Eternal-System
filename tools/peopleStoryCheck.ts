@@ -20,6 +20,7 @@ import { DEFAULT_BIOSPHERE, createPrimordialSpecies } from '../src/simulation/Sp
 import { SeedRNG } from '../src/utils/SeedRNG';
 import {
   MUTATIONS, MUTATION_BY_ID, ANSWERS, answersFor, mutationPrice, giftReason, cardStates, PRESSURE_TIMES,
+  DRAWBACKS, EVOLVE_THRESHOLD, queueReady, mutationEffect, applyMutation, cloneGenome,
 } from '../src/simulation/Mutations';
 import { pressureKinds } from '../src/simulation/PeopleStory';
 import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSpan } from '../src/simulation/SpeciesCatalog';
@@ -181,6 +182,19 @@ console.log('Species catalogue');
   check('older deaths are honest about it', /before anyone kept records/.test(deathOf(old, pool, 'you') ?? ''));
   check('kinds are words', kindOf(wolf) === 'hunter' && kindOf(kelp) === 'ocean plant' && kindOf(base) !== '', `${kindOf(wolf)} / ${kindOf(kelp)} / ${kindOf(base)}`);
   check('spans in years', yearsSpan(400) === '4K years' && yearsSpan(5) === '50 years');
+}
+
+console.log('Evolution: trade-offs');
+{
+  check('every mutation has a drawback, said in words', MUTATIONS.every(m => !!DRAWBACKS[m.id]?.text), MUTATIONS.filter(m => !DRAWBACKS[m.id]).map(m => m.id).join(','));
+  check('every drawback costs something', Object.values(DRAWBACKS).every(d => Object.values(d.effects ?? {}).some(v => (v ?? 0) < 0) || Object.values(d.dna ?? {}).some(v => (v ?? 0) !== 0)));
+  check('every drawback names a real mutation', Object.keys(DRAWBACKS).every(id => !!MUTATION_BY_ID[id]));
+  check('evolving takes three changes, or one major', EVOLVE_THRESHOLD === 3 && !queueReady(['flagellum', 'oxygen']) && queueReady(['flagellum', 'oxygen', 'eyespot']) && queueReady(['colony']));
+  check('a drawback weighs on its effect', mutationEffect(['shell'], 'mobility') < 0, String(mutationEffect(['shell'], 'mobility')));
+  check('effects stay in bounds', mutationEffect(MUTATIONS.map(m => m.id), 'divergence') >= -0.3 && mutationEffect(MUTATIONS.map(m => m.id), 'techSpeed') <= 1.2);
+  const g = cloneGenome(createPrimordialSpecies(0)); g.dna.adaptability = 5;
+  applyMutation(g, 'fins');
+  check('a trait drawback lands on the body', g.dna.adaptability === 4, String(g.dna.adaptability));
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');

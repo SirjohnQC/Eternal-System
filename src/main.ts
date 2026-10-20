@@ -5935,11 +5935,9 @@ function playEvolutionSequence(before: SpeciesGenome, after: SpeciesGenome, form
   cont.onclick = () => { done = true; box.classList.add('hidden'); renderEvoLab(); };
 }
 
+/** The Evolution Lab: the Species screen's EVOLUTION tab (the old overlay is retired, #35). */
 function openEvoLab(): void {
-  const overlay = document.getElementById('evo-lab-overlay');
-  if (!overlay) return;
-  overlay.classList.add('active');
-  renderEvoLab();
+  openSpeciesScreen('evolution');
 }
 
 function closeEvoLab(): void {
@@ -5991,7 +5989,24 @@ function initEvoLab(): void {
     mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
     openLab: openEvoLab,
     tick: () => gameState.tick,
+    // The Evolution Lab now lives in the Species screen's EVOLUTION tab (#35).
+    lab: {
+      states: () => cardStates(mutationContext()),
+      phase: () => mutationContext().phase,
+      queue: queueMutation,
+      unqueue: unqueueMutation,
+      ready: () => !!labSpecimen() && queueReady(gameState.mutationQueue),
+      evolve: evolveNow,
+      preview: () => {
+        const sp = labSpecimen();
+        return sp && gameState.mutationQueue.length ? previewGenome(sp, gameState.mutationQueue) : null;
+      },
+      threshold: EVOLVE_THRESHOLD,
+    },
   });
+  // The evolution sequence plays over whatever is open (it lived inside the old lab).
+  const seq = document.getElementById('evo-seq');
+  if (seq) document.body.appendChild(seq);
   document.getElementById('rail-people')?.addEventListener('click', openYourPeople);
   document.getElementById('rail-species')?.addEventListener('click', () => openSpeciesScreen('living'));
   setInterval(announceBeats, 3000);
