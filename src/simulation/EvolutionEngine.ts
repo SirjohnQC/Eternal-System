@@ -391,7 +391,7 @@ function trophicGrowth(sp: SpeciesGenome, active: SpeciesGenome[]): number {
 }
 
 /** Two species overlap when they want the same living. */
-function nicheOverlap(a: SpeciesGenome, b: SpeciesGenome): number {
+export function nicheOverlap(a: SpeciesGenome, b: SpeciesGenome): number {
   let o = 0;
   if (a.dna.environment === b.dna.environment) o += 0.45;
   if (a.dna.diet === b.dna.diet)               o += 0.35;
@@ -409,6 +409,22 @@ function stepEnum<T>(list: T[], current: T, rng: SeedRNG): T {
 }
 
 /**
+ * One world, few minds (playtest Oct 20: nearly every lineage reached
+ * intelligence 10). Past MIND_CAP only the player's own lineage and at most
+ * one rival may climb: the cleverest other lineage, first to get there.
+ */
+export const MIND_CAP = 6;
+export function rivalMind(live: readonly SpeciesGenome[], signatureId: string | null): SpeciesGenome | null {
+  let best: SpeciesGenome | null = null;
+  for (const s of live) {
+    if (s.isExtinct || s.id === signatureId) continue;
+    if (!best || s.dna.intelligence > best.dna.intelligence
+      || (s.dna.intelligence === best.dna.intelligence && s.originTick < best.originTick)) best = s;
+  }
+  return best;
+}
+
+/**
  * Mutate one trait, chosen by the lineage's drift plus the player's branch bias.
  *
  * @param anomaly when true, coherence is not enforced — the organism keeps
@@ -417,6 +433,8 @@ function stepEnum<T>(list: T[], current: T, rng: SeedRNG): T {
 function mutate(
   g: SpeciesGenome, rng: SeedRNG, defs: BranchDef[], dnaInv: Record<string, number>,
   bioPhase: string, anomaly: boolean, locked?: ReadonlySet<string> | null,
+  /** Highest intelligence this lineage may hold (one world, few minds). */
+  mindCap = 10,
 ): EvolutionEvent | null {
   const drift = driftOf(g.id);
 
@@ -448,7 +466,9 @@ function mutate(
       const ceiling = (PHASE_CEILING[bioPhase] ?? 5)
                     + branchEffect(dnaInv, defs, 'intellectGrowth') * 2
                     + g.evolutionaryPotential.intelligenceGrowth * 2;
-      if (d.intelligence >= Math.min(10, ceiling)) return null;
+      // Few minds per world: a lineage over its cap drifts back toward it.
+      if (d.intelligence > mindCap) { d.intelligence -= 1; break; }
+      if (d.intelligence >= Math.min(10, ceiling, mindCap)) return null;
       d.intelligence = Math.min(10, d.intelligence + 1);
       if (d.intelligence > 5) {
         g.evolutionaryPotential.toolUse = Math.min(1, g.evolutionaryPotential.toolUse + 0.08);
@@ -726,6 +746,15 @@ export function stepEvolution(
     // Never drop below two lineages on a living world: a planet that keeps
     // collapsing to a single species has no ecology to look at.
     if (doomed && live().length > 2 && sp.id !== signature?.id) {
+      // What killed it, for the archive: the lineage that took its niche, or
+      // the dying times.
+      let by: SpeciesGenome | null = null, worst = 0;
+      if (sp.population < 0.02) for (const o of live()) {
+        if (o.id === sp.id) continue;
+        const w = nicheOverlap(sp, o) * o.population;
+        if (w > worst) { worst = w; by = o; }
+      }
+      sp.extinct = by ? { tick, cause: 'outcompeted', by: by.id } : { tick, cause: 'catastrophe' };
       sp.isExtinct = true;
       events.push({
         type: 'extinction', speciesId: sp.id, speciesName: sp.name,
@@ -736,6 +765,7 @@ export function stepEvolution(
 
   // ── 3. Mutation ───────────────────────────────────────────────────────────
   const mutability = 0.30 + branchEffect(dnaInv, defs, 'mutability') * 0.5;
+  const rival = rivalMind(live(), signature?.id ?? null);
   for (const sp of live()) {
     const chance = mutability * (0.5 + sp.dna.adaptability / 12);
     if (!rng.chance(chance)) continue;
@@ -745,7 +775,8 @@ export function stepEvolution(
     const isSig = sp.id === signature?.id;
     // The signature species never takes an anomaly: its strangeness is chosen.
     const anomaly = !isSig && rng.chance(0.033);
-    const evt = mutate(sp, rng, defs, dnaInv, bioPhase, anomaly, isSig ? signature!.locked : null);
+    const evt = mutate(sp, rng, defs, dnaInv, bioPhase, anomaly, isSig ? signature!.locked : null,
+      isSig || sp.id === rival?.id ? 10 : MIND_CAP);
     if (evt) events.push(evt);
   }
 
@@ -762,6 +793,8 @@ export function stepEvolution(
       if (rng.chance(chance)) {
 
       const child = branchSpecies(sp, tick, rng, defs, dnaInv, bioPhase, live());
+      // A branch starts as an animal of its kind, not a second mind.
+      child.dna.intelligence = Math.min(child.dna.intelligence, MIND_CAP);
       sp.population = Math.max(0.15, sp.population - child.population * 0.4);
       pool.push(child);
       events.push({
@@ -814,7 +847,9 @@ export function applyNudgeMutation(
   // Try a few times — a nudge that silently does nothing feels broken.
   let evt: EvolutionEvent | null = null;
   for (let i = 0; i < 8 && !evt; i++) {
-    evt = mutate(target, rng, defs, dnaInv, bioPhase, false, locked);
+    const rv = rivalMind(active, signature?.id ?? null);
+    evt = mutate(target, rng, defs, dnaInv, bioPhase, false, locked,
+      target.id === signature?.id || target.id === rv?.id ? 10 : MIND_CAP);
   }
 
   return {

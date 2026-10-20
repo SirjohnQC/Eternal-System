@@ -23,6 +23,7 @@ import { NationSystem } from '../simulation/Nations';
 import { runtimeState, gameState } from '../simulation/GameState';
 import { openNationsOverview } from '../ui/NationsOverview';
 import { initYourPeople, openYourPeople } from '../ui/YourPeople';
+import { initSpeciesScreen, openSpeciesScreen } from '../ui/SpeciesScreen';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
@@ -233,6 +234,18 @@ function rebuild(): void {
     runtimeState.playerPlanetGrid = grid;
     gameState.playerSpecies = species;
     if (params.get('ov') === '1') openNationsOverview(nations.nations[0]?.id ?? null);
+  }
+  // ?species=1 (or =archive / =evolution) opens the Species screen on this
+  // world: its lineages as evolved here, the people as yours.
+  const spTab = params.get('species');
+  if (spTab && lead) {
+    gameState.playerSpecies = species;
+    runtimeState.playerPlanetGrid = grid;
+    initSpeciesScreen({
+      yours: () => lead, portrait: (g, px) => bakeCreaturePortrait(g, px, g.id === lead.id),
+      mutationLabel: id => id, openLab: () => {}, tick: () => 5 * 160 * 2000,
+    });
+    openSpeciesScreen(spTab === 'archive' || spTab === 'evolution' ? spTab : 'living');
   }
   // ?people=1 opens "Your People" on this world (its forms: the founder, then
   // the people), with a sign cast a generation ago so beliefs and beats show.

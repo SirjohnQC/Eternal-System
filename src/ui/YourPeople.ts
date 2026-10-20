@@ -1,9 +1,9 @@
 /**
  * "Your People" (docs/plans/2026-10-19-species-bond-and-cards.md, pillar A):
- * the species entry. Who they are, what they are doing now, what presses on
+ * the civilisation. Who they are, what they are doing now, what presses on
  * them (as symptoms), what they believe about you, what came of your signs,
- * and their lineage with what shaped each form. The Evolution Lab opens from
- * here (decision 1).
+ * and their world's numbers. Their biology (every lineage, the Evolution
+ * Lab, the extinct) is the Species screen, one button away (playtest Oct 20).
  *
  * Reads the simulation (runtimeState.playerNations, gameState); words come
  * from simulation/PeopleStory. Owns no state but whether it is open. Refreshes
@@ -12,7 +12,7 @@
 import { gameState, runtimeState } from '../simulation/GameState';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import {
-  symptomsOf, activityOf, ACTIVITY_WORDS, natureOf, beliefsOf, shapedBy, headingOf, beatsSince, plural,
+  symptomsOf, activityOf, ACTIVITY_WORDS, natureOf, beliefsOf, headingOf, beatsSince, plural,
 } from '../simulation/PeopleStory';
 import { openChronicle } from './ChronicleUI';
 import { openLedger, worldMetrics, type WorldMetric } from './LedgerUI';
@@ -23,6 +23,7 @@ export interface YourPeopleDeps {
   /** A crisp portrait canvas (may be a shared cached canvas; the panel draws a copy). */
   portrait(g: SpeciesGenome, px: number): HTMLCanvasElement;
   mutationLabel(id: string): string;
+  /** The footer's SPECIES button (biology: every lineage, the lab, the extinct). */
   openLab(): void;
   /** "Microbial", "Intelligent"… (Progression's label). */
   phaseLabel(): string;
@@ -54,7 +55,7 @@ export function openYourPeople(): void {
       <div class="yp-top">YOUR PEOPLE</div>
       <div class="yp-body"></div>
       <div class="yp-foot"><button class="yp-btn" data-act="close" type="button">CLOSE</button>
-        <button class="yp-btn gold" data-act="lab" type="button">EVOLUTION LAB</button></div></div>`;
+        <button class="yp-btn gold" data-act="lab" type="button">SPECIES</button></div></div>`;
     document.body.appendChild(box);
     box.addEventListener('click', e => {
       if (e.target === box) { closeYourPeople(); return; }
@@ -129,25 +130,9 @@ function render(): void {
     ${metrics.length ? `<section class="yp-world">
       <div class="yp-h">Their world <button type="button" class="yp-link" data-act="ledger">FULL LEDGER</button></div>
       <div class="yp-tiles">${metrics.map(statTile).join('')}</div>
-    </section>` : ''}
-    <section class="yp-lineage">
-      <div class="yp-h">Their lineage</div>
-      <div class="yp-strip"></div>
-    </section>`;
+    </section>` : ''}`;
 
   try { body.querySelector('.yp-art')!.appendChild(copyOf(deps.portrait(sp, 150))); } catch { /* portrait is decoration */ }
-  const strip = body.querySelector('.yp-strip') as HTMLElement;
-  forms.forEach((f, i) => {
-    const shaped = shapedBy(f, i > 0 ? forms[i - 1].tick : -1, ns, deps!.mutationLabel);
-    const el = document.createElement(shaped.entry ? 'button' : 'div');
-    el.className = 'yp-form' + (i === forms.length - 1 ? ' now' : '') + (shaped.entry ? ' link' : '');
-    if (shaped.entry) { (el as HTMLButtonElement).type = 'button'; el.dataset.entry = String(shaped.entry); }
-    el.innerHTML = `<div class="yp-form-art"></div><div class="yp-form-num">FORM ${roman(f.form)}</div>
-      <div class="yp-form-name">${esc(f.name)}</div><div class="yp-form-why">${esc(cap(shaped.text))}</div>`;
-    try { el.querySelector('.yp-form-art')!.appendChild(copyOf(deps!.portrait(f.genome, 48))); } catch { /* decoration */ }
-    strip.appendChild(el);
-  });
-  if (!forms.length) strip.innerHTML = '<div class="yp-quiet">They have not changed yet.</div>';
 }
 
 function copyOf(src: HTMLCanvasElement): HTMLCanvasElement {
