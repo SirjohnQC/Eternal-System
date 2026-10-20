@@ -39,6 +39,12 @@ const renderer = new IsoDioramaRenderer();
 Object.assign(window, { previewRenderer: renderer });
 let nations: NationSystem | null = null;
 renderer.setNationSource(() => nations);
+document.addEventListener('dblclick', (e) => {
+  if ((e.target as HTMLElement).closest?.('#nations-ov')) return;
+  if (!nations) return;
+  const hit = renderer.pickTile(e.clientX, e.clientY);
+  openNationsOverview(hit ? nations.nationAt(hit.row, hit.col)?.id ?? null : null);
+});
 
 const params = new URLSearchParams(location.search);
 // ?debug=1 exposes the renderer to browser checks (tools/*.mjs probes).
@@ -219,12 +225,13 @@ function rebuild(): void {
     for (let t = 1; t <= Math.max(10, 20 * star.civLevel); t++) ns.step(grid, t * 2000, 40000);
     if (ns.isFounded) nations = ns;
   }
-  // ?ov=1 opens the nations overview on this world (double-click in the game).
-  if (nations && params.get('ov') === '1') {
+  // The nations overview, as in the game: double-click the world (or ?ov=1
+  // to open it on load).
+  if (nations) {
     runtimeState.playerNations = nations;
     runtimeState.playerPlanetGrid = grid;
     gameState.playerSpecies = species;
-    openNationsOverview(nations.nations[0]?.id ?? null);
+    if (params.get('ov') === '1') openNationsOverview(nations.nations[0]?.id ?? null);
   }
   // ?colony=0..1 shows a COLONY world (expansion P4) the way main.ts draws one:
   // the world's own terrain, the settlers' territory stamped on it at that
