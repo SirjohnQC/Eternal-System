@@ -2134,6 +2134,21 @@ body.forge-await .faith-deck{display:none !important}
 .fate-golden{cursor:default;animation:goldPulse 2.2s ease-in-out infinite;background:linear-gradient(170deg,#2a1f0c 0%,#120c05 75%)}
 .fate-golden .fate-name{font-size:24px;letter-spacing:8px}
 .fw-card.fw-open{animation:fwFlip .7s ease-in-out}
+/* The golden card as art (SpriteCook): the frame and seal are the picture, text sits in its bands. */
+.fw-card-wrap{flex-direction:column;align-items:center;gap:10px}
+.fate-golden.fw-sprite{width:238px;height:360px;padding:0;border:none;background:url(/assets/pixel/divine/cards/golden_card.png) center/100% 100% no-repeat;
+  image-rendering:pixelated;box-shadow:none;animation:fwGlow 2.2s ease-in-out infinite;perspective:600px}
+.fate-golden.fw-sprite.fw-opened{width:232px;height:416px;background-image:url(/assets/pixel/divine/cards/golden_card_open.png)}
+.fate-golden.fw-sprite.fw-open{animation:fwFlip .7s ease-in-out,fwGlow 2.2s ease-in-out infinite}
+.fate-golden.fw-sprite:hover{transform:none}
+.fw-sprite .fate-name{position:absolute;left:12%;right:12%;top:9%;height:8%;min-height:0;justify-content:center;font-size:20px;letter-spacing:6px;
+  color:#ffe7a8;text-shadow:0 1px 0 #3a1e04,0 0 6px rgba(40,18,0,.9)}
+.fw-sprite.fw-opened .fate-name{top:8.5%;height:8%;font-size:17px;letter-spacing:4px}
+.fw-sprite .fate-value{position:absolute;left:14%;right:14%;width:auto;bottom:6.5%;height:7%;border:none;padding:0;display:flex;align-items:center;justify-content:center;
+  color:#ffe7a8;font-size:14px;text-shadow:0 1px 0 #3a1e04,0 0 6px rgba(40,18,0,.9)}
+.fw-sprite.fw-opened .fate-value{bottom:6%}
+.fw-caption{font-family:'Cinzel',serif;font-style:italic;font-size:14px;color:#e8d8b0;text-align:center}
+@keyframes fwGlow{0%,100%{filter:drop-shadow(0 0 10px rgba(255,200,70,.35))}50%{filter:drop-shadow(0 0 26px rgba(255,210,90,.8))}}
 @keyframes goldPulse{0%,100%{box-shadow:0 0 0 1px #000,0 0 18px rgba(255,200,70,.4)}50%{box-shadow:0 0 0 1px #000,0 0 44px rgba(255,210,90,.85)}}
 @keyframes fwFlip{0%{transform:rotateY(0)}50%{transform:rotateY(90deg);filter:brightness(2.4)}100%{transform:rotateY(0)}}
 /* Opening cinematic */
