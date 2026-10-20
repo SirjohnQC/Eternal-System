@@ -1655,6 +1655,32 @@ for (const { seed, stats } of SEEDS) {
   });
 }
 
+// ── Scenarios: continent variety (#100) ─────────────────────────────────────
+// Every world kind can take most land layouts; rocky worlds keep a steady
+// share of land whatever the layout (TerrainArchetypes.structureFor,
+// PlanetGrid SEA_CALIBRATION).
+{
+  const TA = await import('../src/simulation/TerrainArchetypes');
+  const PG = await import('../src/simulation/PlanetGrid');
+  const r: Rule = { name: 'scenario: every kind takes varied land layouts; rocky land share holds', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    for (const type of ['rocky', 'desert', 'ice', 'ocean']) {
+      const seen = new Set<string>();
+      for (let k = 0; k < 300; k++) seen.add(TA.structureFor(type, 17 + k * 7919));
+      if (seen.size < 5) { detail = `${type}: only ${[...seen].join(', ')}`; break; }
+    }
+    for (let k = 0; !detail && k < 12; k++) {
+      const g = PG.generatePlanetGrid('rocky', 500 + k * 104729, { climate: 'temperate', oceans: 'mixed', chaos: 'calm' } as any);
+      let land = 0, n = 0;
+      for (const row of g) for (const c of row) { n++; if (!PG.isWater(c.biome)) land++; }
+      if (land / n < 0.55 || land / n > 0.92) detail = `rocky world ${k}: ${(land / n * 100).toFixed(0)}% land`;
+    }
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Report ───────────────────────────────────────────────────────────────────
 const samples = SEEDS.length * (Math.floor(TICKS / SAMPLE_EVERY) + 1);
 let blocking = crashes.length;

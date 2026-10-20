@@ -251,9 +251,15 @@ export const SEA_LEVEL = 0.48;
  * storm worlds nearly all sea. `level` is the elevation under which the type's
  * own classifyBiome draws water; `share` the wanted fraction at average DNA.
  */
-const SEA_CALIBRATION: Record<string, { level: number; share: number }> = {
+const SEA_CALIBRATION: Record<string, { level: number; share: number; grid?: boolean }> = {
   ice:     { level: SEA_LEVEL - 0.12, share: 0.18 },
   crystal: { level: SEA_LEVEL - 0.14, share: 0.12 },
+  // Rocky worlds take every land layout now (#100); their share of sea is
+  // held here so an island or continent layout does not drown the land the
+  // nations need, nor a cracked plateau leave it bone dry.
+  // Counted on the grid itself (not the face, whose rim dips into sea anyway),
+  // so the layout's own coasts carry the water.
+  rocky:   { level: SEA_LEVEL,        share: 0.3, grid: true },
   toxic:   { level: SEA_LEVEL,        share: 0.55 },
   storm:   { level: SEA_LEVEL,        share: 0.55 },
 };
@@ -277,10 +283,11 @@ function calibrateSeas(grid: PlanetGrid, planetType: string, oceanCoverage: numb
   const share = Math.max(0.02, Math.min(0.85, cal.share * Math.max(0.3, oceanCoverage) / 0.6 * (planetType === 'ice' || planetType === 'crystal' ? 0.6 / 0.28 : 1)));
   const elevs: number[] = [];
   for (const row of grid) for (const c of row) elevs.push(c.elevation);
+  const samples = cal.grid ? [0] : RIM_SAMPLES;
   const wetAt = (shift: number): number => {
     let w = 0;
-    for (const e of elevs) for (const f of RIM_SAMPLES) if (e + shift - f < cal.level) w++;
-    return w / (elevs.length * RIM_SAMPLES.length);
+    for (const e of elevs) for (const f of samples) if (e + shift - f < cal.level) w++;
+    return w / (elevs.length * samples.length);
   };
   let lo = -0.6, hi = 0.6;          // more shift = drier
   for (let it = 0; it < 24; it++) {
@@ -976,7 +983,7 @@ export function generatePlanetGrid(
       if (archetype) elev = elevationFor(archetype, nx, ny, elevSeed);
       else if (shape === 'continents') elev = continentsElevation(nx, ny, elevSeed);
       else if (shape === 'discs') elev = discsElevation(nx, ny, elevSeed);
-      else if (shape === 'archipelago') elev = elevationFor('archipelago', nx, ny, elevSeed);
+      else if (shape === 'archipelago' || shape === 'supercontinent' || shape === 'hemispheric') elev = elevationFor(shape, nx, ny, elevSeed);
       else if (shape === 'canyon') elev = canyonElevation(nx, ny, elevSeed);
       else elev = fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
       // Coastal fade at poles (makes ice caps at very high latitudes)

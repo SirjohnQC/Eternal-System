@@ -1414,12 +1414,30 @@ export class IsoDioramaRenderer {
   }
 
   /**
-   * Elevation penalty applied toward the rim, so the projected hemisphere always
-   * reads as "continent, then ocean, then the disc edge" — the reference silhouette.
+   * Elevation penalty applied toward the rim, so the projected hemisphere
+   * reads as "continent, then ocean, then the disc edge". Its strength varies
+   * per world (#100: a fixed 0.30 sank every rim and every world read as the
+   * same centred island): from 0.06, where land runs out to the edge in cliffs
+   * and peninsulas, to the full 0.30 island. Worlds whose sea share is
+   * calibrated against the full falloff (PlanetGrid SEA_CALIBRATION) keep it.
    */
   private rimFalloff(r: number): number {
     const t = clamp01((r - 0.34) / 0.66);
-    return t * t * 0.30;
+    return t * t * this.rimDepth();
+  }
+
+  private rimDepthKey = '';
+  private rimDepthVal = 0.30;
+  private rimDepth(): number {
+    const key = `${this.planetType}|${this.planetSeed}`;
+    if (key !== this.rimDepthKey) {
+      this.rimDepthKey = key;
+      const fixed = this.planetType === 'ice' || this.planetType === 'crystal' || this.planetType === 'toxic' || this.planetType === 'storm';
+      let h = ((this.planetSeed | 0) * 2654435761 + 0x9e37) >>> 0;
+      h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+      this.rimDepthVal = fixed ? 0.30 : 0.06 + ((h % 1000) / 1000) * 0.24;
+    }
+    return this.rimDepthVal;
   }
 
   /**
