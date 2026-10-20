@@ -14,6 +14,7 @@ import type { NationSystem, Nation, HistoryEntry, Pressures } from './Nations';
 import type { SpeciesGenome, PlanetBiosphere } from './SpeciesGenome';
 import type { SpeciesForm } from './GameState';
 import { descendants, yourHand } from './Chronicle';
+import type { PressureKind } from './Mutations';
 
 export type Severity = 1 | 2 | 3;
 
@@ -29,11 +30,12 @@ export interface Symptom {
 
 export type Activity = 'working' | 'foraging' | 'fighting' | 'sheltering' | 'gathering' | 'praying' | 'spreading' | 'drifting';
 
-/** "Selsul Runner" → "Selsul Runners"; already-plural names are kept. */
+/** "Selsul Runner" → "Selsul Runners"; already-plural or collective names are kept. */
 export function plural(name: string): string {
   const n = name.trim();
   if (!n) return 'your people';
-  if (/s$/i.test(n)) return n;
+  // Already plural, or a collective name a player chose ("Velari", "Na'vi").
+  if (/[si]$/i.test(n)) return n;
   if (/[^aeiou]y$/i.test(n)) return n.slice(0, -1) + 'ies';
   if (/(x|ch|sh)$/i.test(n)) return n + 'es';
   return n + 's';
@@ -212,6 +214,7 @@ export function shapedBy(form: SpeciesForm, prevTick: number, ns: NationSystem |
     const hard = [...window].reverse().find(e => e.nation >= 0 && /starv|hunger|famine|war|plague|revolt|flood|drought|cold|fire|quake/i.test(e.what));
     if (hard) return { text: lower(hard.what.replace(/\.$/, '')), entry: hard.id };
   }
+  if (form.why) return { text: form.why, entry: 0 };
   const gained = form.mutations.map(mutationLabel).filter(Boolean);
   return { text: gained.length ? `they grew ${gained.slice(0, 2).map(g => g.toLowerCase()).join(' and ')}` : 'time, and the world', entry: 0 };
 }
@@ -277,4 +280,11 @@ export function personalize(desc: string, targetText: string, peopleName: string
   if (i < 0) return desc;
   const out = desc.slice(0, i) + who + desc.slice(i + targetText.length);
   return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+/** The pressures on the people now, worst first, without repeats (for the Evolution Lab). */
+export function pressureKinds(ns: NationSystem | null, bio: PlanetBiosphere | null): PressureKind[] {
+  const out: PressureKind[] = [];
+  for (const s of symptomsOf(ns, bio, 12)) if (s.kind !== 'none' && !out.includes(s.kind)) out.push(s.kind);
+  return out;
 }
