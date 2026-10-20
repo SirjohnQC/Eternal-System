@@ -263,25 +263,34 @@ export function canyonTrough(nx: number, ny: number, seed: number): number {
   return trough * open;
 }
 
-export type LandStructure = 'continents' | 'discs' | 'archipelago' | 'canyon' | 'legacy';
+export type LandStructure = 'continents' | 'discs' | 'archipelago' | 'canyon' | 'supercontinent' | 'hemispheric' | 'legacy';
 
-/** What an untyped world is allowed to be. Water can split; dry highland can crack. */
+/**
+ * Which layout a world gets. Every kind can take most layouts (#100: rocky,
+ * desert and ice worlds only ever got a cracked plateau or the old centred
+ * blob, so their continents all looked alike); the weights lean on what the
+ * kind is good at: water splits into continents and islands, dry highland
+ * cracks into canyons. The old centred blob ('legacy') is a rare roll now.
+ */
+const STRUCTURE_WEIGHTS: Record<'water' | 'dry' | 'other', Array<[LandStructure, number]>> = {
+  water: [['continents', 30], ['archipelago', 22], ['supercontinent', 16], ['hemispheric', 14], ['discs', 8], ['canyon', 4], ['legacy', 6]],
+  dry:   [['canyon', 26], ['continents', 20], ['supercontinent', 16], ['hemispheric', 14], ['archipelago', 12], ['discs', 6], ['legacy', 6]],
+  other: [['continents', 24], ['supercontinent', 20], ['hemispheric', 18], ['archipelago', 16], ['canyon', 10], ['discs', 6], ['legacy', 6]],
+};
+
 export function structureFor(planetType: string, seed: number): LandStructure {
   let h = (planetType.length * 131 + seed * 17) | 0;
   h = ((h ^ (h >>> 13)) * 1540483477) | 0;
+  h = ((h ^ (h >>> 15)) * 2246822507) | 0;
   const r = ((h >>> 0) % 1000) / 1000;
   const water = planetType === 'ocean' || planetType === 'toxic' || planetType === 'storm';
   const dry = planetType === 'desert' || planetType === 'ice' || planetType === 'rocky'
     || planetType === 'carbon' || planetType === 'crystal' || planetType === 'mechanical';
-  if (water) {
-    // Clean circular domes are a rare roll. The common split is a ragged coast.
-    if (r < 0.08) return 'discs';
-    if (r < 0.58) return 'continents';
-    if (r < 0.83) return 'archipelago';
-    return 'legacy';
-  }
-  if (dry) return r < 0.55 ? 'canyon' : 'legacy';
-  return 'legacy';
+  const table = STRUCTURE_WEIGHTS[water ? 'water' : dry ? 'dry' : 'other'];
+  const total = table.reduce((a, [, w]) => a + w, 0);
+  let x = r * total;
+  for (const [k, w] of table) { x -= w; if (x < 0) return k; }
+  return table[0][0];
 }
 
 /** Which archetype a world gets. Rolled from `genomeSeed`, type-independent. */
