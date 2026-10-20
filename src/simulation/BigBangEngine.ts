@@ -65,7 +65,7 @@ import {
   type BranchDef,
 } from './DnaBranches';
 import {
-  ARCHETYPES, systemHabitability, planetHabitability, idealOrbitRadius, pickArchetype, rollBioTempo,
+  ARCHETYPES, systemHabitability, planetHabitability, idealOrbitRadius, homeOrbitTarget, pickArchetype, rollBioTempo,
   resolveTransition, rollCatastrophe, phaseLabel, survivesFloorCollapse,
   STALL_TIME_PENALTY, PLAYER_STALL_TIME_CAP,
   type LifeArchetype, type PlanetKind,
@@ -1468,14 +1468,13 @@ export class BigBangEngine {
       // The player's world is guaranteed to be a good one — this is the world the
       // whole game is about — but it still gets its own chemistry and tempo, so
       // no two playthroughs climb the ladder at the same speed.
-      // Habitable-band semi-major; near-circular so home is easy to read.
-      // At the star's goldilocks radius, by the same formula habitability is
-      // scored with (they had drifted: the home world sat ~35% out of its zone).
-      playerPlanet.orbitalRadius = idealOrbitRadius(ps0.temperature);
+      // Near-circular so home is easy to read. Its distance follows what it is
+      // meant to become (placeHomeOrbit): hot worlds closer, cold ones further.
       playerPlanet.eccentricity = this.rng.nextFloat(0, 0.08);
       playerPlanet.periapsisAngle = this.rng.nextFloat(0, Math.PI * 2);
       playerPlanet.type = preferred;
       playerPlanet.destinyType = destiny;
+      this.placeHomeOrbit(ps0, playerIdx, destiny);
       ps0.habitability = undefined;
       ps0.bestPlanetIndex = playerIdx;
       ps0.homePlanetIndex = playerIdx;
@@ -3670,7 +3669,9 @@ export class BigBangEngine {
         starTemperature: star.temperature,
       })));
       star.habitability = score;
-      star.bestPlanetIndex = index;
+      // A home world stays the system's best (rule 3: the home planet is
+      // explicit), even when a cold home orbits far from the goldilocks radius.
+      star.bestPlanetIndex = star.homePlanetIndex ?? index;
     }
     return star.habitability;
   }
@@ -6812,6 +6813,37 @@ export class BigBangEngine {
 
   // ── Home-world formation lifecycle (Formation.ts) ───────────────────────
 
+  /**
+   * Put the home world on the orbit its kind belongs to (LifeSystem
+   * HOME_ORBIT_BAND: hot worlds closer to the star, cold ones further),
+   * kept inside the next planet's closest approach so no orbits cross.
+   * Deterministic per star; speed follows the distance.
+   */
+  placeHomeOrbit(star: StarBody, homeIdx: number, type: string): void {
+    const home = star.planets[homeIdx];
+    if (!home) return;
+    home.orbitalRadius = this.homeOrbitFor(star, homeIdx, type);
+    home.orbitalSpeed = PLANET_ORBIT_MU / Math.sqrt(Math.max(0.5, home.orbitalRadius / 10));
+    star.habitability = undefined;
+  }
+
+  /** The home world's orbit radius for its kind: its target, capped inside the next planet. */
+  homeOrbitFor(star: StarBody, homeIdx: number, type: string): number {
+    let inner = Infinity;
+    star.planets.forEach((p, j) => { if (j !== homeIdx) inner = Math.min(inner, p.orbitalRadius * (1 - (p.eccentricity ?? 0))); });
+    const target = this.homeOrbitTargetOf(star, type);
+    return Math.max(6, Number.isFinite(inner) ? Math.min(target, inner * 0.85) : target);
+  }
+
+  /** The distance a home world of `type` aims for round `star` (stable per star). */
+  homeOrbitTargetOf(star: StarBody, type: string): number {
+    // Per game and per star (the player's star has the same id every game).
+    let h = (star.id * 2654435761 + (this.tick0Seed | 0) * 40503) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 2246822507) >>> 0;
+    h = Math.imul(h ^ (h >>> 13), 3266489909) >>> 0;
+    return homeOrbitTarget(star.temperature, type, (h % 10007) / 10007);
+  }
+
   /** Start the home world molten on its destiny's ladder. */
   private beginHomeFormation(star: StarBody, planet: Planet, destiny: DestinyType, budget: number): void {
     star.hasLife = false;
@@ -6828,6 +6860,8 @@ export class BigBangEngine {
     planet.hasLife = false;
     planet.biosphere = 0;
     planet.destinyType = destiny;
+    const idx = star.planets.indexOf(planet);
+    if (idx >= 0) this.placeHomeOrbit(star, idx, destiny);
     this.applyFormationFace(star, planet);
   }
 
@@ -6941,8 +6975,11 @@ export class BigBangEngine {
     ps.formationDestiny = destiny;
     ps.formationStage = stage;
     if (planet) {
+      const moved = planet.destinyType !== destiny;
       planet.destinyType = destiny;
       planet.dna = { ...dna };
+      // A new destiny moves the world to its kind's orbit (placeHomeOrbit).
+      if (moved) this.placeHomeOrbit(ps, ps.planets.indexOf(planet), destiny);
       this.applyFormationFace(ps, planet);
     }
     gameState.playerPlanetDNA = { ...dna };

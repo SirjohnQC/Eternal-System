@@ -125,6 +125,21 @@ rule({
 });
 
 rule({
+  // The home world orbits where its kind belongs (hot closer, cold further),
+  // inside the next planet, and nothing moves it off that orbit afterwards.
+  name: 'home world orbits at its kind\'s distance',
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const hi = ps ? engine.homeIndexOf(ps) : -1;
+    const home = ps && hi >= 0 ? ps.planets[hi] : null;
+    if (!ps || !home) return null;
+    const kind = home.destinyType ?? home.type;
+    const want = engine.homeOrbitFor(ps, hi, kind);
+    return Math.abs(home.orbitalRadius - want) > 1e-6 ? `${kind} home at r=${home.orbitalRadius.toFixed(2)}, its kind's orbit is ${want.toFixed(2)}` : null;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,
