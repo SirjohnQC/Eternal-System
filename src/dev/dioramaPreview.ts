@@ -25,6 +25,7 @@ import { openNationsOverview } from '../ui/NationsOverview';
 import { initYourPeople, openYourPeople } from '../ui/YourPeople';
 import { initSpeciesScreen, openSpeciesScreen } from '../ui/SpeciesScreen';
 import { initTechScreen, openTechScreen } from '../ui/TechScreen';
+import { raiseLandmarks, LANDMARK_OF, type Landmark } from '../simulation/Landmarks';
 import { TECH_CARDS } from '../simulation/TechCards';
 import { TECH_BY_ID } from '../simulation/Technology';
 import { MUTATIONS, cardStates, queueReady, previewGenome, EVOLVE_THRESHOLD } from '../simulation/Mutations';
@@ -270,6 +271,18 @@ function rebuild(): void {
     });
     openSpeciesScreen(spTab === 'archive' || spTab === 'evolution' ? spTab : 'living');
   }
+  // ?landmarks=1: what a run of TP cards would leave standing (one of each
+  // kind in turn, across the nations), placed as the engine places them.
+  if (params.get('landmarks') === '1' && nations) {
+    const lms: Landmark[] = [];
+    const lr = new SeedRNG(`landmarks_${seed}`);
+    const live = nations.nations.filter(n => !n.fallen);
+    Object.keys(LANDMARK_OF).forEach((card, i) => {
+      const n = live[i % live.length];
+      lms.push(...raiseLandmarks(card, [n], nations!, grid, lms, lr, i));
+    });
+    renderer.setLandmarkSource(() => lms);
+  } else renderer.setLandmarkSource(null);
   // ?tech=1 opens the technology screen on this world's nations (the cards
   // as the engine would list them; playing is the game's).
   if (params.get('tech') === '1' && nations) {

@@ -80,6 +80,8 @@ import {
   queueReady, applyMutation, genomeDiff, answersFor, giftReason, PRESSURE_TIMES,
 } from './Mutations';
 import { pressureKinds } from './PeopleStory';
+import { raiseLandmarks, LANDMARKS_MAX, LANDMARK_WORDS, MARK_OF } from './Landmarks';
+import { work } from './DivineWorks';
 import { nameForGenome } from './SpeciesNaming';
 import {
   type DestinyType, rollDestiny, rollFormationBudget, stageDuration, nextStage,
@@ -1259,6 +1261,7 @@ export class BigBangEngine {
     gameState.mutationGifts = [];
     gameState.mutationPaid = {};
     gameState.mutationGiftWhy = {};
+    gameState.landmarks = [];
     gameState.speciesForms = [];
     gameState.signatureBiomes = [];
     gameState.offeredMutations = rollUniverseMutations(seed);
@@ -2090,6 +2093,25 @@ export class BigBangEngine {
       }
     }
     const said = this.techCardSpecial(card, rng, targets, choice, cause);
+    // What the card leaves standing (Landmarks.ts): a granary, a library, a
+    // spaceport... in each nation it acts on, and for some cards a mark on
+    // their land. The chronicle says so, linked to the card.
+    const grid = runtimeState.playerPlanetGrid;
+    if (ns && grid) {
+      const raised = raiseLandmarks(card.id, targets, ns, grid, gameState.landmarks ?? [], rng.fork('landmarks'), this.tick);
+      if (raised.length) {
+        gameState.landmarks = [...(gameState.landmarks ?? []), ...raised].slice(-LANDMARKS_MAX);
+        for (const l of raised) {
+          const owner = ns.nationAt(l.row, l.col);
+          if (owner) ns.record(owner.id, this.tick, `${owner.name} ${LANDMARK_WORDS[l.kind]}.`, [title], cause ? [cause] : []);
+        }
+      }
+      const mark = MARK_OF[card.id];
+      if (mark && targets.length) {
+        work(mark, grid, ns, { kind: 'nations', ids: targets.map(n => n.id) }, 0.8, 2,
+          this.homeWorld(ps)?.type ?? 'rocky', gameState.playerSpecies);
+      }
+    }
     const all = targets.length === ns?.nations.filter(n => !n.fallen).length;
     const who = card.who === 'world' ? '' : all ? 'every nation takes it up' : targets.length === 1 ? `${targets[0].name} takes it up`
       : `${targets.slice(0, -1).map(n => n.name).join(', ')} and ${targets[targets.length - 1].name} take it up`;
@@ -2347,6 +2369,7 @@ export class BigBangEngine {
 
     // New ground: settle the landing, then let the nations raise new capitals.
     this.invalidatePlayerGrid();
+    gameState.landmarks = [];   // what stood on the old world stays there
     const grid = this.ensurePlayerGrid();
     if (grid) {
       seedLanding(grid, Math.max(200, Math.min(8000, Math.round(settledBefore * 0.5))), String(to.id));

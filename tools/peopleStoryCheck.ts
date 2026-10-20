@@ -27,6 +27,9 @@ import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSp
 import type { SpeciesGenome } from '../src/simulation/SpeciesGenome';
 import { TECHS, TECH_BY_ID } from '../src/simulation/Technology';
 import { TECH_CARDS } from '../src/simulation/TechCards';
+import { raiseLandmarks, LANDMARK_OF, LANDMARK_SPACING, type Landmark } from '../src/simulation/Landmarks';
+import { isWater, GRID_SIZE } from '../src/simulation/PlanetGrid';
+import { existsSync } from 'fs';
 
 let failed = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -205,6 +208,27 @@ console.log('Technology tree (the TP screen draws it)');
   check('nothing needs a later age', TECHS.every(t => t.requires.every(r => TECH_BY_ID[r].era <= t.era)));
   check('every tech card names a real technology', TECH_CARDS.every(c => !c.needs.tech || !!TECH_BY_ID[c.needs.tech]));
   check('every card opens from the tree or an age', TECH_CARDS.every(c => !!c.needs.tech || c.needs.era != null));
+}
+
+console.log('Landmarks (what TP cards leave standing)');
+{
+  const playable = TECH_CARDS.filter(c => c.special !== 'new_world' && c.special !== 'terraform');
+  check('every TP card that acts raises a landmark', playable.every(c => !!LANDMARK_OF[c.id]), playable.filter(c => !LANDMARK_OF[c.id]).map(c => c.id).join(','));
+  check('every landmark kind has its art', [...new Set(Object.values(LANDMARK_OF))].every(k => existsSync(`public/assets/pixel/landmarks/${k}.png`)));
+  const w = world(61);
+  const live = w.ns.nations.filter(n => !n.fallen);
+  const all: Landmark[] = [];
+  for (let i = 0; i < 12; i++) all.push(...raiseLandmarks('libraries', [live[i % live.length]], w.ns, w.grid, all, new SeedRNG(`lm${i}`), i));
+  check('landmarks are raised', all.length >= live.length, `${all.length}`);
+  check('each stands in the nation that raised it', all.every(l => w.ns.owner[l.row * GRID_SIZE + l.col] === l.nation));
+  check('each stands on dry land', all.every(l => !isWater(w.grid[l.row][l.col].biome)));
+  const near = (a: Landmark, b: Landmark) => { let dc = Math.abs(a.col - b.col); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc; return Math.hypot(a.row - b.row, dc) < LANDMARK_SPACING; };
+  check('they keep their distance', all.every((a, i) => all.every((b, j) => i === j || !near(a, b))));
+  const again: Landmark[] = [];
+  for (let i = 0; i < 12; i++) again.push(...raiseLandmarks('libraries', [live[i % live.length]], w.ns, w.grid, again, new SeedRNG(`lm${i}`), i));
+  check('placement is deterministic', JSON.stringify(again) === JSON.stringify(all));
+  const world1 = raiseLandmarks('fleet', [], w.ns, w.grid, [], new SeedRNG('f'), 1);
+  check('a world act raises one, in the largest nation', world1.length === 1 && world1[0].nation === -1);
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');

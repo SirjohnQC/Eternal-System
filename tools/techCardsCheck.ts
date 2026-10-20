@@ -20,6 +20,7 @@ const { gameState, runtimeState } = await import('../src/simulation/GameState');
 const { TECH_CARDS, TECH_CARD_BY_ID } = await import('../src/simulation/TechCards');
 
 let failed = 0;
+import { LANDMARK_OF } from '../src/simulation/Landmarks';
 const check = (name: string, ok: boolean, detail = '') => {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${name.padEnd(64)} ${detail}`);
   if (!ok) failed++;
@@ -121,6 +122,7 @@ console.log('\n═══ 2. Every card in a Post-Biological world ═══');
       attitudes: Object.values(w.interstellar.polities).map((p: any) => p.attitude[wps.id] ?? 0).reduce((a: number, b: number) => a + b, 0),
     };
     const choice = card.special === 'terraform' ? w.getTerraformInfo()?.options[0]?.targetType : undefined;
+    const lmBefore = (gameState.landmarks ?? []).length;
     const line = w.playTechCard(card.id, choice);
     if (!line) { check(`${card.name}: plays`, false, 'refused although listed playable'); continue; }
     const problems: string[] = [];
@@ -133,6 +135,11 @@ console.log('\n═══ 2. Every card in a Post-Biological world ═══');
     }
     if (card.who === 'knowers') for (const n of others) if (n.omens.some((m: any) => m.card === title && m.primary)) problems.push(`${n.name} got it without the knowledge`);
     if (!wns.chronicle.some((h: any) => h.what.includes(`on ${title}`))) problems.push('no Chronicle entry for the act');
+    // What it leaves standing (Landmarks.ts): one per nation it acts on (or one for a world act), where there is room.
+    if (LANDMARK_OF[card.id] && w.getPlayerStar()?.id === wps.id) {
+      const raised = (gameState.landmarks ?? []).slice(lmBefore).filter((l: any) => l.card === card.id);
+      if (!raised.length) problems.push('left nothing standing');
+    }
     switch (card.special) {
       case 'defence': {
         if (!((gameState.techEffects?.defenceUntil ?? 0) > w.tick)) { problems.push('no defence window'); break; }
