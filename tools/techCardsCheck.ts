@@ -213,6 +213,11 @@ console.log('\n═══ 2b. Colonies, other peoples, a world to remake (Interst
   }  {
     const r6 = scene(6);
     ({ w, ps, ns, pol } = r6);
+    // The card's own precondition, made explicit: a nation that knows AI. The
+    // seeded history decides whether one learnt it by era 6, and that is not
+    // what this check is about.
+    const live = ns.nations.filter((n: any) => !n.fallen);
+    if (live.length && !live.some((n: any) => n.techs.includes('ai'))) live[0].techs.push('ai');
     const known = ns.nations.map((n: any) => n.techs.length).reduce((a: number, b: number) => a + b, 0);
     const grudge = pol?.grievance[ps.id] ?? 0;
     const r = play('espionage');
@@ -238,6 +243,13 @@ console.log('\n═══ 3. A played card changes the world (vs its twin) ══
   const twin = (id: string, era: number, ticks: number, measure: (ns: any) => number, more: boolean, label: string) => {
     const a = side(`tech_twin_${id}`, era);
     const b = side(`tech_twin_${id}`, era);
+    // The card's own precondition, made explicit on both twins (the seeded
+    // history decides whether a nation learnt the technology yet).
+    const need = (TECH_CARDS.find((c: any) => c.id === id) as any)?.needs?.tech as string | undefined;
+    for (const x of [a, b]) {
+      const live = x.ns.nations.filter((n: any) => !n.fallen);
+      if (need && live.length && !live.some((n: any) => n.techs.includes(need))) live[0].techs.push(need);
+    }
     enter(a);
     gameState.techPoints = 200;
     const played = a.e.playTechCard(id);
