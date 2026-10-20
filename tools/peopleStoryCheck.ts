@@ -12,7 +12,7 @@
 import { generatePlanetGrid, isHabitable, type PlanetGrid } from '../src/simulation/PlanetGrid';
 import { NationSystem } from '../src/simulation/Nations';
 import { valuesFromGenome, type GenomeSummary } from '../src/simulation/Civilization';
-import { cast, describe, priceOf, targetTextOf, resolveTarget, type FaithCard, type ActionId } from '../src/simulation/FaithCards';
+import { cast, describe, priceOf, targetTextOf, resolveTarget, reachOf, type FaithCard, type ActionId } from '../src/simulation/FaithCards';
 import {
   symptomsOf, activityOf, beliefsOf, shapedBy, beatsSince, personalize, plural, natureOf, headingOf,
 } from '../src/simulation/PeopleStory';
@@ -229,6 +229,22 @@ console.log('Landmarks (what TP cards leave standing)');
   check('placement is deterministic', JSON.stringify(again) === JSON.stringify(all));
   const world1 = raiseLandmarks('fleet', [], w.ns, w.grid, [], new SeedRNG('f'), 1);
   check('a world act raises one, in the largest nation', world1.length === 1 && world1[0].nation === -1);
+}
+
+console.log('Card reach (species design D: where a card would fall)');
+{
+  const w = world(71);
+  const harvest = card(['harvest'], { target: 'all' });
+  const r = reachOf(harvest, w.ns, w.grid);
+  const owned = w.ns.owner.filter(o => o >= 0 && !w.ns.nations[o].fallen).length;
+  check('a nation card reaches all their land', !!r && r.cells.length === owned, `${r?.cells.length} vs ${owned}`);
+  const one = reachOf(card(['harvest'], { target: 'hungriest' }), w.ns, w.grid);
+  const k = resolveTarget(w.ns, 'hungriest')[0].id;
+  check('a single target reaches only its land', !!one && one.cells.every(i => w.ns.owner[i] === k));
+  const rains = reachOf(card(['rains' as ActionId], { target: 'wettest' }), w.ns, w.grid);
+  check('a work reaches its region, in its colour', !!rains && rains.cells.length > 0 && rains.colour === '#5ab8ff', `${rains?.cells.length} ${rains?.colour}`);
+  check('without a world there is no reach', reachOf(harvest, w.ns, null) === null);
+  check('a reach has a centre for the sweep', !!r?.centre && r.centre.row >= 0 && r.centre.row < GRID_SIZE);
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');

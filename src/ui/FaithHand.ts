@@ -39,6 +39,11 @@ export interface FaithHandDeps {
   landChanged?(work: WorkId, cell: { row: number; col: number } | null): void;
   /** The engine side of the heavens, and the home surface. */
   host(): DivineHost | null;
+  /**
+   * A card's reach on the planet (species design D): `preview` while it is
+   * hovered (null clears), `cast` as it lands (a sweep across its reach).
+   */
+  reach?(card: FaithCard | null, mode: 'preview' | 'cast'): void;
   /** What the world allows now (which cards can turn up). */
   context(): WorldContext;
 }
@@ -210,6 +215,9 @@ function play(c: FaithCard): void {
   const price = priceOfNow(c);
   if (gameState.divinePoints < price) { deps.chat(`${c.name} takes ${price} DP.`, 'system'); return; }
   gameState.divinePoints -= price;
+  // The cast moment: its reach sweeps across the land as it falls (read
+  // before the cast, so it shows where the card was aimed).
+  deps.reach?.(c, 'cast');
   const worn = wearOf(wear(), c.actions, now());
   const res = cast(ns, c, rng('cast'), deps.tick(), host, worn);
   noteUse(wear(), c.actions, now());
@@ -277,8 +285,8 @@ export function refresh(force = false): void {
       const why = burning ? null : castable(c, ns, host);
       if (why) showWhy(el, 'NOT NOW', why);
       el.classList.toggle('faith-pick', !!burnPick?.includes(c.id));
-      el.addEventListener('mouseenter', () => showTip(c, el));
-      el.addEventListener('mouseleave', hideTip);
+      el.addEventListener('mouseenter', () => { showTip(c, el); if (!panel.closest('.faith-deck')?.classList.contains('folded')) deps?.reach?.(c, 'preview'); });
+      el.addEventListener('mouseleave', () => { hideTip(); deps?.reach?.(null, 'preview'); });
       el.addEventListener('click', () => {
         if (panel.closest('.faith-deck')?.classList.contains('folded')) return;
         if (burnPick) {
