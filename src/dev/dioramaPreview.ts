@@ -20,6 +20,8 @@ import type { Planet, StarBody } from '../simulation/BigBangEngine';
 import type { BiologyPhase } from '../simulation/GameState';
 import { installZoomBench } from './zoomBench';
 import { NationSystem } from '../simulation/Nations';
+import { runtimeState, gameState } from '../simulation/GameState';
+import { openNationsOverview } from '../ui/NationsOverview';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
@@ -216,6 +218,13 @@ function rebuild(): void {
     // about as many eras as ?civLevel, so they have learned and polluted.
     for (let t = 1; t <= Math.max(10, 20 * star.civLevel); t++) ns.step(grid, t * 2000, 40000);
     if (ns.isFounded) nations = ns;
+  }
+  // ?ov=1 opens the nations overview on this world (double-click in the game).
+  if (nations && params.get('ov') === '1') {
+    runtimeState.playerNations = nations;
+    runtimeState.playerPlanetGrid = grid;
+    gameState.playerSpecies = species;
+    openNationsOverview(nations.nations[0]?.id ?? null);
   }
   // ?colony=0..1 shows a COLONY world (expansion P4) the way main.ts draws one:
   // the world's own terrain, the settlers' territory stamped on it at that
