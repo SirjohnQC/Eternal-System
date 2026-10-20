@@ -4347,6 +4347,11 @@ body.events-collapsed .events-tab{display:block}
 #events-tab-count{color:var(--teal);padding-top:6px}
 
 /* ── FAITH DECK ── */
+/* A Faith card being thrown onto a tile (species design D). */
+.faith-ghost{position:fixed;z-index:400;pointer-events:none;transform:translate(-50%,-60%) scale(.62) rotate(-6deg);opacity:.85;
+  transition:transform .12s ease,opacity .12s;filter:drop-shadow(0 8px 14px rgba(0,0,0,.6))}
+.faith-ghost.on-world{transform:translate(-50%,-80%) scale(.5) rotate(0);opacity:.95;filter:drop-shadow(0 0 16px rgba(255,214,110,.7))}
+body.faith-aiming,body.faith-aiming *{cursor:crosshair !important}
 /* The TP deck: a pile left of the Faith deck (TP rework). */
 .tech-deck{position:fixed;left:calc(var(--rail) + 18px);bottom:calc(var(--status) + 6px);z-index:44;display:flex;flex-direction:column;align-items:center}
 body:has(#planet-overlay[style*="flex"]) .tech-deck{z-index:211;bottom:calc(var(--status) + 14px)}

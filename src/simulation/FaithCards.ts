@@ -700,6 +700,18 @@ export interface CastResult {
 
 const titleCase = (s: string) => s.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()).replace(/^The /, '');
 
+/**
+ * Whether a card can be thrown onto a tile (species design D): it works on the
+ * land at a place the world would otherwise pick (the driest, the wettest,
+ * the coldest land, the wilds). Cards aimed at nations, at all life or at the
+ * heavens keep the world's own aim.
+ */
+export function aimable(card: FaithCard): boolean {
+  const t = card.target;
+  return (t === 'wilds' || t === 'driest' || t === 'wettest' || t === 'coldest')
+    && card.actions.some(id => !!ACTION_BY_ID[id].work);
+}
+
 /** The colour a card's reach is drawn in, by what it does (species design D). */
 export const REACH_COLOUR: Partial<Record<WorkId, string>> = {
   rains: '#5ab8ff', drought: '#ff9a3c', quake: '#d2a46a', volcano: '#ff5a2a', ice_age: '#e4f6ff', comet: '#ffe08a',
@@ -721,7 +733,8 @@ export interface Reach {
  * work's region (a strike disc, the driest land, the whole planet...) for
  * works on land and life. Cosmic acts reach nothing on the surface. Pure.
  */
-export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGrid | null): Reach | null {
+export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGrid | null, aim: { row: number; col: number } | null = null): Reach | null {
+  if (aim && !aimable(card)) aim = null;
   if (!grid) return null;
   const td = TARGET_BY_ID[card.target];
   const named = td.nations && ns?.isFounded ? resolveTarget(ns, card.target) : [];
@@ -729,7 +742,8 @@ export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGr
   let colour: string | null = null;
   for (const a of card.actions.map(id => ACTION_BY_ID[id])) {
     if (a.work) {
-      const region: Region = td.nations ? { kind: 'nations', ids: named.map(n => n.id) }
+      const region: Region = aim ? { kind: 'at', row: aim.row, col: aim.col }
+        : td.nations ? { kind: 'nations', ids: named.map(n => n.id) }
         : card.target === 'kin' || card.target === 'all' ? { kind: 'planet' }
         : { kind: card.target as 'wilds' | 'driest' | 'wettest' | 'coldest' };
       for (const [i, w] of regionCells(grid, ns, region, a.strike ? 'strike' : 'land', card.duration)) if (w > 0) cells.add(i);
@@ -750,7 +764,7 @@ export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGr
   const col = Math.round(((Math.atan2(sy, sx) / (Math.PI * 2)) + 1) % 1 * GRID_SIZE) % GRID_SIZE;
   return {
     cells: [...cells],
-    centre: named[0]?.capital ?? { row: Math.round(sr / cells.size), col },
+    centre: aim ?? named[0]?.capital ?? { row: Math.round(sr / cells.size), col },
     colour: colour ?? (isBane(card) ? '#b07cff' : '#ffd66e'),
   };
 }
@@ -764,7 +778,10 @@ export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGr
  * pay their side effects, and lose people to the violent ones. Cosmic works
  * go through the host.
  */
-export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tick: number, host: DivineHost | null = null, wear = 0): CastResult {
+export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tick: number, host: DivineHost | null = null, wear = 0,
+  /** Where the player threw it (an aimable card dropped on a tile); null: the world's own aim. */
+  aim: { row: number; col: number } | null = null): CastResult {
+  if (aim && !aimable(card)) aim = null;
   const label = titleCase(card.name);
   const now = ns?.now ?? 0, len = DURATION_ERAS[card.duration - 1], m = MAG_STRENGTH[card.magnitude - 1];
   const td = TARGET_BY_ID[card.target];
@@ -818,7 +835,8 @@ export function cast(ns: NationSystem | null, card: FaithCard, rng: SeedRNG, tic
   // Works on land and life: they happen.
   for (const a of card.actions.map(id => ACTION_BY_ID[id])) {
     if (!a.work || !host?.grid) continue;
-    const region: Region = td.nations ? { kind: 'nations', ids: named.map(n => n.id) }
+    const region: Region = aim ? { kind: 'at', row: aim.row, col: aim.col }
+      : td.nations ? { kind: 'nations', ids: named.map(n => n.id) }
       : card.target === 'kin' || card.target === 'all' ? { kind: 'planet' }
       : { kind: card.target as 'wilds' | 'driest' | 'wettest' | 'coldest' };
     const rep = work(a.work, host.grid, ns, region, m, card.duration, host.planetType, host.species);

@@ -15,7 +15,7 @@
  */
 import { gameState, runtimeState } from '../simulation/GameState';
 import {
-  discover, forge, cast, castable, signalsOf, describe, anatomy, isBane, iconOf, scopeOf, spanOf,
+  discover, forge, cast, castable, signalsOf, describe, anatomy, isBane, iconOf, scopeOf, spanOf, aimable,
   priceNow, wearOf, noteUse, ACTION_BY_ID, targetTextOf, resolveTarget,
   type FaithCard, type ForgeKind, type ActionId, type DivineHost, type WorldContext,
 } from '../simulation/FaithCards';
@@ -43,7 +43,9 @@ export interface FaithHandDeps {
    * A card's reach on the planet (species design D): `preview` while it is
    * hovered (null clears), `cast` as it lands (a sweep across its reach).
    */
-  reach?(card: FaithCard | null, mode: 'preview' | 'cast'): void;
+  reach?(card: FaithCard | null, mode: 'preview' | 'cast', aim?: { row: number; col: number } | null): void;
+  /** The home-world tile under a screen point (null: not over the home world). */
+  pickTile?(clientX: number, clientY: number): { row: number; col: number } | null;
   /** What the world allows now (which cards can turn up). */
   context(): WorldContext;
 }
@@ -207,7 +209,7 @@ function burn(a: FaithCard, b: FaithCard): void {
   refresh(true);
 }
 
-function play(c: FaithCard): void {
+function play(c: FaithCard, aim: { row: number; col: number } | null = null): void {
   if (!deps) return;
   const ns = nationsOf(), host = deps.host();
   const why = castable(c, ns, host);
@@ -217,9 +219,9 @@ function play(c: FaithCard): void {
   gameState.divinePoints -= price;
   // The cast moment: its reach sweeps across the land as it falls (read
   // before the cast, so it shows where the card was aimed).
-  deps.reach?.(c, 'cast');
+  deps.reach?.(c, 'cast', aim);
   const worn = wearOf(wear(), c.actions, now());
-  const res = cast(ns, c, rng('cast'), deps.tick(), host, worn);
+  const res = cast(ns, c, rng('cast'), deps.tick(), host, worn, aim);
   noteUse(wear(), c.actions, now());
   gameState.faithHand = hand().filter(x => x !== c);
   deps.chat(res.line, 'god');
@@ -287,8 +289,10 @@ export function refresh(force = false): void {
       el.classList.toggle('faith-pick', !!burnPick?.includes(c.id));
       el.addEventListener('mouseenter', () => { showTip(c, el); if (!panel.closest('.faith-deck')?.classList.contains('folded')) deps?.reach?.(c, 'preview'); });
       el.addEventListener('mouseleave', () => { hideTip(); deps?.reach?.(null, 'preview'); });
+      if (aimable(c) && !burning) wireThrow(el, c, panel);
       el.addEventListener('click', () => {
         if (panel.closest('.faith-deck')?.classList.contains('folded')) return;
+        if (el.dataset['thrown']) { delete el.dataset['thrown']; return; }   // that press was a throw
         if (burnPick) {
           burnPick = burnPick.includes(c.id) ? burnPick.filter(x => x !== c.id) : [...burnPick, c.id];
           if (burnPick.length === 2) {
@@ -310,6 +314,56 @@ export function refresh(force = false): void {
     if (panel.closest('.faith-deck')?.classList.contains('folded')) return;
     burnPick = burnPick ? null : [];
     refresh(true);
+  });
+}
+
+/**
+ * Throwing a card onto a tile (species design D): an aimable card (one that
+ * works the land at a place) can be dragged onto the home world. Its reach
+ * follows the tile under the cursor; dropping it there casts it there.
+ * Dropping it anywhere else puts it back. A plain click still casts it at the
+ * world's own place.
+ */
+function wireThrow(el: HTMLElement, c: FaithCard, panel: HTMLElement): void {
+  el.title = 'Click to cast, or drag it onto your world to choose where it falls';
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || panel.closest('.faith-deck')?.classList.contains('folded')) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    let ghost: HTMLElement | null = null;
+    let tile: { row: number; col: number } | null = null;
+    const move = (ev: PointerEvent) => {
+      if (!ghost) {
+        if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) return;
+        ghost = el.cloneNode(true) as HTMLElement;
+        ghost.classList.add('faith-ghost');
+        document.body.appendChild(ghost);
+        document.body.classList.add('faith-aiming');
+        hideTip();
+      }
+      ghost.style.left = `${ev.clientX}px`;
+      ghost.style.top = `${ev.clientY}px`;
+      const t = deps?.pickTile?.(ev.clientX, ev.clientY) ?? null;
+      if (t?.row !== tile?.row || t?.col !== tile?.col) {
+        tile = t;
+        ghost.classList.toggle('on-world', !!tile);
+        deps?.reach?.(tile ? c : null, 'preview', tile);
+      }
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      if (!ghost) return;
+      ghost.remove();
+      document.body.classList.remove('faith-aiming');
+      el.dataset['thrown'] = '1';
+      deps?.reach?.(null, 'preview');
+      if (tile) play(c, tile);
+      else window.setTimeout(() => { delete el.dataset['thrown']; }, 0);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 }
 

@@ -24,6 +24,8 @@ export type WorkId =
 /** Where a work lands: nations' lands, or a place read from the land itself. */
 export type Region =
   | { kind: 'nations'; ids: number[] }
+  /** A place the player chose (a card thrown onto a tile, species design D). */
+  | { kind: 'at'; row: number; col: number }
   | { kind: 'wilds' } | { kind: 'driest' } | { kind: 'wettest' } | { kind: 'coldest' } | { kind: 'planet' };
 
 const N = GRID_SIZE * GRID_SIZE;
@@ -110,6 +112,7 @@ export function regionCells(grid: PlanetGrid, ns: NationSystem | null, region: R
     for (let i = 0; i < N; i++) if (want.has(ns.owner[i])) out.push([i, 1]);
     return out;
   }
+  if (region.kind === 'at') return disc(region.row * GRID_SIZE + ((region.col % GRID_SIZE) + GRID_SIZE) % GRID_SIZE, r);
   const centre = region.kind === 'driest' ? bestLand(grid, c => -c.moisture + (isHabitable(c.biome) ? 0.2 : 0))
     : region.kind === 'wettest' ? bestLand(grid, c => c.moisture + (isHabitable(c.biome) ? 0.2 : 0))
     : region.kind === 'coldest' ? bestLand(grid, c => -c.temperature + (isHabitable(c.biome) ? 0.2 : 0))
