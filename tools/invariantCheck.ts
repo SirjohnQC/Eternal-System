@@ -125,6 +125,21 @@ rule({
 });
 
 rule({
+  // The home world orbits where its kind belongs (hot closer, cold further),
+  // inside the next planet, and nothing moves it off that orbit afterwards.
+  name: 'home world orbits at its kind\'s distance',
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const hi = ps ? engine.homeIndexOf(ps) : -1;
+    const home = ps && hi >= 0 ? ps.planets[hi] : null;
+    if (!ps || !home) return null;
+    const kind = home.destinyType ?? home.type;
+    const want = engine.homeOrbitFor(ps, hi, kind);
+    return Math.abs(home.orbitalRadius - want) > 1e-6 ? `${kind} home at r=${home.orbitalRadius.toFixed(2)}, its kind's orbit is ${want.toFixed(2)}` : null;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,
@@ -1483,6 +1498,44 @@ for (const { seed, stats } of SEEDS) {
   if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
+// ── Scenario: landforms are not rounded (playtest Oct 19) ──────────────────
+// Mountains came out as round caps (a whole massif above the mountain line)
+// and coasts as smooth blobs. Measured over 24 worlds: share of mountain cells
+// with mountain all around them was 0.68 (now ~0.31); coast cells per
+// sqrt(land) 8.2 (now ~9.0).
+{
+  const r: Rule = { name: 'scenario: mountains run in ranges and coasts are ragged', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    const { generatePlanetGrid, SEA_LEVEL } = await import('../src/simulation/PlanetGrid');
+    const N = 256; let mi = 0, mc = 0, rag = 0, rn = 0;
+    for (const type of ['rocky', 'ocean', 'desert', 'toxic']) for (let k = 0; k < 6; k++) {
+      const g = generatePlanetGrid(type, 1000 + k * 7919, null);
+      const at = (rr: number, cc: number) => g[Math.max(0, Math.min(N - 1, rr))][(cc + N) % N];
+      const isLand = (rr: number, cc: number) => at(rr, cc).elevation >= SEA_LEVEL;
+      const isMtn = (rr: number, cc: number) => at(rr, cc).biome === 'mountain';
+      let mtn = 0, inner = 0, land = 0, coast = 0;
+      for (let row = 1; row < N - 1; row++) for (let col = 0; col < N; col++) {
+        if (isLand(row, col)) {
+          land++;
+          if (!isLand(row - 1, col) || !isLand(row + 1, col) || !isLand(row, col - 1) || !isLand(row, col + 1)) coast++;
+        }
+        if (!isMtn(row, col)) continue;
+        mtn++;
+        if ([[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [0, -2], [0, 2]].every(([dr, dc]) => isMtn(row + dr, col + dc))) inner++;
+      }
+      if (mtn > 200) { mi += inner / mtn; mc++; }
+      if (land > 500) { rag += coast / Math.sqrt(land); rn++; }
+    }
+    const interior = mi / Math.max(1, mc), ragged = rag / Math.max(1, rn);
+    if (mc < 10) detail = `only ${mc} worlds with mountains sampled`;
+    else if (interior > 0.5) detail = `mountains are round caps: interior share ${interior.toFixed(2)} (> 0.5)`;
+    else if (ragged < 8.6) detail = `coasts are smooth: ${ragged.toFixed(2)} coast cells per sqrt(land) (< 8.6)`;
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
+}
+
 // ── Scenarios: lakes (#47) ──────────────────────────────────────────────────
 {
   const PG = await import('../src/simulation/PlanetGrid');
@@ -1638,6 +1691,32 @@ for (const { seed, stats } of SEEDS) {
     const left = g.flat().filter((c: any) => (c.burn ?? 0) > 0).length;
     return left ? `${left} cells still scarred after 16 generations` : null;
   });
+}
+
+// ── Scenarios: continent variety (#100) ─────────────────────────────────────
+// Every world kind can take most land layouts; rocky worlds keep a steady
+// share of land whatever the layout (TerrainArchetypes.structureFor,
+// PlanetGrid SEA_CALIBRATION).
+{
+  const TA = await import('../src/simulation/TerrainArchetypes');
+  const PG = await import('../src/simulation/PlanetGrid');
+  const r: Rule = { name: 'scenario: every kind takes varied land layouts; rocky land share holds', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    for (const type of ['rocky', 'desert', 'ice', 'ocean']) {
+      const seen = new Set<string>();
+      for (let k = 0; k < 300; k++) seen.add(TA.structureFor(type, 17 + k * 7919));
+      if (seen.size < 5) { detail = `${type}: only ${[...seen].join(', ')}`; break; }
+    }
+    for (let k = 0; !detail && k < 12; k++) {
+      const g = PG.generatePlanetGrid('rocky', 500 + k * 104729, { climate: 'temperate', oceans: 'mixed', chaos: 'calm' } as any);
+      let land = 0, n = 0;
+      for (const row of g) for (const c of row) { n++; if (!PG.isWater(c.biome)) land++; }
+      if (land / n < 0.55 || land / n > 0.92) detail = `rocky world ${k}: ${(land / n * 100).toFixed(0)}% land`;
+    }
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────
