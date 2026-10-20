@@ -298,13 +298,10 @@ function showWhisper(): void {
     <div class="fm-title">A WHISPER</div>
     <div class="fm-sub">A voice that is not ${esc(god)}'s speaks, very close:</div>
     <div class="fw-quote">&ldquo;I am ${esc(s.whisperer)}. Take this. Break it when you are ready, and tell ${esc(god)} nothing.&rdquo;</div>
-    <div class="fw-card-wrap"><div class="fate-card fate-golden fw-card">
-      <span class="fate-notch tl"></span><span class="fate-notch br"></span>
+    <div class="fw-card-wrap"><div class="fate-card fate-golden fw-card fw-sprite" role="img" aria-label="A sealed golden card">
       <span class="fate-name">???</span>
-      <span class="fate-icon-wrap"><img class="fate-icon" src="/assets/pixel/divine/cards/golden.png" alt="" width="40" height="40"/></span>
-      <span class="fate-text">Sealed. Warm to the touch.</span>
       <span class="fate-value">a gift</span>
-    </div></div>
+    </div><div class="fw-caption">Sealed. Warm to the touch.</div></div>
     <button class="forge-go">BREAK THE SEAL</button>`);
   deps.chat(`${god}: Someone has been speaking to you. I felt it.`, 'god');
   m.querySelector('.forge-go')?.addEventListener('click', () => breakSeal(m));
@@ -319,11 +316,14 @@ function breakSeal(m: HTMLElement): void {
   const card = m.querySelector('.fw-card');
   card?.classList.add('fw-open');
   window.setTimeout(() => {
-    if (card) card.innerHTML = `<span class="fate-notch tl"></span><span class="fate-notch br"></span>
-      <span class="fate-name">THE SPARK</span>
-      <span class="fate-icon-wrap"><img class="fate-icon" src="/assets/pixel/divine/cards/seed.png" alt="" width="40" height="40"/></span>
-      <span class="fate-text">Life wakes ${esc(s.cradle!)}.</span>
-      <span class="fate-value">life</span>`;
+    // The same card, broken open (SpriteCook art: the seal split, a seed of light).
+    if (card) {
+      card.classList.add('fw-opened');
+      card.setAttribute('aria-label', 'The golden card, broken open: a seed of light');
+      card.innerHTML = `<span class="fate-name">THE SPARK</span><span class="fate-value">life</span>`;
+    }
+    const cap = m.querySelector('.fw-caption');
+    if (cap) cap.textContent = `Life wakes ${s.cradle!}.`;
     const btn = m.querySelector<HTMLButtonElement>('.forge-go');
     if (btn) {
       btn.textContent = 'LET IT LIVE';
