@@ -1,6 +1,6 @@
 # Your species: bond, cards that change their world, rigged peoples
 
-*Design for review, 2026-10-19. From the playtest of the same day: "everything
+*Design, 2026-10-19; decisions agreed 2026-10-20 (below). From the playtest of the same day: "everything
 that touches your species, from the evolution to the UI, feels out of touch.
 You are supposed to bond with your planet and every species; right now it just
 feels like you are giving it a name. And the cards should feel like you are
@@ -150,3 +150,13 @@ already exist.
 4. **Art budget:** card art for 35 kinds is ~420 credits at one per image
    (less with sheets of three); after the rig (~96) about 270 remain. Card art
    now, or after the next pack?
+
+## Decisions (Sirjohn, 2026-10-20)
+
+1. **Panel:** "Your People" **replaces** the Evolution Lab as the species
+   entry; the lab opens from it.
+2. **The answer:** consequence beats are symptoms with a link to the cast
+   ("they moved to the new river", clicking opens the cast in the Chronicle),
+   never "your card caused X".
+3. **Answering mutations:** highlighted **and** a small DNA discount.
+4. **Art:** the rig first (~96 credits); card art after the next credit pack.
