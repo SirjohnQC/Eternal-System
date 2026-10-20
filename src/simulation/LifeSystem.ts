@@ -184,8 +184,12 @@ export function homeOrbitTarget(starTemperature: number, type: string, r01: numb
 export function planetHabitability(p: HabitabilityInput): number {
   const base = TYPE_BASE[p.planetType] ?? 0.3;
 
-  // Goldilocks orbit scales with how much the star radiates.
-  const idealR = idealOrbitRadius(p.starTemperature);
+  // Goldilocks orbit scales with how much the star radiates, and each kind
+  // has its own natural distance (HOME_ORBIT_BAND): an ice world far out is
+  // where ice worlds belong, so it is not marked down twice — once for being
+  // ice (TYPE_BASE) and again for its distance.
+  const band = HOME_ORBIT_BAND[p.planetType] ?? [0.92, 1.08];
+  const idealR = idealOrbitRadius(p.starTemperature) * (band[0] + band[1]) / 2;
   const deviation = Math.abs(p.orbitalRadius - idealR) / idealR;
   const zone = clamp01(1 - deviation * 1.35);
 
