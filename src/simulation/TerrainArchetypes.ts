@@ -273,7 +273,9 @@ export type LandStructure = 'continents' | 'discs' | 'archipelago' | 'canyon' | 
  * cracks into canyons. The old centred blob ('legacy') is a rare roll now.
  */
 const STRUCTURE_WEIGHTS: Record<'water' | 'dry' | 'other', Array<[LandStructure, number]>> = {
-  water: [['continents', 30], ['archipelago', 22], ['supercontinent', 16], ['hemispheric', 14], ['discs', 8], ['canyon', 4], ['legacy', 6]],
+  // No canyon on a water world: a cracked plateau stands above any sea level
+  // (an ocean world came out 98% land).
+  water: [['continents', 30], ['archipelago', 22], ['supercontinent', 18], ['hemispheric', 14], ['discs', 10], ['legacy', 6]],
   dry:   [['canyon', 26], ['continents', 20], ['supercontinent', 16], ['hemispheric', 14], ['archipelago', 12], ['discs', 6], ['legacy', 6]],
   other: [['continents', 24], ['supercontinent', 20], ['hemispheric', 18], ['archipelago', 16], ['canyon', 10], ['discs', 6], ['legacy', 6]],
 };
