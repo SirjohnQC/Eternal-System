@@ -125,6 +125,21 @@ rule({
 });
 
 rule({
+  // The home world orbits where its kind belongs (hot closer, cold further),
+  // inside the next planet, and nothing moves it off that orbit afterwards.
+  name: 'home world orbits at its kind\'s distance',
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const hi = ps ? engine.homeIndexOf(ps) : -1;
+    const home = ps && hi >= 0 ? ps.planets[hi] : null;
+    if (!ps || !home) return null;
+    const kind = home.destinyType ?? home.type;
+    const want = engine.homeOrbitFor(ps, hi, kind);
+    return Math.abs(home.orbitalRadius - want) > 1e-6 ? `${kind} home at r=${home.orbitalRadius.toFixed(2)}, its kind's orbit is ${want.toFixed(2)}` : null;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,
@@ -1638,6 +1653,32 @@ for (const { seed, stats } of SEEDS) {
     const left = g.flat().filter((c: any) => (c.burn ?? 0) > 0).length;
     return left ? `${left} cells still scarred after 16 generations` : null;
   });
+}
+
+// ── Scenarios: continent variety (#100) ─────────────────────────────────────
+// Every world kind can take most land layouts; rocky worlds keep a steady
+// share of land whatever the layout (TerrainArchetypes.structureFor,
+// PlanetGrid SEA_CALIBRATION).
+{
+  const TA = await import('../src/simulation/TerrainArchetypes');
+  const PG = await import('../src/simulation/PlanetGrid');
+  const r: Rule = { name: 'scenario: every kind takes varied land layouts; rocky land share holds', check: () => null };
+  rules.push(r);
+  let detail: string | null = null;
+  try {
+    for (const type of ['rocky', 'desert', 'ice', 'ocean']) {
+      const seen = new Set<string>();
+      for (let k = 0; k < 300; k++) seen.add(TA.structureFor(type, 17 + k * 7919));
+      if (seen.size < 5) { detail = `${type}: only ${[...seen].join(', ')}`; break; }
+    }
+    for (let k = 0; !detail && k < 12; k++) {
+      const g = PG.generatePlanetGrid('rocky', 500 + k * 104729, { climate: 'temperate', oceans: 'mixed', chaos: 'calm' } as any);
+      let land = 0, n = 0;
+      for (const row of g) for (const c of row) { n++; if (!PG.isWater(c.biome)) land++; }
+      if (land / n < 0.55 || land / n > 0.92) detail = `rocky world ${k}: ${(land / n * 100).toFixed(0)}% land`;
+    }
+  } catch (err) { detail = `threw: ${(err as Error).message}`; }
+  if (detail) { failures.set(r, { seed: 'scenario', tick: 0, detail }); failCount.set(r, 1); }
 }
 
 // ── Report ───────────────────────────────────────────────────────────────────

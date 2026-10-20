@@ -163,11 +163,33 @@ export function idealOrbitRadius(starTemperature: number): number {
   return 12 + clamp01((starTemperature - 3000) / 27000) * 34;
 }
 
+/**
+ * Where a home world of each kind belongs, as a share of the star's ideal
+ * (goldilocks) radius: hot worlds closer, cold ones further. A band, so two
+ * worlds of one kind need not sit at the same distance.
+ */
+export const HOME_ORBIT_BAND: Record<string, readonly [number, number]> = {
+  lava: [0.5, 0.65], desert: [0.7, 0.86], toxic: [0.8, 0.95],
+  ocean: [0.92, 1.08], rocky: [0.88, 1.12], storm: [0.9, 1.1],
+  crystal: [1.0, 1.2], carbon: [0.9, 1.1], mechanical: [0.9, 1.1],
+  ice: [1.35, 1.65], gas: [1.9, 2.5],
+};
+
+/** The distance a home world of `type` aims for: its band, placed by `r01` (0..1, stable per world). */
+export function homeOrbitTarget(starTemperature: number, type: string, r01: number): number {
+  const [lo, hi] = HOME_ORBIT_BAND[type] ?? [0.92, 1.08];
+  return idealOrbitRadius(starTemperature) * (lo + (hi - lo) * Math.max(0, Math.min(1, r01)));
+}
+
 export function planetHabitability(p: HabitabilityInput): number {
   const base = TYPE_BASE[p.planetType] ?? 0.3;
 
-  // Goldilocks orbit scales with how much the star radiates.
-  const idealR = idealOrbitRadius(p.starTemperature);
+  // Goldilocks orbit scales with how much the star radiates, and each kind
+  // has its own natural distance (HOME_ORBIT_BAND): an ice world far out is
+  // where ice worlds belong, so it is not marked down twice — once for being
+  // ice (TYPE_BASE) and again for its distance.
+  const band = HOME_ORBIT_BAND[p.planetType] ?? [0.92, 1.08];
+  const idealR = idealOrbitRadius(p.starTemperature) * (band[0] + band[1]) / 2;
   const deviation = Math.abs(p.orbitalRadius - idealR) / idealR;
   const zone = clamp01(1 - deviation * 1.35);
 
