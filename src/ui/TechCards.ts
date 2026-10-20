@@ -12,6 +12,7 @@
 import { gameState } from '../simulation/GameState';
 import { RELOCATE_STAR_ERA, type RelocationTarget, type BigBangEngine } from '../simulation/BigBangEngine';
 import { ageName } from '../simulation/Progression';
+import { LANDMARK_OF, LANDMARK_NAMES, MARK_OF } from '../simulation/Landmarks';
 
 export interface TechCardDeps {
   engine(): BigBangEngine | null;
@@ -106,8 +107,10 @@ function detail(v: View): void {
   const acts = v.card.who === 'world' ? '' : v.acts.length
     ? `<div class="tm-acts"><b>Acts on:</b> ${v.card.who === 'all' ? 'every nation' : esc(v.acts.join(', '))}</div>`
     : '<div class="tm-acts">No nation knows how yet.</div>';
+  const lm = LANDMARK_OF[v.card.id];
+  const leaves = lm ? `<div class="tm-acts"><b>Leaves standing:</b> ${esc(LANDMARK_NAMES[lm])}${v.card.who === 'world' ? ' in your largest nation' : ' in each nation it acts on'}${MARK_OF[v.card.id] ? `, and ${MARK_OF[v.card.id] === 'bounty' ? 'greener fields' : MARK_OF[v.card.id] === 'spread' ? 'new settlements' : 'fouled ground'} around them` : ''}.</div>` : '';
   const info = `<div class="tm-detail">${face(v, true)}<div class="tm-text">
-      <div class="tm-price"><b>Price:</b> ${esc(v.card.priceText)}</div>${acts}
+      <div class="tm-price"><b>Price:</b> ${esc(v.card.priceText)}</div>${acts}${leaves}
       ${v.block ? `<div class="tm-block">${esc(v.block)}</div>` : ''}
     </div></div>`;
   const label = v.card.special === 'new_world' ? 'CHOOSE A WORLD' : v.card.special === 'terraform' ? 'CHOOSE WHAT IT BECOMES' : `PLAY · ${v.price} TP`;

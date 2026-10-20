@@ -217,6 +217,8 @@ export interface GameStateData {
   mutationPaid?: Record<string, number>;
   /** Why each spontaneous card came, in the world's words (species design C). */
   mutationGiftWhy?: Record<string, string>;
+  /** What TP cards left standing on the home world (Landmarks.ts); absent in older saves = none. */
+  landmarks?: import('./Landmarks').Landmark[];
   /** Cards this universe offers (core plus the rolled optional ones). */
   offeredMutations: string[];
   /** Each evolution's result: the dex. Form 1 is the founding organism. */

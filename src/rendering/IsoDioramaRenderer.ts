@@ -47,6 +47,7 @@ import { MeteorStrike, type StrikeView } from './MeteorStrike';
 import { SkyDebris } from './sky/SkyDebris';
 import { moonSizeT, moonIsIrregular, moonInclination } from '../simulation/MoonSize';
 import { motionRate, STRIDE } from './CreatureForge';
+import type { Landmark } from '../simulation/Landmarks';
 import type { NationSystem } from '../simulation/Nations';
 import { paintFlag, mapColor } from './NationFlagArt';
 import {
@@ -438,6 +439,20 @@ const BUILD_SPREAD = 30;
 /** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
 const SKY_HZ = 30;
 
+/** A landmark's width on the face, in base px (a house is ~6-12). */
+const LANDMARK_FACE_W = 24;
+const landmarkImages = new Map<string, HTMLImageElement>();
+/** The hand-made sprite for a landmark kind (public/assets/pixel/landmarks), loaded once. */
+function landmarkImage(kind: string): HTMLImageElement {
+  let img = landmarkImages.get(kind);
+  if (!img) {
+    img = new Image();
+    img.src = `/assets/pixel/landmarks/${kind}.png`;
+    landmarkImages.set(kind, img);
+  }
+  return img;
+}
+
 export class IsoDioramaRenderer {
   /** Visual day for the fastest orbit in the system view, seconds. */
   private static readonly DAY_FAST = 30;
@@ -493,6 +508,10 @@ export class IsoDioramaRenderer {
   private civLevelHere(): number { return this.world ? this.world.civLevel : this.star?.civLevel ?? 0; }
   /** The home world's nations — never drawn on another world. */
   private nationsHere(): NationSystem | null { return this.world ? null : this.nationSource?.() ?? null; }
+  private landmarkSource: (() => readonly Landmark[]) | null = null;
+  private landmarkSig = '';
+  /** Landmarks on the world being shown (home only). */
+  private landmarksHere(): readonly Landmark[] { return this.world ? [] : this.landmarkSource?.() ?? []; }
   /** The quake shaking the view now (#50), or null. Face points in base px. */
   private quake: { x: number; y: number; mag: number; t0: number; rift: Array<{ x: number; y: number }> } | null = null;
   /** The home world's burning cells (Wildfire.ts, #51); null: no fires drawn. */
@@ -2566,6 +2585,10 @@ export class IsoDioramaRenderer {
    * adds towns rather than moving them.
    */
   private planTowns(geom = this.placeGeom): void {
+    // New landmarks (a TP card was played) join the towns' pass at once.
+    const lms = this.landmarksHere();
+    const lmSig = `${lms.length}|${lms[lms.length - 1]?.tick ?? ''}`;
+    if (lmSig !== this.landmarkSig) { this.landmarkSig = lmSig; this.pushTownProps(); }
     const grid = this.grid;
     const civLevel = this.civLevelHere();
     if (!grid || this.planetType === 'gas' || this.forming) {
@@ -2778,6 +2801,25 @@ export class IsoDioramaRenderer {
         g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
       } });
     });
+    // Landmarks (TP cards): hand-made sprites at their cells, a little larger
+    // than a house, in the same back-to-front pass as the towns.
+    const geomL = this.placeGeom;
+    for (const l of this.landmarksHere()) {
+      const d = this.gridToDisc(l.row, l.col);
+      if (!d || d.dx * d.dx + d.dy * d.dy > 0.85) continue;
+      const x = geomL.cx + d.dx * geomL.rx, y = geomL.cy + d.dy * geomL.ry;
+      const wy = y - this.liftAtFace(x, y);
+      const img = landmarkImage(l.kind);
+      list.push({ wy, draw: (g, v) => {
+        if (!img.complete || !img.naturalWidth) return;
+        const w = Math.max(8, LANDMARK_FACE_W * v.K), h = w * img.naturalHeight / img.naturalWidth;
+        const [X, Y] = at(v, x, wy);
+        const sm = g.imageSmoothingEnabled;
+        g.imageSmoothingEnabled = false;
+        g.drawImage(img, Math.round(X - w / 2), Math.round(Y - h * 0.9), Math.round(w), Math.round(h));
+        g.imageSmoothingEnabled = sm;
+      } });
+    }
     for (const r of this.retired) {
       const wy = r.b.y - r.lift;
       list.push({ wy, draw: (g, v) => {
@@ -2994,6 +3036,12 @@ export class IsoDioramaRenderer {
       g.fillRect(x - S / 2, y - 3 * S - (f === 0 ? S : 0), Math.max(1, S), S + (f === 0 ? S : 0));
     }
     g.restore();
+  }
+
+  /** What TP cards left standing on the home world (Landmarks.ts); drawn with the towns. */
+  setLandmarkSource(fn: (() => readonly Landmark[]) | null): void {
+    this.landmarkSource = fn;
+    this.landmarkSig = '';
   }
 
   setNationSource(fn: (() => NationSystem | null) | null): void {
