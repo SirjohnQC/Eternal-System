@@ -13,6 +13,7 @@
  * resumes where it was.
  */
 
+import { playSealBreak } from './SealBreak';
 import { SeedRNG } from '../utils/SeedRNG';
 import { gameState } from '../simulation/GameState';
 import { ladderOf } from '../simulation/Formation';
@@ -313,10 +314,11 @@ function breakSeal(m: HTMLElement): void {
   const rng = new SeedRNG(`${s.seed}_forge_spark`);
   s.cradle = rollCradle(s, rng);
   const tempo = sparkTempo(rng);
-  const card = m.querySelector('.fw-card');
-  card?.classList.add('fw-open');
-  window.setTimeout(() => {
-    // The same card, broken open (SpriteCook art: the seal split, a seed of light).
+  const card = m.querySelector<HTMLElement>('.fw-card');
+  const go = m.querySelector<HTMLButtonElement>('.forge-go');
+  if (go) go.disabled = true;
+  // The seal breaks (ui/SealBreak): tremble, a crack, the halves fly, the seed shows.
+  const reveal = () => {
     if (card) {
       card.classList.add('fw-opened');
       card.setAttribute('aria-label', 'The golden card, broken open: a seed of light');
@@ -324,6 +326,8 @@ function breakSeal(m: HTMLElement): void {
     }
     const cap = m.querySelector('.fw-caption');
     if (cap) cap.textContent = `Life wakes ${s.cradle!}.`;
+  };
+  const after = () => {
     const btn = m.querySelector<HTMLButtonElement>('.forge-go');
     if (btn) {
       btn.textContent = 'LET IT LIVE';
@@ -335,8 +339,11 @@ function breakSeal(m: HTMLElement): void {
         deps!.spark(tempo);
         deps!.chat(`Life has woken on ${deps!.planetName()}, ${s.cradle}.`, 'god');
       };
+      btn.disabled = false;
     }
-  }, 700);
+  };
+  if (card) playSealBreak(card, reveal, after);
+  else { reveal(); after(); }
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────────
