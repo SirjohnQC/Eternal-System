@@ -28,7 +28,7 @@ import type { SeedRNG } from '../utils/SeedRNG';
 import type { PlanetGrid } from './PlanetGrid';
 import { GRID_SIZE, isHabitable, isWater } from './PlanetGrid';
 import type { SpeciesGenome } from './SpeciesGenome';
-import { work, workLine, WORK_TOLL, type WorkId, type Region } from './DivineWorks';
+import { work, workLine, WORK_TOLL, regionCells, type WorkId, type Region } from './DivineWorks';
 
 // ─── World signals ────────────────────────────────────────────────────────────
 
@@ -699,6 +699,61 @@ export interface CastResult {
 }
 
 const titleCase = (s: string) => s.toLowerCase().replace(/(^|\s)\S/g, x => x.toUpperCase()).replace(/^The /, '');
+
+/** The colour a card's reach is drawn in, by what it does (species design D). */
+export const REACH_COLOUR: Partial<Record<WorkId, string>> = {
+  rains: '#5ab8ff', drought: '#ff9a3c', quake: '#d2a46a', volcano: '#ff5a2a', ice_age: '#e4f6ff', comet: '#ffe08a',
+  hardy: '#9be27a', herds: '#c9e27a', murrain: '#b05a5a', awaken: '#c8a0ff',
+  bounty: '#6edc98', wither: '#a8784a', spread: '#ffd66e',
+};
+
+export interface Reach {
+  /** Grid cell indices (row * GRID_SIZE + col) the card would touch. */
+  cells: number[];
+  /** Where it centres (for the sweep), or null. */
+  centre: { row: number; col: number } | null;
+  colour: string;
+}
+
+/**
+ * Where a card would fall if cast now (species design D, "before"): the same
+ * regions cast() uses: the named nations' land for omens and marks, the
+ * work's region (a strike disc, the driest land, the whole planet...) for
+ * works on land and life. Cosmic acts reach nothing on the surface. Pure.
+ */
+export function reachOf(card: FaithCard, ns: NationSystem | null, grid: PlanetGrid | null): Reach | null {
+  if (!grid) return null;
+  const td = TARGET_BY_ID[card.target];
+  const named = td.nations && ns?.isFounded ? resolveTarget(ns, card.target) : [];
+  const cells = new Set<number>();
+  let colour: string | null = null;
+  for (const a of card.actions.map(id => ACTION_BY_ID[id])) {
+    if (a.work) {
+      const region: Region = td.nations ? { kind: 'nations', ids: named.map(n => n.id) }
+        : card.target === 'kin' || card.target === 'all' ? { kind: 'planet' }
+        : { kind: card.target as 'wilds' | 'driest' | 'wettest' | 'coldest' };
+      for (const [i, w] of regionCells(grid, ns, region, a.strike ? 'strike' : 'land', card.duration)) if (w > 0) cells.add(i);
+      colour ??= REACH_COLOUR[a.work] ?? null;
+    } else if ((a.omen || a.mark) && ns?.isFounded && named.length) {
+      const want = new Set(named.map(n => n.id));
+      for (let i = 0; i < ns.owner.length; i++) if (want.has(ns.owner[i])) cells.add(i);
+      colour ??= a.mark ? REACH_COLOUR[a.mark] ?? null : null;
+    }
+  }
+  if (!cells.size) return null;
+  let sr = 0, sx = 0, sy = 0;
+  for (const i of cells) {
+    sr += (i / GRID_SIZE) | 0;
+    const a = ((i % GRID_SIZE) / GRID_SIZE) * Math.PI * 2;
+    sx += Math.cos(a); sy += Math.sin(a);
+  }
+  const col = Math.round(((Math.atan2(sy, sx) / (Math.PI * 2)) + 1) % 1 * GRID_SIZE) % GRID_SIZE;
+  return {
+    cells: [...cells],
+    centre: named[0]?.capital ?? { row: Math.round(sr / cells.size), col },
+    colour: colour ?? (isBane(card) ? '#b07cff' : '#ffd66e'),
+  };
+}
 
 /**
  * Cast (§10, §13). Nation actions: each nation named may heed the sign or not

@@ -3,7 +3,7 @@ import { initFaithHand, refresh as refreshFaithHand, showWhy } from './ui/FaithH
 import { initTechCards } from './ui/TechCards';
 import { initTechScreen, openTechScreen, refreshTechDeck } from './ui/TechScreen';
 import { preloadDivineIcons } from './ui/IconPreload';
-import type { DivineHost } from './simulation/FaithCards';
+import { reachOf, type DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
 import { openLedger } from './ui/LedgerUI';
 import { openNationsOverview } from './ui/NationsOverview';
@@ -6585,6 +6585,13 @@ initFaithHand({
     if (work === 'wither') _dioramaRenderer.playDivineEffect('sink', cell);
   },
   host: faithHost,
+  // Species design D: where a card would fall, and the sweep as it lands.
+  reach: (card, mode) => {
+    if (!_dioramaRenderer || _dioramaSite) return;   // the reach is on the home world's grid
+    const r = card ? reachOf(card, runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null, runtimeState.playerPlanetGrid) : null;
+    if (mode === 'preview') _dioramaRenderer.setReachPreview(r?.cells ?? null, r?.colour);
+    else if (r) _dioramaRenderer.playReachSweep(r.cells, r.colour, r.centre);
+  },
   context: () => {
     const ps = engine?.getPlayerStar();
     const tf = engine?.getTerraformInfo();

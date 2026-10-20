@@ -439,6 +439,10 @@ const BUILD_SPREAD = 30;
 /** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
 const SKY_HZ = 30;
 
+/** Resolution of a card-reach mask, and the rings a cast sweeps through. */
+const REACH_MASK = 192;
+const REACH_BANDS = 12;
+
 /** A landmark's width on the face, in base px (a house is ~6-12). */
 const LANDMARK_FACE_W = 24;
 const landmarkImages = new Map<string, HTMLImageElement>();
@@ -1424,6 +1428,91 @@ export class IsoDioramaRenderer {
   }
 
   /** Cell to outline on the surface, or null. Set by the planet-view UI. */
+  /**
+   * A card's reach (species design D): the cells it would touch, tinted over
+   * the top face. `preview` pulses while a card is hovered; `sweep` washes
+   * outward from `centre` when it is cast, then fades. Null clears a preview.
+   */
+  setReachPreview(cells: readonly number[] | null, colour = '#ffd66e'): void {
+    if (!cells || !cells.length) { if (this.reach?.mode === 'preview') this.reach = null; return; }
+    if (this.reach?.mode === 'sweep') return;   // a cast is playing; it wins
+    this.reach = { ...this.buildReach(cells, colour, null), mode: 'preview', t0: this.elapsed };
+  }
+
+  playReachSweep(cells: readonly number[], colour: string, centre: { row: number; col: number } | null): void {
+    if (!cells.length) return;
+    this.reach = { ...this.buildReach(cells, colour, centre), mode: 'sweep', t0: this.elapsed };
+  }
+
+  private reach: { bands: HTMLCanvasElement[]; mode: 'preview' | 'sweep'; t0: number } | null = null;
+
+  /**
+   * The reach as a mask over the disc ([-1,1]² in disc units), cut into
+   * REACH_BANDS rings by distance from the centre so a sweep can reveal it
+   * ring by ring. Built once per hover / cast; the camera only scales it.
+   */
+  private buildReach(cells: readonly number[], colour: string, centre: { row: number; col: number } | null): { bands: HTMLCanvasElement[] } {
+    const S = REACH_MASK, want = new Uint8Array(GRID_SIZE * GRID_SIZE);
+    for (const i of cells) want[i] = 1;
+    const c0 = centre ? this.gridToDisc(centre.row, centre.col) : null;
+    const [r, g, b] = [1, 3, 5].map(o => parseInt(colour.slice(o, o + 2), 16));
+    const bands = Array.from({ length: REACH_BANDS }, () => {
+      const cv = document.createElement('canvas'); cv.width = S; cv.height = S; return cv;
+    });
+    const imgs = bands.map(cv => cv.getContext('2d')!.createImageData(S, S));
+    // Which mask pixels are in reach, then each painted: a soft fill inside,
+    // a bright rim where the reach ends, so its edge reads on land and sea.
+    const inside = new Uint8Array(S * S);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
+      if (dx * dx + dy * dy > 0.97) continue;
+      const gp = this.discToGrid(dx, dy);
+      if (gp && want[gp.row * GRID_SIZE + gp.col]) inside[y * S + x] = 1;
+    }
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      if (!inside[y * S + x]) continue;
+      const dx = (x + 0.5) / S * 2 - 1, dy = (y + 0.5) / S * 2 - 1;
+      const rim = x === 0 || y === 0 || x === S - 1 || y === S - 1
+        || !inside[y * S + x - 1] || !inside[y * S + x + 1] || !inside[(y - 1) * S + x] || !inside[(y + 1) * S + x];
+      const d = c0 ? Math.min(1, Math.hypot(dx - c0.dx, dy - c0.dy) / 1.6) : 0;
+      const k = Math.min(REACH_BANDS - 1, Math.floor(d * REACH_BANDS));
+      const i = (y * S + x) * 4, img = imgs[k].data;
+      img[i] = rim ? (r + 255 * 2) / 3 : r; img[i + 1] = rim ? (g + 255 * 2) / 3 : g; img[i + 2] = rim ? (b + 255 * 2) / 3 : b;
+      img[i + 3] = rim ? 255 : 120;
+    }
+    bands.forEach((cv, k) => cv.getContext('2d')!.putImageData(imgs[k], 0, 0));
+    return { bands };
+  }
+
+  /** Draw the reach over the top face, in the current view's disc geometry. */
+  private drawReach(g: CanvasRenderingContext2D, t: number): void {
+    const rc = this.reach;
+    if (!rc) return;
+    const age = t - rc.t0;
+    const { cx, cy, rx, ry } = this;
+    const sm = g.imageSmoothingEnabled;
+    g.imageSmoothingEnabled = true;
+    g.save();
+    if (rc.mode === 'preview') {
+      g.globalAlpha = 0.6 + 0.2 * Math.sin(age * 3.4);
+      for (const b of rc.bands) g.drawImage(b, cx - rx, cy - ry, rx * 2, ry * 2);
+    } else {
+      const SWEEP = 1.5, HOLD = 0.5, FADE = 0.9;
+      if (age > SWEEP + HOLD + FADE) { g.restore(); g.imageSmoothingEnabled = sm; this.reach = null; return; }
+      const front = Math.min(1, age / SWEEP) * REACH_BANDS;
+      const fade = age > SWEEP + HOLD ? 1 - (age - SWEEP - HOLD) / FADE : 1;
+      rc.bands.forEach((b, k) => {
+        if (k > front) return;
+        // The ring the wave is on now glows brightest; the land behind settles.
+        const edge = Math.max(0, 1 - Math.abs(front - k - 0.5) / 1.5);
+        g.globalAlpha = Math.max(0, (0.55 + 0.45 * edge) * fade);
+        g.drawImage(b, cx - rx, cy - ry, rx * 2, ry * 2);
+      });
+    }
+    g.restore();
+    g.imageSmoothingEnabled = sm;
+  }
+
   setHighlight(cell: { row: number; col: number } | null): void {
     this.highlight = cell;
   }
@@ -4120,6 +4209,7 @@ export class IsoDioramaRenderer {
           if (this.meteor.active) this.meteor.drawSurface(g, this.updateStrikeView());
         },
         drawUiOverlays: (g) => {
+          this.drawReach(g, this.elapsed);
           this.drawTileMarkers(g, this.elapsed);
           this.drawDivineEffects(g, dt);
           if (this.meteor.active) this.meteor.drawSky(g, this.updateStrikeView());
@@ -4202,7 +4292,8 @@ export class IsoDioramaRenderer {
     // 10b — creatures and settlements standing on the surface
     this.drawInhabitants(g, t);
 
-    // 10c — tile hover / selection markers
+    // 10c — a card's reach; tile hover / selection markers
+    this.drawReach(g, this.elapsed);
     this.drawTileMarkers(g, t);
 
     // 10d — divine powers landing on the surface; meteor strikes

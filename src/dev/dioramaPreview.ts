@@ -26,6 +26,7 @@ import { initYourPeople, openYourPeople } from '../ui/YourPeople';
 import { initSpeciesScreen, openSpeciesScreen } from '../ui/SpeciesScreen';
 import { initTechScreen, openTechScreen } from '../ui/TechScreen';
 import { raiseLandmarks, LANDMARK_OF, type Landmark } from '../simulation/Landmarks';
+import { reachOf, type FaithCard, type ActionId } from '../simulation/FaithCards';
 import { TECH_CARDS } from '../simulation/TechCards';
 import { TECH_BY_ID } from '../simulation/Technology';
 import { MUTATIONS, cardStates, queueReady, previewGenome, EVOLVE_THRESHOLD } from '../simulation/Mutations';
@@ -283,6 +284,21 @@ function rebuild(): void {
     });
     renderer.setLandmarkSource(() => lms);
   } else renderer.setLandmarkSource(null);
+  // ?reach=rains|harvest|comet[&sweep=1]: a Faith card's reach on this world
+  // (hover preview; with sweep=1 the cast moment, repeating).
+  const reachKind = params.get('reach');
+  if (reachKind) {
+    const act = (reachKind === 'harvest' ? 'harvest' : reachKind === 'comet' ? 'comet' : 'rains') as ActionId;
+    const card: FaithCard = { id: 'preview', name: 'PREVIEW', actions: [act], target: act === 'harvest' ? 'all' : act === 'comet' ? 'strongest' : 'wettest',
+      condition: 'always', magnitude: 2, duration: 2, sides: [], cost: 0, odds: 1, origin: '', forged: 0 };
+    const r = reachOf(card, nations, grid);
+    if (r) {
+      if (params.get('sweep') === '1') {
+        const go = () => renderer.playReachSweep(r.cells, r.colour, r.centre);
+        setTimeout(go, 1500); setInterval(go, 4000);
+      } else renderer.setReachPreview(r.cells, r.colour);
+    }
+  }
   // ?tech=1 opens the technology screen on this world's nations (the cards
   // as the engine would list them; playing is the game's).
   if (params.get('tech') === '1' && nations) {
