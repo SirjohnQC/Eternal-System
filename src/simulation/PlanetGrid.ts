@@ -979,13 +979,36 @@ export function generatePlanetGrid(
     for (let col = 0; col < GRID_SIZE; col++) {
       const nx = col / GRID_SIZE;               // wraps (0 == 1)
 
+      // Domain warp (playtest Oct 19: continents, mountains and isles read as
+      // rounded blobs). Every layout is sampled at bent coordinates — a broad
+      // swirl plus a finer one — so coasts run ragged into peninsulas and
+      // bays. The bend itself wraps in x (fbmWrapX on nx), so no seam.
+      const wxo = (fbmWrapX(nx * 2, ny * 2, elevSeed ^ 0x3a7, 2, nx, 4) - 0.5) * 0.32
+                + (fbmWrapX(nx * 6, ny * 6, elevSeed ^ 0x5c1, 6, nx, 3) - 0.5) * 0.12
+                + (fbmWrapX(nx * 16, ny * 16, elevSeed ^ 0x4e5, 16, nx, 2) - 0.5) * 0.035;
+      const wyo = (fbmWrapX(nx * 2 + 7, ny * 2, elevSeed ^ 0x1f3, 2, nx, 4) - 0.5) * 0.24
+                + (fbmWrapX(nx * 6 + 3, ny * 6, elevSeed ^ 0x6d9, 6, nx, 3) - 0.5) * 0.09
+                + (fbmWrapX(nx * 16 + 5, ny * 16, elevSeed ^ 0x2a1, 16, nx, 2) - 0.5) * 0.03;
+      const ux = (((nx + wxo) % 1) + 1) % 1;
+      const uy = Math.max(0, Math.min(1, ny + wyo));
+
       let elev: number;
-      if (archetype) elev = elevationFor(archetype, nx, ny, elevSeed);
-      else if (shape === 'continents') elev = continentsElevation(nx, ny, elevSeed);
-      else if (shape === 'discs') elev = discsElevation(nx, ny, elevSeed);
-      else if (shape === 'archipelago' || shape === 'supercontinent' || shape === 'hemispheric') elev = elevationFor(shape, nx, ny, elevSeed);
-      else if (shape === 'canyon') elev = canyonElevation(nx, ny, elevSeed);
-      else elev = fbmWrapX(nx * 4, ny * 4, elevSeed, 4, nx);
+      if (archetype) elev = elevationFor(archetype, ux, uy, elevSeed);
+      else if (shape === 'continents') elev = continentsElevation(ux, uy, elevSeed);
+      else if (shape === 'discs') elev = discsElevation(ux, uy, elevSeed);
+      else if (shape === 'archipelago' || shape === 'supercontinent' || shape === 'hemispheric') elev = elevationFor(shape, ux, uy, elevSeed);
+      else if (shape === 'canyon') elev = canyonElevation(ux, uy, elevSeed);
+      else elev = fbmWrapX(ux * 4, uy * 4, elevSeed, 4, ux);
+      // A fine fractal fringe where land meets sea: capes, coves, skerries.
+      const coast = 1 - Math.min(1, Math.abs(elev - SEA_LEVEL) / 0.06);
+      if (coast > 0) elev += (fbmWrapX(nx * 24, ny * 24, elevSeed ^ 0x71d, 24, nx, 3) - 0.5) * 0.07 * coast;
+      // Ridges: high ground rises in crests and chains (ridged noise) rather
+      // than smooth domes; lowlands and coasts are left alone.
+      const high = Math.max(0, Math.min(1, (elev - SEA_LEVEL - 0.08) / 0.14));
+      if (high > 0) {
+        const r = 1 - Math.abs(2 * fbmWrapX(nx * 7, ny * 7, elevSeed ^ 0x2b9, 7, nx, 4) - 1);
+        elev += (r * r - 0.4) * 0.14 * high;
+      }
       // Coastal fade at poles (makes ice caps at very high latitudes)
       const poleFade = Math.pow(1 - latTemp, 3) * 0.3;
       elev = Math.max(0, Math.min(1, elev - oceanBias * 0.3 + poleFade));
