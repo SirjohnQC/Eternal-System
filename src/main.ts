@@ -5,6 +5,7 @@ import { preloadDivineIcons } from './ui/IconPreload';
 import type { DivineHost } from './simulation/FaithCards';
 import { openChronicle } from './ui/ChronicleUI';
 import { openLedger } from './ui/LedgerUI';
+import { openNationsOverview } from './ui/NationsOverview';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
 import { wrapEquirectToGlobe } from './rendering/CosmicPixelSprites';
@@ -1835,11 +1836,20 @@ function attachTileInteraction(mount: HTMLElement): void {
 
   // Double-click opens the full surface map, centred on what was clicked. The
   // diorama only ever shows one hemisphere; this is the way to the other half.
+  // Double-click opens the nations overview, on the nation clicked (playtest
+  // Oct 19); its territory panel keeps the surface map one button away.
+  // Before nations are founded, it opens the surface map as it always did.
   mount.addEventListener('dblclick', (e) => {
     e.preventDefault();
-    if (_dioramaSite) return;   // the surface map is the home world's
+    if (_dioramaSite) return;   // the home world's
     AudioManager.playSfx('ui_click');
-    openPlanetMap(_dioramaRenderer?.pickTile(e.clientX, e.clientY) ?? null);
+    const hit = _dioramaRenderer?.pickTile(e.clientX, e.clientY) ?? null;
+    const ns = runtimeState.playerNations;
+    if (ns?.isFounded) {
+      openNationsOverview(hit ? ns.nationAt(hit.row, hit.col)?.id ?? null : null, at => openPlanetMap(at));
+    } else {
+      openPlanetMap(hit);
+    }
   });
 }
 
