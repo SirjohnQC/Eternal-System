@@ -24,6 +24,8 @@ import { runtimeState, gameState } from '../simulation/GameState';
 import { openNationsOverview } from '../ui/NationsOverview';
 import { initYourPeople, openYourPeople } from '../ui/YourPeople';
 import { initSpeciesScreen, openSpeciesScreen } from '../ui/SpeciesScreen';
+import { MUTATIONS, cardStates, queueReady, previewGenome, EVOLVE_THRESHOLD } from '../simulation/Mutations';
+import { pressureKinds } from '../simulation/PeopleStory';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
 import { rollMoons } from '../simulation/MoonSize';
 import { formationFaceType, isDestinyType, type DestinyType } from '../simulation/Formation';
@@ -241,9 +243,27 @@ function rebuild(): void {
   if (spTab && lead) {
     gameState.playerSpecies = species;
     runtimeState.playerPlanetGrid = grid;
+    // A lab to look at: every card offered, a path already taken, DNA to spend.
+    gameState.offeredMutations = MUTATIONS.map(m => m.id);
+    gameState.mutationsOwned = ['engulfing', 'flagellum', 'segments', 'gut', 'exoskeleton'];
+    gameState.mutationQueue = ['legs'];
+    gameState.mutationGifts = [];
+    gameState.dnaPoints = 24;
+    const pressures = pressureKinds(nations, bio);
     initSpeciesScreen({
       yours: () => lead, portrait: (g, px) => bakeCreaturePortrait(g, px, g.id === lead.id),
       mutationLabel: id => id, openLab: () => {}, tick: () => 5 * 160 * 2000,
+      lab: {
+        states: () => cardStates({ genome: lead, phase: 'primitive', owned: gameState.mutationsOwned, queued: gameState.mutationQueue,
+          offered: gameState.offeredMutations, points: gameState.dnaPoints, pressures }),
+        phase: () => 'primitive',
+        queue: id => { gameState.mutationQueue.push(id); },
+        unqueue: id => { gameState.mutationQueue = gameState.mutationQueue.filter(q => q !== id); },
+        ready: () => queueReady(gameState.mutationQueue),
+        evolve: () => {},
+        preview: () => previewGenome(lead, gameState.mutationQueue),
+        threshold: EVOLVE_THRESHOLD,
+      },
     });
     openSpeciesScreen(spTab === 'archive' || spTab === 'evolution' ? spTab : 'living');
   }
