@@ -4786,6 +4786,72 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
   font-size:10px;letter-spacing:2px;padding:8px 18px;cursor:pointer;
 }
 #faith-modal .fm-btn:hover{border-color:var(--gold);color:var(--gold)}
+/* ── Sprite card frames (assets/pixel/divine/cards/frames, SpriteCook): owner's ask,
+   Oct 21. The frame is a 9-slice (22px corners with their flourishes) drawn at
+   --fs × its pixels; the card's own name, art, text and price sit inside it.
+   Each colour family has its own metal; TP cards wear steel. ── */
+.faith-deck .divine-action-btn,#faith-modal .divine-action-btn,#tech-modal .divine-action-btn,.ts-cards .divine-action-btn,.fate-card:not(.fw-sprite){
+  --fs:1.5;
+  border:0 solid transparent;background:transparent;box-shadow:none;
+  /* --frame is set by the card's colour family (below); gold when it has none. */
+  border-image:var(--frame, url(/assets/pixel/divine/cards/frames/frame_gold.png)) 22 fill / calc(22px * var(--fs)) / 0 stretch;
+  image-rendering:pixelated;
+  padding:calc(15px * var(--fs)) calc(8px * var(--fs)) calc(9px * var(--fs));
+  filter:drop-shadow(0 4px 0 #000) drop-shadow(0 8px 10px rgba(0,0,0,.55));
+}
+.faith-deck .divine-action-btn > *,#faith-modal .divine-action-btn > *,#tech-modal .divine-action-btn > *,.ts-cards .divine-action-btn > *,.fate-card > *{image-rendering:auto}
+.faith-deck .faith-icon,#faith-modal .faith-icon,#tech-modal .faith-icon,.ts-cards .faith-icon,.fate-icon{image-rendering:pixelated}
+/* Metal per colour family */
+.faith-red{--frame:url(/assets/pixel/divine/cards/frames/frame_crimson.png)}
+.faith-green{--frame:url(/assets/pixel/divine/cards/frames/frame_verdant.png)}
+.faith-purple,.faith-violet{--frame:url(/assets/pixel/divine/cards/frames/frame_amethyst.png)}
+.tech-card{--frame:url(/assets/pixel/divine/cards/frames/frame_steel.png)}
+.fate-fire{--frame:url(/assets/pixel/divine/cards/frames/frame_crimson.png)}
+.fate-life{--frame:url(/assets/pixel/divine/cards/frames/frame_verdant.png)}
+.fate-sky,.fate-void,.fate-ice{--frame:url(/assets/pixel/divine/cards/frames/frame_amethyst.png)}
+.fate-water{--frame:url(/assets/pixel/divine/cards/frames/frame_steel.png)}
+/* The old drawn corners and notches give way to the frame's own */
+.faith-deck .divine-action-btn::before,.faith-deck .divine-action-btn::after,#faith-modal .divine-action-btn::before,#faith-modal .divine-action-btn::after,
+#tech-modal .divine-action-btn::before,#tech-modal .divine-action-btn::after,.ts-cards .divine-action-btn::before,.ts-cards .divine-action-btn::after,
+.faith-deck .faith-notch-tr,.faith-deck .faith-notch-bl,#faith-modal .faith-notch-tr,#faith-modal .faith-notch-bl,
+#tech-modal .faith-notch-tr,#tech-modal .faith-notch-bl,.ts-cards .faith-notch-tr,.ts-cards .faith-notch-bl,.fate-notch{display:none}
+/* Inside the frame: the name on the card itself, the art in a sunken window, a small price plate */
+.faith-deck .divine-action-name,#faith-modal .divine-action-name,#tech-modal .divine-action-name,.ts-cards .divine-action-name{
+  background:none;border:0;min-height:26px;padding:0 2px;color:color-mix(in srgb,var(--faith-accent) 45%,#fff3d6);text-shadow:0 1px 0 #000,0 0 8px rgba(0,0,0,.8)}
+.faith-deck .faith-icon-wrap,#faith-modal .faith-icon-wrap,#tech-modal .faith-icon-wrap,.ts-cards .faith-icon-wrap{
+  margin:4px 2px 5px;border:0;background:radial-gradient(circle at 50% 56%,color-mix(in srgb,var(--faith-accent) 38%,transparent) 0,transparent 62%),rgba(0,0,0,.42);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.8),inset 0 0 12px rgba(0,0,0,.85)}
+.faith-deck .divine-action-desc,#faith-modal .divine-action-desc,#tech-modal .divine-action-desc,.ts-cards .divine-action-desc{padding:0 1px}
+.faith-deck .divine-action-cost,#faith-modal .divine-action-cost,#tech-modal .divine-action-cost,.ts-cards .divine-action-cost{
+  background:rgba(4,2,10,.85);border:1px solid color-mix(in srgb,var(--faith-accent) 40%,#000);box-shadow:none}
+/* States: lifted on hover, ringed when chosen, dimmed when out of reach, all with the frame intact */
+.faith-deck .divine-action-btn:hover:not(:disabled),#faith-modal .divine-action-btn:hover:not(:disabled),
+#tech-modal .divine-action-btn:hover:not(:disabled),.ts-cards .divine-action-btn:hover:not(:disabled){
+  background:transparent;box-shadow:none;transform:translateY(-5px);
+  filter:drop-shadow(0 4px 0 #000) drop-shadow(0 0 10px var(--faith-glow)) drop-shadow(0 10px 12px rgba(0,0,0,.6))}
+.faith-deck .divine-action-btn.selected,.faith-deck .faith-burning .faith-proc.faith-pick{
+  box-shadow:none;transform:translateY(-9px);filter:drop-shadow(0 0 2px #ffa04d) drop-shadow(0 0 12px rgba(255,140,60,.85)) drop-shadow(0 6px 0 #000)}
+.faith-deck .divine-action-btn:disabled,.faith-deck .divine-action-btn.faith-off,.ts-cards .divine-action-btn.faith-off,#tech-modal .divine-action-btn.faith-off{
+  filter:grayscale(.75) brightness(.6) drop-shadow(0 4px 0 #000)}
+.faith-deck .divine-action-btn:disabled:hover,.faith-deck .divine-action-btn.faith-off:hover{filter:grayscale(.55) brightness(.8) drop-shadow(0 4px 0 #000)}
+.tech-card.tech-in-effect{box-shadow:none;filter:drop-shadow(0 0 2px var(--cyan)) drop-shadow(0 0 12px rgba(90,212,232,.6)) drop-shadow(0 4px 0 #000)}
+/* Bigger cards (Seek, the crucible): the same frame, larger pixels */
+#faith-modal .divine-action-btn.faith-proc-big{--fs:2.4}
+.fate-card:not(.fw-sprite){--fs:1.85;padding:calc(15px * var(--fs)) calc(9px * var(--fs)) calc(9px * var(--fs))}
+.fate-card:not(.fw-sprite):hover{box-shadow:none;filter:drop-shadow(0 0 14px var(--tg)) drop-shadow(0 10px 14px rgba(0,0,0,.6))}
+.fate-card .fate-icon-wrap{border:0;background:radial-gradient(circle,var(--tg) 0%,transparent 70%),rgba(0,0,0,.35)}
+.fate-card .fate-value{border-top:1px solid rgba(255,255,255,.12)}
+/* Card backs: the deck's own pile, an unknown fate, and the TP deck */
+.faith-deck #faith-seek-btn,.fate-card.fate-unknown{border-image:none;background:url(/assets/pixel/divine/cards/frames/back_faith.png) center/100% 100% no-repeat;image-rendering:pixelated}
+.faith-deck #faith-seek-btn .faith-icon-wrap,.faith-deck #faith-seek-btn .divine-action-desc{visibility:hidden}
+.faith-deck #faith-seek-btn .divine-action-name{align-self:center;min-height:0;margin:6px 4px 0;padding:2px 6px;background:rgba(5,3,12,.85);font-size:10px}
+.fate-card.fate-unknown .fate-icon-wrap{background:none}
+.td-pile{border:0;background:url(/assets/pixel/divine/cards/frames/back_tech.png) center/100% 100% no-repeat;image-rendering:pixelated;
+  box-shadow:none;filter:drop-shadow(4px -4px 0 #0d1824) drop-shadow(4px -4px 0 #2e5a78) drop-shadow(0 0 10px rgba(90,170,230,.3))}
+.td-pile .td-icon{visibility:hidden}
+.td-pile .td-tp,.td-pile .td-n{background:rgba(4,10,18,.82);padding:1px 6px;image-rendering:auto}
+.tech-deck.ready .td-pile{animation:tdGlow 1.8s ease-in-out infinite}
+@keyframes tdGlow{0%,100%{filter:drop-shadow(4px -4px 0 #2e5a78) drop-shadow(0 0 8px rgba(90,170,230,.3))}50%{filter:drop-shadow(4px -4px 0 #2e5a78) drop-shadow(0 0 22px rgba(140,210,255,.8))}}
 /* ── Tech cards (src/ui/TechCards.ts): TP spent; cyan is TP's colour ── */
 .res-tp{cursor:pointer}
 #tech-modal{
