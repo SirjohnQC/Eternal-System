@@ -540,12 +540,15 @@ interface CosmicSignal {
   decoded: boolean;
 }
 
+/** The glyph for a turning point, by the pressure behind it. */
+const TURN_ICON: Record<string, string> = { hunger: 'drought', crowding: 'exodus', scarcity: 'veins', unrest: 'revolt', pollution: 'blight' };
+
 /**
  * A great moment on the player's world (stage-moments plan, P1). Presentation
  * only: emitting one changes no simulation state beyond its own high mark.
  */
 export interface StageMoment {
-  kind: 'bio' | 'nations' | 'era' | 'leap' | 'fall';
+  kind: 'bio' | 'nations' | 'era' | 'leap' | 'fall' | 'turn';
   starId: number;
   tick: number;
   /** Banner heading ("Eyes open", "The Iron Age"). */
@@ -4214,6 +4217,7 @@ export class BigBangEngine {
       if (!ns?.isFounded) return null;
       // A leap's wars and treaties are summed up, not told one by one.
       const news = ns.drainNews();
+      ns.drainTurningPoints();   // a leap's crises are summed up, not told one by one
       wars = news.filter(m => m.includes('gone to war')).length;
       falls = news.filter(m => m.includes('has fallen')).length;
       while (ps.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(ps);
@@ -4352,6 +4356,11 @@ export class BigBangEngine {
       }
     }
     for (const line of ns.drainNews()) this.onCivEvent?.(line);
+    // Turning points (1D): a pressure turned acute where it matters. Told in
+    // its symptom, as a moment; never during a leap.
+    for (const tp of ns.drainTurningPoints()) {
+      if (!this.leaping) this.emitMoment(star, 'turn', tp.title, tp.line, TURN_ICON[tp.key]);
+    }
     this.announceTechCards();
     // The world stands in the era its most advanced nation has reached.
     while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);

@@ -167,6 +167,20 @@ rule({
 });
 
 rule({
+  // P2: the people keep up with what they know; a world fed three times over
+  // presses on no one (it was 1.5-4.5x at a roll of 20 before the pace die).
+  name: 'a founded world is not fed more than 3x after its first age',
+  check: () => {
+    const ns = runtimeState.playerNations as any;
+    if (!ns?.isFounded || ns.now < 1) return null;
+    let y = 0, d = 0;
+    for (const n of ns.nations) if (!n.fallen) { y += n.state.foodYield; d += n.state.foodNeed; }
+    const fed = y / Math.max(1e-9, d);
+    return fed <= 3 ? null : `fed ${fed.toFixed(2)}x at era-time ${ns.now.toFixed(2)}`;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,

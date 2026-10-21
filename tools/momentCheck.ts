@@ -116,7 +116,7 @@ console.log('A Creative leap, and a reload');
   const again: any[] = [];
   b.onStageMoment = (m: any) => again.push(m);
   for (let i = 0; i < 2_000; i++) b.update();
-  check('an old save does not replay its past as moments', again.every(m => m.kind === 'era' && m.title !== moments[moments.length - 1].title),
+  check('an old save does not replay its past as moments', again.every(m => m.kind === 'turn' || (m.kind === 'era' && m.title !== moments[moments.length - 1].title)),
     again.map(m => m.title).join(',') || 'none');
 }
 

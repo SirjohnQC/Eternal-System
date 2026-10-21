@@ -15,6 +15,7 @@
     "test:people": "esbuild tools/peopleStoryCheck.ts --bundle --platform=node --format=esm --outfile=.cache/people.mjs --log-level=warning && node .cache/people.mjs",
     "test:menu": "esbuild tools/menuCheck.ts --bundle --platform=node --format=esm --outfile=.cache/menu.mjs --log-level=warning && node .cache/menu.mjs",
     "test:mind": "esbuild tools/mindGateCheck.ts --bundle --platform=node --format=esm --outfile=.cache/mind.mjs --log-level=warning && node .cache/mind.mjs",
+    "test:pace": "esbuild tools/paceCheck.ts --bundle --platform=node --format=esm --outfile=.cache/pace.mjs --log-level=warning && node .cache/pace.mjs",
     "test:moments": "esbuild tools/momentCheck.ts --bundle --platform=node --format=esm --outfile=.cache/moments.mjs --log-level=warning && node .cache/moments.mjs",
     "test:techcards": "esbuild tools/techCardsCheck.ts --bundle --platform=node --format=esm --outfile=.cache/techcards.mjs --log-level=warning && node .cache/techcards.mjs",
     "test:saves": "esbuild tools/saveCheck.ts --bundle --platform=node --format=esm --outfile=.cache/saves.mjs --log-level=warning && node .cache/saves.mjs",
