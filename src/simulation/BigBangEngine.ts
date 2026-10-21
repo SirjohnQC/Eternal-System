@@ -4106,6 +4106,9 @@ export class BigBangEngine {
   }
 
   private spawnLeaderForStar(star: StarBody): void {
+    // The player's nations have rulers who live (Council.ts): the leader who
+    // speaks to the god is the ruler of the leading nation, not a stranger.
+    if (star.isPlayerStar && runtimeState.playerNations?.isFounded) { this.projectPlayerLeader(star); return; }
     // Remove old leader for this star
     gameState.leaders = gameState.leaders.filter(l => l.starId !== star.id);
     if (star.isDead || star.civLevel < 1) return;
@@ -4126,6 +4129,31 @@ export class BigBangEngine {
     if (!gameState.factionFlags[star.id]) {
       gameState.factionFlags[star.id] = generateFactionFlag(this.rng.fork(`flag_${star.id}`));
     }
+  }
+
+  /**
+   * The player star's leader as the ruler of its leading nation (rule 7: one
+   * person, on the council and in the dialogue). Refreshed when the ruler or
+   * the leading nation changes; the same person keeps the same id, so their
+   * memories of the god stay theirs.
+   */
+  private projectPlayerLeader(star: StarBody): void {
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded) return;
+    const lead = ns.nations.filter(n => !n.fallen && n.council?.length)
+      .sort((a, b) => b.era - a.era || b.state.population - a.state.population)[0];
+    const f = lead?.council?.find(x => x.seat === 0);
+    if (!lead || !f) return;
+    const id = `ruler_${star.id}_${f.id}`;
+    const cur = gameState.leaders.find(l => l.starId === star.id);
+    if (cur?.id === id) { cur.faction = lead.name; return; }
+    const base = generateLeader(star.id, lead.name, gameState.playerSpeciesName || star.civName,
+      Math.max(1, star.civLevel), this.stats.hostility, star.religionDevotion, new SeedRNG(id));
+    const role = f.bent === 'war' ? 'general' : f.bent === 'faith' ? 'prophet' : 'scientist';
+    const style = f.bent === 'war' ? 'military_commander' : f.bent === 'faith' ? 'religious_zealot' : 'scientific_thinker';
+    gameState.leaders = gameState.leaders.filter(l => l.starId !== star.id);
+    gameState.leaders.push({ ...base, id, name: f.name, faction: lead.name, role, communicationStyle: style });
+    if (!gameState.factionFlags[star.id]) gameState.factionFlags[star.id] = generateFactionFlag(this.rng.fork(`flag_${star.id}`));
   }
 
   /** The culture of a star's civilisation, or null if it has none yet. */
@@ -4361,6 +4389,7 @@ export class BigBangEngine {
     for (const tp of ns.drainTurningPoints()) {
       if (!this.leaping) this.emitMoment(star, 'turn', tp.title, tp.line, TURN_ICON[tp.key]);
     }
+    this.projectPlayerLeader(star);
     this.announceTechCards();
     // The world stands in the era its most advanced nation has reached.
     while (star.civLevel < Math.min(ns.maxEra, TECH_LEVELS.length - 1)) this.advanceCiv(star);

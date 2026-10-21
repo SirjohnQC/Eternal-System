@@ -12,6 +12,7 @@
  * Pure simulation: no rendering, no DOM. Deterministic from the seed and the
  * grid it is stepped against.
  */
+import { newCouncil, stepCouncil, seatsOf, type Figure } from './Council';
 import { GRID_SIZE, isWater, isHabitable, type PlanetGrid, type BiomeType } from './PlanetGrid';
 import {
   governmentFor, ideologyFor, type CultureValues, type GenomeSummary, type Government, type Ideology,
@@ -114,6 +115,10 @@ export interface Nation {
   omens: Omen[];
   /** Chronicle ids of what later events link back to: 'p:<pressure>', 'tech:<id>', 'founded', 'era'. */
   marks: Record<string, number>;
+  /** The Council of State: three people who live (Council.ts). Optional: older saves roll one. */
+  council?: Figure[];
+  /** The last change at the top, in words (the Nations window). */
+  lastSuccession?: string;
 }
 
 /**
@@ -483,7 +488,13 @@ export interface NationSnapshot {
   rng: number;
   /** Pressures that have turned acute somewhere on the world (optional: older saves). */
   seenAcute?: string[];
+  /** The councils' own random stream and next figure id (optional: older saves). */
+  councilRng?: number;
+  nextFigure?: number;
 }
+
+/** Omens that hurt the people (a bane raises the devout seat more: fear is faith too). */
+const BANE_OPS = new Set<OmenOp>(['blight', 'pestilence', 'stagnation', 'exodus', 'foe', 'schism', 'revolt', 'discord', 'unrest', 'smoke']);
 
 /**
  * Necessity paces study (vision §8, stage-moments plan 1C): a comfortable
@@ -541,6 +552,14 @@ export class NationSystem {
   private nextId = 1;
   private rng: SeedRNG;
   private founded = false;
+  /**
+   * The councils draw from their own stream, so adding them left the
+   * nations' own course (and its balance) as it was.
+   */
+  private councilRng: SeedRNG;
+  private nextFigure = 1;
+  /** Cards that reached each nation since its council last stepped: [casts, banes]. */
+  private castsSince = new Map<number, [number, number]>();
   /** Turning points since the last drainTurningPoints(). */
   private turning: TurningPoint[] = [];
   /** Pressures that have turned acute anywhere on the world. */
@@ -550,9 +569,13 @@ export class NationSystem {
 
   constructor(readonly seed: number) {
     this.rng = new SeedRNG(seed ^ 0x6e47104e);
+    this.councilRng = new SeedRNG(seed ^ 0x0c0c1170);
   }
 
   get isFounded(): boolean { return this.founded; }
+
+  /** The engine tick of the last step. */
+  get tick(): number { return Math.max(0, this.lastTick); }
 
   /** People across every living nation: the one population figure the screens show. */
   get population(): number {
@@ -578,6 +601,7 @@ export class NationSystem {
       relations: this.relations, age: this.age, lastTick: this.lastTick, chronicle: this.chronicle,
       ledger: this.ledger, ledgerAge: Number.isFinite(this.ledgerAge) ? this.ledgerAge : null,
       nextId: this.nextId, rng: this.rng.getState(), seenAcute: [...this.seenAcute],
+      councilRng: this.councilRng.getState(), nextFigure: this.nextFigure,
     })) as NationSnapshot;
   }
 
@@ -606,6 +630,8 @@ export class NationSystem {
     ns.rng.setState(d.rng);
     ns.founded = d.founded;
     for (const k of d.seenAcute ?? []) ns.seenAcute.add(k);
+    if (d.councilRng != null) ns.councilRng.setState(d.councilRng);
+    ns.nextFigure = d.nextFigure ?? 1;
     ns.version++;
     return ns;
   }
@@ -624,6 +650,12 @@ export class NationSystem {
     const n = this.nations[k];
     if (!n || n.fallen) return;
     n.omens.push({ ...omen, started: false, active: false });
+    if (omen.primary) {
+      const c = this.castsSince.get(k) ?? [0, 0];
+      c[0]++;
+      if (BANE_OPS.has(omen.op)) c[1]++;
+      this.castsSince.set(k, c);
+    }
   }
 
   // ── Tech cards (TechCards.ts): what the people do with what they know ──────
@@ -798,7 +830,50 @@ export class NationSystem {
     const form = this.rng.pick(FORM_OF[next]);
     n.government = next; n.form = form; n.name = `${form} ${place}`;
     n.ideology = ideologyFor(n.values);
+    // The old order falls with its council: new people for a new state.
+    const old = n.council?.find(f => f.seat === 0);
+    n.council = newCouncil(this.councilRng, () => this.nextFigure++, next, this.age, this.lastTick, n.state.cohesion);
+    const head = n.council[0];
+    n.lastSuccession = `${seatsOf(next)[0].title} ${head.name} leads the new ${next.toLowerCase()}.`;
+    this.log(n, this.lastTick, `The council of ${n.name} fell with the old order; ${seatsOf(next)[0].title} ${head.name} now leads it.`,
+      ['the people rose against their rulers', ...(old ? [`${old.name} lost the throne`] : [])]);
     this.version++;
+  }
+
+  /**
+   * Each council lives a step (Council.ts): its members' standing moves with
+   * what the nation went through, and deaths and coups change who rules,
+   * each a Chronicle entry with its causes.
+   */
+  private stepCouncils(tick: number, eras: number, known: number[]): void {
+    for (const n of this.nations) {
+      if (n.fallen) { n.council = []; continue; }
+      n.council ??= newCouncil(this.councilRng, () => this.nextFigure++, n.government, this.age, tick, n.state.cohesion);
+      if (n.council.length < 3) n.council = newCouncil(this.councilRng, () => this.nextFigure++, n.government, this.age, tick, n.state.cohesion);
+      const [casts, banes] = this.castsSince.get(n.id) ?? [0, 0];
+      this.castsSince.delete(n.id);
+      const atWar = this.relations.some(r => r.war && (r.a === n.id || r.b === n.id));
+      const changes = stepCouncil(n.council, n.government, {
+        eras, atWar, casts, banes, learned: Math.max(0, n.techs.length - (known[n.id] ?? n.techs.length)),
+        cohesion: n.state.cohesion, unrest: n.pressures.unrest,
+      }, this.councilRng, () => this.nextFigure++, this.age, tick);
+      const seats = seatsOf(n.government);
+      for (const c of changes) {
+        if (c.kind === 'councillor') continue;   // a seat refilled is not news; the throne is
+        const was = seats[0].title, from = seats[c.heirSeat].title;
+        const what = c.kind === 'death'
+          ? `${was} ${c.gone.name} of ${n.name} died; ${from} ${c.heir.name} took the throne.`
+          : `${from} ${c.heir.name} seized power in ${n.name} from ${was} ${c.gone.name}.`;
+        // Links: the war that raised a warlike heir, the casts that raised a devout one.
+        const links: Array<number | undefined> = c.heir.bent === 'war'
+          ? this.relations.filter(r => r.war && (r.a === n.id || r.b === n.id)).map(r => r.war!.id)
+          : c.heir.bent === 'faith' ? this.omenLinks(n) : n.techs.slice(-2).map(id => n.marks[`tech:${id}`]);
+        if (c.kind === 'coup') links.push(n.marks['p:unrest']);
+        this.log(n, tick, what, c.why, links);
+        n.lastSuccession = what;
+        this.news.push(what);
+      }
+    }
   }
 
   /** Something outside the nations (a quake, a comet) killed a share of `k`'s people. */
@@ -913,6 +988,7 @@ export class NationSystem {
       const born = this.nations[this.nations.length - 1];
       born.marks.founded = this.log(born, tick, `${name} was founded around ${place}.`,
         [`the people had spread across ${settled.length} settled cells`, `its founders were ${government.toLowerCase()}-minded`]);
+      born.council = newCouncil(this.councilRng, () => this.nextFigure++, government, this.age, tick, born.state.cohesion);
       this.owner[cap] = idx;
     });
     for (let a = 0; a < this.nations.length; a++) for (let b = a + 1; b < this.nations.length; b++) {
@@ -1100,7 +1176,9 @@ export class NationSystem {
     if (eras > 0) {
       this.age += eras;
       this.relate(grid, tick, eras);
+      const known = this.nations.map(n => n.techs.length);
       this.research(tick, eras);
+      this.stepCouncils(tick, eras, known);
     }
     this.sampleLedger(tick);
   }
@@ -1446,6 +1524,7 @@ export class NationSystem {
     if (landLeft === 0) {
       L.fallen = true;
       L.research = null;
+      L.council = [];   // a conquered realm has no council
       for (const o of this.relations) if (o.a === li || o.b === li) { o.war = null; o.trade = false; }
       const why = [...war.cause.slice(0, 1), `${W.name} was the stronger`, `${L.name} had nowhere left to stand`];
       const fell = this.log(L, tick, `${L.name} fell to ${W.name}.`, why, [war.id]);

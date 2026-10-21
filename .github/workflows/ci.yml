@@ -46,5 +46,7 @@ jobs:
         run: npm run test:techcards
       - name: Great moments and leader voices (~2 min)
         run: npm run test:moments
-      - name: Ages that press (~4 min)
+      - name: Ages that press (~2 min)
         run: npm run test:pace
+      - name: Rulers who live (~1.5 min)
+        run: npm run test:council
