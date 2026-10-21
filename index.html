@@ -2600,14 +2600,16 @@ input[type="range"], select, label[for],
 [disabled], [aria-disabled="true"] {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M16 14 C22 14, 26 15.2, 26 16 C26 16.8, 22 18, 16 18 C10 18, 6 16.8, 6 16 C6 15.2, 10 14, 16 14 Z' fill='%23120d22' stroke='%234a3d5a' stroke-width='0.9'/%3E%3Cpath d='M6 16 C10 14, 13 13.2, 16 13 C19 13.2, 22 14, 26 16' fill='none' stroke='%236a5d7a' stroke-width='1' stroke-linecap='round'/%3E%3Cline x1='11' y1='14.5' x2='10.5' y2='13' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='14' y1='13.4' x2='14' y2='11.8' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='18' y1='13.4' x2='18' y2='11.8' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3Cline x1='21' y1='14.5' x2='21.5' y2='13' stroke='%236a5d7a' stroke-width='0.6' opacity='0.6'/%3E%3C/svg%3E") 16 16, not-allowed !important;
 }
+/* Docked, not modal (stage-moments plan, 3A): the world stays playable behind it. */
 #leader-dialogue-overlay {
   display: none;
   position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.75);
+  top: 84px;
+  right: 16px;
+  width: min(380px, calc(100vw - 32px));
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
   z-index: 900;
-  align-items: center;
-  justify-content: center;
 }
 #leader-dialogue-overlay.active {
   display: flex;
@@ -2616,11 +2618,34 @@ input[type="range"], select, label[for],
   background: #0a0a0f;
   border: 1px solid #4a3060;
   border-radius: 8px;
-  padding: 24px;
-  max-width: 480px;
-  width: 90%;
+  padding: 18px;
+  width: 100%;
+  box-sizing: border-box;
   box-shadow: 0 0 40px #7700aa55;
 }
+
+/* The great-moment banner (ui/MomentBanner): never blocks a click but its own ✕. */
+#moment-banner{position:fixed;top:64px;left:50%;z-index:950;display:flex;gap:12px;align-items:flex-start;
+  width:min(520px,calc(100vw - 32px));box-sizing:border-box;padding:12px 34px 12px 14px;
+  background:linear-gradient(180deg,rgba(24,16,40,.94),rgba(10,8,20,.94));border:1px solid #c8a96e;
+  box-shadow:0 0 0 1px #000,0 0 28px rgba(200,169,110,.35);color:#e8dcc4;pointer-events:none;
+  opacity:0;transform:translate(-50%,-14px);transition:opacity .5s ease,transform .5s ease}
+#moment-banner.show{opacity:1;transform:translate(-50%,0)}
+#moment-banner .mb-x{position:absolute;top:6px;right:8px;pointer-events:auto;background:none;border:0;color:#8a7a9a;cursor:pointer;font-size:12px}
+#moment-banner .mb-icon{width:40px;height:40px;image-rendering:pixelated;flex-shrink:0;margin-top:2px}
+#moment-banner .mb-kicker{font-family:var(--font-pixel);font-size:8px;letter-spacing:.18em;color:#c8a96e}
+#moment-banner .mb-title{font-family:'Cinzel Decorative',serif;font-size:17px;color:#fff1d0;margin:2px 0 3px}
+#moment-banner .mb-line{font-size:12px;line-height:1.45;color:#d8cce8}
+#moment-banner .mb-learned{font-size:11px;color:#9fd8e0;margin-top:5px}
+#moment-banner .mb-earlier{font-size:10px;color:#9a8aaa;margin-top:5px}
+#moment-banner .mb-earlier b{color:#e8dcc4;font-weight:normal}
+#moment-banner .mb-hint{font-size:9px;color:#7a6a8a;margin-top:6px}
+
+.toast .toast-act{margin-left:6px;padding:1px 8px;font-size:9px;letter-spacing:.1em;background:#2a1a3a;border:1px solid #c8a96e;color:#f2e2bf;cursor:pointer}
+.rail-btn{position:relative}
+.rail-voice{position:absolute;top:2px;right:2px;padding:0 4px;font-size:9px;line-height:14px;background:#c8a96e;color:#1a1020;
+  border-radius:7px;cursor:pointer;animation:rail-voice-pulse 1.6s ease-in-out infinite}
+@keyframes rail-voice-pulse{50%{box-shadow:0 0 8px #f2d38a}}
 /* Universe Timeline */
 #timeline-overlay {
   display: none;

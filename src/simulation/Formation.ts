@@ -179,3 +179,19 @@ export function ejectaChance(budget: number, checkEvery: number, distance: numbe
   const near = 1 - distance / range;
   return Math.min(1, (checkEvery / budget) * 1.2 * near * near);
 }
+
+/**
+ * The evolution die's pace (stage-moments plan, Q2): a multiplier on stage
+ * and age lengths. 0.85 at a roll of 20, 1.10 at 10, 1.325 at 1: a temper,
+ * not a skip button (it was (21 - e) / 10, a 20x range).
+ */
+export function paceOf(evolution: number): number {
+  const e = Math.max(1, Math.min(20, evolution));
+  return 0.85 + 0.025 * (20 - e);
+}
+
+/** The player world's tempo stays within these (NPC worlds keep the full tail). */
+export const PLAYER_TEMPO_MIN = 0.6;
+export const PLAYER_TEMPO_MAX = 1.7;
+/** No player stage runs shorter than this share of its base length (dnaMod / tempo). */
+export const PLAYER_STAGE_FLOOR = 0.5;

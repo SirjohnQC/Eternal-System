@@ -14,6 +14,7 @@
     "test:lines": "esbuild tools/lineClipCheck.ts --bundle --platform=node --format=esm --outfile=.cache/lines.mjs --log-level=warning && node .cache/lines.mjs",
     "test:people": "esbuild tools/peopleStoryCheck.ts --bundle --platform=node --format=esm --outfile=.cache/people.mjs --log-level=warning && node .cache/people.mjs",
     "test:menu": "esbuild tools/menuCheck.ts --bundle --platform=node --format=esm --outfile=.cache/menu.mjs --log-level=warning && node .cache/menu.mjs",
+    "test:moments": "esbuild tools/momentCheck.ts --bundle --platform=node --format=esm --outfile=.cache/moments.mjs --log-level=warning && node .cache/moments.mjs",
     "test:techcards": "esbuild tools/techCardsCheck.ts --bundle --platform=node --format=esm --outfile=.cache/techcards.mjs --log-level=warning && node .cache/techcards.mjs",
     "test:saves": "esbuild tools/saveCheck.ts --bundle --platform=node --format=esm --outfile=.cache/saves.mjs --log-level=warning && node .cache/saves.mjs",
     "test:visual": "node tools/visual/visualCheck.mjs"

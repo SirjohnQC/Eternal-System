@@ -44,3 +44,5 @@ jobs:
       - run: npm run test:smoke
       - name: Tech cards (every card played in a seeded world, ~40 s)
         run: npm run test:techcards
+      - name: Great moments and leader voices (~2 min)
+        run: npm run test:moments

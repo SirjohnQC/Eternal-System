@@ -9,6 +9,8 @@ import { openLedger } from './ui/LedgerUI';
 import { openNationsOverview } from './ui/NationsOverview';
 import { initYourPeople, openYourPeople, peopleName } from './ui/YourPeople';
 import { initSpeciesScreen, openSpeciesScreen } from './ui/SpeciesScreen';
+import { SpeedHold } from './ui/SpeedHold';
+import { showMoment } from './ui/MomentBanner';
 import { beatsSince, plural, pressureKinds, symptomsOf as peopleSymptoms, headingOf, natureOf } from './simulation/PeopleStory';
 import { nationArch } from './rendering/Architecture';
 import { PlanetRenderer, bakePlanetTexture } from './simulation/PlanetRenderer';
@@ -177,7 +179,7 @@ const STAT_LABELS: Record<keyof UniverseStats, string> = {
 };
 const STAT_DESC: Record<keyof UniverseStats, string> = {
   life: 'Star count · Panspermia · Life emergence',
-  evolution: 'Civilization tech progression speed',
+  evolution: "Evolution's temper · a little quicker or a little slower",
   hostility: 'War frequency · Conquest aggression',
   entropy: 'Asteroid belts · Cosmic event severity',
   divine: 'AI God intervention power + frequency',
@@ -1257,12 +1259,21 @@ function wireEngineEvents(eng: BigBangEngine): void {
       updateBottomBar(ps);
     }
   };
+  // A leader who would speak is a voice in the feed, never a modal (stage-moments
+  // plan, 3A): the player opens it when they choose.
   eng.onLeaderMessage = (leader, eventContext, starId) => {
     const isPlayerStar = starId === gameState.playerStarId;
     if (isPlayerStar && leader.spawnedAtCivLevel === 1) {
       addCodexEntry(`${leader.name} Rises`, 'civilisation');
     }
-    setTimeout(() => void showLeaderDialogue(leader, eventContext), 800);
+    queueLeaderVoice(leader, eventContext);
+  };
+  // Great moments slow the world to ▶ and show a banner that never blocks play (P1).
+  eng.onStageMoment = (m) => {
+    if (m.starId !== eng.getPlayerStar()?.id) return;
+    slowForMoment();
+    showMoment(m);
+    addFeedEntry(`${m.title} — ${m.line}`, 'milestone');
   };
   eng.onDormantGalaxySelected = (gal, x, y) => showDormantGalaxyCard(gal, x, y, gameState.playerPlanetName || 'your world');
   eng.onSectorCharted = (name) => {
@@ -3001,7 +3012,7 @@ const DICE_FACES = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅']; // index 1–
 function openWarDiceModal(warId: number, attackerName: string, defenderName: string, attackerDice: number[], attackerColor: string, phase: string, playerIsDefender = false): void {
   const overlay = document.getElementById('war-dice-overlay');
   if (!overlay) return;
-  slowForEvent(1);
+  slowForEvent('war-dice');
 
   _warDiceWarId = warId;
   _warDiceAttackerDice = attackerDice;
@@ -3124,7 +3135,7 @@ function rollDefenseDice(): void {
 function closeWarDiceModal(): void {
   document.getElementById('war-dice-overlay')?.classList.remove('open');
   if (_warDiceDismissTimeout) { clearTimeout(_warDiceDismissTimeout); _warDiceDismissTimeout = null; }
-  restoreSpeed();
+  restoreSpeed('war-dice');
 }
 
 // ─── Codex Modal ──────────────────────────────────────────────────────────────
@@ -3361,6 +3372,7 @@ const TOAST_ICONS: Record<string, string> = {
   dna:             '🧬',
   tech:            '◆',
   cast:            '✧',
+  voice:           '✉',
   supernova:       '💥',
   asteroid_impact: '☄',
   void_storm:      '🌀',
@@ -3376,6 +3388,7 @@ const TOAST_TITLES: Record<string, string> = {
   dna:             'EVOLUTION',
   tech:            'TECH CARD',
   cast:            'A SIGN FALLS',
+  voice:           'A VOICE',
   supernova:       'STELLAR COLLAPSE',
   asteroid_impact: 'ASTEROID IMPACT',
   void_storm:      'VOID STORM',
@@ -3387,9 +3400,9 @@ const TOAST_TITLES: Record<string, string> = {
   war_end:         'WAR RESOLVED',
 };
 
-function showToast(type: string, text: string, durationMs = 7000): void {
+function showToast(type: string, text: string, durationMs = 7000): HTMLElement | null {
   const container = document.getElementById('toast-container');
-  if (!container) return;
+  if (!container) return null;
 
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
@@ -3408,6 +3421,7 @@ function showToast(type: string, text: string, durationMs = 7000): void {
   container.appendChild(toast);
 
   setTimeout(() => dismissToast(toast), durationMs);
+  return toast;
 }
 
 function dismissToast(toast: HTMLElement): void {
@@ -3614,20 +3628,24 @@ function placeLifeAction(): void {
   updateDivineActions();
 }
 
-let _preEventSpeed: number | null = null;
+/** Who holds the speed down (SpeedHold): modals by reason, moments slow to ▶. */
+const _speedHold = new SpeedHold();
 
-/** Slow the sim to targetSpeed for a modal/event moment. Saves current speed once. */
-function slowForEvent(targetSpeed = 1): void {
-  if (_preEventSpeed === null) _preEventSpeed = gameState.speed;
-  setSpeed(targetSpeed);
+/** Slow the sim to targetSpeed while a modal (`reason`) is open. */
+function slowForEvent(reason: string, targetSpeed = 1): void {
+  setSpeed(_speedHold.hold(reason, gameState.speed, targetSpeed));
 }
 
-/** Restore the speed saved by slowForEvent(). No-op if never slowed. */
-function restoreSpeed(): void {
-  if (_preEventSpeed !== null) {
-    setSpeed(_preEventSpeed);
-    _preEventSpeed = null;
-  }
+/** The modal `reason` closed: back to the speed found, once nothing else holds it. */
+function restoreSpeed(reason: string): void {
+  const back = _speedHold.release(reason);
+  if (back !== null) setSpeed(back);
+}
+
+/** A great moment: down to ▶ (it stays there until the player speeds up again). */
+function slowForMoment(): void {
+  const to = _speedHold.moment(gameState.speed, gameState.playMode === 'normal' ? NORMAL_PACE : 1);
+  if (to !== null) setSpeed(to);
 }
 
 let _lastDP = -1;
@@ -3687,18 +3705,47 @@ function showTimeline(): void {
   overlay.classList.add('active');
 }
 
+/** Leaders waiting to speak (oldest first); the player opens them when they choose. */
+const _leaderVoices: Array<{ leader: Leader; context: string }> = [];
+
+function queueLeaderVoice(leader: Leader, context: string): void {
+  _leaderVoices.push({ leader, context });
+  if (_leaderVoices.length > 5) _leaderVoices.shift();
+  addFeedEntry(`✉ ${leader.name}, ${leader.role} of ${leader.faction}, would speak with you.`, 'milestone');
+  const t = showToast('voice', `<b>${escapeHtml(leader.name)}</b>, ${escapeHtml(leader.role)} of ${escapeHtml(leader.faction)}, would speak with you. <button type="button" class="toast-act">LISTEN</button>`, 12000);
+  t?.querySelector('.toast-act')?.addEventListener('click', () => { dismissToast(t); openLeaderVoice(leader); });
+  updateVoiceBadge();
+}
+
+/** Open a waiting voice (the oldest, or `leader`'s). Speaking costs nothing. */
+function openLeaderVoice(leader?: Leader): void {
+  if (_leaderDialogueOpen) return;
+  const i = leader ? _leaderVoices.findIndex(v => v.leader === leader) : 0;
+  const v = i >= 0 ? _leaderVoices.splice(i, 1)[0] : null;
+  updateVoiceBadge();
+  if (v) void showLeaderDialogue(v.leader, v.context);
+}
+
+function updateVoiceBadge(): void {
+  const btn = document.getElementById('rail-nations');
+  if (!btn) return;
+  let b = btn.querySelector<HTMLElement>('.rail-voice');
+  if (!_leaderVoices.length) { b?.remove(); return; }
+  if (!b) {
+    b = document.createElement('span');
+    b.className = 'rail-voice';
+    b.setAttribute('role', 'button');
+    b.addEventListener('click', e => { e.stopPropagation(); openLeaderVoice(); });
+    btn.appendChild(b);
+  }
+  b.textContent = `✉${_leaderVoices.length}`;
+  b.title = `${_leaderVoices.length} leader${_leaderVoices.length > 1 ? 's' : ''} would speak with you`;
+}
+
 async function showLeaderDialogue(leader: Leader, eventContext: string): Promise<void> {
   if (_leaderDialogueOpen) return;
   _leaderDialogueOpen = true;
-  if (gameState.divinePoints < 1) {
-    _leaderDialogueOpen = false;
-    addChatMessage(`${leader.name} of ${leader.faction} reaches out, but divine silence prevails.`, 'god');
-    return;
-  }
-  gameState.divinePoints -= 1;
-  updateDivineActions();
-  addFeedEntry(`-1 Divine Power — Leader communication: ${leader.name}`, 'milestone');
-
+  // Listening is free (stage-moments plan, 3A); only blessings and omens cost DP.
   currentDialogueLeader = leader;
 
   const overlay   = document.getElementById('leader-dialogue-overlay')!;
@@ -4056,13 +4103,13 @@ function showFirstContact(npcStar: StarBody): void {
     btn.addEventListener('click', () => {
       handleFirstContactChoice(c.action, npcStar.civName);
       overlay.classList.remove('active');
-      restoreSpeed();
+      restoreSpeed('first-contact');
     });
     choicesEl.appendChild(btn);
   }
 
   overlay.classList.add('active');
-  slowForEvent(1);
+  slowForEvent('first-contact');
 }
 
 function handleFirstContactChoice(action: string, civName: string): void {
@@ -4206,14 +4253,14 @@ function openNamingModal(mode: 'species' | 'religion'): void {
   }
   if (input) input.value = '';
   overlay.classList.add('open');
-  slowForEvent(1);
+  slowForEvent('naming');
   setTimeout(() => input?.focus(), 100);
 }
 
 function closeNamingModal(): void {
   document.getElementById('ingame-naming-overlay')?.classList.remove('open');
   namingMode = null;
-  restoreSpeed();
+  restoreSpeed('naming');
 }
 
 function confirmNaming(): void {
@@ -4269,7 +4316,7 @@ function showSpeciationModal(evt: EvolutionEvent): void {
   document.querySelector('.sp-trait-btn[data-trait="none"]')?.classList.add('selected');
 
   overlay?.classList.add('open');
-  slowForEvent(1);
+  slowForEvent('speciation');
   setTimeout(() => nameInput?.focus(), 100);
 }
 
@@ -4284,7 +4331,7 @@ function closeSpeciationModal(dismissed = false): void {
   }
   document.getElementById('speciation-overlay')?.classList.remove('open');
   _speciationOpen = false;
-  restoreSpeed();
+  restoreSpeed('speciation');
   // Process next queued speciation
   if (_speciationQueue.length > 0) {
     const next = _speciationQueue.shift()!;
@@ -4887,6 +4934,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   document.querySelectorAll('.speed-btn').forEach(btn => {
     btn.addEventListener('click', function(this: HTMLElement) {
+      _speedHold.clear();   // the player's choice wins over every hold
       setSpeed(Number(this.dataset['speed'] ?? 1));
     });
   });
@@ -5176,7 +5224,9 @@ window.addEventListener('DOMContentLoaded', () => {
   let escConsumed = false;
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    escConsumed = escOverlays.some(id => document.getElementById(id)?.classList.contains('open'))
+    const leaderOpen = !!document.getElementById('leader-dialogue-overlay')?.classList.contains('active');
+    if (leaderOpen) closeLeaderDialogue();
+    escConsumed = leaderOpen || escOverlays.some(id => document.getElementById(id)?.classList.contains('open'))
       || !!document.getElementById('tech-modal') || document.body.classList.contains('god-open');
     document.getElementById('help-overlay')?.classList.remove('open');
     if (document.getElementById('settings-overlay')?.classList.contains('open')) closeSettings();

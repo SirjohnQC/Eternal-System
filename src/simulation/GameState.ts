@@ -192,6 +192,12 @@ export interface GameStateData {
   techRewarded?: string[];
   /** Highest age that already paid its TP (an age lost and regained pays once). */
   tpEraHigh?: number;
+  /**
+   * The highest stage moments already shown (stage-moments plan, P1): a
+   * moment fires only on a new high, so a world bouncing back to an age it
+   * lost is not announced again. Never lowered.
+   */
+  momentHigh?: { bio: number; era: number; nations?: boolean };
   /** Tech cards already announced as playable. */
   techCardsKnown?: string[];
   /** Timed tech-card effects, as ticks they last until. */
@@ -262,6 +268,8 @@ export const runtimeState = {
  */
 export function createDefaultGameState(): GameStateData {
   return {
+  // Present (as undefined) so a reset or a load clears the last world's highs.
+  momentHigh: undefined,
   screen: 'menu',
   stats: null,
   tick: 0,
