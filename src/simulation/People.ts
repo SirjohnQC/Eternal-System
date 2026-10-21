@@ -27,3 +27,13 @@ export function peopleOf(species: readonly SpeciesGenome[], minIntelligence = 0)
   }
   return best;
 }
+
+/**
+ * The player's people: the lineage they named and evolved, once the world is
+ * civilised, else the smartest lineage (alpha playtest Oct 20: the named
+ * species and the nation-builders read as two different creatures).
+ */
+export function playerPeopleOf(species: readonly SpeciesGenome[], signatureId: string | null, civilised: boolean): SpeciesGenome | null {
+  const sig = civilised && signatureId ? species.find(s => s.id === signatureId && !s.isExtinct) : undefined;
+  return sig ?? peopleOf(species, 3);
+}

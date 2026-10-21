@@ -74,6 +74,25 @@ export class FallbackNarrator {
     return this.rng.pick(narratives);
   }
 
+  /**
+   * A leader speaking to their god about `context`, a whole sentence
+   * ("Our civilization has advanced to Industrial."). The milestone templates
+   * want a noun phrase, so they used to nest the sentence inside another
+   * (alpha playtest Oct 20).
+   */
+  generateLeaderLine(context: string): string {
+    const said = context.trim().replace(/[.!?…]+$/, '');
+    const tails = [
+      'We felt your eye on us.',
+      'Tell us what you would have of us.',
+      'Do not forget us now.',
+      'We did it in your name.',
+      'Whether you meant this, we cannot tell.',
+      'The young ones ask if you are pleased.',
+    ];
+    return `${said}. ${this.rng.pick(tails)}`;
+  }
+
   generateCosmicEvent(eventType: string, systemName: string): string {
     const eventNarratives: Record<string, string[]> = {
       supernova: [

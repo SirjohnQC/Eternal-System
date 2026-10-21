@@ -58,7 +58,7 @@ export async function generateLeaderDialogue(
     }
   }
 
-  const result = fallbackNarrator.generateCivilizationMilestone(leader.faction, eventContext);
+  const result = fallbackNarrator.generateLeaderLine(eventContext);
   const text = `${result} — ${leader.name}, ${leader.role} of ${leader.faction}`;
   return { text, fromFallback: true };
 }

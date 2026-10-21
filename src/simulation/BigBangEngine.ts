@@ -2010,7 +2010,7 @@ export class BigBangEngine {
   }
 
   /** Every tech card, as the hand shows it: unlocked or sealed, its price now, and why it cannot be played. */
-  techCardViews(): Array<{ card: TechCardDef; unlocked: boolean; price: number; block: string | null; acts: string[]; age: number }> {
+  techCardViews(): Array<{ card: TechCardDef; unlocked: boolean; price: number; block: string | null; acts: string[]; age: number; inEffect: boolean; played: boolean }> {
     const ps = this.getPlayerStar();
     const known = this.homeKnowledge();
     const wear = (gameState.techWear ??= {});
@@ -2018,8 +2018,24 @@ export class BigBangEngine {
       const unlocked = !!ps && techCardUnlocked(card, known, ps.civLevel);
       const price = techPrice(card, wear, this.tick);
       const age = card.needs.era ?? TECH_DEFS[card.needs.tech!]?.era ?? 1;
-      return { card, unlocked, price, block: unlocked ? this.techCardBlock(card, price) : null, acts: unlocked ? this.techCardTargets(card).map(n => n.name) : [], age };
+      return { card, unlocked, price, block: unlocked ? this.techCardBlock(card, price) : null, acts: unlocked ? this.techCardTargets(card).map(n => n.name) : [], age,
+        inEffect: this.techCardInEffect(card), played: !!wear[card.id] };
     });
+  }
+
+  /**
+   * Whether a played card is still working (alpha playtest Oct 20: a played
+   * card only looked greyed out): its omens still run on a living nation, or
+   * its standing effect has not run out.
+   */
+  techCardInEffect(card: TechCardDef): boolean {
+    const fx = gameState.techEffects;
+    if (card.special === 'defence') return this.tick < (fx?.defenceUntil ?? -1);
+    if (card.special === 'kinship') return this.tick < (fx?.kinshipUntil ?? -1);
+    const ns = runtimeState.playerNations;
+    if (!ns?.isFounded || !(card.omens ?? []).length) return false;
+    const title = card.name.charAt(0) + card.name.slice(1).toLowerCase();
+    return ns.nations.some(n => !n.fallen && n.omens.some(o => o.card === title && o.primary && ns.now < o.until));
   }
 
   /** The nations a card's omens fall on. */
@@ -4156,7 +4172,7 @@ export class BigBangEngine {
       // Leader spawning
       this.spawnLeaderForStar(star);
       if (star.civLevel === 1) {
-        if (!this.leaping) this.fireLeaderMessage(star, `${gameState.playerSpeciesName} has reached Ancient civilization. Their first leader rises.`);
+        if (!this.leaping) this.fireLeaderMessage(star, `The ${gameState.playerSpeciesName} have built their first cities. Their first leader rises.`);
       } else if (star.civLevel >= 2) {
         if (!this.leaping) this.fireLeaderMessage(star, `Our civilization has advanced to ${eraTitle(star.civLevel)}.`);
       }

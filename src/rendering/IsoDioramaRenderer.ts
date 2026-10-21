@@ -1138,6 +1138,23 @@ export class IsoDioramaRenderer {
    * ids stamped on the grid stop matching this renderer's copy, every creature
    * lookup fails silently, and the world renders empty.
    */
+  /**
+   * The player's own lineage, when it is the world's people (alpha playtest
+   * Oct 20: the species the player named and the one that built the nations
+   * read as two creatures). Null: the smartest lineage stands in (People.ts).
+   */
+  private peopleId: string | null = null;
+
+  setPeopleId(id: string | null): void {
+    if (id === this.peopleId) return;
+    this.peopleId = id;
+    this.surfaceDirty = true;   // towns and walkers are baked from the people
+  }
+
+  private peopleHere(): SpeciesGenome | null {
+    return (this.peopleId ? this.species.find(s => s.id === this.peopleId && !s.isExtinct) : null) ?? peopleOf(this.species, 3);
+  }
+
   setLiveData(species: SpeciesGenome[], biosphere: PlanetBiosphere): void {
     this.species = species;
     this.biosphere = biosphere;
@@ -1439,10 +1456,57 @@ export class IsoDioramaRenderer {
 
   playReachSweep(cells: readonly number[], colour: string, centre: { row: number; col: number } | null): void {
     if (!cells.length) return;
+    const at = centre ?? { row: Math.floor(cells[0] / GRID_SIZE), col: cells[0] % GRID_SIZE };
+    this.markCast(at, colour);
     this.reach = { ...this.buildReach(cells, colour, centre), mode: 'sweep', t0: this.elapsed };
   }
 
   private reach: { bands: HTMLCanvasElement[]; mode: 'preview' | 'sweep'; t0: number } | null = null;
+
+  /**
+   * Where cards landed (alpha playtest Oct 20: "after the drop the card just
+   * disappears and nothing on the disc marks it"): a sigil that rises, holds
+   * and fades over CAST_MARK_LIFE seconds. Cosmetic only; the work itself is
+   * in the simulation.
+   */
+  private castMarks: Array<{ row: number; col: number; colour: string; t0: number }> = [];
+
+  markCast(cell: { row: number; col: number }, colour: string): void {
+    this.castMarks.push({ row: cell.row, col: cell.col, colour, t0: this.elapsed });
+    if (this.castMarks.length > 6) this.castMarks.shift();
+  }
+
+  private drawCastMarks(g: CanvasRenderingContext2D, t: number): void {
+    if (!this.castMarks.length) return;
+    const LIFE = 40;
+    this.castMarks = this.castMarks.filter(m => t - m.t0 < LIFE);
+    const { cx, cy, rx, ry } = this, k = this.camZoom;
+    g.save();
+    for (const m of this.castMarks) {
+      const p = this.gridToDisc(m.row, m.col);
+      if (!p) continue;
+      const age = t - m.t0;
+      const a = Math.min(1, age / 0.6) * (age > LIFE - 8 ? (LIFE - age) / 8 : 1);
+      const px = cx + p.dx * rx, py = cy + p.dy * ry;
+      const rise = Math.min(1, age / 1.2);
+      const w = 7 * k, h = w * 0.45;
+      // A ring on the ground, a beam and a small four-point star above it.
+      g.globalAlpha = a * (0.55 + 0.25 * Math.sin(age * 2.2));
+      g.strokeStyle = m.colour; g.lineWidth = Math.max(1, k);
+      g.beginPath(); g.ellipse(px, py, w, h, 0, 0, Math.PI * 2); g.stroke();
+      g.globalAlpha = a * 0.35;
+      g.fillStyle = m.colour;
+      g.fillRect(px - k * 0.5, py - 16 * k * rise, Math.max(1, k), 16 * k * rise);
+      const sy = py - 18 * k * rise, sr = 3.2 * k;
+      g.globalAlpha = a;
+      g.fillStyle = '#fff4cf';
+      g.beginPath();
+      g.moveTo(px, sy - sr); g.lineTo(px + sr * 0.3, sy - sr * 0.3); g.lineTo(px + sr, sy);
+      g.lineTo(px + sr * 0.3, sy + sr * 0.3); g.lineTo(px, sy + sr); g.lineTo(px - sr * 0.3, sy + sr * 0.3);
+      g.lineTo(px - sr, sy); g.lineTo(px - sr * 0.3, sy - sr * 0.3); g.closePath(); g.fill();
+    }
+    g.restore();
+  }
 
   /**
    * The reach as a mask over the disc ([-1,1]² in disc units), cut into
@@ -2702,7 +2766,7 @@ export class IsoDioramaRenderer {
         if (cell.civId != null) spots.push({ x: px, y: py, row: gp.row, col: gp.col, fertility: cell.fertility });
       }
     }
-    const intelligent = peopleOf(this.species, 3);
+    const intelligent = this.peopleHere();
     const env = intelligent?.dna.environment ?? 'land';
     const aquatic = env === 'ocean' || env === 'deep_sea';
     // How this civilisation builds: its body, habitat, ways and world, plus
@@ -3456,7 +3520,7 @@ export class IsoDioramaRenderer {
     const creatureSpots: Array<{ x: number; y: number; gy: number; row: number; col: number; id: string; onWater: boolean }> = [];
     // The world's people (People.ts) walk their own settled country — the
     // fields and roads round the towns — whoever dominates the wild there.
-    const peopleId = peopleOf(this.species, 3)?.id ?? null;
+    const peopleId = this.peopleHere()?.id ?? null;
     const peopleSpots: typeof creatureSpots = [];
     const settlementSpots: Array<{
       x: number; y: number; sx: number; sy: number;
@@ -3611,7 +3675,7 @@ export class IsoDioramaRenderer {
     if (!this.habitable) this.planTowns(geom);
     const civLevel = this.civLevelHere();
     let idx = 0;
-    const genome = peopleOf(this.species, 3) ?? this.species[0] ?? null;
+    const genome = this.peopleHere() ?? this.species[0] ?? null;
     for (const t of this.townPlan.towns) {
       const sprite = bakeSettlementSprite(genome, civLevel, idx++, 1);
       const ly = t.y - this.liftAtFace(t.x, t.y, geom);
@@ -3721,7 +3785,7 @@ export class IsoDioramaRenderer {
     if (target < FORGE_MIN_PX) return null;
     const gn = c.genome, d = gn.dna, p = gn.physicalTraits;
     // The world's people stands upright; every other species is an animal.
-    const people = peopleOf(this.species, 3)?.id === gn.id;
+    const people = this.peopleHere()?.id === gn.id;
     const body = [gn.id, d.locomotion, d.metabolism, d.environment, d.diet, d.aggression, d.intelligence,
       p.size, p.bodyStructure, p.mobilityType, p.sensorySystem, people ? 'p' : ''].join('|');
     const key = `${target}|${body}`;
@@ -3773,7 +3837,7 @@ export class IsoDioramaRenderer {
     { dx: number; dy: number; left: boolean; moving: boolean; lift: number } {
     const loc = c.genome.dna.locomotion;
     // The world's people walk, whatever its lineage once did (People.ts).
-    const people = peopleOf(this.species, 3)?.id === c.genome.id;
+    const people = this.peopleHere()?.id === c.genome.id;
     const flyer = !people && loc === 'flying', walker = people || loc === 'walking' || loc === 'crawling';
     // A land walker only picks wander points on land; one over the sea becomes
     // "back home" (#25: two-legged peoples strolled out onto the water).
@@ -4166,6 +4230,7 @@ export class IsoDioramaRenderer {
         },
         drawUiOverlays: (g) => {
           this.drawReach(g, this.elapsed);
+          this.drawCastMarks(g, this.elapsed);
           this.drawTileMarkers(g, this.elapsed);
           this.drawDivineEffects(g, dt);
           if (this.meteor.active) this.meteor.drawSky(g, this.updateStrikeView());
@@ -4250,6 +4315,7 @@ export class IsoDioramaRenderer {
 
     // 10c — a card's reach; tile hover / selection markers
     this.drawReach(g, this.elapsed);
+    this.drawCastMarks(g, this.elapsed);
     this.drawTileMarkers(g, t);
 
     // 10d — divine powers landing on the surface; meteor strikes

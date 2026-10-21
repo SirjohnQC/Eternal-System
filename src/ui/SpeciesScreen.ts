@@ -32,6 +32,8 @@ import { openChronicle } from './ChronicleUI';
 export interface SpeciesScreenDeps {
   /** The player's own lineage (the Evolution Lab's specimen). */
   yours(): SpeciesGenome | null;
+  /** Whether the player's people are civilised: their lineage then reads as a people. */
+  civilised?(): boolean;
   /** A portrait canvas (may be shared and cached; the screen draws a copy). */
   portrait(g: SpeciesGenome, px: number): HTMLCanvasElement;
   mutationLabel(id: string): string;
@@ -117,13 +119,17 @@ export function closeSpeciesScreen(): void {
   if (timer) { clearInterval(timer); timer = null; }
 }
 
+/** Set each render: the player's people are civilised. */
+let civ = false;
+
 function render(): void {
   const box = document.getElementById('species-screen');
   if (!box?.classList.contains('open') || !deps) return;
   const pool = gameState.playerSpecies;
   const yours = deps.yours();
+  civ = deps.civilised?.() ?? false;
   const census = censusOf(pool, yours?.id ?? null);
-  const sig = [tab, chosen, picked, gameState.dnaPoints, gameState.mutationQueue.join(','), gameState.mutationsOwned.length, pool.length, census.living, census.extinct, yours?.id, yours?.name, gameState.speciesForms.length,
+  const sig = [tab, chosen, picked, gameState.dnaPoints, gameState.mutationQueue.join(','), gameState.mutationsOwned.length, pool.length, census.living, census.extinct, yours?.id, yours?.name, gameState.speciesForms.length, civ,
     pool.map(s => s.population.toFixed(2)).join(',')].join('#');
   if (sig === lastSig) return;
   lastSig = sig;
@@ -154,7 +160,7 @@ function renderLiving(body: HTMLElement, pool: readonly SpeciesGenome[], yours: 
   // then animals, plants, microbes; within each, yours first and branches
   // under their parent (a branch shown under a parent of another class is not indented).
   const all = livingRows(pool, yours?.id ?? null);
-  const cls = new Map(all.map(r => [r.g.id, lifeClassOf(r.g, yours?.id ?? null)]));
+  const cls = new Map(all.map(r => [r.g.id, lifeClassOf(r.g, yours?.id ?? null, civ)]));
   const groups = (['mind', 'animal', 'plant', 'microbe'] as LifeClass[])
     .map(c => ({ c, rows: all.filter(r => cls.get(r.g.id) === c) })).filter(x => x.rows.length);
   const rows = groups.flatMap(x => x.rows);
@@ -163,7 +169,7 @@ function renderLiving(body: HTMLElement, pool: readonly SpeciesGenome[], yours: 
     const sub = r.depth && cls.get(r.g.ancestorId ?? '') === cls.get(r.g.id);
     return `<button type="button" class="sp-row${r.g.id === chosen ? ' on' : ''}${r.g.id === yours?.id ? ' yours' : ''}${sub ? ' sub' : ''}" data-sp="${esc(r.g.id)}" role="option" aria-selected="${r.g.id === chosen}">
         <span class="sp-row-art"></span>
-        <span class="sp-row-txt"><span class="sp-row-name">${esc(r.g.name)}</span><span class="sp-row-kind">${esc(kindOf(r.g))}</span></span>
+        <span class="sp-row-txt"><span class="sp-row-name">${esc(r.g.name)}</span><span class="sp-row-kind">${esc(kindOf(r.g, civ && r.g.id === yours?.id))}</span></span>
         <span class="sp-row-pct">${pct(r.share)}</span>
       </button>`;
   };
@@ -187,9 +193,9 @@ function detail(el: HTMLElement, g: SpeciesGenome, pool: readonly SpeciesGenome[
       <div class="sp-d-art"></div>
       <div>
         <div class="sp-d-name">${esc(g.name)}</div>
-        <div class="sp-d-kind"><span class="sp-class sp-g-${lifeClassOf(g, yours?.id ?? null)}">${esc(cap(LIFE_CLASS_WORDS[lifeClassOf(g, yours?.id ?? null)].one))}</span> ${esc(cap(kindOf(g)))} · ${esc(g.physicalTraits.size)} · ${esc(d.locomotion)}</div>
+        <div class="sp-d-kind"><span class="sp-class sp-g-${lifeClassOf(g, yours?.id ?? null, civ)}">${esc(cap(LIFE_CLASS_WORDS[lifeClassOf(g, yours?.id ?? null, civ)].one))}</span> ${esc(cap(kindOf(g, civ && g.id === yours?.id)))} · ${esc(g.physicalTraits.size)} · ${esc(d.locomotion)}</div>
         <div class="sp-rel r-${rel}">${esc(cap(RELATION_WORDS[rel]))}</div>
-        ${hasTemper(g) ? `<div class="sp-nature">${natureOf(g).map(w => `<span>${esc(w)}</span>`).join('')}</div>` : ''}
+        ${hasTemper(g) || (civ && g.id === yours?.id) ? `<div class="sp-nature">${natureOf(g, civ && g.id === yours?.id).map(w => `<span>${esc(w)}</span>`).join('')}</div>` : ''}
       </div>
     </div>
     <div class="sp-d-grid">
@@ -253,7 +259,7 @@ function renderEvolution(body: HTMLElement, yours: SpeciesGenome | null): void {
   body.innerHTML = `<div class="sp-evo">
     <div class="sp-evo-now"><div class="sp-d-art"></div>
       <div><div class="sp-d-name">${esc(yours?.name ?? 'No lineage yet')}</div>
-      <div class="sp-d-kind">${yours ? `Form ${roman(Math.max(1, forms.length))} · ${esc(cap(kindOf(yours)))}` : ''}</div>
+      <div class="sp-d-kind">${yours ? `Form ${roman(Math.max(1, forms.length))} · ${esc(cap(kindOf(yours, civ)))}` : ''}</div>
       <div class="sp-evo-dna">${gameState.dnaPoints} DNA · ${gameState.mutationQueue.length} queued · ${gameState.mutationsOwned.length} taken</div>
       <button type="button" class="sp-btn gold" data-act="lab">OPEN THE EVOLUTION LAB</button></div></div>
     <div class="sp-h">Their lineage</div>
@@ -332,7 +338,7 @@ function renderLab(body: HTMLElement, yours: SpeciesGenome | null, lab: NonNulla
     <div class="sp-lab-left">
       <div class="sp-d-art lab-now"></div>
       <div class="sp-d-name">${esc(yours?.name ?? 'No lineage yet')}</div>
-      <div class="sp-d-kind">${yours ? `Form ${roman(Math.max(1, forms.length))} · ${esc(cap(kindOf(yours)))}` : ''}</div>
+      <div class="sp-d-kind">${yours ? `Form ${roman(Math.max(1, forms.length))} · ${esc(cap(kindOf(yours, civ)))}` : ''}</div>
       <div class="sp-dna"><b>${gameState.dnaPoints}</b> DNA</div>
       <div class="sp-h">Waiting to evolve</div>
       <div class="sp-queue">${queue.length ? queue.map(id => {

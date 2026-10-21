@@ -30,6 +30,8 @@ export const HAND_MAX = 6;
 
 export interface FaithHandDeps {
   chat(text: string, kind: 'god' | 'system'): void;
+  /** A card was cast: what it did, for a toast (alpha playtest Oct 20). */
+  landed?(card: FaithCard, line: string): void;
   /** DP changed: refresh chips and the rest of the deck. */
   dpChanged(): void;
   tick(): number;
@@ -225,6 +227,7 @@ function play(c: FaithCard, aim: { row: number; col: number } | null = null): vo
   noteUse(wear(), c.actions, now());
   gameState.faithHand = hand().filter(x => x !== c);
   deps.chat(res.line, 'god');
+  deps.landed?.(c, res.line);
   if (res.where || scopeOf(c) !== 'nation') deps.effect?.(EFFECT_OF[c.actions[0]], res.where);
   for (const w of res.works) if (w.changed > 0) deps.landChanged?.(w.work, w.where);
   hideTip();

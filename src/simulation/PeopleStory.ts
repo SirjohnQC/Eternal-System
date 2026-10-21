@@ -134,9 +134,11 @@ export const ACTIVITY_WORDS: Record<Activity, string> = {
 };
 
 /** Stats as words (pillar C): "clever, wary of strangers, quick to anger". */
-export function natureOf(g: SpeciesGenome): string[] {
+export function natureOf(g: SpeciesGenome, civilised = false): string[] {
   const d = g.dna, out: string[] = [];
-  out.push(d.intelligence >= 8 ? 'brilliant' : d.intelligence >= 6 ? 'clever' : d.intelligence >= 4 ? 'cunning' : d.intelligence >= 2 ? 'simple' : 'mindless');
+  // A civilised people is never "mindless" (alpha playtest Oct 20).
+  out.push(d.intelligence >= 8 ? 'brilliant' : d.intelligence >= 6 ? 'clever' : d.intelligence >= 4 ? 'cunning'
+    : civilised ? 'slow, patient minds' : d.intelligence >= 2 ? 'simple' : 'mindless');
   out.push(d.social >= 7 ? 'deeply communal' : d.social >= 4 ? 'loyal to their own' : 'wary of strangers');
   out.push(d.aggression >= 7 ? 'quick to anger' : d.aggression >= 4 ? 'proud' : 'peaceable');
   out.push(d.adaptability >= 7 ? 'at home anywhere' : d.adaptability >= 4 ? 'hardy' : 'set in their ways');

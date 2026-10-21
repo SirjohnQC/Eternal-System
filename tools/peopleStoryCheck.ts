@@ -18,6 +18,8 @@ import {
 } from '../src/simulation/PeopleStory';
 import { DEFAULT_BIOSPHERE, createPrimordialSpecies } from '../src/simulation/SpeciesGenome';
 import { SeedRNG } from '../src/utils/SeedRNG';
+import { FallbackNarrator } from '../src/ai/FallbackNarrator';
+import { playerPeopleOf } from '../src/simulation/People';
 import {
   MUTATIONS, MUTATION_BY_ID, ANSWERS, answersFor, mutationPrice, giftReason, cardStates, PRESSURE_TIMES,
   DRAWBACKS, EVOLVE_THRESHOLD, queueReady, mutationEffect, applyMutation, cloneGenome,
@@ -275,6 +277,32 @@ console.log('Throwing a card onto a tile');
     if (w.grid[rr][cc].moisture !== before[rr][cc]) { moved++; if (near(i) > 24) far++; }
   }
   check('a thrown card works the land where it landed', moved > 0 && far === 0, `${moved} cells wetter, ${far} far away`);
+}
+
+console.log('One creature: the named lineage is the civilised people');
+{
+  const plant = createPrimordialSpecies(1);
+  plant.id = 'sig'; plant.physicalTraits.bodyStructure = 'radial'; plant.dna.diet = 'producer'; plant.dna.intelligence = 0;
+  const smart = createPrimordialSpecies(2);
+  smart.id = 'smart'; smart.physicalTraits.bodyStructure = 'bilateral'; smart.dna.intelligence = 5;
+  check('one creature: a civilised lineage is a people', lifeClassOf(plant, 'sig', true) === 'mind' && lifeClassOf(plant, 'sig', false) === 'plant');
+  check('one creature: listed as a people, not a plant', kindOf(plant, true).endsWith('people') && !kindOf(plant, true).includes('plant'), kindOf(plant, true));
+  check('one creature: never "mindless" once civilised', !natureOf(plant, true).includes('mindless') && natureOf(plant, false).includes('mindless'));
+  check('one creature: the named lineage builds the nations', playerPeopleOf([plant, smart], 'sig', true)?.id === 'sig'
+    && playerPeopleOf([plant, smart], 'sig', false)?.id === 'smart' && playerPeopleOf([smart], 'gone', true)?.id === 'smart');
+}
+
+console.log('A leader speaks in whole sentences');
+{
+  const n = new FallbackNarrator('leader_lines');
+  let bad = '';
+  for (const ctx of ['Our civilization has advanced to Industrial.', 'The Lumari has reached Ancient civilization. Their first leader rises.']) {
+    for (let i = 0; i < 20; i++) {
+      const line = n.generateLeaderLine(ctx);
+      if (/\.\.|achieved Our|: Our/.test(line) || !line.startsWith(ctx.replace(/\.$/, ''))) bad = line;
+    }
+  }
+  check('leader lines: no nested sentence, no doubled period', !bad, bad);
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');

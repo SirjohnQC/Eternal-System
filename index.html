@@ -2810,7 +2810,7 @@ input[type="range"], select, label[for],
           <header class="sim-header">
             <button type="button" id="rolling-back-btn">← BACK</button>
             <div class="sim-header-brand">
-              <span class="sim-brand">ETERNAL SYSTEM</span>
+              <span class="sim-brand">ETERNAL SYSTEMS</span>
               <span class="sim-mode">// SIMULATION BOOT</span>
             </div>
             <div class="sim-status" id="sim-boot-status" data-state="standby">
@@ -2938,7 +2938,7 @@ input[type="range"], select, label[for],
 
   <!-- Precache gate — shown until seed + Pixi + visual caches are warm -->
   <div id="bigbang-loading" aria-live="polite" aria-busy="true">
-    <div class="bb-load-brand">ETERNAL SYSTEM</div>
+    <div class="bb-load-brand">ETERNAL SYSTEMS</div>
     <div class="bb-load-title">Weaving the cosmos…</div>
     <div class="bb-load-bar"><div class="bb-load-fill" id="bb-load-fill"></div></div>
     <div class="bb-load-status" id="bb-load-status">Seeding the void</div>
@@ -2967,7 +2967,7 @@ input[type="range"], select, label[for],
     <div class="top-brand">
       <div class="top-logo-row">
         <img class="top-star" src="/assets/pixel/icons/dp.png" alt="" width="14" height="14"/>
-        <div class="top-logo">ETERNAL SYSTEM</div>
+        <div class="top-logo">ETERNAL SYSTEMS</div>
       </div>
       <div class="top-tag">ASCEND. INFLUENCE. TRANSCEND.</div>
     </div>
@@ -4280,6 +4280,8 @@ body.hud-on #game-hud{display:contents}
   transition:transform .22s ease;font-family:var(--font-ui);
 }
 body.events-collapsed .right-panel{transform:translateX(100%)}
+/* GOD in the planet view: the god's column comes over the planet's info column. */
+body.god-open:has(#planet-overlay[style*="flex"]) .right-panel{z-index:236;box-shadow:-8px 0 24px rgba(0,0,0,.6)}
 .god-nameplate{
   padding:14px 14px 10px;border-bottom:1px solid rgba(123,94,167,0.25);
   display:flex;align-items:center;gap:8px;
@@ -4778,6 +4780,11 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
 #tech-modal .fm-btn:disabled{opacity:.4;cursor:default}
 #tech-modal .tm-go:not(:disabled){border-color:var(--cyan);color:var(--cyan)}
 .tech-card{--faith-accent:var(--cyan);--faith-glow:rgba(90,212,232,0.4)}
+.tech-card{position:relative}
+.tech-card-badge{position:absolute;top:-7px;left:50%;transform:translateX(-50%);z-index:3;padding:1px 6px;font-size:8px;letter-spacing:.12em;white-space:nowrap;
+  background:#1a2230;color:#9fb0c4;border:1px solid #3a4a60;pointer-events:none}
+.tech-card-badge.on{background:#0f3a40;color:#bff6ff;border-color:var(--cyan);box-shadow:0 0 8px rgba(90,212,232,0.6)}
+.tech-card.tech-in-effect{opacity:1;filter:none;box-shadow:0 0 0 1px var(--cyan),0 0 14px rgba(90,212,232,0.35)}
 .tech-card.affordable .divine-action-cost{color:var(--cyan)}
 #tech-modal .tm-worlds{display:flex;flex-direction:column;gap:6px;width:min(420px,calc(100vw - 64px));max-height:min(52vh,460px);overflow-y:auto;padding-right:4px}
 #tech-modal .tm-group{font-family:var(--font-pixel);font-size:9px;letter-spacing:3px;color:var(--dim);margin:6px 0 0}
@@ -4922,7 +4929,7 @@ body:not(.events-collapsed) .bottom-bar{padding-right:calc(var(--events) + 10px)
       <div class="settings-scanlines" aria-hidden="true"></div>
       <div class="settings-crt-body">
         <div class="settings-header">
-          <div class="settings-title">ETERNAL SYSTEM</div>
+          <div class="settings-title">ETERNAL SYSTEMS</div>
           <div class="settings-status">
             <span class="settings-status-dot" aria-hidden="true"></span>
             ONLINE

@@ -82,7 +82,7 @@ import { UiSound, wireUiSounds } from './audio/UiSound';
 import { D20View, setDiceActive } from './ui/D20';
 import { loadSpriteOverrides, spritesRequested, SPRITES_PREF } from './rendering/SpriteAtlasLoader';
 import { spriteOverridesActive } from './rendering/SpriteOverride';
-import { peopleOf } from './simulation/People';
+import { playerPeopleOf } from './simulation/People';
 
 // Hand-made sprite sheets instead of the forges (on by default; ?sprites=0 or
 // Settings > ART for the procedural art). Anything already baked before they
@@ -392,7 +392,10 @@ function checkGenesisReady(): void {
   const allQuestionsAnswered = !!(answeredQuestions.climate && answeredQuestions.oceans && answeredQuestions.chaos);
 
   if (planet && allQuestionsAnswered) {
+    const wasHidden = genBtn.style.display === 'none';
     genBtn.style.display = '';
+    // Keep LAUNCH in sight: it used to sit below the panel's fold (alpha Oct 20).
+    if (wasHidden) requestAnimationFrame(() => genBtn.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
     if (hintEl) hintEl.textContent = 'Seed locked. Press to initialize cosmos.';
     setSimBootStatus('ready', 'READY');
   } else {
@@ -1393,7 +1396,19 @@ let _dioramaSite: { starId: number; planetIndex: number; sig: string } | null = 
 
 /** Push the home world's live species into the diorama — only while it shows home. */
 function homeDioramaLiveData(): void {
-  if (!_dioramaSite) _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+  if (_dioramaSite) return;
+  _dioramaRenderer?.setPeopleId(homePeopleId());
+  _dioramaRenderer?.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
+}
+
+/** Whether the home world's people are civilised (their lineage is then the player's). */
+function homeCivilised(): boolean {
+  return engine?.getPlayerStar()?.biologyPhase === 'intelligent';
+}
+
+/** The home world's people as the diorama should draw them (People.playerPeopleOf). */
+function homePeopleId(): string | null {
+  return homeCivilised() ? gameState.signatureSpeciesId : null;
 }
 
 /** A colony world in view changed (grew, its people changed): redraw from the engine's re-stamped surface. */
@@ -1409,6 +1424,7 @@ function refreshColonyDiorama(): void {
     const star = engine.stars.find(s => s.id === site.starId);
     const planet = star?.planets[site.planetIndex];
     if (star && planet) {
+      _dioramaRenderer.setPeopleId(null);
       _dioramaRenderer.refreshData(v.grid, { ...DEFAULT_BIOSPHERE }, v.species, planet, star, site.planetIndex,
         { civLevel: v.civLevel, phase: v.colony ? 'intelligent' : 'none' });
       return;
@@ -1481,6 +1497,7 @@ async function openPlanetView(star?: StarBody, planetIndex?: number): Promise<vo
       _dioramaRenderer.setFireSource(() => engine?.fires.cells ?? null);
     }
 
+    _dioramaRenderer.setPeopleId(colonyView ? null : homePeopleId());
     if (colonyView && planet) {
       _dioramaRenderer.refreshData(colonyView.grid, { ...DEFAULT_BIOSPHERE }, colonyView.species, planet, target, planetIndex,
         { civLevel: colonyView.civLevel, phase: colonyView.colony ? 'intelligent' : 'none' });
@@ -1990,45 +2007,19 @@ function buildLineageSection(star: StarBody, planetIndex: number, isHome: boolea
   box.replaceChildren(...rows);
 }
 
-function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
-  _panelStarId = star.id;
+/**
+ * The Overview's age, era, population and biosphere: refreshed every second
+ * while the planet view is open (alpha playtest Oct 20: they stayed at
+ * "Microbial Life" / "Early Ancient" until the view was re-entered; CLAUDE.md
+ * rule 1).
+ */
+function refreshPlanetVitals(star: StarBody, planetIndex: number): void {
   const planet = star.planets[planetIndex] ?? star.planets[0];
-  const isPlayer = star.isPlayerStar;
-  // The player's people live in this system, but only ONE planet is home: the
-  // home world's name and DNA must not be pinned on its neighbours (#16).
-  const isHome = isPlayer && planetIndex === (engine?.homeIndexOf(star) ?? planetIndex);
-  const dna = isHome ? gameState.playerPlanetDNA : null;
-  const civLevel = star.civLevel;
-
-  // ── OVERVIEW ──────────────────────────────────────────────
-  const displayName = isHome && gameState.playerPlanetName !== '—'
-    ? gameState.playerPlanetName
-    : (planet?.name ?? star.civName + ' Prime');
-
+  const isHome = star.isPlayerStar && planetIndex === (engine?.homeIndexOf(star) ?? planetIndex);
   const colony = isHome ? null : engine?.colonyAt(star.id, planetIndex) ?? null;
-  setText('pi-planet-name', colony?.name ?? displayName);
-  buildWorldSection(star, planetIndex, isHome);
-  buildLineageSection(star, planetIndex, isHome);
-  // Views render from simulation state (CLAUDE.md rule 1): keep "This World"
-  // current while the panel is open, not only as it was on entry.
-  if (_worldSectionTimer) clearInterval(_worldSectionTimer);
-  _worldSectionTimer = isHome ? null : setInterval(() => {
-    const overlay = document.getElementById('planet-overlay');
-    if (!overlay || overlay.style.display === 'none' || _panelStarId !== star.id) {
-      if (_worldSectionTimer) clearInterval(_worldSectionTimer);
-      _worldSectionTimer = null;
-      return;
-    }
-    buildWorldSection(star, planetIndex, false);
-    buildLineageSection(star, planetIndex, false);
-    refreshColonyDiorama();
-  }, 1000);
-  setText('pi-type-badge', (planet?.type ?? 'unknown').toUpperCase());
-  setText('pi-star-system', star.civName + ' System');
-  setText('pi-planet-index', planet ? `Orbit ${planetIndex + 1} of ${star.planets.length}` : '—');
-
-  // Sim age — rough years based on tick (each tick ~100 years by lore)
-  const simYears = gameState.tick * 100;
+  const civLevel = star.civLevel;
+  // Sim age: the same years as the top bar (10 per tick).
+  const simYears = gameState.tick * 10;
   const ageStr = simYears >= 1e9 ? (simYears / 1e9).toFixed(1) + ' Gyr'
     : simYears >= 1e6 ? (simYears / 1e6).toFixed(0) + ' Myr'
     : simYears.toLocaleString() + ' yr';
@@ -2070,6 +2061,49 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
     setText('pi-biosphere', '0%');
     setStyle('pi-biosphere-bar', 'width', '0%');
   }
+
+}
+
+function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
+  _panelStarId = star.id;
+  const planet = star.planets[planetIndex] ?? star.planets[0];
+  const isPlayer = star.isPlayerStar;
+  // The player's people live in this system, but only ONE planet is home: the
+  // home world's name and DNA must not be pinned on its neighbours (#16).
+  const isHome = isPlayer && planetIndex === (engine?.homeIndexOf(star) ?? planetIndex);
+  const dna = isHome ? gameState.playerPlanetDNA : null;
+  const civLevel = star.civLevel;
+
+  // ── OVERVIEW ──────────────────────────────────────────────
+  const displayName = isHome && gameState.playerPlanetName !== '—'
+    ? gameState.playerPlanetName
+    : (planet?.name ?? star.civName + ' Prime');
+
+  const colony = isHome ? null : engine?.colonyAt(star.id, planetIndex) ?? null;
+  setText('pi-planet-name', colony?.name ?? displayName);
+  buildWorldSection(star, planetIndex, isHome);
+  buildLineageSection(star, planetIndex, isHome);
+  // Views render from simulation state (CLAUDE.md rule 1): keep "This World"
+  // current while the panel is open, not only as it was on entry.
+  if (_worldSectionTimer) clearInterval(_worldSectionTimer);
+  _worldSectionTimer = setInterval(() => {
+    const overlay = document.getElementById('planet-overlay');
+    if (!overlay || overlay.style.display === 'none' || _panelStarId !== star.id) {
+      if (_worldSectionTimer) clearInterval(_worldSectionTimer);
+      _worldSectionTimer = null;
+      return;
+    }
+    refreshPlanetVitals(star, planetIndex);
+    if (isHome) return;
+    buildWorldSection(star, planetIndex, false);
+    buildLineageSection(star, planetIndex, false);
+    refreshColonyDiorama();
+  }, 1000);
+  setText('pi-type-badge', (planet?.type ?? 'unknown').toUpperCase());
+  setText('pi-star-system', star.civName + ' System');
+  setText('pi-planet-index', planet ? `Orbit ${planetIndex + 1} of ${star.planets.length}` : '—');
+
+  refreshPlanetVitals(star, planetIndex);
 
   // ── Habitability + biology (LifeSystem) ───────────────────
   // Only meaningful once the system has actually been surveyed — an uncharted
@@ -2113,7 +2147,7 @@ function buildPlanetInfoPanel(star: StarBody, planetIndex: number): void {
   const dnaSection = document.getElementById('pi-dna-section');
   // The world's DNA is not shown until it is decided (#18): not while it is a
   // magma ocean, nor while the Forge is drafting it.
-  const dnaKnown = !!dna && prog.worldDnaKnown;
+  const dnaKnown = !!dna && progressionFor(star).worldDnaKnown;
   if (dna && dnaKnown && dnaSection) {
     dnaSection.style.display = '';
     setText('pi-dna-climate', dna.climate);
@@ -2613,6 +2647,7 @@ function planetViewOpen(): boolean {
 
 function closePlanetView(): void {
   document.getElementById('planet-overlay')!.style.display = 'none';
+  document.body.classList.remove('god-open');
   planetRenderer?.stop();
   _dioramaRenderer?.pause();
   _dioramaRenderer?.setHighlight(null);
@@ -3325,6 +3360,7 @@ function closeEventLog(): void {
 const TOAST_ICONS: Record<string, string> = {
   dna:             '🧬',
   tech:            '◆',
+  cast:            '✧',
   supernova:       '💥',
   asteroid_impact: '☄',
   void_storm:      '🌀',
@@ -3339,6 +3375,7 @@ const TOAST_ICONS: Record<string, string> = {
 const TOAST_TITLES: Record<string, string> = {
   dna:             'EVOLUTION',
   tech:            'TECH CARD',
+  cast:            'A SIGN FALLS',
   supernova:       'STELLAR COLLAPSE',
   asteroid_impact: 'ASTEROID IMPACT',
   void_storm:      'VOID STORM',
@@ -4592,6 +4629,7 @@ function setEvolveDrawer(open: boolean): void {
 
 function setEventsCollapsed(collapsed: boolean): void {
   document.body.classList.toggle('events-collapsed', collapsed);
+  if (collapsed) document.body.classList.remove('god-open');
 }
 
 /** Settings > ART: the hand-made sprites on or off (remembered; applies on the next load). */
@@ -4622,6 +4660,16 @@ function initHudShell(): void {
   });
   document.getElementById('evolve-drawer-close')?.addEventListener('click', () => setEvolveDrawer(false));
   document.getElementById('rail-god')?.addEventListener('click', () => {
+    // In the planet view the god's column sits under the overlay: bring it to
+    // the front (alpha playtest Oct 20: "GOD does nothing in the planet view").
+    // A second click while it is up puts it back.
+    const inPlanet = document.getElementById('planet-overlay')?.style.display === 'flex';
+    if (inPlanet && document.body.classList.contains('god-open')) {
+      document.body.classList.remove('god-open');
+      document.getElementById('rail-god')?.classList.remove('active');
+      return;
+    }
+    document.body.classList.toggle('god-open', inPlanet);
     setEventsCollapsed(false);
     document.getElementById('player-input')?.focus();
     document.querySelectorAll('.rail-btn').forEach(b => b.classList.remove('active'));
@@ -5122,8 +5170,20 @@ window.addEventListener('DOMContentLoaded', () => {
     (e.target as HTMLInputElement).value = '';
   });
 
+  // Esc closes the topmost overlay first; it leaves the planet view only when
+  // nothing sits over it (alpha playtest Oct 20: Esc never closed Help).
+  const escOverlays = ['help-overlay', 'settings-overlay', 'ledger', 'chronicle', 'nations-ov', 'species-screen', 'your-people', 'tech-screen'];
+  let escConsumed = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    escConsumed = escOverlays.some(id => document.getElementById(id)?.classList.contains('open'))
+      || !!document.getElementById('tech-modal') || document.body.classList.contains('god-open');
+    document.getElementById('help-overlay')?.classList.remove('open');
+    if (document.getElementById('settings-overlay')?.classList.contains('open')) closeSettings();
+    document.body.classList.remove('god-open');
+  }, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closePlanetView();
+    if (e.key === 'Escape' && !escConsumed) closePlanetView();
     if (e.key === 'f' || e.key === 'F') engine?.focusPlayerStar();
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault();
@@ -5582,7 +5642,7 @@ function genomeFromSummary(g: GenomeSummary, id: string): SpeciesGenome {
 
 /** Is `g` the home world's people (People.ts), drawn standing upright? */
 function isPeople(g: SpeciesGenome): boolean {
-  return peopleOf(gameState.playerSpecies, 3)?.id === g.id;
+  return playerPeopleOf(gameState.playerSpecies, gameState.signatureSpeciesId, homeCivilised())?.id === g.id;
 }
 
 /** A creature as a dark silhouette with a pale rim: what it will become, unseen. */
@@ -5686,7 +5746,7 @@ function renderEvoLab(): void {
     const stats = document.getElementById('evo-specimen-stats')!;
     stats.innerHTML = '';
     // Stats as words, not /10 (species design C).
-    const [mind, kin, temper, reach] = natureOf(sp);
+    const [mind, kin, temper, reach] = natureOf(sp, homeCivilised());
     const rows: Array<[string, string]> = [
       ['MIND', mind], ['WITH OTHERS', kin], ['TEMPER', temper], ['IN NEW LANDS', reach],
       ['SENSES', sp.physicalTraits.sensorySystem],
@@ -5865,7 +5925,8 @@ function evolveNow(): void {
   addFeedEntry(`${r.before.name} evolved into ${r.after.name} (Form ${roman(r.form)})`, 'milestone');
   addCodexEntry(`Form ${roman(r.form)}: ${r.after.name}`, 'biology');
   // The planet's creatures are drawn from the same genomes.
-  if (_dioramaRenderer) {
+  if (_dioramaRenderer && !_dioramaSite) {
+    _dioramaRenderer.setPeopleId(homePeopleId());
     _dioramaRenderer.setLiveData(gameState.playerSpecies, gameState.playerBiosphere);
     _dioramaRenderer.markSurfaceDirty();
   }
@@ -6009,10 +6070,12 @@ function initEvoLab(): void {
     mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
     openLab: () => openSpeciesScreen('living'),
     phaseLabel: () => { const ps = engine?.getPlayerStar(); return ps ? progressionFor(ps).phaseLabel : '—'; },
+    civilised: homeCivilised,
   });
   // Species: the planet's biology, the lab, the extinct (playtest Oct 20).
   initSpeciesScreen({
     yours: labSpecimen,
+    civilised: homeCivilised,
     portrait: (g, px) => creatureCanvas(g, px),
     mutationLabel: id => MUTATION_BY_ID[id]?.label ?? id,
     openLab: openEvoLab,
@@ -6595,6 +6658,7 @@ initTechCards({
 });
 initFaithHand({
   chat: (text, kind) => addChatMessage(text, kind),
+  landed: (card, line) => showToast('cast', `<b>${escapeHtml(card.name)}</b> — ${escapeHtml(line)}`, 6000),
   dpChanged: () => {
     updateDivineActions();
     setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);
