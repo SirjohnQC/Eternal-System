@@ -698,3 +698,324 @@ Each phase is one PR, one concern, with its issue number. Every new
 5. **Saving the nations.** P3 and P5 put characters on the nations, which are
    not saved. Fix the NationSystem save before P3, or accept rulers that
    re-roll on reload for now?
+
+---
+
+## Decisions (2026-10-20)
+
+*Sirjohn answered the open questions. Q4 was delegated to the game designer;
+the decision and its numbers are below, checked against the code on `main`
+(not against this doc's earlier text, which predates `MIND_CAP`,
+`playerPeopleOf` and the signature lineage).*
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Slow or pause | **Slow.** Great moments use the counted hold of 1A. Pause stays a setting, not the default. |
+| 2 | The pace die | **Narrower and slower than proposed:** see *Q2* below. |
+| 3 | Threshold cards | **Free to take** into the hand. Casting still costs DP. |
+| 4 | The mind gate | **A hard gate with a bounded wait:** see *Q4* below. |
+| 5 | Saving the nations | **The NationSystem save lands first**, as its own task, before P3 and P5. |
+
+### Q4: the mind gate
+
+**Decision: the world may wait at Hands (`primitive`) until the player's own
+lineage has a mind. The wait is always bounded. A *mind drift* grows the mind
+from the moment Hands begins, so a passive player still crosses, only later.**
+"Only slow the step" is rejected. If the step is only slowed, a mindless people
+still founds nations, and that is the tester's "mindless plant-fish built
+Dyson-era tech" again. A gate whose worst case is bounded keeps the one
+promise that matters ("the people are the creature I shaped") without the
+silent game over that `PLAYER_STALL_TIME_CAP` exists to prevent.
+
+**What the code does today (the reasons for the details below):**
+- `updateBiologyPhase` (`BigBangEngine.ts:3884`) makes the primitive →
+  intelligent step a Great Filter roll (`BASE_FILTER.primitive = 0.62`) and
+  never reads a genome. A `burst` from `complex` can skip Hands entirely
+  (`step = 2`).
+- Three different selectors pick "the people" at emergence. This breaks rule 7:
+  - `ensureCivilization` takes the **most populous** living species;
+  - `stepNations` takes `civ.sourceGenome`, else `peopleOf(playerSpecies)` with
+    a minimum of **0**;
+  - the UI (`playerPeopleOf`) shows the **signature** lineage.
+- `stepEvolution` runs only while `biologyPhase !== 'intelligent'`
+  (`BigBangEngine.ts:3414`), so the people's genome freezes once they have a
+  mind, apart from the player's own mutations. Whatever mind they have at the
+  crossing is the mind they keep.
+- Intelligence drift is weak and different for each lineage. `driftOf` weights
+  each trait by `u² × 3`, with a floor of 0.02, so some lineages almost never
+  pick intelligence. The mutation chance per step is about 0.2–0.4.
+- Several mutations lock `intelligence`: `big_brain`, `hands` and
+  `toolmaking`. A locked trait never drifts. A player who takes Grasping Hands
+  (+1, locked) can freeze their lineage at 1.
+
+**The gate**
+- `MIND_MIN = 4`, on the 0–10 `dna.intelligence` scale, exported from
+  `People.ts`.
+- The thinker is **the signature lineage** (`signatureSpecies()`). It is not
+  `peopleOf(...)` and not a rival.
+  - A rival that climbs past `MIND_CAP` stays wildlife. "Another mind on your
+    world" is a hook for later, not a way around the gate.
+- The gate applies to **any** step whose `nextPhase === 'intelligent'`, on the
+  player star only. NPC stars have no simulated genome and keep the filter
+  alone.
+- **The gate is checked before the filter roll.** If the signature has
+  intelligence below `MIND_MIN`:
+  - `bioPhaseProgress` is held at `rate` (the world is ripe), with no roll and
+    no `bioStalls++`, so `STALL_TIME_PENALTY` does not compound;
+  - a world coming from `primitive` stays at Hands;
+  - a `burst` from `complex` lands on `primitive` instead (step 1, still
+    announced as a burst).
+- **When the mind arrives:** progress is already ripe, so the normal filter
+  roll fires on the next tick. A real filter stall after that counts as usual.
+- **A sharper mind wakes more easily.** For this one step, `playerBioAssistance`
+  gains `0.06 × (int − MIND_MIN + 1)`, capped at 0.30. That is 0.06 at 4, 0.12
+  at 5 and 0.30 at 8. Because `filterChance` multiplies by
+  `1 − assistance × 0.55`, the filter is up to 16.5 % softer.
+- **No locomotion clause.** I am overruling 1E's `locomotion !== 'stationary'`.
+  Exotic life is a project pillar, and a thinking forest is on-premise. The
+  complaint was "mindless", not "plant". A plant lineage reaches the gate through
+  Language and Toolmaking (neither needs a skeleton) plus the drift.
+
+**The mind drift (the safety net)**
+- It runs on each evolution step (`shouldStepEvolution`, every 2000 ticks), on
+  the player star, while `biologyPhase === 'primitive'` and the signature has
+  intelligence below `MIND_MIN`.
+- Let `k` be the number of evolution steps since Hands began. It is stored as
+  `StarBody.mindWait?: number`: optional, defaulting to 0 (rule 8). It is reset
+  to 0 on entering `primitive`, in `regressPhases`, in `sterilise`, and on a new
+  game, where stars are rebuilt.
+- Each step gives `+1 intelligence` with probability
+  `p = min(0.90, (0.10 + 0.02·k) × (1 + playerEffect('intellectGrowth')) × 1.1 / paceOf(stats))`.
+  When `k ≥ 40`, the step gives +1 unconditionally. That is the hard bound.
+- **What it may and may not do:**
+  - It only ever goes up, and stops at `MIND_MIN`. Climbing past the gate is
+    left to the normal drift and the lab.
+  - It ignores trait locks, because it never undoes a choice.
+  - It calls `repair()`, so the `int > 3` coherence rule raises a microscopic
+    body to `tiny`.
+  - It emits a signature `mutation` event, so the existing `onSignatureDrift`
+    toast reports it.
+- **The wait for an untouched lineage starting at intelligence 0**, simulated
+  over 200k trials at the median die (`paceOf = 1.1`):
+
+  | Steps to reach 4 | Ticks | Wall time at 1000× |
+  |---|---|---|
+  | median 15 | 30k | 30 s |
+  | p90 21 | 42k | 42 s |
+  | p99 25 | 50k | 50 s |
+  | hard maximum 44 | 88k | 88 s |
+
+  - At `intellectGrowth` 0.6 the median falls to 12 steps.
+  - Starting at intelligence 2, the median is 9 steps.
+- **The cost of the gate:** Hands lasts about 8 steps at the median die
+  (15,000 × 1.1 ticks). A passive player therefore waits a median of about 7
+  extra steps (about 14k ticks) at Hands.
+  - A player who buys a mind never sees the wait. Bigger Brain sets
+    intelligence to at least 5.
+
+**What DNA buys.** The player can buy the mind in the lab.
+- **The lab's prices:** Bigger Brain costs 12 DNA, Language 15, Toolmaking 15
+  and Grasping Hands 12.
+- **What the economy gives:** reaching Hands grants `8 × 4 = 32` DNA, and the
+  tester held 135 unspent.
+- **Changes to the catalogue:**
+  - `language` and `toolmaking` move to `phase: 'primitive'` in `Mutations.ts`.
+  - After the crossing, all three are hidden. That fixes "offered in space".
+- **Every route to 4:**
+  - Bigger Brain alone;
+  - Language + Toolmaking with intelligence 2;
+  - Hands + Language + Toolmaking with intelligence 1;
+  - or the drift.
+
+**What the player sees**
+- On entering Hands: the *Hands* moment from 1A.
+- **In the Species → Evolution tab**, the INTELLIGENT SPECIES column shows the
+  signature's Intellect as 10 pips with a notch at 4: "the mind wakes here".
+  Bigger Brain, Language and Toolmaking carry a tag: "brings the mind closer".
+  - This is a stage requirement, not a hidden scenario, so showing the number
+    is right. The tester asked for exactly this link.
+- **When the timer ripens with no mind:** one feed line per visit to Hands,
+  "They are clever with their bodies, not yet with their thoughts." It is not
+  a modal and costs no DP.
+- **Each drift step:** a toast, "Lumari grow cleverer."
+- **At the crossing:** the *First minds* moment (it holds the speed) and the
+  naming prompt.
+
+**Rule 7: one people everywhere.**
+- For the player star, `ensureCivilization` and `stepNations` both take
+  `signatureSpecies()`. That is the same lineage `playerPeopleOf` already
+  shows.
+- The nations' genome, Your People, Nations & Councils, the diorama and the
+  colony `playerLineage()` then agree.
+- "Wildlife · 100 % of its land" becomes the people's own line.
+
+**Q2 together with creative mode**
+- The drift is scaled by `1.1 / paceOf`. A fast die shortens the mind wait in
+  step with the other stages (×1.29 at a roll of 20, ×0.83 at a roll of 1),
+  so the gate never becomes the slowest stage on a fast roll.
+- **Creative mode (rule 6).** `leapToEra` currently sets
+  `biologyPhase = 'intelligent'` directly. Instead, it runs the same mind drift
+  in its quick steps (`k` +1 per STEP of 2000 ticks), bounded at 44 steps,
+  before it sets the phase.
+  - Creative mode may lower DNA prices. It may not skip the gate.
+
+**Guards (P4)**
+- **Invariant**, flagged `knownIssue` until P4 lands: on an `intelligent`
+  player world created after P4, `signatureSpecies().dna.intelligence ≥ MIND_MIN`,
+  and the civilisation's source species id equals `signatureSpeciesId`.
+  - **Control:** all three probe runs in §0 fail it (intelligence 0).
+- **`tools/mindGateCheck.ts`**, over 8 seeds at evo 10 and at evo 20. It
+  asserts:
+  - the untouched wait at Hands has a median between 6 and 20 evolution steps,
+    and a maximum of at most 44;
+  - a twin that buys Bigger Brain on entering Hands reaches `intelligent`
+    sooner than the untouched twin on at least 6 of 8 seeds;
+  - gated holds never increment `bioStalls`;
+  - `leapToEra(1)` on a mindless world yields `intelligence ≥ 4`.
+- **`playerProgressCheck`:** at least 35 % of seeds still reach intelligence
+  within 400k ticks.
+
+### Q2: the pace die
+
+**`paceOf(e) = 0.85 + 0.025 × (20 − e)`** for `e` in 1..20. It replaces all
+three copies of `(21 − e) / 10`:
+- `updateBiologyPhase` (`BigBangEngine.ts:3885`);
+- `civAdvanceRate` (`:4063`);
+- `stepPolities` (`:4346`).
+
+| Roll | Today | Proposed in 1C | **Decided** |
+|---|---|---|---|
+| 20 | 0.10 | 0.60 | **0.85** |
+| 15 | 0.60 | 0.85 | **0.975** |
+| 10 | 1.10 | 1.10 | **1.10** |
+| 5 | 1.60 | 1.35 | **1.225** |
+| 1 | 2.00 | 1.55 | **1.325** |
+| Range | 20× | 2.6× | **1.56×** |
+
+- **The median does not move.** At a roll of 10, §0 measured "fed" at 111–119 %
+  and about 95k ticks for the Ancient age, which is the pacing we want.
+- **A roll of 20 is now 23 % quicker than the median, not 11× quicker.** The
+  die still reads as a temperament, but it is no longer a skip button.
+- **The world tempo is also bounded, on the player star only.** The die was not
+  the only accelerator: on seed b, `bioTempo` (log-uniform 0.28–3.6, times the
+  archetype and Forge tempo) did as much as the die.
+  - The rule: `tempo` is clamped to [0.6, 1.7].
+  - The product `dnaMod / tempo` may not fall below 0.5, so no player stage
+    runs shorter than half its `BIO_PHASE_TICKS` × `paceOf`.
+  - NPC worlds keep the full tail, which is what spreads the universe across
+    the ladder.
+- **The seed console** subtitle for the die must say what it now does:
+  "Evolution's temper: a little quicker or a little slower".
+- **`paceCheck` (P2), tightened.** It asserts:
+  - the median ticks per bio stage at evo 20 is at least **0.70×** the evo-10
+    median (the design value is 0.77);
+  - at evo 1 the median is at most **1.3×** the evo-10 median;
+  - the Ancient age at evo 20 lasts at least 0.70× its length at evo 10.
+  - **Control:** `main` measures about 0.08×, so it fails.
+
+### Q (owner, follow-up): politicians or war next?
+
+**Recommendation: politicians (3C, then 3D) before any new war work.**
+
+**What exists:**
+- **War is already one of the richest systems in the build.** `Nations.relate`
+  / `fight` (`Nations.ts:1163–1340`) already provide:
+  - wars that start from pressure: militarism × need × resentment, along a
+    shared border, after a truce;
+  - causes linked into the Chronicle;
+  - fronts that take cells and are drawn on the disc (`IsoDioramaRenderer:3289`);
+  - bleeding and weariness, peace, truces, grievance, annexation and conquest;
+  - knowledge learned from an enemy;
+  - Faith-card levers on war: `discord`, `fervor`, `foe`, `calm`, `concord`,
+    and the `war` condition.
+  - Between stars there are fleets, sieges and conquest (`updateWars`). That
+    level's war dice are the one place where the player *controls* an outcome,
+    which is against §2.
+- **Politics is the thinnest system:**
+  - the councils are hashed for display (`NationsOverview.councilOf`);
+  - a government changes only when the player casts the `revolt` omen
+    (`Nations.overthrow`), so no revolt emerges from `unrest`;
+  - the leaders are disposable strangers in a parallel per-star system.
+
+**Why politicians bring more gameplay:**
+1. **A new verb.**
+   - More war adds events to watch. The player can already tilt a war with
+     five omens, and the next steps for war (alliances, battles) are more of
+     the same, observed.
+   - Rulers add a target that has memory. The player can never order a nation,
+     but can shift who holds influence, and so who rules next. That is §2
+     exactly: disturbing conditions, not controlling them.
+2. **The "I caused this" chains, which the Chronicle is built for.** For
+   example: a blessing raises the High Priest; the queen dies; the priest takes
+   the throne; the realm turns theocratic and xenophobic; its frontier war
+   follows.
+   - Every link is a cause the player can trace back to their own cast.
+   - War alone gives "a war happened". Politics gives "*my* priest started
+     it".
+3. **It multiplies war rather than competing with it.** Once a Marshal's
+   influence feeds `drive` in `relate`, the existing war system gains a human
+   cause at no further cost. Building war first leaves politics hashed.
+4. **It answers measured complaints.** The tester's "the same three
+   councillors from Ancient to Interstellar" and the 12 disposable-leader
+   modals of §0 are both this gap, and so is the rule-7 split between
+   `gameState.leaders` and the nations.
+
+**Preconditions:**
+- the NationSystem save (Q5);
+- P2, so that pressures actually cross into acute. Petitions need that, and so
+  do successions with causes.
+
+**First PR: "Rulers who live" (P3a), one concern**
+
+*The model, in `Nations.ts`:*
+- `Figure` and `Nation.council?: Figure[]`, as specified in 3C. Figures are
+  seeded from the NationSystem rng and saved with the nations.
+- `SEATS` moves here from `NationsOverview.ts`.
+- **Reigns** last 0.3–0.9 era of `NationSystem.age`.
+- **Influence and loyalty drift** once per `advance`, each bounded to 0..1:
+  - the Marshal: `+0.4 × eras` while at war;
+  - the High Priest: `+0.15` for each cast that reaches the nation, `+0.1` more
+    for a bane;
+  - the third seat: `+0.2 × eras` for each tech learned;
+  - all seats: `−0.25 × eras`, decaying toward the seat's base;
+  - loyalty eases toward cohesion ± temper.
+
+*Successions:*
+- **When:** a ruler dies, an existing `overthrow` fires, the nation is
+  conquered (its council ends), or the government changes.
+- **The heir:** the seated figure with the highest `influence × loyalty`. This
+  is the lever. A new councillor is rolled into the empty seat.
+- **The record:** every succession is a Chronicle entry with causes, linked to
+  the casts and wars that raised the heir.
+
+*The leaders:*
+- `spawnLeaderForStar` skips the player star.
+- The player star's `gameState.leaders` entry becomes a projection of the
+  leading nation's ruler, refreshed on succession.
+- The voice from 3A speaks as that person.
+
+*The display:*
+- `NationsOverview` reads `n.council`, with "since" dates and the last
+  succession line.
+
+*Art (mine):*
+- 32×32 portraits from `bakeCreatureSprite` of the people's genome, with a 6×6
+  seat prop stamped above (crown, staff or helm) and a flag tint.
+- Cached per (genome, seat, tint), cleared by `clearSpriteCaches()`.
+
+*Guards:*
+- `tools/councilCheck.ts`, as listed under P3. **Control:** today's hashed
+  councils show 0 successions in 6 ages.
+- A twin test: three blessings on one nation make its High Priest the heir at
+  the next death, on at least 5 of 8 seeds, compared with an untouched twin.
+- The P3 invariant: three seats titled from `SEATS[government]`, and unique
+  ruler ids.
+
+**Deferred:**
+- **P3b:** the ruler's traits bias the nation's choices. A martial ruler
+  multiplies war `drive` by 0.7–1.4, a pious one moves the piety drift.
+  Revolts emerge on their own: `unrest > 0.6` held for 0.25 era, with a Marshal
+  whose loyalty is below 0.3, means a coup.
+- **P5:** petitions (3D).
+- **Later war work:** alliances (`allyBonus` is already half of one), and
+  retiring the war dice in favour of omens.

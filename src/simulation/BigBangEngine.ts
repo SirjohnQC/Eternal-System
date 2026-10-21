@@ -1,4 +1,4 @@
-import { NationSystem, type Nation } from './Nations';
+import { NationSystem, type Nation, type NationSnapshot } from './Nations';
 import { peopleOf } from './People';
 import {
   emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
@@ -578,6 +578,12 @@ export interface EngineSnapshot {
    * generated grid. Optional: older saves regenerate the surface as before.
    */
   playerGrid?: { starId: number; planetIndex: number; edits: GridEdits; generator?: number };
+  /**
+   * The home world's nations (alpha playtest Oct 20: they were runtime only,
+   * so a reload founded new ones). Kept with the surface they rule. Optional:
+   * older saves found their nations again, as before.
+   */
+  nations?: { starId: number; data: NationSnapshot };
 }
 
 export interface Camera {
@@ -8122,7 +8128,13 @@ export class BigBangEngine {
       worldHistory: this.worldHistory,
       fires: this.fires,
       playerGrid: this.savedPlayerGrid(),
+      nations: this.savedNations(),
     };
+  }
+
+  private savedNations(): EngineSnapshot['nations'] {
+    const ns = runtimeState.playerNations, ps = this.getPlayerStar();
+    return ns?.isFounded && ps ? { starId: ps.id, data: ns.toSnapshot() } : undefined;
   }
 
   loadState(snap: EngineSnapshot): void {
@@ -8134,6 +8146,12 @@ export class BigBangEngine {
     this.pendingGridEdits = snap.playerGrid && (snap.playerGrid.generator ?? 1) === GRID_GENERATOR ? snap.playerGrid : null;
     // Fires only make sense on the surface they burn on: keep them with it.
     this.fires = this.pendingGridEdits && snap.fires ? snap.fires : emptyFire();
+    // The nations rule the saved surface: restore them only with it, on the same home.
+    {
+      const home = snap.stars.find(st => st.isPlayerStar && !st.isDead);
+      runtimeState.playerNations = this.pendingGridEdits && snap.nations?.data && home?.id === snap.nations.starId
+        ? NationSystem.fromSnapshot(snap.nations.data) : null;
+    }
     this.phase = snap.phase;
     this.stars = snap.stars;
     // Saves written before the genome existed have no genomeSeed. Derive it
@@ -8229,6 +8247,12 @@ export class BigBangEngine {
     this.supernovaFlashes = [];
     this.revelationFlashes = [];
     this.planetTextureCache.clear();
+    // Restored nations already stand in the saved era: nothing to announce again.
+    {
+      const ps = this.getPlayerStar();
+      this.nationEra = runtimeState.playerNations?.isFounded && ps ? ps.civLevel : 0;
+      this.nationSub = runtimeState.playerNations?.isFounded && ps ? this.civSubOf(ps) : 0;
+    }
   }
 }
 

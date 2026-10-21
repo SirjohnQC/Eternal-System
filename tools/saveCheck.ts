@@ -110,6 +110,44 @@ console.log('\n═══ round trip ═══');
   }
 }
 
+// ── The nations come back (alpha playtest Oct 20) ────────────────────────────
+console.log('\n═══ nations round trip ═══');
+{
+  const { runtimeState } = await import('../src/simulation/GameState');
+  const stats = { life: 15, evolution: 13, hostility: 12, entropy: 11, divine: 10 };
+  Object.assign(gameState, createDefaultGameState(), { stats, masterSeed: 'nations_rt', skipFormation: true });
+  runtimeState.playerPlanetGrid = null;
+  runtimeState.playerNations = null;
+  const a = new BigBangEngine(makeCanvas()) as any;
+  a.init(stats, 'nations_rt');
+  for (let i = 0; i < 3_000; i++) a.update();
+  a.leapToEra(3);
+  for (let i = 0; i < 2_000; i++) a.update();
+  const nsA = runtimeState.playerNations as any;
+  check('a world with nations to save', !!nsA?.isFounded, nsA ? `${nsA.nations.length} nations` : 'none');
+  const nfp = (ns: any): string => !ns?.isFounded ? 'none' : ns.nations.map((n: any) =>
+    `${n.name}|${n.government}|${n.era}|${n.techs.length}|${n.fallen ? 1 : 0}|${n.state.land}|${n.state.population.toFixed(3)}|${n.omens.length}`).join(';')
+    + `#${ns.chronicle.length}#${ns.relations.map((r: any) => `${r.attitude.toFixed(4)}${r.war ? 'W' : ''}`).join(',')}#${Array.from(ns.owner as Int8Array).join('').length}`;
+  const json = JSON.stringify({ version: SAVE_VERSION, savedAt: 0, gameState: { ...gameState }, engine: a.serialize(), eventLog: [] });
+  const atSave = nfp(nsA);
+  const ownerA = Array.from(nsA.owner as Int8Array).join(',');
+  for (let i = 0; i < 3_000; i++) a.update();
+  const laterA = nfp(runtimeState.playerNations);
+  const parsed = migrateSave(JSON.parse(json));
+  if (parsed.ok && nsA?.isFounded) {
+    const b = loadIntoEngine(parsed.save);
+    const nsB = runtimeState.playerNations as any;
+    check('the nations are restored, not founded again', nfp(nsB) === atSave, nfp(nsB) === atSave ? `${(JSON.stringify(parsed.save.engine.nations).length / 1024).toFixed(1)} KB` : `${nfp(nsB).slice(0, 120)} vs ${atSave.slice(0, 120)}`);
+    check('their land is restored cell for cell', !!nsB && Array.from(nsB.owner as Int8Array).join(',') === ownerA);
+    check('history and chronicle share entries', !!nsB && nsB.nations.every((n: any) => n.history.every((h: any) => !nsB.chronicle.includes(h) || nsB.chronicle.find((c: any) => c.id === h.id) === h)));
+    check('relations are wired both ways', !!nsB && nsB.relations.every((r: any) => nsB.relation(r.a, r.b) === r && nsB.relation(r.b, r.a) === r));
+    for (let i = 0; i < 3_000; i++) b.update();
+    check('the restored nations live on as the saved ones would', nfp(runtimeState.playerNations) === laterA,
+      nfp(runtimeState.playerNations) === laterA ? '3k ticks' : `${nfp(runtimeState.playerNations).slice(0, 120)} vs ${laterA.slice(0, 120)}`);
+  }
+  gameState.skipFormation = false;
+}
+
 // ── Refusals ─────────────────────────────────────────────────────────────────
 console.log('\n═══ refusals ═══');
 {
