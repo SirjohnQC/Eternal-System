@@ -143,14 +143,19 @@ function frameHue(sheet: Sheet, f: SheetFrame): number {
  */
 function recolour(px: Uint8ClampedArray, sheet: Sheet, f: SheetFrame, t: Tint): void {
   const dh = t.hue - frameHue(sheet, f);
+  // A species colour is a material, not paint (playtest Oct 20: hives came out
+  // a loud magenta): its saturation is capped, and the darkest tones are
+  // lifted a little so a dark material still reads at game zoom.
+  const sat = Math.min(0.5, t.sat);
   for (let i = 0; i < px.length; i += 4) {
     if (!px[i + 3]) continue;
     const [h, s, l] = toHsl(px[i], px[i + 1], px[i + 2]);
     if (l > 0.72 && s > 0.5) continue;
     const k = Math.min(1, s * 3);
     const nh = (h + dh * k + 720) % 360;
-    const ns = s * (1 - 0.5 * k) + t.sat * 0.5 * k;
-    const [r, g, b] = fromHsl(nh, ns, l);
+    const ns = Math.min(0.6, s * (1 - 0.5 * k) + sat * 0.5 * k);
+    const nl = l < 0.35 ? l + (0.35 - l) * 0.35 : l;
+    const [r, g, b] = fromHsl(nh, ns, nl);
     px[i] = r; px[i + 1] = g; px[i + 2] = b;
   }
 }
@@ -235,9 +240,11 @@ export function buildingOverride(b: Building, S: number, era: number, tint?: Tin
   // Bigger than the old 1.35: a sprite town keeps fewer buildings, each clearer.
   const tw = Math.max(3, Math.round(b.w * S * 1.7));
   // A species' own shape family: its sheet, the row for its age, its colour.
+  // These are chunky monuments already wide in the plan: drawn nearer their
+  // footprint (playtest Oct 20: at 1.7 they read as giant blobs).
   if (FAMILIES.has(b.kind) && sheets.has(b.kind)) {
     const age = era <= 1 ? 'age0' : era <= 4 ? 'age1' : 'age2';
-    return pick(b.kind, [age], b.seed, tw, tint);
+    return pick(b.kind, [age], b.seed, Math.max(3, Math.round(b.w * S * 1.15)), tint);
   }
   if (era <= 1) {
     if (b.stilts) return pick('huts', ['stilts'], b.seed, tw);

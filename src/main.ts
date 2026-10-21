@@ -80,11 +80,16 @@ import { flagCanvas } from './rendering/NationFlagArt';
 import { MenuScene } from './ui/MenuScene';
 import { UiSound, wireUiSounds } from './audio/UiSound';
 import { D20View, setDiceActive } from './ui/D20';
-import { loadSpriteOverrides } from './rendering/SpriteAtlasLoader';
+import { loadSpriteOverrides, spritesRequested, SPRITES_PREF } from './rendering/SpriteAtlasLoader';
+import { spriteOverridesActive } from './rendering/SpriteOverride';
 import { peopleOf } from './simulation/People';
 
-// Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
-void loadSpriteOverrides();
+// Hand-made sprite sheets instead of the forges (on by default; ?sprites=0 or
+// Settings > ART for the procedural art). Anything already baked before they
+// arrive is rebuilt once they have.
+void loadSpriteOverrides().then(() => {
+  if (spriteOverridesActive()) _dioramaRenderer?.markSurfaceDirty(true);
+});
 
 // ─── API Key (live-updatable — reads localStorage first, then .env) ───────────
 const ENV_geminiKey = (import.meta as unknown as { env: Record<string, string> }).env['VITE_GEMINI_API_KEY'] ?? '';
@@ -4589,7 +4594,26 @@ function setEventsCollapsed(collapsed: boolean): void {
   document.body.classList.toggle('events-collapsed', collapsed);
 }
 
+/** Settings > ART: the hand-made sprites on or off (remembered; applies on the next load). */
+function initSpritesToggle(): void {
+  const btn = document.getElementById('sprites-toggle');
+  if (!btn) return;
+  const show = (on: boolean) => {
+    btn.textContent = `HAND-MADE SPRITES: ${on ? 'ON' : 'OFF'}`;
+    btn.setAttribute('aria-pressed', String(on));
+  };
+  let on = spritesRequested();
+  show(on);
+  btn.addEventListener('click', () => {
+    on = !on;
+    try { localStorage.setItem(SPRITES_PREF, on ? '1' : '0'); } catch { /* not remembered */ }
+    show(on);
+    btn.title = 'Takes effect the next time the game loads.';
+  });
+}
+
 function initHudShell(): void {
+  initSpritesToggle();
   document.getElementById('rail-evolve')?.addEventListener('click', () => {
     const panel = document.querySelector('.left-panel');
     setEvolveDrawer(!panel?.classList.contains('drawer-open'));

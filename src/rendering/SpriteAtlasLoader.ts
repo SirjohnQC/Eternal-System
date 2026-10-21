@@ -1,6 +1,6 @@
 /**
  * Loads the SpriteCook sprite sheets (public/assets/sprites/<name>.png +
- * .json) into SpriteOverride. Dev flag `?sprites=1` only for now. Any sheet
+ * .json) into SpriteOverride. On by default (`?sprites=0` or Settings > ART turns them off). Any sheet
  * that fails to load is skipped: the forges draw what it would have covered.
  */
 import { registerSheet, type SheetFrame } from './SpriteOverride';
@@ -8,8 +8,18 @@ import { registerSheet, type SheetFrame } from './SpriteOverride';
 const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons', 'islets', 'hangings', 'skirt-earth', 'skirt-water',
   ...['humanoid', 'simian', 'reptilian', 'avian', 'insectoid', 'cephaloid', 'mycoid', 'crystalline'].map(f => `people-${f}`)];
 
+/** The player's choice (Settings > ART), remembered between sessions. */
+export const SPRITES_PREF = 'eternal_sprites';
+
+/**
+ * Hand-made sprites are on by default (playtest Oct 20: "use the new sprites
+ * in the game"). `?sprites=0` / `?sprites=1` in the address wins (to compare);
+ * otherwise the player's setting; otherwise on.
+ */
 export function spritesRequested(): boolean {
-  return new URLSearchParams(location.search).get('sprites') === '1';
+  const q = new URLSearchParams(location.search).get('sprites');
+  if (q === '0' || q === '1') return q === '1';
+  try { return localStorage.getItem(SPRITES_PREF) !== '0'; } catch { return true; }
 }
 
 async function loadSheet(base: string, name: string): Promise<void> {
