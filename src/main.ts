@@ -84,7 +84,7 @@ import { UiSound, wireUiSounds } from './audio/UiSound';
 import { D20View, setDiceActive } from './ui/D20';
 import { loadSpriteOverrides, spritesRequested, SPRITES_PREF } from './rendering/SpriteAtlasLoader';
 import { spriteOverridesActive } from './rendering/SpriteOverride';
-import { playerPeopleOf } from './simulation/People';
+import { playerPeopleOf, MIND_MIN } from './simulation/People';
 
 // Hand-made sprite sheets instead of the forges (on by default; ?sprites=0 or
 // Settings > ART for the procedural art). Anything already baked before they
@@ -1037,6 +1037,14 @@ function wireEngineEvents(eng: BigBangEngine): void {
   };
   eng.onSignatureDrift = (evt) => {
     addFeedEntry(`🧬 Natural drift: ${evt.description}`, 'milestone');
+    refreshEvolutionUI();
+  };
+  eng.onMindDrift = (name, intel) => {
+    const line = intel >= MIND_MIN
+      ? `The ${name} grow cleverer. Their minds are awake now (intellect ${intel}).`
+      : `The ${name} grow cleverer (intellect ${intel} of ${MIND_MIN}).`;
+    addFeedEntry(`🧠 ${line}`, 'milestone');
+    showToast('dna', escapeHtml(line), 6000);
     refreshEvolutionUI();
   };
   eng.onSpontaneousMutation = (id) => {

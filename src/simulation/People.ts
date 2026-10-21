@@ -9,6 +9,26 @@
  */
 import type { SpeciesGenome } from './SpeciesGenome';
 
+/**
+ * The mind a people needs to found a civilisation (stage-moments plan, P4):
+ * the player's own lineage must reach this intelligence (0..10) before its
+ * world crosses from Hands to minds.
+ */
+export const MIND_MIN = 4;
+/** Evolution steps at Hands after which the mind drift always lands (its hard bound). */
+export const MIND_WAIT_MAX = 40;
+
+/** Chance per evolution step that the mind drift adds +1 intelligence. */
+export function mindDriftChance(wait: number, intellectGrowth: number, pace: number): number {
+  if (wait >= MIND_WAIT_MAX) return 1;
+  return Math.min(0.9, (0.1 + 0.02 * wait) * (1 + Math.max(0, intellectGrowth)) * 1.1 / Math.max(0.1, pace));
+}
+
+/** The filter's extra softness for a sharper mind at the crossing. */
+export function mindAssist(intelligence: number): number {
+  return intelligence < MIND_MIN ? 0 : Math.min(0.3, 0.06 * (intelligence - MIND_MIN + 1));
+}
+
 const SIZE_RANK: Record<string, number> = { microscopic: 0, tiny: 1, small: 2, medium: 3, large: 4, massive: 3 };
 const LOCO_RANK: Record<string, number> = { walking: 3, crawling: 1, swimming: 1, flying: 0, stationary: -2 };
 const ENV_RANK: Record<string, number> = { land: 2, coastal: 2, ocean: 0, deep_sea: -1, aerial: -1 };
