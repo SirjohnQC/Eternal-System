@@ -171,10 +171,15 @@ function tides(w: EncounterWorld, host: StarBody, intruder: StarBody, d: number,
 function capture(w: EncounterWorld, captor: StarBody, p: Planet, d: number): void {
   const outer = captor.planets.length ? captor.planets[captor.planets.length - 1].orbitalRadius : captor.radius + 6;
   const want = Math.max(outer * 1.08 + 4, Math.abs(p.orbitalRadius - d) * w.rng.nextFloat(0.6, 1.1));
-  const a = Math.min(Math.max(want, outer + 4), Math.max(MAX_CAPTURE_ORBIT, outer + 4));
+  let a = Math.min(Math.max(want, outer + 4), Math.max(MAX_CAPTURE_ORBIT, outer + 4));
+  const ecc = w.rng.nextFloat(0.3, 0.6);
+  // Its closest approach stays outside every orbit already there: an eccentric
+  // capture used to dip inside the home world's and pull its orbit in
+  // (invariant "home world orbits at its kind's distance").
+  a = Math.max(a, (outer / 0.85 + 4) / (1 - ecc));
   p.orbitalSpeed *= Math.sqrt(Math.max(1, p.orbitalRadius) / a);
   p.orbitalRadius = a;
-  p.eccentricity = w.rng.nextFloat(0.3, 0.6);
+  p.eccentricity = ecc;
   p.periapsisAngle = w.rng.nextFloat(0, Math.PI * 2);
   p.orbitalAngle = w.rng.nextFloat(0, Math.PI * 2);
   // A capture strips most of what the planet held.

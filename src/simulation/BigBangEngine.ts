@@ -87,6 +87,7 @@ import {
   type DestinyType, rollDestiny, rollFormationBudget, stageDuration, nextStage,
   lifeEligible, addBoost, LIFE_BOOST, SEED_BOOST, formationFaceType,
   spontaneousLifeChance, ejectaChance, formationFraction,
+  paceOf, PLAYER_TEMPO_MIN, PLAYER_TEMPO_MAX, PLAYER_STAGE_FLOOR,
 } from './Formation';
 import { progressionOf, eraLabel, eraTitle, ageName, civPhaseOf, type Progression } from './Progression';
 import type { GeminiService } from '../ai/GeminiService';
@@ -537,6 +538,24 @@ interface CosmicSignal {
   decoded: boolean;
 }
 
+/**
+ * A great moment on the player's world (stage-moments plan, P1). Presentation
+ * only: emitting one changes no simulation state beyond its own high mark.
+ */
+export interface StageMoment {
+  kind: 'bio' | 'nations' | 'era' | 'leap';
+  starId: number;
+  tick: number;
+  /** Banner heading ("Eyes open", "The Iron Age"). */
+  title: string;
+  /** One line in the world's own words. */
+  line: string;
+  /** For an age: what was learned in it, newest last (at most three). */
+  learned?: string[];
+  /** Which glyph to show (public/assets/pixel/divine/cards/<icon>.png). */
+  icon: string;
+}
+
 export interface EngineSnapshot {
   version: 1;
   tick: number;
@@ -938,6 +957,10 @@ export class BigBangEngine {
   onFormationLifeArrived: ((source: FormationLifeSource, from: string) => void) | null = null;
   onWarBattle: ((warId: number, attackerName: string, defenderName: string, attackerDice: number[], attackerColor: string, phase: string) => void) | null = null;
   onLeaderMessage: ((leader: Leader, eventContext: string, starId: number) => void) | null = null;
+  /** A great moment on the player's world (a new high of life, nations or age): the UI slows to ▶ and shows it. */
+  onStageMoment: ((m: StageMoment) => void) | null = null;
+  /** What the player's nations learned since the last age moment (its summary). */
+  private ageLearned: string[] = [];
   // Phase / evolution callbacks
   onBioPhaseAdvance: ((phase: BiologyPhase, starName: string) => void) | null = null;
   onCodexMilestone:  ((entry: Omit<CodexEntry, 'body'>) => void) | null = null;
@@ -3888,7 +3911,7 @@ export class BigBangEngine {
    * not a guarantee. Worlds can stall here permanently or collapse backwards.
    */
   private updateBiologyPhase(star: StarBody): void {
-    const evoMod = (21 - this.stats.evolution) / 10;           // slower = higher stat inverse
+    const evoMod = paceOf(this.stats.evolution);               // a high roll is a little quicker
     // NPC worlds fast-track so the universe feels populated — each at its own
     // pace (seeded per star, about 6% to 24% of the player's timer), so some
     // race ahead and some crawl, and they do not wake together.
@@ -3900,15 +3923,18 @@ export class BigBangEngine {
 
     // Per-world tempo is what makes two identical planets wake up centuries apart.
     // The forged world's mutation pressure rides on top (Forge.ts ForgeMods).
-    const tempo  = (star.bioTempo ?? 1) * (star.isPlayerStar ? gameState.forgeMods?.tempo ?? 1 : 1);
+    const rawTempo = (star.bioTempo ?? 1) * (star.isPlayerStar ? gameState.forgeMods?.tempo ?? 1 : 1);
+    // The player's world is bounded (stage-moments plan, Q2): chance alone
+    // used to race it from microbes to space in a minute and a half.
+    const tempo = star.isPlayerStar ? Math.min(PLAYER_TEMPO_MAX, Math.max(PLAYER_TEMPO_MIN, rawTempo)) : rawTempo;
     const stalls = star.bioStalls ?? 0;
     // The player's world caps its stall count: uncapped, the wait between
     // attempts diverges and a world that failed a few times effectively never
     // rolled again. NPC worlds stay uncapped — parking them across the ladder is
     // what makes the universe look inhabited at every stage rather than binary.
     const effStalls = star.isPlayerStar ? Math.min(stalls, PLAYER_STALL_TIME_CAP) : stalls;
-    const rate = BIO_PHASE_TICKS[star.biologyPhase] * evoMod * speedMult * dnaMod
-               / Math.max(0.15, tempo)
+    const quick = star.isPlayerStar ? Math.max(PLAYER_STAGE_FLOOR, dnaMod / tempo) : dnaMod / Math.max(0.15, tempo);
+    const rate = BIO_PHASE_TICKS[star.biologyPhase] * evoMod * speedMult * quick
                * (1 + effStalls * STALL_TIME_PENALTY);
 
     star.bioPhaseProgress++;
@@ -3962,6 +3988,7 @@ export class BigBangEngine {
     const nextIdx = Math.min(BIO_PHASE_SEQUENCE.length - 1, idx + step);
     const nextPhase = BIO_PHASE_SEQUENCE[nextIdx];
     star.biologyPhase = nextPhase;
+    if (star.isPlayerStar) this.bioMoment(star, nextIdx, idx);
 
     if (outcome === 'burst') {
       const name = star.isPlayerStar
@@ -4066,7 +4093,7 @@ export class BigBangEngine {
    * player's DNA and prophet boost, and a curious culture all speed it.
    */
   private civAdvanceRate(star: StarBody, withCulture = true): number {
-    let advanceRate = CIV_TICK_RATE * (21 - this.stats.evolution) / 10;
+    let advanceRate = CIV_TICK_RATE * paceOf(this.stats.evolution);
     // DNA intelligence branch speeds up research for player's species
     if (star.isPlayerStar) {
       advanceRate *= Math.max(0.4, 1 - this.playerEffect('techSpeed') * 0.55);
@@ -4142,6 +4169,15 @@ export class BigBangEngine {
     } finally {
       this.leaping = false;
     }
+    {
+      const high = this.momentHighs({ bio: 4, era: ps.civLevel });
+      high.bio = Math.max(high.bio, 4);
+      high.era = Math.max(high.era, ps.civLevel);
+      high.nations = high.nations || !!runtimeState.playerNations?.isFounded;
+      this.ageLearned = [];
+      // A leap is one moment, not eight (rule 6).
+      this.emitMoment(ps, 'leap', eraTitle(ps.civLevel), `Ages pass in a breath. ${name} stands in the ${ageName(ps.civLevel)}.`, 'crucible', learned.slice(-3));
+    }
     return `Ages pass in a breath: ${name} learned ${learned.length ? learned.slice(-4).join(', ') + (learned.length > 4 ? ` and ${learned.length - 4} more` : '') : 'little'}, and stands in the ${ageName(ps.civLevel)}.${wars ? ` ${wars} war${wars > 1 ? 's were' : ' was'} fought${falls ? `, and ${falls} nation${falls > 1 ? 's' : ''} fell` : ''}.` : ''}`;
   }
 
@@ -4177,10 +4213,16 @@ export class BigBangEngine {
       this.fireCodexMilestone(`civ_${star.civLevel}`);
       // Leader spawning
       this.spawnLeaderForStar(star);
-      if (star.civLevel === 1) {
-        if (!this.leaping) this.fireLeaderMessage(star, `The ${gameState.playerSpeciesName} have built their first cities. Their first leader rises.`);
-      } else if (star.civLevel >= 2) {
-        if (!this.leaping) this.fireLeaderMessage(star, `Our civilization has advanced to ${eraTitle(star.civLevel)}.`);
+      // A new high of the ages is a great moment, and a leader speaks once for
+      // it; an age lost and regained is neither (stage-moments plan, P1).
+      const high = this.momentHighs({ era: star.civLevel - 1 });
+      if (star.civLevel > high.era) {
+        high.era = star.civLevel;
+        if (!this.leaping) {
+          if (star.civLevel === 1) this.fireLeaderMessage(star, `The ${gameState.playerSpeciesName} have built their first cities. Their first leader rises.`);
+          else this.fireLeaderMessage(star, `Our civilization has advanced to ${eraTitle(star.civLevel)}.`);
+          this.eraMoment(star);
+        }
       }
       // First Contact — fires exactly once when player reaches Space Age
       if (star.civLevel === 5 && !gameState.firstContactFired) {
@@ -4230,6 +4272,11 @@ export class BigBangEngine {
       if (ns.isFounded) {
         const names = ns.nations.map(n => n.name);
         this.onCivEvent?.(`Your people have split into ${names.length} nations: ${names.join(', ')}.`);
+        const high = this.momentHighs({ nations: false });
+        if (!high.nations && !this.leaping) {
+          high.nations = true;
+          this.emitMoment(star, 'nations', 'The first nations', `Your people have split into ${names.length} nations: ${names.join(', ')}.`, 'concord');
+        }
       }
       return;
     }
@@ -4243,6 +4290,8 @@ export class BigBangEngine {
       this.rewardDiscovery(d.tech.id);
       if (this.announcedTechs.has(d.tech.id)) continue;
       this.announcedTechs.add(d.tech.id);
+      this.ageLearned.push(d.tech.name);
+      if (this.ageLearned.length > 12) this.ageLearned.shift();
       if (d.tech.spaceship) {
         this.onCivEvent?.(`${d.nation.name} has launched a colony ark — the first ship of ${gameState.playerSpeciesName || 'your people'} to leave its world.`);
         this.fireCodexMilestone('colony_ark');
@@ -4349,7 +4398,7 @@ export class BigBangEngine {
   private stepPolities(): void {
     const dt = this.tick - this.lastPolityTick;
     this.lastPolityTick = this.tick;
-    const rate = CIV_TICK_RATE * (21 - this.stats.evolution) / 10;
+    const rate = CIV_TICK_RATE * paceOf(this.stats.evolution);
     const eras = Math.min(0.5, dt / rate);
     const ps = this.getPlayerStar();
     const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
@@ -4997,6 +5046,60 @@ export class BigBangEngine {
       biome: env === 'ocean' || env === 'deep_sea' ? 'open_ocean' : 'grassland',
       temperatureRange: 'temperate',
     };
+  }
+
+  /** The moment highs, made on first use (optional on old saves: their present counts as seen). */
+  /**
+   * The moment highs, made on first use from the world as it stood just
+   * before the change being announced (`prior`), so the first climb of a new
+   * game is shown and an old save's present counts as already seen.
+   */
+  private momentHighs(prior: { bio?: number; era?: number; nations?: boolean } = {}): NonNullable<typeof gameState.momentHigh> {
+    if (!gameState.momentHigh) {
+      const ps = this.getPlayerStar();
+      gameState.momentHigh = {
+        bio: prior.bio ?? (ps?.hasLife ? BIO_PHASE_SEQUENCE.indexOf(ps.biologyPhase) : -1),
+        era: prior.era ?? ps?.civLevel ?? 0,
+        nations: prior.nations ?? !!runtimeState.playerNations?.isFounded,
+      };
+    }
+    return gameState.momentHigh;
+  }
+
+  private emitMoment(star: StarBody, kind: StageMoment['kind'], title: string, line: string, icon: string, learned?: string[]): void {
+    this.onStageMoment?.({ kind, starId: star.id, tick: this.tick, title, line, icon, learned });
+  }
+
+  /** Biology reached phase `idx` on the player's world: a moment on a new high. */
+  private bioMoment(star: StarBody, idx: number, from: number): void {
+    const high = this.momentHighs({ bio: from });
+    if (idx <= high.bio) return;
+    const skipped = idx - high.bio > 1 && high.bio >= 0;
+    high.bio = idx;
+    if (this.leaping) return;
+    const who = gameState.playerSpeciesName || 'your creatures';
+    const world = gameState.playerPlanetName || star.civName;
+    const label = this.progressionOf(star).phaseLabel;
+    const [title, line, icon]: [string, string, string] =
+        idx === 1 ? ['Cells hold together', `On ${world}, single cells have begun to live as one.`, 'seed']
+      : idx === 2 ? ['Eyes open', `Creatures with bodies, senses and hungers move across ${world}.`, 'sight']
+      : idx === 3 ? ['Hands', `The ${who} have begun to shape what they find.`, 'hardy']
+      : idx === 4 ? ['First minds', `The ${who} know that they are.`, 'awaken']
+      : [label, `${world} has changed.`, 'mutate'];
+    this.emitMoment(star, 'bio', title, skipped ? `${line} Life leapt a whole stage to get here.` : line, icon);
+  }
+
+  /** A new age on the player's world: its summary (what was learned, who leads). */
+  private eraMoment(star: StarBody): void {
+    const ns = runtimeState.playerNations;
+    const lead = ns?.isFounded ? ns.nations.filter(n => !n.fallen).sort((a, b) => b.era - a.era || b.state.population - a.state.population)[0] : null;
+    const who = gameState.playerSpeciesName || 'your people';
+    const line = star.civLevel === 1
+      ? `The ${who} have built their first cities.`
+      : lead ? `${lead.name} leads the ${who} into the ${ageName(star.civLevel)}.` : `The ${who} enter the ${ageName(star.civLevel)}.`;
+    const learned = this.ageLearned.slice(-3);
+    this.ageLearned = [];
+    this.emitMoment(star, 'era', eraTitle(star.civLevel), line, star.civLevel >= 5 ? 'seafaring' : 'inspire', learned);
   }
 
   private fireLeaderMessage(star: StarBody, eventContext: string): void {
@@ -8247,6 +8350,8 @@ export class BigBangEngine {
     this.supernovaFlashes = [];
     this.revelationFlashes = [];
     this.planetTextureCache.clear();
+    // An old save has no moment highs: what it has reached counts as seen.
+    if (this.getPlayerStar()) this.momentHighs();
     // Restored nations already stand in the saved era: nothing to announce again.
     {
       const ps = this.getPlayerStar();
