@@ -449,6 +449,24 @@ export function symptomsOf(n: Nation): string[] {
   return out;
 }
 
+/** A NationSystem as saved (NationSystem.toSnapshot). */
+export interface NationSnapshot {
+  v: 1;
+  seed: number;
+  founded: boolean;
+  nations: Nation[];
+  /** Cell owners, run-length encoded: value, count, value, count... */
+  owner: number[];
+  relations: Relation[];
+  age: number;
+  lastTick: number;
+  chronicle: HistoryEntry[];
+  ledger: LedgerSample[][];
+  ledgerAge: number | null;
+  nextId: number;
+  rng: number;
+}
+
 export class NationSystem {
   readonly nations: Nation[] = [];
   /** Nation index per cell (row * GRID_SIZE + col), -1 for none. */
@@ -480,6 +498,54 @@ export class NationSystem {
   }
 
   get isFounded(): boolean { return this.founded; }
+
+  /**
+   * Everything the nations are, as plain JSON (alpha playtest Oct 20: the
+   * nations were runtime only, so a reload founded new ones). Discoveries and
+   * news are drained every step and are not kept.
+   */
+  toSnapshot(): NationSnapshot {
+    const owner: number[] = [];   // run-length: [value, count, value, count, ...]
+    for (let i = 0; i < N; i++) {
+      const v = this.owner[i];
+      if (owner.length && owner[owner.length - 2] === v) owner[owner.length - 1]++;
+      else owner.push(v, 1);
+    }
+    return JSON.parse(JSON.stringify({
+      v: 1, seed: this.seed, founded: this.founded, nations: this.nations, owner,
+      relations: this.relations, age: this.age, lastTick: this.lastTick, chronicle: this.chronicle,
+      ledger: this.ledger, ledgerAge: Number.isFinite(this.ledgerAge) ? this.ledgerAge : null,
+      nextId: this.nextId, rng: this.rng.getState(),
+    })) as NationSnapshot;
+  }
+
+  /** The nations a snapshot holds, ready to step on (toSnapshot). */
+  static fromSnapshot(snap: NationSnapshot): NationSystem {
+    const ns = new NationSystem(snap.seed);
+    const d = JSON.parse(JSON.stringify(snap)) as NationSnapshot;
+    ns.chronicle.push(...d.chronicle);
+    for (const e of ns.chronicle) ns.byId.set(e.id, e);
+    // A nation's history shares its entries with the chronicle: keep them one object.
+    for (const n of d.nations) n.history = n.history.map(e => ns.byId.get(e.id) ?? e);
+    ns.nations.push(...d.nations);
+    for (let i = 0, at = 0; i + 1 < d.owner.length; i += 2) {
+      ns.owner.fill(d.owner[i], at, Math.min(N, at + d.owner[i + 1]));
+      at += d.owner[i + 1];
+    }
+    for (const r of d.relations) {
+      ns.relations.push(r);
+      ns.relAt[r.a * MAX_NATIONS + r.b] = ns.relAt[r.b * MAX_NATIONS + r.a] = r;
+    }
+    ns.ledger.push(...d.ledger);
+    ns.age = d.age;
+    ns.lastTick = d.lastTick;
+    ns.ledgerAge = d.ledgerAge ?? -Infinity;
+    ns.nextId = d.nextId;
+    ns.rng.setState(d.rng);
+    ns.founded = d.founded;
+    ns.version++;
+    return ns;
+  }
 
   /** The most advanced nation's era (TECH_LEVELS index); 0 before founding. */
   get maxEra(): number { return this.nations.reduce((m, n) => Math.max(m, n.era), 0); }
@@ -1016,8 +1082,8 @@ export class NationSystem {
 
   /**
    * Every LEDGER_EVERY of era-time, each nation's state is written down, so
-   * a view can show rates and trends (food, pollution, people...). Runtime
-   * only, like the nations themselves; the last LEDGER_MAX samples are kept
+   * a view can show rates and trends (food, pollution, people...). Saved
+   * with the nations (toSnapshot); the last LEDGER_MAX samples are kept
    * (about three ages).
    */
   private sampleLedger(tick: number): void {
