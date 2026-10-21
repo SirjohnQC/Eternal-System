@@ -3019,9 +3019,9 @@ input[type="range"], select, label[for],
         <img class="rail-icon" src="/assets/pixel/icons/species.png" alt="" width="24" height="24"/>
         <span>SPECIES</span>
       </button>
-      <button class="rail-btn" id="rail-evolve" data-rail="evolve" title="Evolve">
-        <img class="rail-icon" src="/assets/pixel/icons/evolve.png" alt="" width="24" height="24"/>
-        <span>EVOLVE</span>
+      <button class="rail-btn" id="rail-nations" data-rail="nations" title="Nations &amp; Councils: your nations, their land, people and councils">
+        <img class="rail-icon" src="/assets/pixel/icons/nations.png" alt="" width="24" height="24"/>
+        <span>NATIONS</span>
       </button>
       <button class="rail-btn" id="rail-system" data-rail="system" title="System">
         <img class="rail-icon" src="/assets/pixel/icons/system.png" alt="" width="24" height="24"/>
@@ -3988,7 +3988,14 @@ input[type="range"], select, label[for],
 #evo-seq{ position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center;
   justify-content:center; gap:10px; background:radial-gradient(ellipse at 50% 42%, #12301f, #020806 75%); }
 #evo-seq.hidden{ display:none; }
-body > #evo-seq{ position:fixed; z-index:340; }
+/* The evolution moment is a panel over the Species screen, not the whole screen (playtest Oct 20). */
+body > #evo-seq{ position:fixed; z-index:340; inset:auto; left:50%; top:50%; transform:translate(-50%,-50%);
+  width:min(440px,calc(100vw - 32px)); padding:16px 18px 14px; gap:8px; box-sizing:border-box;
+  border:2px solid #3f6a58; box-shadow:0 0 0 4px #0a1210,0 0 40px rgba(125,255,180,.25),0 12px 40px rgba(0,0,0,.7);
+  background:radial-gradient(ellipse at 50% 38%, #12301f, #050d09 80%); }
+body > #evo-seq #evo-seq-canvas{ width:300px; height:250px; }
+body > #evo-seq #evo-seq-text{ font-size:14px; }
+body > #evo-seq #evo-seq-diff{ font-size:10px; }
 #evo-seq-canvas{ width:540px; height:450px; max-width:80vw; image-rendering:pixelated; }
 #evo-seq-text{ color:#e8fff2; font-size:17px; letter-spacing:1px; text-align:center; min-height:24px;
   text-shadow:0 0 10px rgba(125,255,180,0.5); }

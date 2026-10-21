@@ -96,8 +96,6 @@ function hash01(n: number, seed: number): number {
   return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
 }
 
-/** Camera zoom where birds start to fade in over living worlds. */
-const BIRD_ZOOM = 1.4;
 const CREATURE_HOP_PERIOD = 2.4;
 /** How far (in disc radii) a hunter looks for prey and a rival for a quarrel (#112). */
 const ENCOUNTER_REACH = 0.22;
@@ -4011,47 +4009,6 @@ export class IsoDioramaRenderer {
     g.restore();
   }
 
-  /**
-   * Small flocks wheeling over a living world once the camera is close
-   * (they fade in from BIRD_ZOOM). Each flock flies a slow loop over the
-   * disc in a loose V; every bird flaps on its own two-frame beat, 1 px x S.
-   */
-  private drawBirds(g: CanvasRenderingContext2D, t: number): void {
-    if (!this.habitable || this.inhabitants.length === 0) return;
-    const k = this.camZoom, fade = Math.min(1, (k - BIRD_ZOOM) / 0.6);
-    if (fade <= 0) return;
-    // BASE geometry: wsx / wsy apply the camera, so the active cx/cy/rx/ry
-    // here would zoom twice and fling flocks off the disc into space.
-    const { cx, cy, rx, ry } = this.placeGeom;
-    const S = Math.max(1, Math.round(k));
-    g.save();
-    g.globalAlpha = 0.85 * fade;
-    g.fillStyle = 'rgb(232,234,240)';
-    const flocks = 3 + (this.planetSeed % 3);
-    for (let f = 0; f < flocks; f++) {
-      const h = ((this.planetSeed * 2654435761 + f * 40503) >>> 0) / 4294967296;
-      const dir = f % 2 ? 1 : -1, speed = 0.035 + h * 0.03;
-      const a = (h + f / flocks) * Math.PI * 2 + dir * t * speed;
-      const lr = 0.2 + ((h * 7.31) % 1) * 0.55;
-      const fx = cx + Math.cos(a) * rx * lr, fy = cy + Math.sin(a) * ry * lr - 6 - h * 6;
-      // Heading along the loop, so the V points the way it flies.
-      const hx = -Math.sin(a) * dir * rx, hy = Math.cos(a) * dir * ry, hl = Math.hypot(hx, hy) || 1;
-      const ux = hx / hl, uy = hy / hl;
-      const n = 3 + Math.floor(h * 4);
-      for (let b = 0; b < n; b++) {
-        const rank = Math.ceil(b / 2), side = b % 2 ? 1 : -1;
-        const bx = fx - ux * rank * 5 + -uy * side * rank * 4 + Math.sin(t * 0.7 + b) * 0.8;
-        const by = fy - uy * rank * 5 + ux * side * rank * 4 + Math.cos(t * 0.9 + b * 2) * 0.8;
-        const sx = Math.round(this.wsx(bx)), sy = Math.round(this.wsy(by));
-        const up = Math.sin(t * 9 + b * 1.7 + f) > 0;
-        g.fillRect(sx, sy, S, S);
-        g.fillRect(sx - S, sy - (up ? S : 0), S, S);
-        g.fillRect(sx + S, sy - (up ? S : 0), S, S);
-      }
-    }
-    g.restore();
-  }
-
   private drawInhabitants(g: CanvasRenderingContext2D, t: number): void {
     if (this.inhabitants.length === 0 && this.settlements.length === 0) return;
     const { cx, cy, rx, ry } = this;
@@ -4205,7 +4162,6 @@ export class IsoDioramaRenderer {
           this.drawInhabitants(g, this.elapsed);
           this.drawQuakeFx(g);
           this.drawFires(g, this.elapsed);
-          this.drawBirds(g, this.elapsed);
           if (this.meteor.active) this.meteor.drawSurface(g, this.updateStrikeView());
         },
         drawUiOverlays: (g) => {

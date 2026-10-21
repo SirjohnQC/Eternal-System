@@ -23,7 +23,7 @@ import {
   DRAWBACKS, EVOLVE_THRESHOLD, queueReady, mutationEffect, applyMutation, cloneGenome,
 } from '../src/simulation/Mutations';
 import { pressureKinds } from '../src/simulation/PeopleStory';
-import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSpan } from '../src/simulation/SpeciesCatalog';
+import { kindOf, relationTo, censusOf, livingRows, archiveRows, deathOf, yearsSpan, lifeClassOf } from '../src/simulation/SpeciesCatalog';
 import type { SpeciesGenome } from '../src/simulation/SpeciesGenome';
 import { TECHS, TECH_BY_ID } from '../src/simulation/Technology';
 import { TECH_CARDS } from '../src/simulation/TechCards';
@@ -187,6 +187,12 @@ console.log('Species catalogue');
   check('older deaths are honest about it', /before anyone kept records/.test(deathOf(old, pool, 'you') ?? ''));
   check('kinds are words', kindOf(wolf) === 'hunter' && kindOf(kelp) === 'ocean plant' && kindOf(base) !== '', `${kindOf(wolf)} / ${kindOf(kelp)} / ${kindOf(base)}`);
   check('spans in years', yearsSpan(400) === '4K years' && yearsSpan(5) === '50 years');
+  const mind = mk('mind', g => { g.dna.diet = 'omnivore'; g.dna.intelligence = 9; });
+  you.dna.intelligence = 4;
+  check('classes of life: minds, animals, plants, microbes',
+    lifeClassOf(mind) === 'mind' && lifeClassOf(wolf) === 'animal' && lifeClassOf(kelp) === 'plant' && lifeClassOf(base) === 'microbe',
+    [mind, wolf, kelp, base].map(g => lifeClassOf(g)).join(','));
+  check('your thinking people count as a people before they are brilliant', lifeClassOf(you, 'you') === 'mind' && lifeClassOf(you) === 'animal');
 }
 
 console.log('Evolution: trade-offs');
