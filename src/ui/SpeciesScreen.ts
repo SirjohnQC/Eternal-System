@@ -19,7 +19,7 @@ import { gameState, runtimeState } from '../simulation/GameState';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { GRID_SIZE, BIOME_COLORS, isWater } from '../simulation/PlanetGrid';
 import {
-  kindOf, relationTo, RELATION_WORDS, lifeClassOf, LIFE_CLASS_WORDS, type LifeClass, censusOf, livingRows, archiveRows, childrenOf, deathOf, yearsSpan,
+  kindOf, relationTo, RELATION_WORDS, lifeClassOf, heldCells, LIFE_CLASS_WORDS, type LifeClass, censusOf, livingRows, archiveRows, childrenOf, deathOf, yearsSpan,
 } from '../simulation/SpeciesCatalog';
 import { natureOf, shapedBy, symptomsOf } from '../simulation/PeopleStory';
 import { MIND_MIN } from '../simulation/People';
@@ -131,7 +131,8 @@ function render(): void {
   civ = deps.civilised?.() ?? false;
   const census = censusOf(pool, yours?.id ?? null);
   const sig = [tab, chosen, picked, gameState.dnaPoints, gameState.mutationQueue.join(','), gameState.mutationsOwned.length, pool.length, census.living, census.extinct, yours?.id, yours?.name, gameState.speciesForms.length, civ,
-    pool.map(s => s.population.toFixed(2)).join(',')].join('#');
+    pool.map(s => s.population.toFixed(2)).join(','),
+    civ && runtimeState.playerPlanetGrid ? [...heldCells(runtimeState.playerPlanetGrid).values()].join(',') : ''].join('#');
   if (sig === lastSig) return;
   lastSig = sig;
 
@@ -160,7 +161,8 @@ function renderLiving(body: HTMLElement, pool: readonly SpeciesGenome[], yours: 
   // Grouped by class of life (playtest Oct 20): intelligent peoples first,
   // then animals, plants, microbes; within each, yours first and branches
   // under their parent (a branch shown under a parent of another class is not indented).
-  const all = livingRows(pool, yours?.id ?? null);
+  const grid = runtimeState.playerPlanetGrid;
+  const all = livingRows(pool, yours?.id ?? null, civ && grid ? heldCells(grid) : null);
   const cls = new Map(all.map(r => [r.g.id, lifeClassOf(r.g, yours?.id ?? null, civ)]));
   const groups = (['mind', 'animal', 'plant', 'microbe'] as LifeClass[])
     .map(c => ({ c, rows: all.filter(r => cls.get(r.g.id) === c) })).filter(x => x.rows.length);

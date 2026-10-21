@@ -499,6 +499,13 @@ export class NationSystem {
 
   get isFounded(): boolean { return this.founded; }
 
+  /** People across every living nation: the one population figure the screens show. */
+  get population(): number {
+    let n = 0;
+    for (const x of this.nations) if (!x.fallen) n += Math.max(0, x.state.population);
+    return n;
+  }
+
   /**
    * Everything the nations are, as plain JSON (alpha playtest Oct 20: the
    * nations were runtime only, so a reload founded new ones). Discoveries and

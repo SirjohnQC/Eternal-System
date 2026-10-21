@@ -142,7 +142,7 @@ export interface CatalogRow {
   g: SpeciesGenome;
   /** Indent: 1 when listed under its living parent. */
   depth: 0 | 1;
-  /** Share of the world's living population (0..1). */
+  /** Share of the world's living population (0..1), or of the held ground once civilised. */
   share: number;
 }
 
@@ -150,9 +150,14 @@ export interface CatalogRow {
  * The living, in list order: the player's lineage first, then the rest by
  * population, each lineage's living branches right under it.
  */
-export function livingRows(pool: readonly SpeciesGenome[], yoursId: string | null): CatalogRow[] {
+export function livingRows(pool: readonly SpeciesGenome[], yoursId: string | null,
+  held: ReadonlyMap<string, number> | null = null): CatalogRow[] {
   const live = pool.filter(s => !s.isExtinct);
-  const total = live.reduce((a, s) => a + Math.max(0, s.population), 0) || 1;
+  // Once the people are civilised the biosphere stops evolving and the
+  // populations stand still, so the share is the ground each one holds, which
+  // still moves (alpha round 2: shares frozen for millions of years).
+  const weight = (s: SpeciesGenome) => held ? held.get(s.id) ?? 0 : Math.max(0, s.population);
+  const total = live.reduce((a, s) => a + weight(s), 0) || 1;
   const liveIds = new Set(live.map(s => s.id));
   const roots = live.filter(s => !s.ancestorId || !liveIds.has(s.ancestorId))
     .sort((a, b) => (a.id === yoursId ? -1 : b.id === yoursId ? 1 : b.population - a.population));
@@ -161,7 +166,7 @@ export function livingRows(pool: readonly SpeciesGenome[], yoursId: string | nul
   const put = (s: SpeciesGenome, depth: 0 | 1) => {
     if (placed.has(s.id)) return;
     placed.add(s.id);
-    out.push({ g: s, depth, share: Math.max(0, s.population) / total });
+    out.push({ g: s, depth, share: weight(s) / total });
     for (const c of live.filter(k => k.ancestorId === s.id).sort((a, b) => b.population - a.population)) put(c, 1);
   };
   // The player's lineage leads even when it branched from a living parent.
@@ -180,4 +185,11 @@ export function archiveRows(pool: readonly SpeciesGenome[]): SpeciesGenome[] {
 /** Lineages that branched from `g` (living or not). */
 export function childrenOf(g: SpeciesGenome, pool: readonly SpeciesGenome[]): SpeciesGenome[] {
   return pool.filter(s => s.ancestorId === g.id);
+}
+
+/** Cells each species holds on a surface (its dominant species), for shares by ground. */
+export function heldCells(grid: ReadonlyArray<ReadonlyArray<{ dominantSpeciesId: string | null }>>): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const row of grid) for (const c of row) if (c.dominantSpeciesId) out.set(c.dominantSpeciesId, (out.get(c.dominantSpeciesId) ?? 0) + 1);
+  return out;
 }
