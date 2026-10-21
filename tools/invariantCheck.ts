@@ -181,6 +181,21 @@ rule({
 });
 
 rule({
+  // P3: each living nation is ruled by a council of three, one of them the ruler.
+  name: 'every living nation has a council of three with one ruler',
+  check: () => {
+    const ns = runtimeState.playerNations as any;
+    if (!ns?.isFounded) return null;
+    for (const n of ns.nations) {
+      if (n.fallen || !n.council) continue;   // a council is rolled at its first step
+      const seats = n.council.map((f: any) => f.seat).sort().join('');
+      if (seats !== '012') return `${n.name}: seats ${seats}`;
+    }
+    return null;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,

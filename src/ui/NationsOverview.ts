@@ -16,6 +16,7 @@ import { GRID_SIZE, BIOME_COLORS, isWater, type PlanetGrid } from '../simulation
 import type { Nation, NationSystem } from '../simulation/Nations';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { eraTitle } from '../simulation/Progression';
+import { seatsOf, type Seat } from '../simulation/Council';
 import { playerPeopleOf } from '../simulation/People';
 import { bakeCreaturePortrait } from '../rendering/SpeciesSprite';
 import { peopleFormOf } from '../rendering/CreatureForge';
@@ -34,60 +35,21 @@ const compact = (v: number) => {
   return a >= 1e9 ? `${(v / 1e9).toFixed(1)}B` : a >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : a >= 1e3 ? `${(v / 1e3).toFixed(1)}K` : v.toFixed(0);
 };
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
-function hash(a: number, b: number, c = 0): number {
-  let h = (Math.imul(a | 0, 374761393) + Math.imul(b | 0, 668265263) + Math.imul(c | 0, 2147483647)) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-}
-function hashStr(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return h >>> 0;
-}
 
-// ── The council (derived) ────────────────────────────────────────────────────
-
-interface Seat { title: string; icon: string; weight: number }
-
-/** Three seats per government: who holds power in such a state. */
-const SEATS: Record<string, Seat[]> = {
-  Theocracy:     [{ title: 'High Priest', icon: '✦', weight: 1 }, { title: 'Keeper of Rites', icon: '☽', weight: 0.7 }, { title: 'Inquisitor', icon: '⚔', weight: 0.6 }],
-  Republic:      [{ title: 'Chancellor', icon: '⚖', weight: 1 }, { title: 'Speaker', icon: '❝', weight: 0.75 }, { title: 'Marshal', icon: '⚔', weight: 0.6 }],
-  Empire:        [{ title: 'Sovereign', icon: '♛', weight: 1 }, { title: 'Grand Vizier', icon: '⚖', weight: 0.7 }, { title: 'Warlord', icon: '⚔', weight: 0.75 }],
-  Confederation: [{ title: 'First Delegate', icon: '⚖', weight: 0.85 }, { title: 'Treasurer', icon: '⛁', weight: 0.7 }, { title: 'Marshal', icon: '⚔', weight: 0.6 }],
-  Technocracy:   [{ title: 'Chief Engineer', icon: '⚙', weight: 1 }, { title: 'Archivist', icon: '❖', weight: 0.7 }, { title: 'Director of Works', icon: '⚒', weight: 0.65 }],
-  Warband:       [{ title: 'Warchief', icon: '⚔', weight: 1 }, { title: 'Champion', icon: '⛨', weight: 0.75 }, { title: 'Shaman', icon: '✦', weight: 0.6 }],
-  Hive:          [{ title: 'Voice of the Hive', icon: '⬢', weight: 1 }, { title: 'Brood Warden', icon: '⬡', weight: 0.7 }, { title: 'Swarm Captain', icon: '⚔', weight: 0.65 }],
-  Council:       [{ title: 'Elder of the Council', icon: '⚖', weight: 0.85 }, { title: 'Lawgiver', icon: '❝', weight: 0.75 }, { title: 'Warden', icon: '⛨', weight: 0.6 }],
-};
-
-const ONSETS = ['Ar', 'Bel', 'Cor', 'Dra', 'El', 'Fen', 'Gal', 'Hal', 'Is', 'Ka', 'Lor', 'Mae', 'Nyr', 'Or', 'Pel', 'Quo', 'Ra', 'Sel', 'Tor', 'Ul', 'Vae', 'Wyn', 'Xa', 'Yl', 'Zor'];
-const CODAS = ['an', 'eth', 'ira', 'on', 'us', 'ael', 'ix', 'ora', 'en', 'is', 'ul', 'ane', 'ar', 'yr', 'eus'];
-
-function personName(seed: number): string {
-  const p = (k: number) => Math.floor(hash(seed, k) * 1e6);
-  const first = ONSETS[p(1) % ONSETS.length] + CODAS[p(2) % CODAS.length];
-  const last = ONSETS[p(3) % ONSETS.length] + CODAS[p(4) % CODAS.length].toLowerCase() + (p(5) % 3 === 0 ? 'son' : '');
-  return `${first} ${last}`;
-}
+// ── The council (Council.ts: people who live) ────────────────────────────────
 
 const level = (v: number) => (v > 0.8 ? 'Very High' : v > 0.6 ? 'High' : v > 0.4 ? 'Medium' : v > 0.2 ? 'Low' : 'Very Low');
 const levelClass = (v: number) => (v > 0.6 ? 'good' : v > 0.35 ? 'mid' : 'bad');
+const yearsOf = (y: number) => y >= 1e6 ? `${(y / 1e6).toFixed(1)}M years` : y >= 1e3 ? `${Math.round(y / 1e3)}K years` : `${Math.round(y)} years`;
 
-interface Member { name: string; seat: Seat; influence: number; loyalty: number; mood: string }
+interface Member { name: string; seat: Seat; influence: number; loyalty: number; mood: string; years: number }
 
-/** The nation's council: stable until its government changes (a revolt brings new faces). */
-function councilOf(n: Nation): Member[] {
-  const seats = SEATS[n.government] ?? SEATS.Council;
-  const revolts = n.history.filter(h => /rose against|revolt/i.test(JSON.stringify(h))).length;
-  const base = hashStr(`${n.name}|${n.government}|${revolts}`);
-  const unrest = n.pressures.unrest;
-  return seats.map((seat, i) => {
-    const seed = base + i * 7919;
-    const influence = clamp01(seat.weight * (0.55 + 0.4 * hash(seed, 11)) + (i === 0 ? 0.1 : 0));
-    const loyalty = clamp01(n.state.cohesion * 0.8 + 0.25 - unrest * 0.5 + (hash(seed, 12) - 0.5) * 0.3);
-    const mood = loyalty > 0.7 ? 'Steadfast' : loyalty > 0.45 ? 'Stable' : loyalty > 0.25 ? 'Wavering' : 'Plotting';
-    return { name: personName(seed), seat, influence, loyalty, mood };
+/** The nation's council, read from the simulation (rule 1): it changes as its people live and die. */
+function councilOf(n: Nation, tick: number): Member[] {
+  const seats = seatsOf(n.government);
+  return (n.council ?? []).map(f => {
+    const mood = f.loyalty > 0.7 ? 'Steadfast' : f.loyalty > 0.45 ? 'Stable' : f.loyalty > 0.25 ? 'Wavering' : 'Plotting';
+    return { name: f.name, seat: seats[f.seat], influence: f.influence, loyalty: f.loyalty, mood, years: Math.max(0, tick - f.sinceTick) * 10 };
   });
 }
 
@@ -233,7 +195,7 @@ function render(force = false): void {
   const n = ns.nations.find(x => x.id === chosen)!;
   // The player's own lineage is the nations' people (alpha playtest Oct 20).
   const people = playerPeopleOf(gameState.playerSpecies, gameState.signatureSpeciesId, true);
-  const sig = `${chosen}|${live.map(x => x.id).join(',')}|${n.government}|${Math.round(n.state.cohesion * 20)}|${Math.round(n.pressures.unrest * 20)}`;
+  const sig = `${chosen}|${live.map(x => x.id).join(',')}|${n.government}|${Math.round(n.state.cohesion * 20)}|${Math.round(n.pressures.unrest * 20)}|${(n.council ?? []).map(f => `${f.id}:${Math.round(f.influence * 10)}:${Math.round(f.loyalty * 10)}`).join(',')}`;
   if (!force && body.dataset['sig'] === sig) return;
   body.dataset['sig'] = sig;
   const s = n.state;
@@ -246,7 +208,7 @@ function render(force = false): void {
     ['Pollution', pct(s.pollution), clamp01(s.pollution), s.pollution > 0.5 ? 'bad' : s.pollution > 0.25 ? 'mid' : 'good'],
     ['Trade in', compact(Math.max(0, s.tradeFood) + Math.max(0, s.tradeMaterials)), clamp01((Math.max(0, s.tradeFood) + Math.max(0, s.tradeMaterials)) / Math.max(1, s.population * 0.2)), 'mid'],
   ];
-  const council = councilOf(n);
+  const council = councilOf(n, ns.tick);
   const who = inhabitants(grid, ns, n, people);
   body.innerHTML = `
     <div class="nv-col nv-list"><div class="nv-h">Nations</div>
@@ -271,6 +233,7 @@ function render(force = false): void {
       </div></div>
     </div>
     <div class="nv-col nv-council"><div class="nv-h">Council of State</div>
+      ${n.lastSuccession ? `<div class="nv-succ">${esc(n.lastSuccession)}</div>` : ''}
       ${council.map((m, i) => `<div class="nv-m">
         <div class="nv-m-art" data-m="${i}"></div>
         <div class="nv-m-txt"><div class="nv-m-name">${esc(m.name)}</div>
@@ -278,6 +241,7 @@ function render(force = false): void {
           <div class="nv-m-line">Influence: <b class="${levelClass(m.influence)}">${level(m.influence)}</b></div>
           <div class="nv-m-line">Loyalty: <b class="${levelClass(m.loyalty)}">${m.mood}</b></div>
           <div class="nv-m-role"><span>${m.seat.icon}</span>${esc(m.seat.title)}</div>
+          <div class="nv-m-line nv-m-since">${m.years >= 1 ? `${i === 0 ? 'Rules' : 'Seated'} for ${yearsOf(m.years)}` : 'Newly seated'}</div>
           <div class="nv-bar ${levelClass(m.influence)}"><span style="width:${Math.round(m.influence * 100)}%"></span></div>
         </div></div>`).join('')}
     </div>`;
@@ -356,6 +320,8 @@ const NV_CSS = `/* ── Nations overview (double-click the world) ── */
 #nations-ov .nv-m-txt{min-width:0;font-size:11px;color:#cdbfa6;flex:1}
 #nations-ov .nv-m-name{font-size:12px;color:#f3e6c4}
 #nations-ov .nv-m-role{margin-top:3px;color:#f3e6c4;font-size:12px}
+#nations-ov .nv-m-since{color:#8f8aa6;font-size:10px}
+#nations-ov .nv-succ{margin:2px 0 8px;padding:6px 8px;border-left:2px solid #c8a96e;background:rgba(200,169,110,.08);color:#e8dcc4;font-size:11px;line-height:1.4}
 #nations-ov .nv-m-role span{color:var(--gold,#c8a96e);margin-right:5px}
 #nations-ov .nv-foot{display:flex;justify-content:space-between;padding:8px 10px;border-top:1px solid rgba(200,169,110,.25)}
 #nations-ov .nv-btn{font:inherit;font-size:12px;letter-spacing:2px;color:#e8dcc4;background:#1b1530;border:1px solid rgba(200,169,110,.4);padding:7px 26px;cursor:pointer}
