@@ -39,7 +39,7 @@ import { peopleOf } from '../simulation/People';
 
 import { loadSpriteOverrides } from '../rendering/SpriteAtlasLoader';
 
-// Hand-made sprite sheets instead of the forges, with ?sprites=1 (art pipeline plan).
+// Hand-made sprite sheets instead of the forges (on by default; ?sprites=0 for the procedural art).
 await loadSpriteOverrides();
 
 const stage = document.getElementById('stage')!;
