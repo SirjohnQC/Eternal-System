@@ -128,5 +128,16 @@ console.log('The mind cards');
   check('the mind cards say so', ['big_brain', 'language', 'toolmaking'].every(id => MUTATIONS.find((m: any) => m.id === id)?.mind));
 }
 
+console.log('The name the player gives');
+{
+  const e = world('mind_name');
+  e.namePlayerPeople('Thessari');
+  check('naming the people names the lineage', e.signatureSpecies()?.name === 'Thessari');
+  gameState.mutationQueue = ['big_brain'];
+  gameState.mutationsOwned = ['backbone'];
+  const r = e.evolveSignature();
+  check('evolving keeps the name the player gave', !!r && e.signatureSpecies()?.name === 'Thessari' && r.after.name === 'Thessari', r?.after.name ?? 'did not evolve');
+}
+
 console.log(failed ? `\n${failed} mind gate check(s) FAILED` : '\nmind gate checks passed');
 if (failed) process.exit(1);

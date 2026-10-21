@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 const { BigBangEngine } = await import('../src/simulation/BigBangEngine');
 const { gameState, createDefaultGameState } = await import('../src/simulation/GameState');
-const { SAVE_VERSION, migrateSave, gameStateFromSave } = await import('../src/simulation/SaveFormat');
+const { SAVE_VERSION, migrateSave, gameStateFromSave, restoreSave } = await import('../src/simulation/SaveFormat');
 
 let passed = 0;
 const failures: string[] = [];
@@ -29,10 +29,8 @@ function check(name: string, ok: boolean, detail = ''): void {
 
 /** What applyLoadedSave() does to the simulation, minus the DOM. */
 function loadIntoEngine(save: any): any {
-  Object.assign(gameState, gameStateFromSave(save.gameState));
   const e = new BigBangEngine(makeCanvas()) as any;
-  e.init(save.gameState.stats, save.gameState.masterSeed);
-  e.loadState(save.engine);
+  restoreSave(e, save);
   return e;
 }
 
@@ -128,6 +126,12 @@ console.log('\n═══ nations round trip ═══');
   const nfp = (ns: any): string => !ns?.isFounded ? 'none' : ns.nations.map((n: any) =>
     `${n.name}|${n.government}|${n.era}|${n.techs.length}|${n.fallen ? 1 : 0}|${n.state.land}|${n.state.population.toFixed(3)}|${n.omens.length}`).join(';')
     + `#${ns.chronicle.length}#${ns.relations.map((r: any) => `${r.attitude.toFixed(4)}${r.war ? 'W' : ''}`).join(',')}#${Array.from(ns.owner as Int8Array).join('').length}`;
+  // The player's own records (alpha round 2: engine.init wiped them on every load).
+  gameState.dnaPoints = 255;
+  gameState.mutationsOwned = ['engulfing', 'flagellum'];
+  gameState.landmarks = [{ kind: 'library', nation: 0, row: 10, col: 10, tick: 1 } as any];
+  gameState.speciesForms = [{ form: 1, name: 'Saved Form', tick: 1, genome: gameState.playerSpecies[0], mutations: [] } as any];
+  const sigBefore = gameState.signatureSpeciesId;
   const json = JSON.stringify({ version: SAVE_VERSION, savedAt: 0, gameState: { ...gameState }, engine: a.serialize(), eventLog: [] });
   const atSave = nfp(nsA);
   const ownerA = Array.from(nsA.owner as Int8Array).join(',');
@@ -137,6 +141,10 @@ console.log('\n═══ nations round trip ═══');
   if (parsed.ok && nsA?.isFounded) {
     const b = loadIntoEngine(parsed.save);
     const nsB = runtimeState.playerNations as any;
+    check('the player\'s lineage, mutations, forms, landmarks and DNA survive a load',
+      gameState.signatureSpeciesId === sigBefore && !!sigBefore && gameState.dnaPoints === 255
+      && gameState.mutationsOwned.join() === 'engulfing,flagellum' && gameState.landmarks?.length === 1 && gameState.speciesForms.length === 1,
+      `sig ${gameState.signatureSpeciesId} dna ${gameState.dnaPoints} owned ${gameState.mutationsOwned.length} landmarks ${gameState.landmarks?.length} forms ${gameState.speciesForms.length}`);
     check('the nations are restored, not founded again', nfp(nsB) === atSave, nfp(nsB) === atSave ? `${(JSON.stringify(parsed.save.engine.nations).length / 1024).toFixed(1)} KB` : `${nfp(nsB).slice(0, 120)} vs ${atSave.slice(0, 120)}`);
     check('their land is restored cell for cell', !!nsB && Array.from(nsB.owner as Int8Array).join(',') === ownerA);
     check('history and chronicle share entries', !!nsB && nsB.nations.every((n: any) => n.history.every((h: any) => !nsB.chronicle.includes(h) || nsB.chronicle.find((c: any) => c.id === h.id) === h)));

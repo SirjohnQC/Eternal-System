@@ -552,6 +552,8 @@ const SP_CSS = `
 #species-screen .sp-next{display:flex;flex-direction:column;align-items:center;gap:3px}
 #species-screen .sp-next .sp-d-art{width:84px;height:84px;flex:0 0 84px}
 #species-screen .sp-next-note{font-size:10px;color:#86a396;text-align:center}
+/* EVOLVE stays in sight however long the column grows (alpha round 2: it sat below the screen). */
+#species-screen .sp-lab-left .sp-evolve{position:sticky;bottom:0;z-index:2;background:#07120e;box-shadow:0 -10px 12px -4px #07120e}
 #species-screen .sp-evolve{font:inherit;font-size:11px;letter-spacing:1px;padding:9px 6px;color:#86a396;background:transparent;border:1px solid rgba(93,204,138,.3);cursor:not-allowed}
 #species-screen .sp-evolve.ready{cursor:pointer;color:#04140d;background:#ffe08a;border-color:#ffe08a;letter-spacing:3px;font-size:13px;animation:spPulse 1.1s ease-in-out infinite}
 @keyframes spPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,224,138,.6)}50%{box-shadow:0 0 18px 3px rgba(255,224,138,.55)}}

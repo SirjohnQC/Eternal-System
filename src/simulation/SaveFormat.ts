@@ -14,7 +14,7 @@
  *      players may still hold. Add a fixture for each new version.
  */
 import type { GameStateData } from './GameState';
-import { createDefaultGameState } from './GameState';
+import { createDefaultGameState, gameState } from './GameState';
 import type { EngineSnapshot } from './BigBangEngine';
 
 /** Current save format. Written into every new save. */
@@ -92,4 +92,21 @@ export function gameStateFromSave(saved: Partial<GameStateData>): GameStateData 
     if (v !== undefined) (out as unknown as Record<string, unknown>)[k] = v;
   }
   return out;
+}
+
+/**
+ * Put a save into a fresh engine: the game state, a universe built from its
+ * seed, then the saved simulation over it.
+ *
+ * `init()` starts a new universe and clears the player's own records (their
+ * lineage, its mutations and forms, the landmarks...). Applying the saved
+ * state only before it lost all of those on every load (alpha playtest
+ * round 2), so the saved state goes back on after it too.
+ */
+export function restoreSave(engine: { init(stats: NonNullable<GameStateData['stats']>, seed: string): void; loadState(snap: EngineSnapshot): void },
+  save: EternalSaveFile): void {
+  Object.assign(gameState, gameStateFromSave(save.gameState));
+  engine.init(gameState.stats!, gameState.masterSeed);
+  Object.assign(gameState, gameStateFromSave(save.gameState));
+  engine.loadState(save.engine);
 }

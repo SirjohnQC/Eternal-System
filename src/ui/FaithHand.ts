@@ -329,8 +329,13 @@ export function refresh(force = false): void {
  */
 function wireThrow(el: HTMLElement, c: FaithCard, panel: HTMLElement): void {
   el.title = 'Click to cast, or drag it onto your world to choose where it falls';
+  // The card's icon is an <img>: the browser's own image drag took the
+  // pointer (pointercancel) and the card went back to the hand (alpha round 2, B10).
+  el.addEventListener('dragstart', e => e.preventDefault());
+  el.querySelectorAll('img').forEach(img => { img.draggable = false; });
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || panel.closest('.faith-deck')?.classList.contains('folded')) return;
+    e.preventDefault();   // no native drag, no text selection; the click still fires
     const x0 = e.clientX, y0 = e.clientY;
     let ghost: HTMLElement | null = null;
     let tile: { row: number; col: number } | null = null;

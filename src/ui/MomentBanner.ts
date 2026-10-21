@@ -27,10 +27,30 @@ function root(): HTMLElement {
 function hide(): void {
   window.clearTimeout(timer);
   el?.classList.remove('show');
+  document.body.classList.remove('moment-on');
   shown = [];
 }
 
+/** A naming dialog or other modal is up: a moment waits for it (alpha round 2, B4). */
+const MODALS = ['#ingame-naming-overlay.open', '#speciation-overlay.open', '#first-contact-overlay.active'];
+let waiting: StageMoment[] = [];
+let waitTimer = 0;
+
 export function showMoment(m: StageMoment): void {
+  if (MODALS.some(q => document.querySelector(q))) {
+    waiting.push(m);
+    if (!waitTimer) waitTimer = window.setInterval(() => {
+      if (MODALS.some(q => document.querySelector(q))) return;
+      window.clearInterval(waitTimer); waitTimer = 0;
+      const all = waiting; waiting = [];
+      for (const w of all) present(w);
+    }, 400);
+    return;
+  }
+  present(m);
+}
+
+function present(m: StageMoment): void {
   const r = root();
   const joining = r.classList.contains('show');
   shown = joining ? [...shown, m].slice(-3) : [m];
@@ -40,7 +60,7 @@ export function showMoment(m: StageMoment): void {
     <button type="button" class="mb-x" aria-label="Dismiss">✕</button>
     <img class="mb-icon" src="/assets/pixel/divine/cards/${esc(head.icon)}.png" alt="" width="32" height="32"/>
     <div class="mb-body">
-      <div class="mb-kicker">${head.kind === 'era' || head.kind === 'leap' ? 'A NEW AGE' : head.kind === 'nations' ? 'A GREAT MOMENT · NATIONS' : 'A GREAT MOMENT · LIFE'}</div>
+      <div class="mb-kicker">${head.kind === 'era' || head.kind === 'leap' ? 'A NEW AGE' : head.kind === 'fall' ? 'A FALL' : head.kind === 'nations' ? 'A GREAT MOMENT · NATIONS' : 'A GREAT MOMENT · LIFE'}</div>
       <div class="mb-title">${esc(head.title)}</div>
       <div class="mb-line">${esc(head.line)}</div>
       ${head.learned?.length ? `<div class="mb-learned">Learned: ${head.learned.map(esc).join(' · ')}</div>` : ''}
@@ -51,6 +71,7 @@ export function showMoment(m: StageMoment): void {
   // Restart the rise when it was hidden; a joining moment only refreshes the text.
   if (!joining) { r.classList.remove('show'); void r.offsetWidth; }
   r.classList.add('show');
+  document.body.classList.add('moment-on');   // toasts step down out of its lane
   window.clearTimeout(timer);
   timer = window.setTimeout(hide, SHOW_MS);
 }
