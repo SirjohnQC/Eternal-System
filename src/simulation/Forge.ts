@@ -469,7 +469,8 @@ export function forgeDestiny(s: ForgeState): DestinyType {
 
 export function planetDNAOf(d: ForgeDNA): PlanetDNA {
   const climate: PlanetDNA['climate'] = d.cold >= 0.6 ? 'frozen'
-    : (d.heat - d.cold > 0.2 || (d.water < 0.32 && d.heat > 0.5)) ? 'desert' : 'temperate';
+    // An ocean world is never a desert, however hot (alpha playtest Oct 20).
+    : d.water < 0.66 && (d.heat - d.cold > 0.2 || (d.water < 0.32 && d.heat > 0.5)) ? 'desert' : 'temperate';
   const oceans: PlanetDNA['oceans'] = d.water >= 0.66 ? 'ocean_world' : d.water <= 0.34 ? 'barren' : 'mixed';
   const unrest = (1 - d.stability) + d.heat * 0.2 + d.toxic * 0.1;
   const chaos: PlanetDNA['chaos'] = unrest >= 0.78 ? 'storm' : unrest >= 0.5 ? 'turbulent' : 'serene';
@@ -550,13 +551,32 @@ export function coolingLeft(s: ForgeState, now: number): number {
   return Math.max(0, COOLING_SECONDS - s.coolingDone - (now - s.coolingStart) / 1000);
 }
 
+/**
+ * How fast the crust cools at a game speed (alpha playtest Oct 20: the speed
+ * buttons did nothing here). Paused stops it; ▶ is real time; 1000× is 10×,
+ * so the 90 s cooling takes 9 s.
+ */
+export function coolingRate(speed: number): number {
+  if (!(speed > 0)) return 0;
+  if (speed <= 2) return 1;
+  return Math.min(10, 1 + Math.log10(speed) * 3);
+}
+
+/** Cool by `seconds` of wall time at `speed`. */
+export function advanceCooling(s: ForgeState, now: number, seconds: number, speed: number): void {
+  if (s.phase !== 'cooling') return;
+  s.coolingDone = Math.min(COOLING_SECONDS, s.coolingDone + Math.max(0, seconds) * coolingRate(speed));
+  s.coolingStart = now;
+}
+
 /** Where the spark wakes life: chance, leaning on what the world is. */
 export function rollCradle(s: ForgeState, rng: SeedRNG): string {
   const d = s.dna;
   const cradles: Array<[string, number]> = [
     ['in the deep vents, where the core still breathes', 1 + d.heat * 3],
     ['in warm tidal pools, under a pull of tides', 1 + d.water * 2 + d.fertile],
-    ['in a sea hidden beneath the ice', d.cold * 3],
+    // Only a cold world has ice to hide a sea (alpha playtest Oct 20).
+    ['in a sea hidden beneath the ice', planetDNAOf(d).climate === 'frozen' || d.cold >= 0.56 ? d.cold * 3 : 0],
     ['in the shallow seas along the first shores', 1 + d.water * 2],
     ['in films of clay, wet and warm', 0.6 + d.minerals * 1.5],
     ['high in the clouds, on drops of acid rain', d.air * d.toxic * 3],

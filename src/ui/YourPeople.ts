@@ -27,6 +27,8 @@ export interface YourPeopleDeps {
   openLab(): void;
   /** "Microbial", "Intelligent"… (Progression's label). */
   phaseLabel(): string;
+  /** Whether the people are civilised (never "mindless" then). */
+  civilised?(): boolean;
 }
 
 let deps: YourPeopleDeps | null = null;
@@ -103,7 +105,7 @@ function render(): void {
   }
   const name = peopleName(sp);
   const form = Math.max(1, forms.length);
-  const nature = natureOf(sp);
+  const nature = natureOf(sp, deps.civilised?.() ?? false);
   const sevDots = (n: number) => '●'.repeat(n) + '○'.repeat(3 - n);
 
   body.innerHTML = `

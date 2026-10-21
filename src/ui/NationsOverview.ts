@@ -16,7 +16,7 @@ import { GRID_SIZE, BIOME_COLORS, isWater, type PlanetGrid } from '../simulation
 import type { Nation, NationSystem } from '../simulation/Nations';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { eraTitle } from '../simulation/Progression';
-import { peopleOf } from '../simulation/People';
+import { playerPeopleOf } from '../simulation/People';
 import { bakeCreaturePortrait } from '../rendering/SpeciesSprite';
 import { peopleFormOf } from '../rendering/CreatureForge';
 import { openLedger } from './LedgerUI';
@@ -231,7 +231,8 @@ function render(force = false): void {
   const live = ns.nations.filter(n => !n.fallen);
   if (!live.some(n => n.id === chosen)) chosen = live[0]?.id ?? 0;
   const n = ns.nations.find(x => x.id === chosen)!;
-  const people = peopleOf(gameState.playerSpecies, 3);
+  // The player's own lineage is the nations' people (alpha playtest Oct 20).
+  const people = playerPeopleOf(gameState.playerSpecies, gameState.signatureSpeciesId, true);
   const sig = `${chosen}|${live.map(x => x.id).join(',')}|${n.government}|${Math.round(n.state.cohesion * 20)}|${Math.round(n.pressures.unrest * 20)}`;
   if (!force && body.dataset['sig'] === sig) return;
   body.dataset['sig'] = sig;

@@ -28,8 +28,15 @@ const SIZES = ['microscopic', 'tiny', 'small', 'medium', 'large', 'massive'];
 const sizeOf = (g: SpeciesGenome) => Math.max(0, SIZES.indexOf(g.physicalTraits.size));
 
 /** What kind of life it is, in a word or two ("a grazer", "a deep-sea hunter"). */
-export function kindOf(g: SpeciesGenome): string {
+export function kindOf(g: SpeciesGenome, asPeople = false): string {
   const d = g.dna;
+  // A civilised people is a people, whatever it eats (alpha playtest Oct 20:
+  // an interstellar people listed as "ocean plant").
+  if (asPeople) {
+    const where = d.environment === 'deep_sea' ? 'deep-sea ' : d.environment === 'ocean' ? 'sea ' : d.environment === 'aerial' ? 'sky ' : '';
+    const how = d.diet === 'producer' ? 'sun-fed' : d.diet === 'herbivore' ? 'gentle' : d.diet === 'carnivore' ? 'hunting' : '';
+    return `${how ? how + ' ' : ''}${where}people`;
+  }
   if (g.physicalTraits.bodyStructure === 'single-celled') {
     return d.metabolism === 'photosynthetic' ? 'light-eating microbe' : d.metabolism === 'chemosynthetic' ? 'vent microbe' : 'microbe';
   }
@@ -55,9 +62,12 @@ export const LIFE_CLASS_WORDS: Record<LifeClass, { one: string; many: string }> 
 /**
  * A mind is a lineage past the animal intelligence cap (at most the player's
  * own and one rival, EvolutionEngine.rivalMind), or the player's people once
- * they think at all; producers are plants; single cells are microbes.
+ * they think at all or once they are civilised; producers are plants; single
+ * cells are microbes.
  */
-export function lifeClassOf(g: SpeciesGenome, yoursId: string | null = null): LifeClass {
+export function lifeClassOf(g: SpeciesGenome, yoursId: string | null = null, civilised = false): LifeClass {
+  // The player's lineage, once civilised, is a people first (alpha playtest Oct 20).
+  if (civilised && g.id === yoursId) return 'mind';
   if (g.physicalTraits.bodyStructure === 'single-celled') return 'microbe';
   if (g.dna.diet === 'producer') return 'plant';
   if (g.dna.intelligence > MIND_CAP || (g.id === yoursId && g.dna.intelligence >= 3)) return 'mind';

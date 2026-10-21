@@ -21,7 +21,7 @@ import type { PlanetFormationStage } from '../simulation/BigBangEngine';
 import {
   FATE_BY_ID, FORGE_TARGET, COOLING_SECONDS, type ForgeState, type ForgedCard,
   forgeCard, rerollHand, forgeProgress, valueOf, destinyOf, planetDNAOf,
-  beginCooling, coolingLeft, rollCradle, sparkTempo, forceHint,
+  beginCooling, coolingLeft, advanceCooling, rollCradle, sparkTempo, forceHint,
   DECREES, decreeWorld, forgeDestiny, letFateDecide,
 } from '../simulation/Forge';
 
@@ -267,10 +267,12 @@ function showCooling(): void {
   const r = root();
   r.className = 'forge-cooling';
   window.clearInterval(coolTimer);
+  let last = Date.now();
   const tick = () => {
-    const left = coolingLeft(s, Date.now());
-    s.coolingDone = COOLING_SECONDS - left;
-    s.coolingStart = Date.now();
+    const now = Date.now();
+    advanceCooling(s, now, (now - last) / 1000, gameState.speed);
+    last = now;
+    const left = coolingLeft(s, now);
     if (left <= 0) { window.clearInterval(coolTimer); showWhisper(); return; }
     const p = 1 - left / COOLING_SECONDS, segs = 24, on = Math.round(p * segs);
     const m = Math.floor(left / 60), sec = Math.floor(left % 60);
@@ -283,7 +285,7 @@ function showCooling(): void {
     </div>`;
   };
   tick();
-  coolTimer = window.setInterval(tick, 1000);
+  coolTimer = window.setInterval(tick, 250);
 }
 
 // ─── The whisper and the spark ────────────────────────────────────────────────

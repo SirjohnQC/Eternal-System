@@ -255,5 +255,34 @@ function steer(param: string, dir = 1): Record<string, number> {
   gameState.forgeMods = null;
 }
 
+// ─── Cooling follows the speed buttons (alpha playtest Oct 20) ─────────────
+{
+  check('cooling: paused stops it', F.coolingRate(0) === 0);
+  check('cooling: ▶ is real time', F.coolingRate(1) === 1 && F.coolingRate(2) === 1);
+  check('cooling: faster speeds cool faster', F.coolingRate(10) > 1 && F.coolingRate(1000) > F.coolingRate(10) && F.coolingRate(1000) <= 10);
+  const s = F.newForge('forge_cool_check', STATS, 300, 'W');
+  s.phase = 'reveal';
+  F.beginCooling(s, 0);
+  F.advanceCooling(s, 1000, 1, 1000);
+  check('cooling: one second at 1000× cools ten', Math.abs(F.coolingLeft(s, 1000) - (F.COOLING_SECONDS - 10)) < 1e-6, `${F.coolingLeft(s, 1000)}`);
+  F.advanceCooling(s, 2000, 100, 1000);
+  check('cooling: never past done', F.coolingLeft(s, 2000) === 0);
+}
+
+// ─── The forged world says one thing (alpha playtest Oct 20) ─────────────────
+{
+  let iceOnWarm = 0, desertOcean = 0;
+  for (let i = 0; i < 400; i++) {
+    const s = F.newForge(`forge_cradle_${i}`, STATS, 3000 + i * 40, 'W');
+    s.dna.cold = (i % 20) / 20; s.dna.heat = ((i * 7) % 20) / 20; s.dna.water = ((i * 3) % 20) / 20;
+    const dna = F.planetDNAOf(s.dna);
+    if (dna.oceans === 'ocean_world' && dna.climate === 'desert') desertOcean++;
+    const c = F.rollCradle(s, new SeedRNG(`cradle_${i}`));
+    if (c.includes('ice') && dna.climate !== 'frozen' && s.dna.cold < 0.56) iceOnWarm++;
+  }
+  check('no desert ocean worlds', desertOcean === 0, `${desertOcean}`);
+  check('no ice cradle on a warm world', iceOnWarm === 0, `${iceOnWarm}`);
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall forge checks passed');
 process.exit(failures ? 1 : 0);

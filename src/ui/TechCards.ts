@@ -56,7 +56,8 @@ function modal(title: string, sub: string, body: string, footer: string, wide = 
 export function techCardFace(v: View, big = false): string { return face(v, big); }
 function face(v: View, big = false): string {
   const off = !!v.block;
-  return `<button class="divine-action-btn faith-proc${big ? ' faith-proc-big' : ''} tech-card${off ? ' faith-off' : ' affordable'}" data-card="${v.card.id}">
+  const badge = v.inEffect ? '<span class="tech-card-badge on">IN EFFECT</span>' : v.played ? '<span class="tech-card-badge">PLAYED</span>' : '';
+  return `<button class="divine-action-btn faith-proc${big ? ' faith-proc-big' : ''} tech-card${off ? ' faith-off' : ' affordable'}${v.inEffect ? ' tech-in-effect' : ''}" data-card="${v.card.id}">${badge}
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">${esc(v.card.name)}</span>
     <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/${v.card.icon}.png" alt="" width="32" height="32"/></span>
