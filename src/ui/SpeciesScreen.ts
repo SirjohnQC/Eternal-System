@@ -19,7 +19,7 @@ import { gameState, runtimeState } from '../simulation/GameState';
 import type { SpeciesGenome } from '../simulation/SpeciesGenome';
 import { GRID_SIZE, BIOME_COLORS, isWater } from '../simulation/PlanetGrid';
 import {
-  kindOf, relationTo, RELATION_WORDS, censusOf, livingRows, archiveRows, childrenOf, deathOf, yearsSpan,
+  kindOf, relationTo, RELATION_WORDS, lifeClassOf, LIFE_CLASS_WORDS, type LifeClass, censusOf, livingRows, archiveRows, childrenOf, deathOf, yearsSpan,
 } from '../simulation/SpeciesCatalog';
 import { natureOf, shapedBy, symptomsOf } from '../simulation/PeopleStory';
 import {
@@ -150,14 +150,25 @@ function render(): void {
 // ── Living ───────────────────────────────────────────────────────────────────
 
 function renderLiving(body: HTMLElement, pool: readonly SpeciesGenome[], yours: SpeciesGenome | null): void {
-  const rows = livingRows(pool, yours?.id ?? null);
+  // Grouped by class of life (playtest Oct 20): intelligent peoples first,
+  // then animals, plants, microbes; within each, yours first and branches
+  // under their parent (a branch shown under a parent of another class is not indented).
+  const all = livingRows(pool, yours?.id ?? null);
+  const cls = new Map(all.map(r => [r.g.id, lifeClassOf(r.g, yours?.id ?? null)]));
+  const groups = (['mind', 'animal', 'plant', 'microbe'] as LifeClass[])
+    .map(c => ({ c, rows: all.filter(r => cls.get(r.g.id) === c) })).filter(x => x.rows.length);
+  const rows = groups.flatMap(x => x.rows);
   if (!rows.some(r => r.g.id === chosen)) chosen = rows[0]?.g.id ?? null;
-  body.innerHTML = `<div class="sp-list" role="listbox" aria-label="Living species">${rows.map(r => `
-      <button type="button" class="sp-row${r.g.id === chosen ? ' on' : ''}${r.g.id === yours?.id ? ' yours' : ''}${r.depth ? ' sub' : ''}" data-sp="${esc(r.g.id)}" role="option" aria-selected="${r.g.id === chosen}">
+  const rowHtml = (r: typeof rows[number]) => {
+    const sub = r.depth && cls.get(r.g.ancestorId ?? '') === cls.get(r.g.id);
+    return `<button type="button" class="sp-row${r.g.id === chosen ? ' on' : ''}${r.g.id === yours?.id ? ' yours' : ''}${sub ? ' sub' : ''}" data-sp="${esc(r.g.id)}" role="option" aria-selected="${r.g.id === chosen}">
         <span class="sp-row-art"></span>
         <span class="sp-row-txt"><span class="sp-row-name">${esc(r.g.name)}</span><span class="sp-row-kind">${esc(kindOf(r.g))}</span></span>
         <span class="sp-row-pct">${pct(r.share)}</span>
-      </button>`).join('')}</div>
+      </button>`;
+  };
+  body.innerHTML = `<div class="sp-list" role="listbox" aria-label="Living species">${groups.map(x =>
+      `<div class="sp-group sp-g-${x.c}">${esc(LIFE_CLASS_WORDS[x.c].many.toUpperCase())} <span>${x.rows.length}</span></div>${x.rows.map(rowHtml).join('')}`).join('')}</div>
     <div class="sp-detail"></div>`;
   body.querySelectorAll<HTMLElement>('.sp-row').forEach((el, i) => {
     try { el.querySelector('.sp-row-art')!.appendChild(copyOf(deps!.portrait(rows[i].g, 28))); } catch { /* decoration */ }
@@ -176,7 +187,7 @@ function detail(el: HTMLElement, g: SpeciesGenome, pool: readonly SpeciesGenome[
       <div class="sp-d-art"></div>
       <div>
         <div class="sp-d-name">${esc(g.name)}</div>
-        <div class="sp-d-kind">${esc(cap(kindOf(g)))} · ${esc(g.physicalTraits.size)} · ${esc(d.locomotion)}</div>
+        <div class="sp-d-kind"><span class="sp-class sp-g-${lifeClassOf(g, yours?.id ?? null)}">${esc(cap(LIFE_CLASS_WORDS[lifeClassOf(g, yours?.id ?? null)].one))}</span> ${esc(cap(kindOf(g)))} · ${esc(g.physicalTraits.size)} · ${esc(d.locomotion)}</div>
         <div class="sp-rel r-${rel}">${esc(cap(RELATION_WORDS[rel]))}</div>
         ${hasTemper(g) ? `<div class="sp-nature">${natureOf(g).map(w => `<span>${esc(w)}</span>`).join('')}</div>` : ''}
       </div>
@@ -459,6 +470,13 @@ const SP_CSS = `
 #species-screen .sp-row{font:inherit;display:flex;align-items:center;gap:8px;text-align:left;padding:4px 8px;background:#121c1a;
   border:1px solid rgba(93,204,138,.15);color:#cfe3d8;cursor:pointer}
 #species-screen .sp-row.sub{margin-left:18px}
+#species-screen .sp-group{font-size:10px;letter-spacing:2px;color:#86a396;padding:8px 2px 3px;border-bottom:1px solid rgba(93,204,138,.15);margin-bottom:2px}
+#species-screen .sp-group:first-child{padding-top:0}
+#species-screen .sp-group span{color:#e6f5ec;margin-left:4px}
+#species-screen .sp-group.sp-g-mind{color:#e8c98a}
+#species-screen .sp-class{display:inline-block;font-size:10px;letter-spacing:1px;padding:0 5px;margin-right:6px;border:1px solid currentColor;color:#9fb8ad}
+#species-screen .sp-class.sp-g-mind{color:#e8c98a} #species-screen .sp-class.sp-g-animal{color:#7fe0a4}
+#species-screen .sp-class.sp-g-plant{color:#9be27a} #species-screen .sp-class.sp-g-microbe{color:#8fd8ff}
 #species-screen .sp-row.on{border-color:#5dcc8a;background:#1a2b26}
 #species-screen .sp-row.yours{border-color:#c8a96e}
 #species-screen .sp-row:hover{border-color:#7fe0a4}

@@ -7,7 +7,7 @@
  * Pure functions over gameState.playerSpecies. No DOM, nothing written.
  */
 import type { SpeciesGenome } from './SpeciesGenome';
-import { nicheOverlap } from './EvolutionEngine';
+import { nicheOverlap, MIND_CAP } from './EvolutionEngine';
 
 /** Years per engine tick (the HUD's age). */
 export const YEARS_PER_TICK = 10;
@@ -40,6 +40,28 @@ export function kindOf(g: SpeciesGenome): string {
     : d.diet === 'decomposer' ? 'scavenger'
     : 'forager';
   return `${where}${role}`;
+}
+
+/** The broad class of life (playtest Oct 20: tell intelligent peoples from animals). */
+export type LifeClass = 'mind' | 'animal' | 'plant' | 'microbe';
+
+export const LIFE_CLASS_WORDS: Record<LifeClass, { one: string; many: string }> = {
+  mind: { one: 'an intelligent people', many: 'Intelligent peoples' },
+  animal: { one: 'an animal', many: 'Animals' },
+  plant: { one: 'a plant', many: 'Plants' },
+  microbe: { one: 'a microbe', many: 'Microbes' },
+};
+
+/**
+ * A mind is a lineage past the animal intelligence cap (at most the player's
+ * own and one rival, EvolutionEngine.rivalMind), or the player's people once
+ * they think at all; producers are plants; single cells are microbes.
+ */
+export function lifeClassOf(g: SpeciesGenome, yoursId: string | null = null): LifeClass {
+  if (g.physicalTraits.bodyStructure === 'single-celled') return 'microbe';
+  if (g.dna.diet === 'producer') return 'plant';
+  if (g.dna.intelligence > MIND_CAP || (g.id === yoursId && g.dna.intelligence >= 3)) return 'mind';
+  return 'animal';
 }
 
 /** Every ancestor id of `g` in the pool, nearest first. */

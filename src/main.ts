@@ -4614,9 +4614,11 @@ function initSpritesToggle(): void {
 
 function initHudShell(): void {
   initSpritesToggle();
-  document.getElementById('rail-evolve')?.addEventListener('click', () => {
-    const panel = document.querySelector('.left-panel');
-    setEvolveDrawer(!panel?.classList.contains('drawer-open'));
+  // The Evolve drawer's contents now live in Species (DNA, the lab) and the
+  // technology screen (TP); its rail slot opens Nations & Councils (playtest Oct 20).
+  document.getElementById('rail-nations')?.addEventListener('click', () => {
+    AudioManager.playSfx('ui_click');
+    openNationsOverview(null, at => openPlanetMap(at));
   });
   document.getElementById('evolve-drawer-close')?.addEventListener('click', () => setEvolveDrawer(false));
   document.getElementById('rail-god')?.addEventListener('click', () => {
