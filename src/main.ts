@@ -6585,10 +6585,16 @@ initFaithHand({
     if (work === 'wither') _dioramaRenderer.playDivineEffect('sink', cell);
   },
   host: faithHost,
+  // A thrown card lands on the home world's tile under the cursor (only while the diorama shows home).
+  pickTile: (x, y) => {
+    const ov = document.getElementById('planet-overlay');
+    if (!_dioramaRenderer || _dioramaSite || !ov || ov.style.display === 'none') return null;
+    return _dioramaRenderer.pickTile(x, y);
+  },
   // Species design D: where a card would fall, and the sweep as it lands.
-  reach: (card, mode) => {
+  reach: (card, mode, aim) => {
     if (!_dioramaRenderer || _dioramaSite) return;   // the reach is on the home world's grid
-    const r = card ? reachOf(card, runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null, runtimeState.playerPlanetGrid) : null;
+    const r = card ? reachOf(card, runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null, runtimeState.playerPlanetGrid, aim ?? null) : null;
     if (mode === 'preview') _dioramaRenderer.setReachPreview(r?.cells ?? null, r?.colour);
     else if (r) _dioramaRenderer.playReachSweep(r.cells, r.colour, r.centre);
   },

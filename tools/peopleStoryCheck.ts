@@ -12,7 +12,7 @@
 import { generatePlanetGrid, isHabitable, type PlanetGrid } from '../src/simulation/PlanetGrid';
 import { NationSystem } from '../src/simulation/Nations';
 import { valuesFromGenome, type GenomeSummary } from '../src/simulation/Civilization';
-import { cast, describe, priceOf, targetTextOf, resolveTarget, reachOf, type FaithCard, type ActionId } from '../src/simulation/FaithCards';
+import { cast, describe, priceOf, targetTextOf, resolveTarget, reachOf, aimable, type FaithCard, type ActionId } from '../src/simulation/FaithCards';
 import {
   symptomsOf, activityOf, beliefsOf, shapedBy, beatsSince, personalize, plural, natureOf, headingOf,
 } from '../src/simulation/PeopleStory';
@@ -245,6 +245,30 @@ console.log('Card reach (species design D: where a card would fall)');
   check('a work reaches its region, in its colour', !!rains && rains.cells.length > 0 && rains.colour === '#5ab8ff', `${rains?.cells.length} ${rains?.colour}`);
   check('without a world there is no reach', reachOf(harvest, w.ns, null) === null);
   check('a reach has a centre for the sweep', !!r?.centre && r.centre.row >= 0 && r.centre.row < GRID_SIZE);
+}
+
+console.log('Throwing a card onto a tile');
+{
+  const w = world(81);
+  const rains = card(['rains' as ActionId], { target: 'driest' });
+  check('a card that works the land at a place can be thrown', aimable(rains));
+  check('a card aimed at nations keeps the world\'s aim', !aimable(card(['harvest'], { target: 'hungriest' })));
+  check('a card on all life keeps the world\'s aim', !aimable(card(['hardy' as ActionId], { target: 'kin' })));
+  // A land tile far from the driest place.
+  let aim = { row: 0, col: 0 };
+  outer: for (let r = 60; r < 200; r += 3) for (let c = 0; c < GRID_SIZE; c += 3) if (!isWater(w.grid[r][c].biome)) { aim = { row: r, col: c }; break outer; }
+  const r = reachOf(rains, w.ns, w.grid, aim)!;
+  const near = (i: number) => { const rr = (i / GRID_SIZE) | 0, cc = i % GRID_SIZE; let dc = Math.abs(cc - aim.col); if (dc > GRID_SIZE / 2) dc = GRID_SIZE - dc; return Math.hypot(rr - aim.row, dc); };
+  check('the reach follows the throw', r.cells.length > 0 && r.cells.every(i => near(i) <= 24) && r.centre?.row === aim.row, `${r.cells.length} cells`);
+  const before = w.grid.map(row => row.map(c => c.moisture));
+  const host = { grid: w.grid, planetType: 'ocean', species: [], canCosmic: () => false, cosmic: () => null, surfaceChanged: () => {} };
+  cast(w.ns, rains, new SeedRNG('aim'), w.t, host as any, 0, aim);
+  let moved = 0, far = 0;
+  for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+    const rr = (i / GRID_SIZE) | 0, cc = i % GRID_SIZE;
+    if (w.grid[rr][cc].moisture !== before[rr][cc]) { moved++; if (near(i) > 24) far++; }
+  }
+  check('a thrown card works the land where it landed', moved > 0 && far === 0, `${moved} cells wetter, ${far} far away`);
 }
 
 console.log(failed ? `\n${failed} people-story check(s) FAILED` : '\npeople-story checks passed');
