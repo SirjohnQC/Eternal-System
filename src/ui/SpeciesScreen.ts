@@ -22,6 +22,7 @@ import {
   kindOf, relationTo, RELATION_WORDS, lifeClassOf, LIFE_CLASS_WORDS, type LifeClass, censusOf, livingRows, archiveRows, childrenOf, deathOf, yearsSpan,
 } from '../simulation/SpeciesCatalog';
 import { natureOf, shapedBy, symptomsOf } from '../simulation/PeopleStory';
+import { MIND_MIN } from '../simulation/People';
 import {
   MUTATIONS, MUTATION_BY_ID, DRAWBACKS, PRESSURE_TIMES, type CardState,
 } from '../simulation/Mutations';
@@ -311,6 +312,7 @@ function renderLab(body: HTMLElement, yours: SpeciesGenome | null, lab: NonNulla
     const closed = !!c.def.group && forkTaker.has(c.def.group) && forkTaker.get(c.def.group) !== c.def.id;
     const poor = c.status === 'available' && !c.affordable;
     const cls = ['sp-mut', c.status, closed ? 'closed' : '', poor ? 'poor' : '', c.status === 'available' && c.answers ? 'answers' : '',
+      c.def.mind && c.status !== 'owned' ? 'mind' : '',
       c.def.major ? 'major' : '', c.def.id === picked ? 'on' : ''].filter(Boolean).join(' ');
     const right = c.status === 'owned' ? '✓' : c.status === 'queued' ? '◆' : closed ? '✕' : String(c.price);
     return `<button type="button" class="${cls}" data-mut="${esc(c.def.id)}" title="${esc(c.def.label)}">
@@ -340,6 +342,7 @@ function renderLab(body: HTMLElement, yours: SpeciesGenome | null, lab: NonNulla
       <div class="sp-d-name">${esc(yours?.name ?? 'No lineage yet')}</div>
       <div class="sp-d-kind">${yours ? `Form ${roman(Math.max(1, forms.length))} · ${esc(cap(kindOf(yours, civ)))}` : ''}</div>
       <div class="sp-dna"><b>${gameState.dnaPoints}</b> DNA</div>
+      ${yours && phIdx <= BIO_PHASE_SEQUENCE.indexOf('primitive') ? mindMeter(yours.dna.intelligence) : ''}
       <div class="sp-h">Waiting to evolve</div>
       <div class="sp-queue">${queue.length ? queue.map(id => {
         const gift = gameState.mutationGifts.includes(id), why = gameState.mutationGiftWhy?.[id];
@@ -364,6 +367,18 @@ function renderLab(body: HTMLElement, yours: SpeciesGenome | null, lab: NonNulla
   drawLinks(body.querySelector('.sp-path') as HTMLElement, states, owned, queue);
 }
 
+/**
+ * The intellect the gate waits for (P4): ten pips, a notch where the mind
+ * wakes. A stage requirement, so the number is shown.
+ */
+function mindMeter(intel: number): string {
+  const v = Math.max(0, Math.min(10, Math.round(intel)));
+  const pips = Array.from({ length: 10 }, (_, i) => `<i class="${i < v ? 'on' : ''}${i === MIND_MIN - 1 ? ' gate' : ''}"></i>`).join('');
+  return `<div class="sp-mind" title="Civilisation waits until their intellect reaches ${MIND_MIN}">
+    <div class="sp-mind-h">INTELLECT <b>${v}</b> / 10</div><div class="sp-mind-bar">${pips}</div>
+    <div class="sp-mind-l">${v >= MIND_MIN ? 'The mind is awake: they can found a civilisation.' : `The mind wakes at ${MIND_MIN}. It grows slowly on its own; ✦ changes bring it sooner.`}</div></div>`;
+}
+
 function detailOf(c: CardState, forkTaker: ReadonlyMap<string, string>): string {
   const d = c.def, dr = DRAWBACKS[d.id];
   const gains = Object.entries(d.effects).filter(([, v]) => (v ?? 0) > 0).map(([k]) => GAIN_WORDS[k] ?? k);
@@ -382,6 +397,7 @@ function detailOf(c: CardState, forkTaker: ReadonlyMap<string, string>): string 
     ${c.answers ? `<div class="sp-ans">Answers ${esc(PRESSURE_TIMES[c.answers])}: it costs less now.</div>` : ''}
     <div class="sp-h">Gives</div><div class="sp-gain">${gains.length ? gains.map(g => `+ ${esc(g)}`).join('<br>') : '+ a new shape'}</div>
     <div class="sp-h">Costs them</div><div class="sp-cost">${dr ? `− ${esc(dr.text)}` : '− nothing more than DNA'}</div>
+    ${d.mind && c.status !== 'owned' ? `<div class="sp-mind-note">✦ Brings the mind closer: their world waits at Hands until they reach intelligence ${MIND_MIN}.</div>` : ''}
     ${d.major ? '<div class="sp-note">A major change: it can evolve them on its own.</div>' : ''}
     ${req.length ? `<div class="sp-note">Needs ${esc(req.join(' or '))} first.</div>` : ''}
     ${siblings.length ? `<div class="sp-note">${closedBy ? '' : `Taking it closes: ${esc(siblings.map(m => m.label).join(', '))}.`}</div>` : ''}
@@ -564,6 +580,16 @@ const SP_CSS = `
 #species-screen .sp-mut.owned{background:rgba(200,169,110,.22);border-color:#c8a96e;color:#f3e6c4}
 #species-screen .sp-mut.owned .p{color:#c8a96e}
 #species-screen .sp-mut.queued{border-color:#ffe08a;background:rgba(255,224,138,.12)}
+#species-screen .sp-mind{margin:6px 0 8px;padding:6px 8px;border:1px solid #4a3d64;background:rgba(120,90,200,.08)}
+#species-screen .sp-mind-h{font-size:9px;letter-spacing:.14em;color:#b9a6e8}
+#species-screen .sp-mind-h b{color:#fff;font-size:11px}
+#species-screen .sp-mind-bar{display:flex;gap:2px;margin:4px 0}
+#species-screen .sp-mind-bar i{flex:1;height:7px;background:#221a33;border:1px solid #3a2f52}
+#species-screen .sp-mind-bar i.on{background:#b48cff;border-color:#d8c2ff}
+#species-screen .sp-mind-bar i.gate{box-shadow:3px 0 0 -1px #f2d38a}
+#species-screen .sp-mind-l{font-size:9px;color:#9a8aaa;line-height:1.35}
+#species-screen .sp-mut.mind .n::after{content:' ✦';color:#d8c2ff}
+#species-screen .sp-mind-note{font-size:10px;color:#d8c2ff;margin:6px 0}
 #species-screen .sp-mut.answers{border-color:#ffb27a;box-shadow:0 0 0 1px rgba(255,178,122,.35),0 0 8px rgba(255,178,122,.3)}
 #species-screen .sp-mut.locked{opacity:.45}
 #species-screen .sp-mut.poor .p{color:#ff8a6a}

@@ -28,6 +28,10 @@ export interface MutationDef {
   blurb: string;
   /** Earliest biology phase the card is offered in. */
   phase: BiologyPhase;
+  /** Last biology phase it is offered in; later it is no longer shown (absent: always). */
+  until?: BiologyPhase;
+  /** It raises the mind the gate to civilisation waits for (P4: "brings the mind closer"). */
+  mind?: boolean;
   cost: number;
   /** One card per group: a fork. */
   group?: string;
@@ -202,7 +206,7 @@ export const MUTATIONS: MutationDef[] = [
     apply: g => { g.dna.aggression = clamp10(Math.max(6, g.dna.aggression + 2)); } },
 
   // ── Primitive ──────────────────────────────────────────────────────────────
-  { id: 'big_brain', label: 'Bigger Brain', glyph: '◍', phase: 'primitive', cost: 12, core: true, major: true,
+  { id: 'big_brain', label: 'Bigger Brain', glyph: '◍', phase: 'primitive', until: 'primitive', mind: true, cost: 12, core: true, major: true,
     requiresAny: ['backbone', 'exoskeleton'],
     blurb: 'A swollen cranium. Expensive to feed; it thinks.',
     locks: ['intelligence'], effects: { intellectGrowth: 0.4, techSpeed: 0.2 },
@@ -230,11 +234,11 @@ export const MUTATIONS: MutationDef[] = [
     apply: g => { g.dna.adaptability = clamp10(g.dna.adaptability + 1); g.dna.reproduction = 'sexual'; } },
 
   // ── Intelligent ────────────────────────────────────────────────────────────
-  { id: 'language', label: 'Language', glyph: '❝', phase: 'intelligent', cost: 15, core: true, major: true,
+  { id: 'language', label: 'Language', glyph: '❝', phase: 'primitive', until: 'primitive', mind: true, cost: 15, core: true, major: true,
     blurb: 'Words. Knowledge outlives the one who learned it.',
     locks: ['social'], effects: { techSpeed: 0.4, social: 0.3 },
     apply: g => { g.dna.social = clamp10(g.dna.social + 2); g.dna.intelligence = clamp10(g.dna.intelligence + 1); } },
-  { id: 'toolmaking', label: 'Toolmaking', glyph: '⚒', phase: 'intelligent', cost: 15, core: true,
+  { id: 'toolmaking', label: 'Toolmaking', glyph: '⚒', phase: 'primitive', until: 'primitive', mind: true, cost: 15, core: true,
     blurb: 'Shape stone and wood. The first technology.',
     locks: ['intelligence'], effects: { techSpeed: 0.5 },
     apply: g => { g.evolutionaryPotential.toolUse = 1; g.dna.intelligence = clamp10(g.dna.intelligence + 1); } },
@@ -408,6 +412,8 @@ export function cardStates(ctx: MutationContext): CardState[] {
   const out: CardState[] = [];
   for (const def of MUTATIONS) {
     if (!ctx.offered.includes(def.id)) continue;
+    // A card past its last phase is no longer offered (a mind card in space).
+    if (def.until && phaseIdx(ctx.phase) > phaseIdx(def.until) && !ctx.owned.includes(def.id) && !ctx.queued.includes(def.id)) continue;
     let status: CardStatus = ctx.owned.includes(def.id) ? 'owned'
       : ctx.queued.includes(def.id) ? 'queued' : 'available';
     let reason: string | null = null;

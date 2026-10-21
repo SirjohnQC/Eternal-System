@@ -140,6 +140,33 @@ rule({
 });
 
 rule({
+  // P4 mind gate, rule 7: the civilisation is the lineage the player shaped.
+  name: 'the player\'s civilisation is their own lineage',
+  check: ({ stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    const civ = ps ? gameState.civilizations[ps.id] : null;
+    const sigId = gameState.signatureSpeciesId;
+    if (!ps || !civ || ps.biologyPhase !== 'intelligent' || !sigId) return null;
+    const live = (id: string) => gameState.playerSpecies.some(g => g.id === id && !g.isExtinct);
+    if (!live(civ.speciesId) || !live(sigId)) return null;   // a lost lineage hands the signature on
+    return civ.speciesId === sigId ? null : `civilisation of ${civ.speciesId}, signature ${sigId}`;
+  },
+});
+
+rule({
+  // P4: a mindless people never wakes. While the world waits at Hands, its
+  // lineage is below the gate or the world is about to cross.
+  name: 'a world past Hands has a thinking lineage',
+  check: ({ engine, stars }) => {
+    const ps = stars.find(s => s.isPlayerStar);
+    if (!ps || ps.biologyPhase !== 'intelligent' || (ps.lifeFirstTick ?? 0) < 0) return null;
+    const crossed = (engine as any).mindCrossedAt as Map<number, number> | undefined;
+    const intel = crossed?.get(ps.id);
+    return intel == null || intel >= 4 ? null : `crossed into minds with intelligence ${intel}`;
+  },
+});
+
+rule({
   name: 'no stars pinned to the universe edge',
   check: ({ stars }) => firstBad(stars.filter(s => !s.isDead),
     s => Math.hypot(s.x - WORLD_SIZE / 2, s.y - WORLD_SIZE / 2) > UNIVERSE_RADIUS - 1,

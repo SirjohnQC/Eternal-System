@@ -1,5 +1,5 @@
 import { NationSystem, type Nation, type NationSnapshot } from './Nations';
-import { peopleOf } from './People';
+import { peopleOf, MIND_MIN, MIND_WAIT_MAX, mindDriftChance, mindAssist } from './People';
 import {
   emptyInterstellar, stepInterstellar, warDrive, grieve, homeImports, reachOf,
   type InterstellarState, type StarView, type HomeView, type TradeRoute,
@@ -51,7 +51,7 @@ import {
   type MoonKind as CosmicMoonKind,
 } from '../rendering/CosmicPixelSprites';
 import {
-  stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE,
+  stepEvolution, shouldStepEvolution, initPlayerSpecies, applyNudgeMutation, EVOLUTION_TICK_RATE, repair,
   type EvolutionEvent,
 } from './EvolutionEngine';
 import { tryQuake, restlessness, quakePlace, QUAKE_EVERY, type Quake } from './Quakes';
@@ -436,6 +436,8 @@ export interface StarBody {
   lifeArchetype?:  LifeArchetype;  // biochemistry of the current biosphere
   bioTempo?:       number;         // per-world evolutionary speed multiplier
   bioStalls?:      number;         // times this world has failed to leave its phase
+  /** Evolution steps spent at Hands waiting for a mind (P4 mind gate; the drift's clock). */
+  mindWait?:       number;
   extinctions?:    number;         // biospheres this system has lost outright
   lifeFirstTick?:  number;         // tick abiogenesis last happened here
   /**
@@ -969,6 +971,8 @@ export class BigBangEngine {
   onDNAAward:        ((amount: number, reason: string) => void) | null = null;
   /** Natural drift changed the signature species (an unlocked trait). */
   onSignatureDrift:  ((event: EvolutionEvent) => void) | null = null;
+  /** The mind drift raised the player's lineage (P4): its name and new intelligence. */
+  onMindDrift: ((name: string, intelligence: number) => void) | null = null;
   /** A free card dropped into the evolution queue on its own. */
   onSpontaneousMutation: ((mutationId: string) => void) | null = null;
   /** The signature lineage was lost and a descendant took its place. */
@@ -3452,6 +3456,7 @@ export class BigBangEngine {
           }
           this.ensureSignature();
           if (shouldStepEvolution(this.tick)) {
+            this.stepMindDrift(star);
             const sigId = gameState.signatureSpeciesId;
             const result = stepEvolution(
               star.biologyPhase,
@@ -3867,6 +3872,7 @@ export class BigBangEngine {
     this.dropCulture(star);
     star.bioPhaseProgress = 0;
     star.bioStalls = 0;
+    star.mindWait = 0;
     star.lifeArchetype = undefined;
     star.bioTempo = undefined;
     star.extinctions = (star.extinctions ?? 0) + 1;
@@ -3900,6 +3906,8 @@ export class BigBangEngine {
 
     star.biologyPhase = BIO_PHASE_SEQUENCE[next];
     star.bioPhaseProgress = 0;
+    star.mindWait = 0;
+    if (star.isPlayerStar) this.mindGateSaid = false;
     if (next < BIO_PHASE_SEQUENCE.indexOf('intelligent')) {
       star.civLevel = 0;
       this.dropCulture(star);
@@ -3939,9 +3947,20 @@ export class BigBangEngine {
 
     star.bioPhaseProgress++;
     if (star.bioPhaseProgress < rate) return;
-    star.bioPhaseProgress = 0;
 
     const idx = BIO_PHASE_SEQUENCE.indexOf(star.biologyPhase);
+    // The mind gate (P4): the player's world waits, ripe, at Hands until its
+    // own lineage can think. No roll, no stall: the drift will bring the mind.
+    if (star.isPlayerStar && star.biologyPhase === 'primitive' && !this.mindReady()) {
+      star.bioPhaseProgress = rate;
+      if (!this.mindGateSaid) {
+        this.mindGateSaid = true;
+        const sig = this.signatureSpecies();
+        this.onLifeEvent?.(`The ${sig?.name ?? gameState.playerSpeciesName ?? 'people'} are clever with their bodies, not yet with their thoughts.`, 'stall', false);
+      }
+      return;
+    }
+    star.bioPhaseProgress = 0;
     if (idx < 0 || idx >= BIO_PHASE_SEQUENCE.length - 1) return;
 
     const fromPhase = star.biologyPhase;
@@ -3955,7 +3974,10 @@ export class BigBangEngine {
       // DNA used to touch only `dnaMod` above, which scales the timer and is
       // capped at 0.6× — so spending points could not change whether the world
       // ever got past a filter, only how often it re-rolled a hopeless one.
-      assistance:   star.isPlayerStar ? this.playerBioAssistance() : 0,
+      // A sharper mind wakes more easily (P4).
+      assistance:   star.isPlayerStar
+        ? Math.min(0.9, this.playerBioAssistance() + (fromPhase === 'primitive' ? mindAssist(this.signatureSpecies()?.dna.intelligence ?? 0) : 0))
+        : 0,
     }, rng);
 
     if (outcome === 'stall') {
@@ -3985,10 +4007,16 @@ export class BigBangEngine {
     if (star.isPlayerStar) this.bioAssistance = 0;   // the nudge is spent
     star.bioStalls = 0;
     const step = outcome === 'burst' ? 2 : 1;
-    const nextIdx = Math.min(BIO_PHASE_SEQUENCE.length - 1, idx + step);
+    let nextIdx = Math.min(BIO_PHASE_SEQUENCE.length - 1, idx + step);
+    // A burst cannot vault a mindless people over the gate: it lands at Hands.
+    if (star.isPlayerStar && BIO_PHASE_SEQUENCE[nextIdx] === 'intelligent' && !this.mindReady()) {
+      nextIdx = BIO_PHASE_SEQUENCE.indexOf('primitive');
+    }
+    if (BIO_PHASE_SEQUENCE[nextIdx] === 'primitive') { star.mindWait = 0; this.mindGateSaid = false; }
     const nextPhase = BIO_PHASE_SEQUENCE[nextIdx];
     star.biologyPhase = nextPhase;
     if (star.isPlayerStar) this.bioMoment(star, nextIdx, idx);
+    if (star.isPlayerStar && nextPhase === 'intelligent') this.mindCrossedAt.set(star.id, this.signatureSpecies()?.dna.intelligence ?? -1);
 
     if (outcome === 'burst') {
       const name = star.isPlayerStar
@@ -4122,7 +4150,16 @@ export class BigBangEngine {
     target = Math.max(1, Math.min(TECH_LEVELS.length - 1, Math.round(target)));
     if (ps.biologyPhase !== 'intelligent') {
       if (gameState.playerSpecies.length === 0) gameState.playerSpecies = initPlayerSpecies(this.tick, this.rng.fork('leap'));
+      this.ensureSignature();
+      // Creative mode passes the same mind gate (rule 6): the drift runs its
+      // quick steps at Hands, bounded, before the world wakes.
+      ps.biologyPhase = 'primitive';
+      ps.mindWait = ps.mindWait ?? 0;
+      this.leaping = true;
+      for (let k = 0; k <= MIND_WAIT_MAX + 4 && !this.mindReady(); k++) this.stepMindDrift(ps, `_leap${k}`);
+      this.leaping = false;
       ps.biologyPhase = 'intelligent';
+      this.mindCrossedAt.set(ps.id, this.signatureSpecies()?.dna.intelligence ?? -1);
       ps.bioPhaseProgress = 0;
       this.ensureCivilization(ps);
     }
@@ -4265,7 +4302,7 @@ export class BigBangEngine {
     if (!ns) ns = runtimeState.playerNations = new NationSystem((star.id * 2654435761 + this.tick0Seed) >>> 0);
     if (!ns.isFounded) {
       const civ = this.cultureFor(star);
-      const lead = peopleOf(gameState.playerSpecies);
+      const lead = this.signatureSpecies() ?? peopleOf(gameState.playerSpecies);
       const genome = civ?.sourceGenome ?? (lead ? summariseGenome(lead) : null);
       if (!genome) return;
       ns.found(grid, civ?.values ?? valuesFromGenome(genome), genome, this.tick);
@@ -4908,8 +4945,9 @@ export class BigBangEngine {
   private ensureCivilization(star: StarBody): void {
     if (gameState.civilizations[star.id]) return;
 
+    // The player's people are the lineage they shaped (P4, rule 7), else the most numerous.
     const species = star.isPlayerStar
-      ? gameState.playerSpecies.filter(s => !s.isExtinct)
+      ? this.signatureSpecies() ?? gameState.playerSpecies.filter(s => !s.isExtinct)
           .sort((a, b) => b.population - a.population)[0]
       : undefined;
     const genome = species
@@ -5049,6 +5087,38 @@ export class BigBangEngine {
   }
 
   /** The moment highs, made on first use (optional on old saves: their present counts as seen). */
+  /** The signature's intelligence when the player's world last crossed into minds (for the checks). */
+  readonly mindCrossedAt = new Map<number, number>();
+
+  /** Said once per visit to Hands: the world is ripe but waits for a mind. */
+  private mindGateSaid = false;
+
+  /** Whether the player's own lineage can think (P4 mind gate). */
+  mindReady(): boolean {
+    return (this.signatureSpecies()?.dna.intelligence ?? 0) >= MIND_MIN;
+  }
+
+  /**
+   * The mind drift (P4): at Hands, each evolution step may add +1 to the
+   * signature's intelligence, more surely the longer it waits, certainly
+   * after MIND_WAIT_MAX steps. Only up, only to MIND_MIN; trait locks never
+   * stop it (it undoes no choice). Returns whether it moved.
+   */
+  private stepMindDrift(star: StarBody, salt = ''): boolean {
+    if (!star.isPlayerStar || star.biologyPhase !== 'primitive') return false;
+    const sig = this.signatureSpecies();
+    if (!sig || sig.dna.intelligence >= MIND_MIN) return false;
+    const wait = star.mindWait ?? 0;
+    star.mindWait = wait + 1;
+    const p = mindDriftChance(wait, this.playerEffect('intellectGrowth'), paceOf(this.stats.evolution));
+    if (p < 1 && !this.rng.fork(`mind_${star.id}_${this.tick}${salt}`).chance(p)) return false;
+    sig.dna.intelligence = Math.min(MIND_MIN, sig.dna.intelligence + 1);
+    repair(sig);
+    this.playerSpeciesChanged();
+    if (!this.leaping) this.onMindDrift?.(sig.name, sig.dna.intelligence);
+    return true;
+  }
+
   /**
    * The moment highs, made on first use from the world as it stood just
    * before the change being announced (`prior`), so the first climb of a new
