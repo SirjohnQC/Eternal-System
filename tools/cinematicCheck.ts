@@ -178,5 +178,19 @@ check('skip lands on the home world at planet zoom', Math.abs(skipped.currentCam
   check('past the galaxy tier the home system is centred', worst < 40, `${worst.toFixed(1)}px off`);
 }
 
+// A slow machine (alpha round 2): a frame the 50 ms cap shortened still
+// moves the cinematic by its real length, so the opening keeps its wall time.
+{
+  const e = makeEngine();
+  e.cinematic = new BigBangCinematic();
+  e.paceToWallClock = true;
+  e.rawFrameDtMs = 250;   // pullFrameDeltaMs caps it here
+  e.update(50);
+  check('a slow frame moves the cinematic by its real time (capped at 250 ms)', Math.abs(e.cinematic.t - 0.25) < 1e-9, `${e.cinematic.t}`);
+  e.rawFrameDtMs = 16;
+  e.update(16);
+  check('a normal frame moves it by its own length', Math.abs(e.cinematic.t - 0.266) < 1e-9, `${e.cinematic.t}`);
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nall cinematic checks passed');
 process.exit(failures ? 1 : 0);

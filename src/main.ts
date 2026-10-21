@@ -1929,7 +1929,8 @@ function formatPop(n: number): string {
   if (n >= 1e12) return (n / 1e12).toFixed(1) + ' trillion';
   if (n >= 1e9)  return (n / 1e9).toFixed(1) + ' billion';
   if (n >= 1e6)  return (n / 1e6).toFixed(1) + ' million';
-  return Math.round(n / 1e3) + ' thousand';
+  if (n >= 1e3)  return Math.round(n / 1e3) + ' thousand';
+  return String(Math.round(n));
 }
 
 // Which star the planet panel is currently showing. `onCultureGenerated` needs
@@ -2075,7 +2076,10 @@ function refreshPlanetVitals(star: StarBody, planetIndex: number): void {
     setStyle('pi-arch-row', 'display', arch ? '' : 'none');
     if (arch) setText('pi-arch', arch.summary.charAt(0).toUpperCase() + arch.summary.slice(1));
     const biosphere = planet?.biosphere ?? 0;
-    setText('pi-population', formatPop(calcPop(civLevel)));
+    // One population everywhere (alpha round 2): the nations' own count when
+    // they exist, the same figure Your People and Nations show.
+    const ns = star.isPlayerStar && runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
+    setText('pi-population', formatPop(ns ? ns.population : calcPop(civLevel)));
     setText('pi-biosphere', Math.round(biosphere * 100) + '%');
     setStyle('pi-biosphere-bar', 'width', Math.round(biosphere * 100) + '%');
   } else {

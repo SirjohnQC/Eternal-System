@@ -181,6 +181,9 @@ console.log('Species catalogue');
   const c = censusOf(pool, 'you');
   check('the census counts living, extinct and branches', c.living === 5 && c.extinct === 2 && c.branches === 1 && c.ever === 7, JSON.stringify(c));
   const rows = livingRows(pool, 'you');
+  const byGround = livingRows(pool, 'you', new Map([['you', 3], [pool.find(g => g.id !== 'you' && !g.isExtinct)!.id, 1]]));
+  check('civilised shares follow the ground held', Math.abs((byGround.find(r => r.g.id === 'you')?.share ?? 0) - 0.75) < 1e-9,
+    String(byGround.find(r => r.g.id === 'you')?.share));
   check('yours first, its branch right under it', rows[0].g.id === 'you' && rows[1].g.id === 'branch' && rows[1].depth === 1, rows.map(r => r.g.id).join(','));
   check('every living lineage listed once', rows.length === 5 && new Set(rows.map(r => r.g.id)).size === 5);
   check('shares add up to the whole', Math.abs(rows.reduce((a, r) => a + r.share, 0) - 1) < 1e-9);

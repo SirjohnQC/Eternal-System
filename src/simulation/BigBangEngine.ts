@@ -1645,8 +1645,17 @@ export class BigBangEngine {
     }
     const dt = now - this.lastFrameTime;
     this.lastFrameTime = now;
+    this.rawFrameDtMs = Math.min(250, Math.max(0, dt));
     return Math.min(50, Math.max(0, dt));
   }
+
+  /**
+   * The last frame's real length, capped at 250 ms (a hidden tab), not 50:
+   * the opening cinematic is told in wall time, and the 50 ms cap stretched
+   * it to 8–9 minutes on a machine drawing a few frames a second (alpha
+   * round 2). The simulation keeps the 50 ms cap.
+   */
+  private rawFrameDtMs = 1000 / 60;
 
   update(dtMs?: number): void {
     const speed = (window as unknown as Record<string, unknown>)['eternalSpeed'] as number ?? 1;
@@ -1668,7 +1677,8 @@ export class BigBangEngine {
     // speed buttons, which are hidden while it plays) and the Big Bang ticks
     // are slaved to it, so the beats line up at any frame rate.
     const cine = this.cinematic && !this.cinematic.finished ? this.cinematic : null;
-    if (cine) cine.advance(dt / 1000);
+    // A frame the 50 ms cap shortened counts at its real length here.
+    if (cine) cine.advance((dt >= 50 ? Math.max(dt, this.rawFrameDtMs) : dt) / 1000);
     let ticksThisFrame: number;
     if (cine && this.phase !== 'settled') {
       ticksThisFrame = Math.max(0, cine.targetTicks - this.tick);
@@ -4407,6 +4417,10 @@ export class BigBangEngine {
         this.onCivEvent?.(`${cap(cause)}: ${name ? `the ${name}` : 'your people'} fall back to the ${ageName(star.civLevel)}.`);
         this.emitMoment(star, 'fall', `Back to the ${ageName(star.civLevel)}`,
           `${cap(cause)}. ${name ? `The ${name}` : 'Your people'} lose much of what they knew.`, 'quake');
+      } else if (star.civLevel > from && !this.leaping) {
+        // A climb from outside their own learning is told too, never silent.
+        const name = gameState.playerSpeciesName || this.signatureSpecies()?.name || '';
+        this.onCivEvent?.(`${cap(cause)}: ${name ? `the ${name}` : 'your people'} rise to the ${ageName(star.civLevel)}.`);
       }
     }
   }
