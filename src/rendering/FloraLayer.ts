@@ -481,7 +481,8 @@ function atlasSprite(
     o[i + 2] = ub * m + (mineral ? 10 : -10);
     o[i + 3] = 255;
   };
-  const dest = Math.max(2, px);
+  // A NaN or fractional size threw in createImageData ("not of type long", alpha round 2).
+  const dest = Math.max(2, Math.round(px) || 2);
   const data = new Uint8ClampedArray(dest * dest * 4);
   const fallback: Record<string, DecalKind> = { palm: 'broadleaf', bush: 'scrub', grass: 'scrub', mushroom: 'scrub', ore: 'rock', crystal: 'rock' };
   const row = atlas ? atlas.rows[s.kind] ?? atlas.rows[fallback[s.kind] ?? s.kind] : undefined;

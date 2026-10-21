@@ -545,7 +545,7 @@ interface CosmicSignal {
  * only: emitting one changes no simulation state beyond its own high mark.
  */
 export interface StageMoment {
-  kind: 'bio' | 'nations' | 'era' | 'leap';
+  kind: 'bio' | 'nations' | 'era' | 'leap' | 'fall';
   starId: number;
   tick: number;
   /** Banner heading ("Eyes open", "The Iron Age"). */
@@ -3633,6 +3633,8 @@ export class BigBangEngine {
     }
     heir ??= [...living].sort((a, b) => b.population - a.population)[0];
     gameState.signatureSpeciesId = heir.id;
+    // A named people that lives on through a branch keeps its name.
+    if (!first && gameState.playerSpeciesName) heir.name = gameState.playerSpeciesName;
     if (first) {
       gameState.speciesForms = [{
         form: 1, name: heir.name, tick: this.tick, mutations: [],
@@ -3655,10 +3657,13 @@ export class BigBangEngine {
     if (!sig || !queueReady(queue)) return null;
     const before = cloneGenome(sig);
     for (const id of queue) applyMutation(sig, id);
-    // Every form gets a fresh name that fits what it became.
+    // Every form gets a fresh name that fits what it became, until the player
+    // has named their people: then it keeps that name (alpha round 2: it was
+    // renamed four times and never shown as the name the player gave).
     const rng = this.rng.fork(`form_${sig.id}_${gameState.speciesForms.length + 1}`);
     let name = nameForGenome(sig, rng);
     for (let i = 0; i < 4 && name === before.name; i++) name = nameForGenome(sig, rng);
+    if (gameState.playerSpeciesName) name = gameState.playerSpeciesName;
     sig.name = name;
     gameState.mutationsOwned.push(...queue);
     gameState.mutationQueue = [];
@@ -4256,7 +4261,7 @@ export class BigBangEngine {
       if (star.civLevel > high.era) {
         high.era = star.civLevel;
         if (!this.leaping) {
-          if (star.civLevel === 1) this.fireLeaderMessage(star, `The ${gameState.playerSpeciesName} have built their first cities. Their first leader rises.`);
+          if (star.civLevel === 1) this.fireLeaderMessage(star, `${gameState.playerSpeciesName ? `The ${gameState.playerSpeciesName} have` : 'Our people have'} built their first cities. Their first leader rises.`);
           else this.fireLeaderMessage(star, `Our civilization has advanced to ${eraTitle(star.civLevel)}.`);
           this.eraMoment(star);
         }
@@ -4387,10 +4392,23 @@ export class BigBangEngine {
    * themselves from civLevel (StarPolities).
    */
   private shiftEra(star: StarBody, to: number, cause: string): void {
+    const cap = (t: string) => t.charAt(0).toUpperCase() + t.slice(1);
     const level = Math.max(0, Math.min(TECH_LEVELS.length - 1, to));
     if (level === star.civLevel) return;
+    const from = star.civLevel;
     star.civLevel = level;
-    if (star.isPlayerStar) { this.eraCause = cause; this.reconcilePlayerEra(star); }
+    if (star.isPlayerStar) {
+      this.eraCause = cause;
+      this.reconcilePlayerEra(star);
+      // A fall is a great moment too, told in what happened (alpha round 2:
+      // the era dropped with nothing to say why).
+      if (star.civLevel < from && !this.leaping) {
+        const name = gameState.playerSpeciesName || this.signatureSpecies()?.name || '';
+        this.onCivEvent?.(`${cap(cause)}: ${name ? `the ${name}` : 'your people'} fall back to the ${ageName(star.civLevel)}.`);
+        this.emitMoment(star, 'fall', `Back to the ${ageName(star.civLevel)}`,
+          `${cap(cause)}. ${name ? `The ${name}` : 'Your people'} lose much of what they knew.`, 'quake');
+      }
+    }
   }
 
   /**
@@ -5090,6 +5108,13 @@ export class BigBangEngine {
   /** The signature's intelligence when the player's world last crossed into minds (for the checks). */
   readonly mindCrossedAt = new Map<number, number>();
 
+  /** The player names their people: the name goes on the lineage itself, everywhere it shows. */
+  namePlayerPeople(name: string): void {
+    gameState.playerSpeciesName = name;
+    const sig = this.signatureSpecies();
+    if (sig) { sig.name = name; this.playerSpeciesChanged(); }
+  }
+
   /** Said once per visit to Hands: the world is ripe but waits for a mind. */
   private mindGateSaid = false;
 
@@ -5147,7 +5172,7 @@ export class BigBangEngine {
     const skipped = idx - high.bio > 1 && high.bio >= 0;
     high.bio = idx;
     if (this.leaping) return;
-    const who = gameState.playerSpeciesName || 'your creatures';
+    const who = gameState.playerSpeciesName || this.signatureSpecies()?.name || 'creatures';
     const world = gameState.playerPlanetName || star.civName;
     const label = this.progressionOf(star).phaseLabel;
     const [title, line, icon]: [string, string, string] =
@@ -5163,10 +5188,12 @@ export class BigBangEngine {
   private eraMoment(star: StarBody): void {
     const ns = runtimeState.playerNations;
     const lead = ns?.isFounded ? ns.nations.filter(n => !n.fallen).sort((a, b) => b.era - a.era || b.state.population - a.state.population)[0] : null;
-    const who = gameState.playerSpeciesName || 'your people';
+    const name = gameState.playerSpeciesName || this.signatureSpecies()?.name || '';
+    const the = name ? `the ${name}` : 'your people';
+    const The = name ? `The ${name}` : 'Your people';
     const line = star.civLevel === 1
-      ? `The ${who} have built their first cities.`
-      : lead ? `${lead.name} leads the ${who} into the ${ageName(star.civLevel)}.` : `The ${who} enter the ${ageName(star.civLevel)}.`;
+      ? `${The} have built their first cities.`
+      : lead ? `${lead.name} leads ${the} into the ${ageName(star.civLevel)}.` : `${The} enter the ${ageName(star.civLevel)}.`;
     const learned = this.ageLearned.slice(-3);
     this.ageLearned = [];
     this.emitMoment(star, 'era', eraTitle(star.civLevel), line, star.civLevel >= 5 ? 'seafaring' : 'inspire', learned);

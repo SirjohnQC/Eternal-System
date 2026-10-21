@@ -2625,7 +2625,8 @@ input[type="range"], select, label[for],
 }
 
 /* The great-moment banner (ui/MomentBanner): never blocks a click but its own ✕. */
-#moment-banner{position:fixed;top:64px;left:50%;z-index:950;display:flex;gap:12px;align-items:flex-start;
+body.moment-on #toast-container{top:calc(var(--top, 50px) + 168px);transition:top .4s ease}
+#moment-banner{position:fixed;top:64px;left:50%;z-index:8100;display:flex;gap:12px;align-items:flex-start;
   width:min(520px,calc(100vw - 32px));box-sizing:border-box;padding:12px 34px 12px 14px;
   background:linear-gradient(180deg,rgba(24,16,40,.94),rgba(10,8,20,.94));border:1px solid #c8a96e;
   box-shadow:0 0 0 1px #000,0 0 28px rgba(200,169,110,.35);color:#e8dcc4;pointer-events:none;
@@ -2643,7 +2644,7 @@ input[type="range"], select, label[for],
 
 .toast .toast-act{margin-left:6px;padding:1px 8px;font-size:9px;letter-spacing:.1em;background:#2a1a3a;border:1px solid #c8a96e;color:#f2e2bf;cursor:pointer}
 .rail-btn{position:relative}
-.rail-voice{position:absolute;top:2px;right:2px;padding:0 4px;font-size:9px;line-height:14px;background:#c8a96e;color:#1a1020;
+.rail-voice{position:absolute;top:0;right:0;padding:2px 6px;font-size:12px;line-height:16px;min-width:22px;text-align:center;background:#c8a96e;color:#1a1020;
   border-radius:7px;cursor:pointer;animation:rail-voice-pulse 1.6s ease-in-out infinite}
 @keyframes rail-voice-pulse{50%{box-shadow:0 0 8px #f2d38a}}
 /* Universe Timeline */
@@ -4976,6 +4977,16 @@ body:not(.events-collapsed) .bottom-bar{padding-right:calc(var(--events) + 10px)
           <div id="gemini-status">
             <span id="gemini-status-dot" class="status-none">●</span>
             <span id="gemini-status-text">No key configured</span>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-label">SAVE</div>
+          <div class="settings-desc">Your world saves itself every minute or so, and with Ctrl+S. Export a file to keep a copy or move it to another computer.</div>
+          <div class="settings-input-row">
+            <button class="settings-action-btn" id="settings-save-now" type="button">SAVE NOW</button>
+            <button class="settings-action-btn" id="settings-export" type="button">EXPORT FILE</button>
+            <button class="settings-action-btn" id="settings-import" type="button">IMPORT FILE</button>
           </div>
         </div>
 

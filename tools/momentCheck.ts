@@ -102,6 +102,11 @@ console.log('A Creative leap, and a reload');
   e.leapToEra(4);
   check('a leap of many ages is one moment', moments.filter(m => m.kind !== 'bio').length === 1 && moments[moments.length - 1]?.kind === 'leap',
     moments.map(m => m.kind).join(','));
+  // A fall is told as a moment, once, with its cause (alpha round 2).
+  const before = moments.length;
+  e.shiftEra(e.getPlayerStar(), 2, 'an asteroid struck the world');
+  const falls = moments.slice(before).filter(m => m.kind === 'fall');
+  check('a fall is a moment that says why', falls.length === 1 && /asteroid/i.test(falls[0].line), falls.map(m => m.line).join(' | '));
   // A save from before the moments: its present is already seen.
   const snap = JSON.parse(JSON.stringify(e.serialize()));
   delete gameState.momentHigh;

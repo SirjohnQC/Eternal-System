@@ -73,7 +73,7 @@ import { BUILD_LABEL } from './buildInfo';
 import { DP_CAP, DP_REGEN_BASE, DP_DEVOTION_THRESHOLD_MID, DP_DEVOTION_THRESHOLD_HIGH } from './constants';
 import { NORMAL_PACE, NORMAL_FAST_FORWARD, isDestinyType, type DestinyType } from './simulation/Formation';
 import {
-  SAVE_VERSION, migrateSave, gameStateFromSave,
+  SAVE_VERSION, migrateSave, gameStateFromSave, restoreSave,
   type EternalSaveFile as SaveFile, type ParsedSave,
 } from './simulation/SaveFormat';
 import { symptomsOf } from './simulation/Nations';
@@ -1225,7 +1225,9 @@ function wireEngineEvents(eng: BigBangEngine): void {
       updateHUDTick(tick);
       updatePhaseBar();
     }
-    if (tick % 100 === 0 && gameState.screen === 'game') {
+    // Autosave by the wall clock: every 100 ticks was ten saves a second at 1000×.
+    if (tick % 100 === 0 && Date.now() - _lastAutoSave > AUTOSAVE_MS && canSave()) {
+      _lastAutoSave = Date.now();
       autoSaveGame();
       showSaveIndicator();
     }
@@ -1318,10 +1320,14 @@ function wireEngineEvents(eng: BigBangEngine): void {
     if (planetRenderer?.bioOverlayVisible) {
       planetRenderer.bioData = { species: gameState.playerSpecies, biosphere: gameState.playerBiosphere };
     }
-    // Open interactive modal — player names the new lineage and optionally nudges a trait.
-    // Feed entry, Codex entry, and Gemini narration are all handled inside confirmSpeciation().
-    // If dismissed, a minimal feed entry is recorded here.
-    showSpeciationModal(evt);
+    // A new lineage is news, not a stop (alpha round 2: eight modals in one
+    // game, each dropping the speed). It is recorded at once under the name
+    // evolution gave it; NAME IT opens the old naming dialog by choice.
+    const child = evt.newSpeciesName ?? 'a new lineage';
+    addFeedEntry(`🌿 SPECIATION: ${evt.speciesName} diverged into ${child}.`, 'milestone');
+    addCodexEntry(`New Lineage: ${child}`, 'biology');
+    const t = showToast('dna', `<b>${escapeHtml(child)}</b> branched from ${escapeHtml(evt.speciesName)}. <button type="button" class="toast-act">NAME IT</button>`, 9000);
+    t?.querySelector('.toast-act')?.addEventListener('click', () => { dismissToast(t); showSpeciationModal(evt, true); });
   };
 
   eng.onExtinctionEvent = (evt: EvolutionEvent) => {
@@ -3381,6 +3387,7 @@ const TOAST_ICONS: Record<string, string> = {
   tech:            '◆',
   cast:            '✧',
   voice:           '✉',
+  save:            '✓',
   supernova:       '💥',
   asteroid_impact: '☄',
   void_storm:      '🌀',
@@ -3397,6 +3404,7 @@ const TOAST_TITLES: Record<string, string> = {
   tech:            'TECH CARD',
   cast:            'A SIGN FALLS',
   voice:           'A VOICE',
+  save:            'SAVED',
   supernova:       'STELLAR COLLAPSE',
   asteroid_impact: 'ASTEROID IMPACT',
   void_storm:      'VOID STORM',
@@ -4277,7 +4285,7 @@ function confirmNaming(): void {
   if (!name) return;
 
   if (namingMode === 'species') {
-    gameState.playerSpeciesName = name;
+    if (engine) engine.namePlayerPeople(name); else gameState.playerSpeciesName = name;
     addChatMessage(`"${name}" — so your children shall be known across the cosmos.`, 'god');
     addFeedEntry(`First species named: ${name}`, 'milestone');
     addCodexEntry(`The ${name}`, 'civilisation');
@@ -4302,12 +4310,14 @@ let _selectedSpeciationTrait = 'none';
 
 const BRANCH_PREFIXES = ['Neo', 'Para', 'Proto', 'Xeno', 'Hyper', 'Sub', 'Archi', 'Ur'];
 
-function showSpeciationModal(evt: EvolutionEvent): void {
+function showSpeciationModal(evt: EvolutionEvent, recorded = false): void {
   if (_speciationOpen) {
     _speciationQueue.push(evt);
     return;
   }
   _speciationOpen = true;
+  _speciationRecorded = recorded;
+  _speciationEvt = evt;
   _selectedSpeciationTrait = 'none';
 
   const overlay   = document.getElementById('speciation-overlay');
@@ -4328,8 +4338,13 @@ function showSpeciationModal(evt: EvolutionEvent): void {
   setTimeout(() => nameInput?.focus(), 100);
 }
 
+/** The open lineage was already put in the feed and Codex when it branched (the toast path). */
+let _speciationRecorded = false;
+/** The branching being named (so a late naming renames the right lineage). */
+let _speciationEvt: EvolutionEvent | null = null;
+
 function closeSpeciationModal(dismissed = false): void {
-  if (dismissed) {
+  if (dismissed && !_speciationRecorded) {
     // Minimal record so the event isn't completely silent
     const parentName = document.getElementById('sp-parent-name')?.textContent ?? 'a species';
     const autoName   = (document.getElementById('speciation-name-input') as HTMLInputElement | null)?.value.trim()
@@ -4343,7 +4358,7 @@ function closeSpeciationModal(dismissed = false): void {
   // Process next queued speciation
   if (_speciationQueue.length > 0) {
     const next = _speciationQueue.shift()!;
-    setTimeout(() => showSpeciationModal(next), 400);
+    setTimeout(() => showSpeciationModal(next, true), 400);
   }
 }
 
@@ -4355,9 +4370,10 @@ function confirmSpeciation(): void {
   const parentName = document.getElementById('sp-parent-name')?.textContent ?? '';
 
   // Locate the newest species in the array whose ancestorId matches the parent
-  const newSpecies = [...(gameState.playerSpecies ?? [])]
-    .reverse()
-    .find(s => !s.isExtinct && s.ancestorId != null);
+  const ev = _speciationEvt;
+  const newSpecies = [...(gameState.playerSpecies ?? [])].reverse()
+    .find(s => !s.isExtinct && ev != null && s.ancestorId === ev.speciesId && s.name === ev.newSpeciesName)
+    ?? [...(gameState.playerSpecies ?? [])].reverse().find(s => !s.isExtinct && s.ancestorId != null);
 
   if (newSpecies) {
     newSpecies.name = newName;
@@ -4455,6 +4471,28 @@ function exportSaveFile(): void {
   showSaveIndicator('EXPORTED');
 }
 
+/**
+ * Whether there is a world to save. The live game runs on the 'bigbang'
+ * screen; saves only checked for 'game' (the load screen), so a new game was
+ * never saved at all (alpha playtest round 2, B1). Not during the opening
+ * cinematic.
+ */
+const AUTOSAVE_MS = 45_000;
+let _lastAutoSave = Date.now();
+
+function canSave(): boolean {
+  if (!engine || engine.cinematicActive || !engine.getPlayerStar()) return false;
+  return gameState.screen === 'game' || gameState.screen === 'bigbang';
+}
+
+/** Save at once (Ctrl+S, Settings → SAVE NOW), and say so. */
+function saveNow(): void {
+  if (!canSave()) { showToast('warning', 'There is no world to save yet.', 3000); return; }
+  autoSaveGame();
+  showSaveIndicator();
+  showToast('save', 'Your world is saved. It will be here when you come back.', 3000);
+}
+
 function showSaveIndicator(label = 'SAVED'): void {
   const el = document.getElementById('save-indicator');
   if (!el) return;
@@ -4521,8 +4559,8 @@ function applyLoadedSave(save: EternalSaveFile): boolean {
   // the actual saved civilisations, but the ordering must be correct
   // regardless of that.)
   engine.geminiService = _geminiService;
-  engine.init(save.gameState.stats!, save.gameState.masterSeed);
-  engine.loadState(save.engine);
+  restoreSave(engine, save);
+  gameState.screen = 'game';
   const godName = save.gameState.godName;
 
   chatHandler = async (msg: string) => {
@@ -5210,6 +5248,9 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('export-save-btn')?.addEventListener('click', exportSaveFile);
+  document.getElementById('settings-save-now')?.addEventListener('click', saveNow);
+  document.getElementById('settings-export')?.addEventListener('click', () => { if (canSave()) exportSaveFile(); else saveNow(); });
+  document.getElementById('settings-import')?.addEventListener('click', () => document.getElementById('import-file-input')?.click());
 
   document.getElementById('import-save-btn')?.addEventListener('click', () => {
     document.getElementById('import-file-input')?.click();
@@ -5232,6 +5273,8 @@ window.addEventListener('DOMContentLoaded', () => {
   let escConsumed = false;
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    const speciationOpen = !!document.getElementById('speciation-overlay')?.classList.contains('open');
+    if (speciationOpen) { closeSpeciationModal(true); escConsumed = true; return; }
     const leaderOpen = !!document.getElementById('leader-dialogue-overlay')?.classList.contains('active');
     if (leaderOpen) closeLeaderDialogue();
     escConsumed = leaderOpen || escOverlays.some(id => document.getElementById(id)?.classList.contains('open'))
@@ -5245,7 +5288,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'f' || e.key === 'F') engine?.focusPlayerStar();
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
       e.preventDefault();
-      if (gameState.screen === 'game') { autoSaveGame(); showSaveIndicator(); }
+      saveNow();
     }
   });
 
@@ -6716,7 +6759,9 @@ initTechCards({
 });
 initFaithHand({
   chat: (text, kind) => addChatMessage(text, kind),
-  landed: (card, line) => showToast('cast', `<b>${escapeHtml(card.name)}</b> — ${escapeHtml(line)}`, 6000),
+  // The cast line usually opens with the card's name already: don't say it twice (alpha round 2).
+  landed: (card, line) => showToast('cast', line.toLowerCase().startsWith(card.name.toLowerCase())
+    ? escapeHtml(line) : `<b>${escapeHtml(card.name)}</b> — ${escapeHtml(line)}`, 6000),
   dpChanged: () => {
     updateDivineActions();
     setResourceChip('dp-display', 'dp-display-val', gameState.divinePoints);

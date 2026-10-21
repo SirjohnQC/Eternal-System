@@ -1489,15 +1489,15 @@ export class IsoDioramaRenderer {
       const a = Math.min(1, age / 0.6) * (age > LIFE - 8 ? (LIFE - age) / 8 : 1);
       const px = cx + p.dx * rx, py = cy + p.dy * ry;
       const rise = Math.min(1, age / 1.2);
-      const w = 7 * k, h = w * 0.45;
+      const w = 11 * k, h = w * 0.45;   // big enough to find at default zoom (alpha round 2)
       // A ring on the ground, a beam and a small four-point star above it.
       g.globalAlpha = a * (0.55 + 0.25 * Math.sin(age * 2.2));
       g.strokeStyle = m.colour; g.lineWidth = Math.max(1, k);
       g.beginPath(); g.ellipse(px, py, w, h, 0, 0, Math.PI * 2); g.stroke();
       g.globalAlpha = a * 0.35;
       g.fillStyle = m.colour;
-      g.fillRect(px - k * 0.5, py - 16 * k * rise, Math.max(1, k), 16 * k * rise);
-      const sy = py - 18 * k * rise, sr = 3.2 * k;
+      g.fillRect(px - k, py - 26 * k * rise, Math.max(2, 2 * k), 26 * k * rise);
+      const sy = py - 29 * k * rise, sr = 5 * k;
       g.globalAlpha = a;
       g.fillStyle = '#fff4cf';
       g.beginPath();
@@ -3578,6 +3578,11 @@ export class IsoDioramaRenderer {
           // See inhabitsWater() in SpeciesGenome.ts.
           const occupant = byId.get(cell.dominantSpeciesId);
           if (this.habitable && !onLand && !(occupant && inhabitsWater(occupant))) continue;
+          // Plants are the land's cover (flora decals), not figures standing on
+          // it: drawn as creatures they were the dark "b"-shaped stalks
+          // scattered over land and sea (alpha round 2, B6). The people stand
+          // wherever they are, whatever they are.
+          if (occupant && occupant.id !== peopleId && this.isFlora(occupant)) continue;
           creatureSpots.push({
             x: px, y: py - lift, gy: py, row: gp.row, col: gp.col, id: cell.dominantSpeciesId,
             onWater: this.habitable && !onLand,
