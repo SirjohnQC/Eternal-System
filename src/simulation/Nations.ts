@@ -449,6 +449,22 @@ export function symptomsOf(n: Nation): string[] {
   return out;
 }
 
+/**
+ * A pressure that turned acute where it matters (stage-moments plan, 1D):
+ * in a nation holding a quarter of the people, or for the first time on the
+ * world. Told as its symptom, never as a label ("FAMINE").
+ */
+export interface TurningPoint { nation: number; key: keyof Pressures; title: string; line: string; tick: number }
+
+/** How a turning point reads: a heading and a line, in what the people live through. */
+const TURN_WORDS: Record<keyof Pressures, (name: string) => [string, string]> = {
+  hunger: n => ['Empty granaries', `In ${n} the young go hungry, and people queue at empty granaries.`],
+  crowding: n => ['Crowded streets', `${n} has filled up: families crowd into every room.`],
+  scarcity: n => ['Half-built walls', `${n} runs out of timber and stone; half-built walls stand abandoned.`],
+  unrest: n => ['Crowds in the squares', `Crowds gather against the rulers of ${n}.`],
+  pollution: n => ['Grey rivers', `The rivers of ${n} run grey, and the fish float dead.`],
+};
+
 /** A NationSystem as saved (NationSystem.toSnapshot). */
 export interface NationSnapshot {
   v: 1;
@@ -465,6 +481,16 @@ export interface NationSnapshot {
   ledgerAge: number | null;
   nextId: number;
   rng: number;
+  /** Pressures that have turned acute somewhere on the world (optional: older saves). */
+  seenAcute?: string[];
+}
+
+/**
+ * Necessity paces study (vision §8, stage-moments plan 1C): a comfortable
+ * people learns slowly, a pressed one fast. 0.7 .. 1.5.
+ */
+export function needOf(p: Pressures): number {
+  return Math.max(0.7, Math.min(1.5, 0.7 + 0.8 * Math.max(p.hunger, p.crowding, p.scarcity, p.unrest)));
 }
 
 export class NationSystem {
@@ -478,6 +504,29 @@ export class NationSystem {
   /** Every pair of nations, once (a < b). */
   readonly relations: Relation[] = [];
   private relAt: Array<Relation | undefined> = [];
+  /** A pressure just turned acute in `n`: a turning point when it matters, at most one per nation per half age. */
+  private turningPoint(n: Nation, key: keyof Pressures, tick: number): void {
+    const total = this.nations.reduce((a, x) => a + (x.fallen ? 0 : x.state.population), 0) || 1;
+    const first = !this.seenAcute.has(key);
+    this.seenAcute.add(key);
+    if (!first && n.state.population / total < 0.25) return;
+    const last = this.lastTurn.get(n.id), world = this.lastTurn.get(-1);
+    // At most one per nation per half age, and one on the world per third of
+    // an age: each one slows the world, so they must stay rare to matter.
+    if ((last != null && this.age - last < 0.5) || (world != null && this.age - world < 1 / 3)) return;
+    this.lastTurn.set(n.id, this.age);
+    this.lastTurn.set(-1, this.age);
+    const [title, line] = TURN_WORDS[key](n.name);
+    this.turning.push({ nation: n.id, key, title, line, tick });
+  }
+
+  /** The turning points since the last call (the engine tells them as moments). */
+  drainTurningPoints(): TurningPoint[] {
+    const out = this.turning;
+    this.turning = [];
+    return out;
+  }
+
   /** Wars, peaces, trade and falls since the last drainNews(), as plain lines. */
   private news: string[] = [];
   /** Era-time stepped so far (sum of `eras` given to advance). */
@@ -492,6 +541,12 @@ export class NationSystem {
   private nextId = 1;
   private rng: SeedRNG;
   private founded = false;
+  /** Turning points since the last drainTurningPoints(). */
+  private turning: TurningPoint[] = [];
+  /** Pressures that have turned acute anywhere on the world. */
+  private seenAcute = new Set<string>();
+  /** Era-time of each nation's last turning point (at most one per half age). */
+  private lastTurn = new Map<number, number>();
 
   constructor(readonly seed: number) {
     this.rng = new SeedRNG(seed ^ 0x6e47104e);
@@ -522,7 +577,7 @@ export class NationSystem {
       v: 1, seed: this.seed, founded: this.founded, nations: this.nations, owner,
       relations: this.relations, age: this.age, lastTick: this.lastTick, chronicle: this.chronicle,
       ledger: this.ledger, ledgerAge: Number.isFinite(this.ledgerAge) ? this.ledgerAge : null,
-      nextId: this.nextId, rng: this.rng.getState(),
+      nextId: this.nextId, rng: this.rng.getState(), seenAcute: [...this.seenAcute],
     })) as NationSnapshot;
   }
 
@@ -550,6 +605,7 @@ export class NationSystem {
     ns.nextId = d.nextId;
     ns.rng.setState(d.rng);
     ns.founded = d.founded;
+    for (const k of d.seenAcute ?? []) ns.seenAcute.add(k);
     ns.version++;
     return ns;
   }
@@ -1129,7 +1185,8 @@ export class NationSystem {
       const pace = Math.max(0.35, Math.min(1.9,
         (0.7 + 0.6 * n.values.curiosity) * Math.sqrt(effectOf(n.techs).knowledge)
         * (1 - 0.6 * n.pressures.unrest) * (0.8 + 0.6 * share * this.nations.length / 2)))
-        * this.modsOf(n).research;
+        * this.modsOf(n).research
+        * needOf(n.pressures);
       // Knowledge of an age already reached comes cheaply (others have shown
       // the way); only the frontier costs full effort.
       const t = TECH_BY_ID[r.id];
@@ -1511,7 +1568,10 @@ export class NationSystem {
           ...(s.inequality > 0.3 ? n.techs.filter(id => (TECH_BY_ID[id].effect.inequality ?? 0) >= 0.1).slice(-2).map(id => n.marks[`tech:${id}`]) : [])],
       };
       const note = (key: keyof Pressures, what: string, because: string[]) => {
-        if (before[key] < 0.5 && p[key] >= 0.5) n.marks[`p:${key}`] = this.log(n, tick, what, [...because, ...this.omenCauses(n)], [...fed[key], ...this.omenLinks(n)]);
+        if (before[key] < 0.5 && p[key] >= 0.5) {
+          n.marks[`p:${key}`] = this.log(n, tick, what, [...because, ...this.omenCauses(n)], [...fed[key], ...this.omenLinks(n)]);
+          this.turningPoint(n, key, tick);
+        }
         if (before[key] >= 0.5 && p[key] < 0.25) {
           // What eased it: what it learned lately, trade, a card.
           const helped = [...n.techs.slice(-2).map(id => n.marks[`tech:${id}`]), ...this.omenLinks(n)];
