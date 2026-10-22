@@ -3,11 +3,14 @@
  * deterministic towns, stable when the territory grows, fields on farmland,
  * roads on land, ground marks and clear zones, a sprite for every kind.
  *
- * Build + run:
+ * Grounded sites: nothing on water, a river or a cliff; a building on a
+ * terrace step stands on a levelled pad with a foundation.
+ *
+ * Build + run (also `npm run test:settlements`, part of `npm test`):
  *   node_modules/.bin/esbuild tools/settlementCheck.ts --bundle --platform=node \
  *     --format=esm --outfile="$TEMP/stc.mjs" --log-level=error && node "$TEMP/stc.mjs"
  */
-import { planSettlements, groundAt, keepClear, fieldUV, SQUASH, type PlanInput, type Field } from '../src/rendering/SettlementPlan';
+import { planSettlements, groundAt, keepClear, fieldUV, plotGround, SQUASH, MAX_PLOT_STEP, type PlanInput, type Field } from '../src/rendering/SettlementPlan';
 
 /** A diamond field's corners and centre (face coordinates). */
 const corners = (f: Field): Array<[number, number]> => {
@@ -101,4 +104,30 @@ for (const era of [0, 2, 4, 6]) {
   check('every kind paints and stands on its foot', bad === 0, `${bad} bad of ${kinds.length * 4 * 5}`);
 }
 
+// Grounded sites: hilly land with terraces, a cliff and a river.
+// Terraces rise eastward 3 px a step every 14 px; past x = 236 a 12 px cliff;
+// a river runs north-south at x = 205.
+const liftAt = (x: number, y: number) => 3 * Math.floor(Math.max(0, x - 100) / 14) + (x > 236 ? 12 : 0) + (y < 100 ? 3 : 0);
+const waterAt = (x: number) => Math.abs(x - 205) < 1.2;
+const hilly = (era: number): PlanInput => ({ ...input(era), liftAt, waterAt });
+for (const era of [1, 3, 5]) {
+  const p = planSettlements(hilly(era));
+  check(`hilly era ${era}: towns still build`, p.buildings.length > 10, `${p.buildings.length} buildings`);
+  const bad = p.buildings.filter(b => !plotGround({ isLand, liftAt, waterAt }, b.x, b.y, b.w, b.d));
+  check(`hilly era ${era}: nothing on water, a river or a cliff`, bad.length === 0, `${bad.length} bad`);
+  check(`hilly era ${era}: every building knows its ground`, p.buildings.every(b => b.lift !== undefined && (b.pad ?? -1) >= 0 && (b.pad ?? 9) <= MAX_PLOT_STEP));
+  const padded = p.buildings.filter(b => (b.pad ?? 0) > 0);
+  check(`hilly era ${era}: a building on a step is levelled (pad painted)`, padded.length === 0 || padded.every(b => groundAt(p, b.x, b.y + 0.2, 1, 90, 140, 70) >= 0),
+    `${padded.length} padded`);
+  check(`hilly era ${era}: deterministic`, JSON.stringify(p) === JSON.stringify(planSettlements(hilly(era))));
+}
+{
+  // A foundation hangs below a levelled building, the foot unmoved.
+  const b = { x: 0, y: 0, w: 3, d: 3, h: 3, kind: 'house' as const, seed: 3, town: 0 };
+  const flat = paintBuilding(b, 3, townStyle(2)), raised = paintBuilding({ ...b, pad: 3, lift: 6 }, 3, townStyle(2));
+  check('a pad adds a foundation under the foot', raised.height > flat.height && raised.footY === flat.footY
+    && raised.data[((raised.footY + 4) * raised.width + raised.footX) * 4 + 3] > 0);
+}
+
 console.log(fails ? `\n  ${fails} FAILED` : '\n  all ok');
+if (fails) process.exit(1);

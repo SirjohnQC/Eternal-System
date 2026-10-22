@@ -33,6 +33,19 @@ export interface Building {
   town: number;
   /** Raised on stilts (the civilisation's architecture). */
   stilts?: boolean;
+  /**
+   * Ground the building stands on, when the plan knows the terrain
+   * (`PlanInput.liftAt`): `lift` is the levelled pad's height (the highest
+   * ground under the footprint: cut and fill), `pad` how far the ground
+   * falls away below it in front (world px), drawn as a foundation.
+   */
+  lift?: number;
+  pad?: number;
+}
+
+/** A levelled building plot painted into the ground bake (terraforming). */
+export interface Pad {
+  x0: number; y0: number; x1: number; y1: number;
 }
 
 /**
@@ -90,9 +103,11 @@ export interface SettlementPlan {
   buildings: Building[];
   fields: Field[];
   roads: RoadSeg[];
+  /** Levelled plots under buildings on uneven ground. */
+  pads: Pad[];
   /** Spatial buckets for `groundAt` / `keepClear`. */
   bucket: number;
-  cells: Map<number, { f: number[]; r: number[] }>;
+  cells: Map<number, { f: number[]; r: number[]; p: number[] }>;
 }
 
 export interface PlanInput {
@@ -112,6 +127,44 @@ export interface PlanInput {
   aggression: number;
   /** How this civilisation builds (Architecture.ts); absent: by era only. */
   arch?: ArchGenome;
+  /**
+   * Height (px) the drawn ground is lifted at a face point: the terrain's
+   * terraces. Absent: flat ground. Buildings stand only where their footprint
+   * spans at most one terrace step, and level a pad where it spans one.
+   */
+  liftAt?(x: number, y: number): number;
+  /** A river or stream at a face point (roads bridge it, nothing is built on it). */
+  waterAt?(x: number, y: number): boolean;
+}
+
+/**
+ * The most a building plot may fall across its footprint (world px): one
+ * terrace step (the tiers rise 3–5 px). More is a cliff: nothing is built.
+ */
+export const MAX_PLOT_STEP = 5;
+
+/**
+ * The ground under a footprint `w` wide and `d` deep (world px) whose front
+ * centre is (x, y): its levelled height and the foundation it needs, or null
+ * where nothing should be built (water, a river, a cliff). The sampled width
+ * covers the drawn sprite, which is wider than the plan's box.
+ */
+export function plotGround(inp: Pick<PlanInput, 'isLand' | 'liftAt' | 'waterAt'>, x: number, y: number, w: number, d: number): { lift: number; pad: number } | null {
+  const hw = w * 0.8, hd = d * SQUASH;
+  let lo = Infinity, hi = -Infinity;
+  for (const fy of [0, 0.5, 1]) for (const fx of [-1, -0.5, 0, 0.5, 1]) {
+    const px = x + fx * hw, py = y - fy * hd;
+    if (!inp.isLand(px, py) || inp.waterAt?.(px, py)) return null;
+    const l = inp.liftAt?.(px, py) ?? 0;
+    // Lifted ground shows where it lands on the screen only if the face
+    // there is not sea (the sea is drawn over it): a lone high cell behind
+    // the water is not ground anyone can see.
+    if (l > 0 && !inp.isLand(px, py - l)) return null;
+    if (l < lo) lo = l;
+    if (l > hi) hi = l;
+  }
+  if (hi - lo > MAX_PLOT_STEP) return null;
+  return { lift: hi, pad: hi - lo };
 }
 
 import type { ArchGenome } from './Architecture';
@@ -129,7 +182,7 @@ function rng(seed: number) {
 }
 
 export function emptyPlan(): SettlementPlan {
-  return { era: 0, towns: [], buildings: [], fields: [], roads: [], bucket: 8, cells: new Map() };
+  return { era: 0, towns: [], buildings: [], fields: [], roads: [], pads: [], bucket: 8, cells: new Map() };
 }
 
 export function planSettlements(inp: PlanInput): SettlementPlan {
@@ -179,7 +232,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       lm = makeBuilding(era, tin, R, sc, 0, 0, ti, true);
       lm.x = t.x + (cross ? streetHalf + lm.w / 2 + 0.6 : 0);
       lm.y = t.y - streetHalf - 0.4;
-      if (inp.isLand(lm.x, lm.y)) plan.buildings.push(lm); else lm = null;
+      if (!settle(lm, lm.w * 0.6)) lm = null;
     }
     // Lots by the civilisation's layout: a jittered grid along the
     // streets, concentric rings, a dense cluster, a line along the main
@@ -211,6 +264,29 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     }
     const streets = layout === 'grid' || layout === 'line';
     const placed: Array<[number, number]> = [];
+    /**
+     * Stand a building on its plot if the ground allows: never on water or
+     * across a cliff; on a terrace step the plot is levelled (a pad, and a
+     * foundation in front). Returns whether it was built.
+     */
+    function settle(b: Building, nudge = 0): boolean {
+      // A plot that does not fit is shifted a little before it is given up.
+      let g = plotGround(inp, b.x, b.y, b.w, b.d);
+      for (const [ox, oy] of nudge ? [[1, 0], [-1, 0], [0, -1], [0, 1]] : []) {
+        if (g) break;
+        const nx = b.x + ox * nudge, ny = b.y + oy * nudge * SQUASH;
+        g = plotGround(inp, nx, ny, b.w, b.d);
+        if (g) { b.x = nx; b.y = ny; }
+      }
+      if (!g) return false;
+      if (inp.liftAt) { b.lift = g.lift; b.pad = g.pad; }
+      if (g.pad > 0) {
+        const hw = b.w * 0.8 + 0.4 * sc;
+        plan.pads.push({ x0: b.x - hw, x1: b.x + hw, y0: b.y - b.d * SQUASH - 0.3 * sc, y1: b.y + 0.6 * sc });
+      }
+      plan.buildings.push(b);
+      return true;
+    }
     for (const [x, y] of cand) {
       const e = Math.hypot((x - t.x) / t.r, (y - t.y) / (t.r * SQUASH));
       if (e > (layout === 'scatter' ? 1.3 : layout === 'line' ? 1.6 : 1)) continue;
@@ -224,8 +300,8 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       if (!inp.isLand(x, y)) continue;
       if (lm && Math.abs(x - lm.x) < (lm.w + lot) / 2 && y < lm.y + 0.2 && y > lm.y - lm.d * SQUASH - lot * SQUASH) continue;
       if (!streets && placed.some(([px, py]) => Math.abs(px - x) < lot * 0.7 && Math.abs(py - y) < lot * SQUASH * 0.7)) continue;
-      placed.push([x, y]);
-      plan.buildings.push(makeBuilding(era, tin, R, sc, x, y, ti, false));
+      const nb = makeBuilding(era, tin, R, sc, x, y, ti, false);
+      if (settle(nb, lot * 0.4)) placed.push([nb.x, nb.y]);
     }
   });
   // Back to front.
@@ -484,17 +560,18 @@ function routeOverLand(inp: PlanInput, ax: number, ay: number, bx: number, by: n
 function index(plan: SettlementPlan): void {
   const B = plan.bucket, cells = plan.cells;
   const key = (i: number, j: number) => (i + 4096) * 8192 + (j + 4096);
-  const add = (x0: number, y0: number, x1: number, y1: number, fn: (c: { f: number[]; r: number[] }) => void) => {
+  const add = (x0: number, y0: number, x1: number, y1: number, fn: (c: { f: number[]; r: number[]; p: number[] }) => void) => {
     for (let j = Math.floor(y0 / B); j <= Math.floor(y1 / B); j++) {
       for (let i = Math.floor(x0 / B); i <= Math.floor(x1 / B); i++) {
         const k = key(i, j);
         let c = cells.get(k);
-        if (!c) { c = { f: [], r: [] }; cells.set(k, c); }
+        if (!c) { c = { f: [], r: [], p: [] }; cells.set(k, c); }
         fn(c);
       }
     }
   };
   plan.fields.forEach((f, n) => add(f.x0, f.y0, f.x1, f.y1, c => c.f.push(n)));
+  plan.pads.forEach((p, n) => add(p.x0, p.y0, p.x1, p.y1, c => c.p.push(n)));
   plan.roads.forEach((r, n) => add(Math.min(r.ax, r.bx) - r.half - 1, Math.min(r.ay, r.by) - r.half - 1,
     Math.max(r.ax, r.bx) + r.half + 1, Math.max(r.ay, r.by) + r.half + 1, c => c.r.push(n)));
 }
@@ -558,6 +635,19 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
     return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
   }
   if (water) return -1;
+  // A levelled plot under a building on uneven ground: packed earth, then
+  // dressed stone, then paving, with a kerb as the camera closes in.
+  for (const n of c.p) {
+    const p = plan.pads[n];
+    if (x < p.x0 || x > p.x1 || y < p.y0 || y > p.y1) continue;
+    const era = plan.era;
+    let [cr, cg, cb] = era <= 1 ? [150, 118, 82] : era <= 3 ? [168, 160, 146] : [150, 152, 156];
+    cr = cr * 0.75 + r * 0.25; cg = cg * 0.75 + g * 0.25; cb = cb * 0.75 + b * 0.25;
+    const e = Math.min(x - p.x0, p.x1 - x, (y - p.y0) / SQUASH, (p.y1 - y) / SQUASH);
+    if (k >= 3 && e < 0.3) { cr *= 0.8; cg *= 0.8; cb *= 0.8; }
+    else if (era >= 2 && k >= 4 && ((Math.floor(x * 1.5) + Math.floor(y * 3)) & 1)) { cr *= 0.94; cg *= 0.94; cb *= 0.94; }
+    return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
+  }
   for (const n of c.f) {
     const f = plan.fields[n];
     if (x < f.x0 || x > f.x1 || y < f.y0 || y > f.y1) continue;

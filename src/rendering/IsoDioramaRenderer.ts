@@ -32,7 +32,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { formationHeat } from '../simulation/Formation';
-import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf } from '../simulation/PlanetGrid';
+import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf, riverAt } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
@@ -2803,10 +2803,27 @@ export class IsoDioramaRenderer {
       return 24;
     };
     const byCell = new Map<string, { x: number; y: number; score: number; row: number; col: number }>();
+    // Towns grow where building is easy: flat ground (one terrace, not a
+    // stair of them) and fresh water near (a river within a cell or two).
+    const nearRiver = (row: number, col: number) => {
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+        const c = grid[row + dr]?.[(col + dc + GRID_SIZE) % GRID_SIZE];
+        if (c && c.river > 0) return true;
+      }
+      return false;
+    };
     for (const sp of spots) {
       const inland = Math.min(1, coast(sp.x, sp.y) / 6);
+      const l0 = this.liftAtFace(sp.x, sp.y, geom);
+      // Raised ground whose top lands over the sea is drawn under it (the
+      // bake's "water wins"): no town there.
+      if (l0 > 0 && !land.has(key(sp.x, sp.y - l0))) continue;
+      let spread = 0;
+      for (const [ox, oy] of [[-8, 0], [8, 0], [0, -4], [0, 4], [-6, -3], [6, 3]]) spread = Math.max(spread, Math.abs(this.liftAtFace(sp.x + ox, sp.y + oy, geom) - l0));
+      const flat = 1 - 0.6 * Math.min(1, spread / 10);
+      const water = this.planetType !== 'lava' && nearRiver(sp.row, sp.col) ? 0.15 : 0;
       // A small hash breaks ties so the order never depends on scan order.
-      const score = sp.fertility * (0.2 + 0.8 * inland) + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
+      const score = (sp.fertility * (0.2 + 0.8 * inland) + water) * flat + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
       const k2 = `${sp.row},${sp.col}`;
       const prev = byCell.get(k2);
       if (!prev || score > prev.score) byCell.set(k2, { x: sp.x, y: sp.y, score, row: sp.row, col: sp.col });
@@ -2860,7 +2877,9 @@ export class IsoDioramaRenderer {
       const gp = this.discToGrid(dx, dy);
       const cell = gp ? grid[gp.row]?.[gp.col] : null;
       if (!cell) return false;
-      const e = this.elevationAt(grid, dx, dy) ?? cell.elevation;
+      // Land in both the identity bake (nearest cell) and the zoomed ones
+      // (interpolated): either one drawing water there is water.
+      const e = Math.min(this.elevationAt(grid, dx, dy) ?? cell.elevation, cell.elevation);
       if (e - this.rimFalloff(r) < SEA_LEVEL + 0.004) return false;
       return cell.biome !== 'snow' && cell.biome !== 'volcanic' && cell.biome !== 'lake';
     };
@@ -2873,11 +2892,21 @@ export class IsoDioramaRenderer {
       if (cell.biome === 'desert') return era >= 3 ? 0.3 : 0;
       return Math.max(0.2, cell.fertility);
     };
+    // Rivers as drawn (none on lava worlds): roads bridge them, nothing is built on them.
+    const rivers = this.planetType !== 'lava';
+    const waterAt = (x: number, y: number) => {
+      if (!rivers) return false;
+      const f = this.discToGridF((x - cx) / rx, (y - cy) / ry);
+      if (!f) return false;
+      const rs = riverAt(grid, f.row, f.col);
+      return rs.half > 0 && rs.dist <= rs.half + 0.08;
+    };
     this.townPlan = planSettlements({
       sites, civLevel, seed: this.planetSeed, rx, isLand, fertileAt, aquatic,
       aggression: intelligent?.dna.aggression ?? 3, arch,
+      liftAt: (x, y) => this.liftAtFace(x, y, geom), waterAt,
     });
-    this.townLift = this.townPlan.buildings.map(b => this.liftAtFace(b.x, b.y, geom));
+    this.townLift = this.townPlan.buildings.map(b => b.lift ?? this.liftAtFace(b.x, b.y, geom));
     // Construction: buildings new to this planet's plan go up over time,
     // staggered so a town grows outward from its first houses.
     const fresh = this.townPlanet !== this.planet;

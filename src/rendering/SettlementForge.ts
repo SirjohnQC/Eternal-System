@@ -123,6 +123,58 @@ class Px {
  * at least 1). Long walls get detail only once there are pixels for it.
  */
 export function paintBuilding(b: Building, S: number, st: TownStyle): BuildingSprite {
+  const spr = paintBody(b, S, st);
+  return b.pad && b.pad > 0 ? withFoundation(spr, Math.max(1, Math.round(b.pad * S)), S, st) : spr;
+}
+
+/**
+ * The building raised on a foundation `padPx` tall: where its plot falls
+ * away across a terrace step, the town levelled it (cut and fill) and walled
+ * the drop. Rubble and packed earth early, dressed stone courses through the
+ * industrial era, poured concrete after. Lit from the right like the land.
+ * The foot stays the building's base (the top of the pad).
+ */
+export function withFoundation(spr: BuildingSprite, padPx: number, S: number, st: TownStyle): BuildingSprite {
+  const { width: W, height: H } = spr;
+  // The building's base: the opaque extent of its lowest rows.
+  let x0 = W, x1 = -1;
+  for (let y = Math.max(0, spr.footY - 1); y <= spr.footY; y++) for (let x = 0; x < W; x++) {
+    if (spr.data[(y * W + x) * 4 + 3]) { if (x < x0) x0 = x; if (x > x1) x1 = x; }
+  }
+  if (x1 < x0) { x0 = Math.max(0, spr.footX - 2); x1 = Math.min(W - 1, spr.footX + 2); }
+  const NH = Math.max(H, spr.footY + 1 + padPx);
+  const out = new Uint8ClampedArray(W * NH * 4);
+  out.set(spr.data.subarray(0, W * H * 4));
+  const era = st.era;
+  const base: RGB = era <= 1 ? [128, 106, 82] : era <= 3 ? [158, 150, 136] : [168, 170, 172];
+  const shade = (c: RGB, k: number): RGB => [Math.min(255, c[0] * k), Math.min(255, c[1] * k), Math.min(255, c[2] * k)];
+  const put = (x: number, y: number, c: RGB) => {
+    if (x < 0 || y < 0 || x >= W || y >= NH) return;
+    const o = (y * W + x) * 4;
+    out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+  };
+  const top = spr.footY + 1, bottom = spr.footY + padPx;
+  const course = Math.max(2, Math.round(S * 0.6)), block = Math.max(3, Math.round(S * 1.2));
+  for (let y = top; y <= bottom; y++) for (let x = x0; x <= x1; x++) {
+    const edge = x === x0 || x === x1 || y === bottom;
+    let k = x <= x0 + Math.max(0, Math.round((x1 - x0) * 0.15)) ? 0.82 : x >= x1 - Math.max(0, Math.round((x1 - x0) * 0.2)) ? 1.12 : 1;
+    if (y === top) k *= 1.15;                                        // the lip of the pad
+    if (era <= 1 && ((x * 7 + y * 13) % 5 === 0)) k *= 0.85;          // rubble
+    else if (era >= 2 && era <= 3 && S >= 2) {
+      const row = Math.floor((y - top) / course);
+      if ((y - top) % course === course - 1 || (x - x0 + (row & 1) * (block >> 1)) % block === 0) k *= 0.78;   // mortar
+    } else if (era >= 4 && S >= 3 && (x - x0) % (block * 2) === 0) k *= 0.88;                                   // shuttering joints
+    put(x, y, edge && S >= 2 ? shade(base, 0.45) : shade(base, k));
+  }
+  // Steps up to the door, cut into the front of the pad.
+  if (S >= 2 && padPx >= 3) {
+    const sw = Math.max(2, Math.round(S * 0.9)), sx = Math.max(x0 + 1, Math.min(x1 - sw, spr.footX - (sw >> 1)));
+    for (let y = top; y < bottom; y++) for (let x = sx; x < sx + sw; x++) put(x, y, shade(base, (y - top) % 2 ? 0.7 : 1.22));
+  }
+  return { width: W, height: NH, data: out, footX: spr.footX, footY: spr.footY };
+}
+
+function paintBody(b: Building, S: number, st: TownStyle): BuildingSprite {
   const sheet = buildingOverride(b, S, st.era, st.tint);
   if (sheet) return sheet;
   const W = Math.max(1, Math.round(b.w * S));
