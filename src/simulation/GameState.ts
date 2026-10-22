@@ -198,8 +198,12 @@ export interface GameStateData {
    * lost is not announced again. Never lowered.
    */
   momentHigh?: { bio: number; era: number; nations?: boolean };
-  /** Tech cards already announced as playable. */
+  /** Tech cards whose technology was already announced as ready to unlock. */
   techCardsKnown?: string[];
+  /** Technologies the player unlocked with TP (owner's model, Oct 22). Optional: older saves have none. */
+  techUnlocked?: string[];
+  /** Tech cards in the TP hand (granted by unlocks; a burned card leaves it). Optional: older saves have none. */
+  techHand?: string[];
   /** Timed tech-card effects, as ticks they last until. */
   techEffects?: { defenceUntil?: number; kinshipUntil?: number };
   codexEntries: CodexEntry[];

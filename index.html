@@ -3106,13 +3106,6 @@ body.moment-on #toast-container{top:calc(var(--top, 50px) + 168px);transition:to
     </div>
   </div>
 
-  <!-- TP DECK: the second deck, once the people have nations (ui/TechScreen.ts) -->
-  <div class="tech-deck" id="tech-deck" style="display:none">
-    <div class="faith-deck-label">TECHNOLOGY</div>
-    <button class="td-pile" type="button" title="Technology: what your people know, and the cards it opens">
-      <span class="td-icon">⚙</span><span class="td-tp">0 TP</span><span class="td-n">no cards yet</span>
-    </button>
-  </div>
   <!-- FAITH DECK — exact mockup structure -->
   <div class="faith-deck folded">
     <div class="faith-deck-label">FAITH <span class="fold-mark">▸</span></div>
@@ -3155,6 +3148,14 @@ body.moment-on #toast-container{top:calc(var(--top, 50px) + 168px);transition:to
       <span class="faith-dot"></span>
     </div>
     <span id="divine-dp-counter" class="faith-dp-readout">0 DP</span>
+    <!-- TP DECK: the second deck of the hand tray, left of Faith, once the people have nations (ui/TechScreen.ts).
+         Last in the deck so '.faith-deck-label' still finds Faith's label first. -->
+    <div class="tech-deck" id="tech-deck" style="display:none">
+      <div class="faith-deck-label td-label">TECHNOLOGY</div>
+      <button class="td-pile" type="button" title="Technology: spend TP to unlock the tree; each unlock gives a card to burn">
+        <span class="td-icon">⚙</span><span class="td-tp">0 TP</span><span class="td-n">nothing to unlock</span>
+      </button>
+    </div>
   </div>
 
   <!-- RIGHT: NYX THE VAST narrative console -->
@@ -4388,11 +4389,25 @@ body.events-collapsed .events-tab{display:block}
 .faith-ghost.on-world{transform:translate(-50%,-80%) scale(.5) rotate(0);opacity:.95;filter:drop-shadow(0 0 16px rgba(255,214,110,.7))}
 body.faith-aiming,body.faith-aiming *{cursor:crosshair !important}
 /* The TP deck: a pile left of the Faith deck (TP rework). */
-.tech-deck{position:fixed;left:calc(var(--rail) + 18px);bottom:calc(var(--status) + 6px);z-index:44;display:flex;flex-direction:column;align-items:center}
-body:has(#planet-overlay[style*="flex"]) .tech-deck{z-index:211;bottom:calc(var(--status) + 14px)}
-body.forging .tech-deck,body.umap-cosmos .tech-deck{display:none !important}
+/* The hand tray (owner's ask, Oct 22: the two decks read as one hand): the
+   Faith deck is a grid of two columns, TECHNOLOGY left and FAITH right, their
+   labels on one line and their piles on one floor; the tray plate sits behind
+   both. The TP deck lives inside .faith-deck, so it shows, hides and moves
+   (over the planet view) with it. */
+body .faith-deck{display:grid;grid-template-columns:auto minmax(0,max-content);justify-content:center;align-items:end;column-gap:26px}
+body .faith-deck > *{grid-column:2;justify-self:center}
+body .faith-deck > .faith-deck-label{grid-row:1}
+body .faith-deck > .divine-panel{grid-row:2}
+.tech-deck{display:contents}
+.tech-deck .td-label{grid-column:1;grid-row:1;justify-self:center}
+.tech-deck .td-pile{grid-column:1;grid-row:2;align-self:end;justify-self:center;pointer-events:auto;margin-bottom:8px}
+/* The tray: a low studded shelf both piles stand in (low, so it hides little of the world) */
+body .faith-deck:has(#tech-deck:not([style*="none"]))::before{content:'';grid-column:1 / span 2;grid-row:2;align-self:end;justify-self:stretch;
+  height:70px;margin:0 -16px -2px;z-index:-1;border:6px solid transparent;border-image:url(/assets/pixel/ui/panel.png) 12 fill / 12px / 0 stretch;
+  image-rendering:pixelated;opacity:.96;pointer-events:none}
+.tech-deck .td-label::before,.tech-deck .td-label::after{width:22px}
 .tech-deck .faith-deck-label{color:#8fd8ff;text-shadow:0 0 12px rgba(120,200,255,.4)}
-.td-pile{position:relative;width:96px;height:128px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+.td-pile{position:relative;width:124px;height:198px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;cursor:pointer;
   font:inherit;color:#d8eefc;background:linear-gradient(170deg,#132233,#0a1018);border:2px solid #4c8fb8;
   box-shadow:4px -4px 0 -1px #0d1824,4px -4px 0 1px #2e5a78,8px -8px 0 -1px #0d1824,8px -8px 0 1px #23455c,0 0 14px rgba(90,170,230,.25)}
 .td-pile:hover{transform:translateY(-4px)}
@@ -5043,6 +5058,7 @@ body:not(.events-collapsed) .bottom-bar{padding-right:calc(var(--events) + 10px)
     --fs-micro:9px;--fs-label:10px;--fs-body:12px;--fs-title:14px;--fs-display:16px;
   }
   .divine-action-btn{width:104px;min-width:104px;max-width:104px;min-height:136px}
+  .td-pile{width:104px;height:166px}
   .top-tag{display:none}
   .faith-icon{width:28px;height:28px}
 }

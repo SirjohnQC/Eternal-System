@@ -223,7 +223,8 @@ console.log('Technology tree (the TP screen draws it)');
 
 console.log('Landmarks (what TP cards leave standing)');
 {
-  const playable = TECH_CARDS.filter(c => c.special !== 'new_world' && c.special !== 'terraform');
+  // Small cards (minorCardOf: every other technology's own card) build no monument; the authored acts do.
+  const playable = TECH_CARDS.filter(c => c.special !== 'new_world' && c.special !== 'terraform' && !c.minor);
   check('every TP card that acts raises a landmark', playable.every(c => !!LANDMARK_OF[c.id]), playable.filter(c => !LANDMARK_OF[c.id]).map(c => c.id).join(','));
   check('every landmark kind has its art', [...new Set(Object.values(LANDMARK_OF))].every(k => existsSync(`public/assets/pixel/landmarks/${k}.png`)));
   const w = world(61);

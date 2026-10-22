@@ -3,8 +3,8 @@
  * knowledge can do (#40; docs/plans/2026-10-14-tech-cards.md). Opened from the
  * TP chip in the top bar.
  *
- * The hand shows every card your nations' knowledge has opened, by age, and a
- * sealed count for the rest. A card opens to its detail (what it does, its
+ * The hand shows every card your unlocks granted (owner's model, Oct 22), by
+ * age, and a sealed count for the rest; a held card burns free. A card opens to its detail (what it does, its
  * price, which nations it acts on) and plays from there. A NEW WORLD and
  * REMAKE A WORLD ask where / what first. The engine does every act
  * (BigBangEngine.playTechCard, relocateHome); this module only offers them.
@@ -63,7 +63,7 @@ function face(v: View, big = false): string {
     <span class="divine-action-name">${esc(v.card.name)}</span>
     ${cardArt(v.card.icon, 'faith-icon-wrap', `/assets/pixel/divine/cards/${v.card.icon}.png`)}
     <span class="divine-action-desc">${esc(v.card.does)}</span>
-    <span class="divine-action-cost">◆ ${v.price} TP</span></button>`;
+    <span class="divine-action-cost">${v.price ? `◆ ${v.price} TP` : v.unlocked ? '✦ BURN' : '◆ UNLOCK IN THE TREE'}</span></button>`;
 }
 
 /** The hand of tech cards, by age. */
@@ -87,8 +87,8 @@ export function openTechCards(): void {
     </div>`;
   }).join('') + (later ? `<div class="tm-age"><div class="tm-group">LATER AGES · <span class="tm-sealed">${later} sealed</span></div></div>` : '');
   const sub = open
-    ? `What your people know, put to use. You hold <b>${gameState.techPoints} TP</b>. Each new technology your nations learn earns 1, each new age 3.`
-    : `Your nations know nothing a card can use yet. Each new technology they learn opens cards and earns 1 TP; each new age, 3. You hold <b>${gameState.techPoints} TP</b>.`;
+    ? `Your hand: cards your unlocks granted. You hold <b>${gameState.techPoints} TP</b> to unlock more in the tree.`
+    : `No card in hand. Unlock a technology in the tree with TP to receive its card. You hold <b>${gameState.techPoints} TP</b>.`;
   const m = modal('TECH CARDS', sub, `<div class="tm-hand">${body}</div>`, '<button class="fm-btn" data-act="close">CLOSE</button>', true);
   m.querySelectorAll<HTMLElement>('.tech-card').forEach(el => el.addEventListener('click', () => {
     const v = views.find(x => x.card.id === el.dataset['card']);
@@ -113,9 +113,10 @@ function detail(v: View): void {
   const leaves = lm ? `<div class="tm-acts"><b>Leaves standing:</b> ${esc(LANDMARK_NAMES[lm])}${v.card.who === 'world' ? ' in your largest nation' : ' in each nation it acts on'}${MARK_OF[v.card.id] ? `, and ${MARK_OF[v.card.id] === 'bounty' ? 'greener fields' : MARK_OF[v.card.id] === 'spread' ? 'new settlements' : 'fouled ground'} around them` : ''}.</div>` : '';
   const info = `<div class="tm-detail">${face(v, true)}<div class="tm-text">
       <div class="tm-price"><b>Price:</b> ${esc(v.card.priceText)}</div>${acts}${leaves}
+      ${v.card.special === 'new_world' ? '' : '<div class="tm-acts">Burned, it leaves your hand. Unlock its technology again in the tree to take it back.</div>'}
       ${v.block ? `<div class="tm-block">${esc(v.block)}</div>` : ''}
     </div></div>`;
-  const label = v.card.special === 'new_world' ? 'CHOOSE A WORLD' : v.card.special === 'terraform' ? 'CHOOSE WHAT IT BECOMES' : `PLAY · ${v.price} TP`;
+  const label = v.card.special === 'new_world' ? 'CHOOSE A WORLD' : v.card.special === 'terraform' ? 'CHOOSE WHAT IT BECOMES' : 'BURN IT';
   const m = modal(esc(v.card.name), '', info,
     `<button class="fm-btn" data-act="back">BACK</button><button class="fm-btn tm-go" data-act="play"${v.block ? ' disabled' : ''}>${label}</button>`);
   m.querySelector<HTMLElement>('[data-act="play"]')?.addEventListener('click', () => {
@@ -137,7 +138,7 @@ function pickTerraform(v: View): void {
     `<div class="tm-worlds">${opts.map(o => `<button class="tm-world" data-t="${esc(o.targetType)}">
       <span class="tm-world-name">${esc(o.targetType.toUpperCase())}</span>
       <span class="tm-world-type">${esc(o.label)} · ${o.stages.length} stages</span></button>`).join('')}</div>`,
-    `<button class="fm-btn" data-act="back">BACK</button><button class="fm-btn tm-go" data-act="go" disabled>REMAKE · ${v.price} TP</button>`);
+    `<button class="fm-btn" data-act="back">BACK</button><button class="fm-btn tm-go" data-act="go" disabled>REMAKE · BURN</button>`);
   const go = m.querySelector<HTMLButtonElement>('[data-act="go"]')!;
   let chosen: string | null = null;
   m.querySelectorAll<HTMLElement>('.tm-world').forEach(el => el.addEventListener('click', () => {

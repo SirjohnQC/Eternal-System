@@ -28,7 +28,7 @@ import { initTechScreen, openTechScreen } from '../ui/TechScreen';
 import { raiseLandmarks, LANDMARK_OF, type Landmark } from '../simulation/Landmarks';
 import { reachOf, type FaithCard, type ActionId } from '../simulation/FaithCards';
 import { TECH_CARDS } from '../simulation/TechCards';
-import { TECH_BY_ID } from '../simulation/Technology';
+import { TECH_BY_ID, TECHS } from '../simulation/Technology';
 import { MUTATIONS, cardStates, queueReady, previewGenome, EVOLVE_THRESHOLD } from '../simulation/Mutations';
 import { pressureKinds } from '../simulation/PeopleStory';
 import { summariseGenome, valuesFromGenome } from '../simulation/Civilization';
@@ -310,7 +310,15 @@ function rebuild(): void {
       return { card, unlocked, price: card.cost, block: unlocked && card.cost > gameState.techPoints ? `It takes ${card.cost} TP.` : null,
         acts: [], age: card.needs.era ?? TECH_BY_ID[card.needs.tech!]?.era ?? 1 };
     });
-    initTechScreen({ engine: () => ({ techCardViews: views }) as unknown as BigBangEngine });
+    // The tree as the engine would list it (owner's model): card nodes a nation knows, or could study, are ready.
+    const nodes = () => TECHS.map(tech => {
+      const cards = TECH_CARDS.filter(c => c.needs.tech === tech.id);
+      const ready = !!cards.length && (known.has(tech.id) || tech.requires.every(r => known.has(r)));
+      const price = cards.reduce((a, c) => a + c.cost, 0);
+      return { tech, cards, known: known.has(tech.id), unlocked: false, inHand: [], price, recall: false,
+        ready, block: !cards.length ? 'No card to give.' : !ready ? 'Not yet.' : price > gameState.techPoints ? `It takes ${price} TP.` : null };
+    });
+    initTechScreen({ engine: () => ({ techCardViews: () => views().map(v => ({ ...v, unlocked: false })), techNodeViews: nodes }) as unknown as BigBangEngine });
     openTechScreen();
   }
   // ?people=1 opens "Your People" on this world (its forms: the founder, then
