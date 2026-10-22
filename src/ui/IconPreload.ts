@@ -7,6 +7,7 @@
  */
 import { ACTIONS } from '../simulation/FaithCards';
 import { FATE_CARDS } from '../simulation/Forge';
+import { CARD_ART_URL } from './CardArt';
 
 const held: HTMLImageElement[] = [];
 let started = false;
@@ -17,6 +18,10 @@ export function divineIconUrls(): string[] {
   for (const a of ACTIONS) { names.add(a.id); names.add(a.icon); }
   for (const f of FATE_CARDS) names.add(f.icon);
   const urls = [...names].map(n => `/assets/pixel/divine/cards/${n}.png`);
+  // The card art atlas, the frames and the backs (CardArt.ts): one image for
+  // every card's picture, so a card never shows before its art.
+  urls.unshift(CARD_ART_URL, ...['gold', 'crimson', 'verdant', 'amethyst', 'steel'].map(m => `/assets/pixel/divine/cards/frames/frame_${m}.png`),
+    '/assets/pixel/divine/cards/frames/back_faith.png', '/assets/pixel/divine/cards/frames/back_tech.png');
   // The fixed divine actions' own icons (one level up).
   for (const n of ['evolution', 'harvest', 'meteor', 'prophet', 'revelation', 'sight', 'smite', 'terraform']) urls.push(`/assets/pixel/divine/${n}.png`);
   return urls;
