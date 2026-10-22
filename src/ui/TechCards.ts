@@ -9,6 +9,7 @@
  * REMAKE A WORLD ask where / what first. The engine does every act
  * (BigBangEngine.playTechCard, relocateHome); this module only offers them.
  */
+import { cardArt } from './CardArt';
 import { gameState } from '../simulation/GameState';
 import { RELOCATE_STAR_ERA, type RelocationTarget, type BigBangEngine } from '../simulation/BigBangEngine';
 import { ageName } from '../simulation/Progression';
@@ -60,7 +61,7 @@ function face(v: View, big = false): string {
   return `<button class="divine-action-btn faith-proc${big ? ' faith-proc-big' : ''} tech-card${off ? ' faith-off' : ' affordable'}${v.inEffect ? ' tech-in-effect' : ''}" data-card="${v.card.id}">${badge}
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">${esc(v.card.name)}</span>
-    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/${v.card.icon}.png" alt="" width="32" height="32"/></span>
+    ${cardArt(v.card.icon, 'faith-icon-wrap', `/assets/pixel/divine/cards/${v.card.icon}.png`)}
     <span class="divine-action-desc">${esc(v.card.does)}</span>
     <span class="divine-action-cost">◆ ${v.price} TP</span></button>`;
 }

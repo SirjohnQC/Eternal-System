@@ -13,6 +13,7 @@
  * the land and the heavens. Hovering a card shows its anatomy. Each recent
  * use of a kind of card marks the next one up (gameState.faithWear).
  */
+import { cardArt } from './CardArt';
 import { gameState, runtimeState } from '../simulation/GameState';
 import {
   discover, forge, cast, castable, signalsOf, describe, anatomy, isBane, iconOf, scopeOf, spanOf, aimable,
@@ -117,7 +118,7 @@ function face(c: FaithCard, big = false): string {
   return `<button class="divine-action-btn faith-proc ${tone}${big ? ' faith-proc-big' : ''}" data-card="${esc(c.id)}">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">${esc(c.name)}</span>
-    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/${iconOf(c)}.png" alt="" width="32" height="32"/></span>
+    ${cardArt(iconOf(c), 'faith-icon-wrap', `/assets/pixel/divine/${iconOf(c)}.png`)}
     <span class="fc-meta"><span class="fc-pips">${[1, 2, 3].map(i => `<i${i <= c.magnitude ? ' class="on"' : ''}></i>`).join('')}</span>${esc(spanOf(c))}</span>
     <span class="divine-action-desc">${esc(say(c))}</span>
     ${c.sides.length ? `<span class="faith-proc-side">${c.sides.length === 1 ? '1 price' : `${c.sides.length} prices`}</span>` : ''}
@@ -272,7 +273,7 @@ export function refresh(force = false): void {
   const crucible = hand().length >= 2 ? `<button class="divine-action-btn faith-orange faith-hand-el${burning ? ' selected' : ' affordable'}" id="faith-crucible-btn">
     <span class="faith-notch-tr"></span><span class="faith-notch-bl"></span>
     <span class="divine-action-name">THE CRUCIBLE</span>
-    <span class="faith-icon-wrap"><img class="faith-icon" src="/assets/pixel/divine/cards/crucible.png" alt="" width="32" height="32"/></span>
+    ${cardArt('crucible')}
     <span class="divine-action-desc">${burning ? `Choose ${2 - burnPick!.length} more to burn. Click here to stop.` : 'Burn two cards to forge one you cannot foresee.'}</span>
     <span class="divine-action-cost">${burning ? '✕ CANCEL' : '✦ FREE'}</span></button>` : '';
   const holder = document.createElement('div');

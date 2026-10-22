@@ -13,6 +13,7 @@
  * resumes where it was.
  */
 
+import { cardArt } from './CardArt';
 import { playSealBreak } from './SealBreak';
 import { SeedRNG } from '../utils/SeedRNG';
 import { gameState } from '../simulation/GameState';
@@ -89,7 +90,7 @@ function cardFace(card: ForgedCard, index: number): string {
     <span class="fate-notch tl"></span><span class="fate-notch br"></span>
     ${def.answers ? `<span class="fate-ribbon">The world answers</span>` : ''}
     <span class="fate-name">${esc(def.name)}</span>
-    <span class="fate-icon-wrap"><img class="fate-icon" src="/assets/pixel/divine/cards/${def.icon}.png" alt="" width="40" height="40"/></span>
+    ${cardArt(def.icon, 'fate-icon-wrap', `/assets/pixel/divine/cards/${def.icon}.png`)}
     <span class="fate-text">${esc(def.text)}</span>
     ${def.answers ? `<span class="fate-answers">${esc(def.answers)}</span>` : ''}
     <span class="fate-value">+${value} <i>forging</i></span>
