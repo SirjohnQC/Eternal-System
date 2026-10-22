@@ -16,6 +16,7 @@
  * Pure data + pure functions; the engine plays them (BigBangEngine.playTechCard).
  */
 import type { OmenOp, OmenCondition } from './Nations';
+import { TECHS, type Tech } from './Technology';
 
 /** Engine-level acts a card can carry beyond omens. */
 export type TechSpecial =
@@ -54,6 +55,8 @@ export interface TechCardDef {
   priceText: string;
   /** Icon under /assets/pixel/divine/cards/. */
   icon: string;
+  /** A small card, made from its technology's own effect (every node grants a card; owner's model, Oct 22). */
+  minor?: boolean;
 }
 
 const SEASON = 0.25, GENERATION = 0.5, AGE = 1;
@@ -202,6 +205,47 @@ export const TECH_CARDS: TechCardDef[] = [
     priceText: 'Nothing but what that life becomes.' }),
 ];
 
+// ─── Small cards: one for every technology without an authored card ──────────
+//
+// Owner's model (Oct 22): the player unlocks the tree itself, so every node
+// must grant something. A technology with no authored card grants a small
+// one, read from what the technology does (its strongest benefit, pressed
+// hard for a generation by the nations that know it) with the price its own
+// effect carries (smoke, greed, cracked certainties) or, failing that, the
+// unrest of new ways. Lawful, never a flat bonus (vision §13), and cheap:
+// 2 TP in the Ancient age to 5 in the Post-Biological.
+
+/** The small card for technology `t`. */
+export function minorCardOf(t: Tech): TechCardDef {
+  const e = t.effect;
+  const [op, m, icon, words]: [OmenOp, number, string, string] =
+    (e.food ?? 1) > 1 ? ['harvest', 0.6, 'harvest', 'their fields yield far more']
+    : (e.materials ?? 1) > 1 ? ['veins', 0.6, 'veins', 'they win far more wood, stone and ore']
+    : (e.knowledge ?? 1) > 1 ? ['inspire', 0.5, 'inspire', 'their study runs faster']
+    : (e.housing ?? 1) > 1 ? ['fertility', 0.5, 'fertility', 'their towns grow and more children live']
+    : (e.pollution ?? 0) < 0 ? ['cleanse', 1, 'cleanse', 'their land and air clear']
+    : (e.cohesion ?? 0) > 0 || (e.inequality ?? 0) < 0 ? ['zeal', 0.5, 'concord', 'they hold together']
+    : ['inspire', 0.4, 'awaken', 'curiosity takes hold of them'];
+  const [pop, pm, priceText]: [OmenOp, number, string] =
+    (e.pollution ?? 0) > 0 ? ['smoke', 0.6, 'Smoke over their towns.']
+    : (e.inequality ?? 0) > 0 ? ['greed', 0.5, 'The few grow rich on it.']
+    : (e.cohesion ?? 0) < 0 ? ['unrest', 0.5, 'Old certainties crack.']
+    : ['unrest', 0.3, 'Not everyone wants the new ways.'];
+  return {
+    id: `t_${t.id}`, name: t.name.toUpperCase(), needs: { tech: t.id }, cost: 1 + Math.ceil(t.era / 2), who: 'knowers', icon, minor: true,
+    omens: [{ op, m, eras: GENERATION }],
+    price: [{ op: pop, m: pm, when: 'with', eras: GENERATION }],
+    inequality: (e.inequality ?? 0) < 0 ? -0.05 : undefined,
+    does: `The nations that know ${t.name} press it hard: ${words}, for a generation.`,
+    priceText,
+  };
+}
+
+{
+  const authored = new Set(TECH_CARDS.map(c => c.needs.tech).filter(Boolean));
+  for (const t of TECHS) if (!authored.has(t.id)) TECH_CARDS.push(minorCardOf(t));
+}
+
 export const TECH_CARD_BY_ID: Record<string, TechCardDef> = Object.fromEntries(TECH_CARDS.map(c => [c.id, c]));
 
 // ─── TP economy ───────────────────────────────────────────────────────────────
@@ -229,6 +273,41 @@ export function techPrice(card: TechCardDef, wear: TechWear, tick: number): numb
 
 export function noteTechUse(wear: TechWear, id: string, tick: number): void {
   wear[id] = { n: decayed(wear[id], tick) + 1, tick };
+}
+
+// ─── The owner's model (Oct 22): TP unlock the tree, an unlock grants cards ───
+//
+// TP are spent on technologies in the tree, not on cards. Unlocking a
+// technology is the god inspiring the nations (the neediest nation that could
+// study it learns it at once) and puts that technology's card(s) into the TP
+// hand; a card in hand is burned (played) for free, and leaves the hand. A
+// burned card comes back by unlocking its node again (a recall), at the
+// card's price marked up by wear. Every technology grants a card (an authored
+// one, or its small card, minorCardOf). A New World is no technology: it
+// stays a standing card from the Space Age, paid in TP when played.
+// Design: docs/plans/2026-10-14-tech-cards.md, "Owner's model, Oct 22".
+
+/** The cards each technology grants when unlocked. */
+export const CARDS_OF_TECH: Record<string, TechCardDef[]> = (() => {
+  const out: Record<string, TechCardDef[]> = {};
+  for (const c of TECH_CARDS) if (c.needs.tech) (out[c.needs.tech] ??= []).push(c);
+  return out;
+})();
+
+/** A node a nation already knows costs this share (rounded up): they did the work, the god only names it. */
+export const KNOWN_NODE_SHARE = 0.5;
+
+/**
+ * TP a technology node costs now. First unlock: its cards' base costs (2 in the
+ * Ancient age .. 12 for Remake a World), halved when a nation already knows it.
+ * Recall (`recall`: the node is unlocked and `missing` cards were burned): those
+ * cards' prices marked up by wear.
+ */
+export function nodePrice(tech: string, wear: TechWear, tick: number, knownAlready: boolean, recall: readonly string[] | null): number {
+  const cards = CARDS_OF_TECH[tech] ?? [];
+  if (recall) return cards.filter(c => recall.includes(c.id)).reduce((s, c) => s + techPrice(c, wear, tick), 0);
+  const base = cards.reduce((s, c) => s + c.cost, 0);
+  return knownAlready ? Math.ceil(base * KNOWN_NODE_SHARE) : base;
 }
 
 /** Whether `known` (every tech any home nation knows) and `era` unlock the card. */

@@ -711,6 +711,25 @@ export class NationSystem {
     return true;
   }
 
+  /**
+   * The god inspires the nations with `tech` (a TP unlock): the live nation
+   * that could study it now and is drawn to it most (its pressures and
+   * temper, Technology.appeal) learns it at once. No dice: the neediest
+   * mind gets the idea. Returns that nation, or null when none could.
+   */
+  inspire(tech: string, tick: number, cause?: number): Nation | null {
+    const t = TECH_BY_ID[tech];
+    if (!t) return null;
+    let best: Nation | null = null, bestW = -1;
+    for (const n of this.nations) {
+      if (n.fallen || !available(n.techs).some(x => x.id === tech)) continue;
+      const need: Record<Need, number> = { ...n.pressures, curiosity: n.values.curiosity * 0.5 };
+      const w = appeal(t, need, n.values);
+      if (w > bestW) { best = n; bestW = w; }
+    }
+    return best && this.learnFromOutside(best.id, tech, tick, 'an inspiration', cause) ? best : null;
+  }
+
   /** Write a line to a nation's history (a card cast over it, say). Returns its chronicle id (0 if none). */
   record(k: number, tick: number, what: string, because: string[], causes: number[] = []): number {
     const n = this.nations[k];

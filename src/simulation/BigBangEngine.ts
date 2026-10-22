@@ -36,10 +36,10 @@ import {
 import { bakePlanetTexture } from './PlanetRenderer';
 import { genomeSeedFor } from './PlanetGenome';
 import {
-  TECH_CARDS, TECH_CARD_BY_ID, TP_PER_ERA, TP_PER_DISCOVERY, techPrice, noteTechUse, techCardUnlocked,
+  TECH_CARDS, TECH_CARD_BY_ID, TP_PER_ERA, TP_PER_DISCOVERY, techPrice, noteTechUse, techCardUnlocked, CARDS_OF_TECH, nodePrice,
   type TechCardDef,
 } from './TechCards';
-import { available as techsAvailable, TECH_BY_ID as TECH_DEFS } from './Technology';
+import { available as techsAvailable, TECH_BY_ID as TECH_DEFS, TECHS, type Tech } from './Technology';
 import { stepEncounters, ENCOUNTER_EVERY, type EncounterEvent, type EncounterKind } from './SystemEncounters';
 import { generateLeader, type Leader } from './Leader';
 import { generateFactionFlag, drawFactionFlag, type FactionFlag } from './FactionFlag';
@@ -1298,6 +1298,14 @@ export class BigBangEngine {
     gameState.mutationPaid = {};
     gameState.mutationGiftWhy = {};
     gameState.landmarks = [];
+    // TP's tree and hand are per-game (owner's model, Oct 22); a second game
+    // in one session must not inherit unlocks, held cards, wear or timed effects.
+    gameState.techUnlocked = [];
+    gameState.techHand = [];
+    gameState.techWear = {};
+    gameState.techRewarded = [];
+    gameState.techCardsKnown = [];
+    gameState.techEffects = {};
     gameState.speciesForms = [];
     gameState.signatureBiomes = [];
     gameState.offeredMutations = rollUniverseMutations(seed);
@@ -2024,7 +2032,7 @@ export class BigBangEngine {
 
   /** Called when TP change for a reason other than an age (a discovery, a card played). */
   onTPChanged?: (total: number) => void;
-  /** A tech card became playable for the first time (its technology was learned). */
+  /** A tech card's technology became ready to unlock for the first time (a nation could learn it, or knows it). */
   onTechCardUnlocked?: (card: TechCardDef) => void;
 
   /** TP for a technology the home world's nations learned for the first time (paid once per game). */
@@ -2042,29 +2050,124 @@ export class BigBangEngine {
     return new Set(ns?.isFounded ? ns.nations.filter(n => !n.fallen).flatMap(n => n.techs) : []);
   }
 
-  /** Tell the player about cards that just became playable (once each, saved). */
+  /**
+   * Tell the player about technologies that just became ready to unlock for a
+   * card (once per card, saved): a nation stands ready to learn it, or one
+   * already knows it. Owner's model, Oct 22.
+   */
   private announceTechCards(): void {
     const ps = this.getPlayerStar();
-    if (!ps) return;
+    const ns = runtimeState.playerNations;
+    if (!ps || !ns?.isFounded) return;
     const seen = (gameState.techCardsKnown ??= []);
     const known = this.homeKnowledge();
     for (const c of TECH_CARDS) {
-      if (seen.includes(c.id) || !techCardUnlocked(c, known, ps.civLevel)) continue;
+      // Small cards come quietly; the authored ones are news.
+      if (c.minor || seen.includes(c.id)) continue;
+      const ready = c.needs.tech ? this.techNodeTarget(c.needs.tech, known) : techCardUnlocked(c, known, ps.civLevel);
+      if (!ready) continue;
       seen.push(c.id);
       this.onTechCardUnlocked?.(c);
     }
   }
 
-  /** Every tech card, as the hand shows it: unlocked or sealed, its price now, and why it cannot be played. */
+  /** Whether a technology can be given now: a nation knows it, or a live nation could study it. */
+  private techNodeTarget(tech: string, known: ReadonlySet<string>): boolean {
+    if (known.has(tech)) return true;
+    const ns = runtimeState.playerNations;
+    return !!ns?.isFounded && ns.nations.some(n => !n.fallen && techsAvailable(n.techs).some(t => t.id === tech));
+  }
+
+  /** The TP hand: cards granted by unlocks, plus A New World once the Space Age stands. */
+  private techHeld(card: TechCardDef, era: number): boolean {
+    return card.special === 'new_world' ? techCardUnlocked(card, new Set(), era) : (gameState.techHand ?? []).includes(card.id);
+  }
+
+  /**
+   * Every technology as the tree shows it (owner's model, Oct 22): whether the
+   * nations know it, whether the player unlocked it, its cards (and which are
+   * in hand), what unlocking or recalling it costs now, and why it cannot be
+   * bought (null when it can).
+   */
+  techNodeViews(): Array<{ tech: Tech; cards: TechCardDef[]; known: boolean; unlocked: boolean; inHand: string[]; price: number; block: string | null; ready: boolean; recall: boolean }> {
+    const known = this.homeKnowledge();
+    const wear = gameState.techWear ?? {};
+    const unlocked = new Set(gameState.techUnlocked ?? []);
+    const hand = gameState.techHand ?? [];
+    return TECHS.map(tech => {
+      const cards = CARDS_OF_TECH[tech.id] ?? [];
+      const missing = unlocked.has(tech.id) ? cards.filter(c => !hand.includes(c.id)).map(c => c.id) : null;
+      const price = cards.length ? nodePrice(tech.id, wear, this.tick, known.has(tech.id), missing) : 0;
+      const block = this.techNodeBlock(tech, cards, known, missing, price);
+      return { tech, cards, known: known.has(tech.id), unlocked: unlocked.has(tech.id), inHand: cards.filter(c => hand.includes(c.id)).map(c => c.id),
+        price, block, ready: !block || this.techNodeBlock(tech, cards, known, missing, 0) === null, recall: !!missing?.length };
+    });
+  }
+
+  /** Why a technology cannot be unlocked (or its card recalled) now, or null. */
+  private techNodeBlock(tech: Tech, cards: TechCardDef[], known: ReadonlySet<string>, missing: string[] | null, price: number): string | null {
+    const ps = this.getPlayerStar();
+    if (!cards.length) return 'No card to give: the nations find this on their own.';
+    if (!ps || ps.biologyPhase !== 'intelligent' || !runtimeState.playerNations?.isFounded) return 'Your people have no nations yet.';
+    if (missing && !missing.length) return cards.length > 1 ? 'Its cards are in your hand.' : 'Its card is in your hand.';
+    if (!missing && !this.techNodeTarget(tech.id, known)) {
+      const lack = tech.requires.filter(r => !known.has(r)).map(r => TECH_DEFS[r]?.name ?? r);
+      return lack.length ? `First a nation must know ${lack.join(' and ')}.` : 'No nation is ready for it yet: it must master more of its own age first.';
+    }
+    if (gameState.techPoints < price) return `It takes ${price} TP; you have ${gameState.techPoints}.`;
+    return null;
+  }
+
+  /**
+   * Unlock a technology with TP (the player's act; owner's model, Oct 22): the
+   * god inspires the nations, so the neediest nation that could study it
+   * learns it at once (Nations.inspire; none if a nation already knows it), and
+   * its card(s) go into the TP hand. Unlocking it again after its card was
+   * burned recalls the card, at the card's price marked up by wear, with no
+   * new inspiration. Written into the Chronicle. Returns the feed line, or
+   * null when it cannot be bought (techNodeViews' block).
+   */
+  unlockTech(id: string): string | null {
+    const node = this.techNodeViews().find(v => v.tech.id === id);
+    if (!node || node.block) return null;
+    const ns = runtimeState.playerNations!;
+    const hand = (gameState.techHand ??= []);
+    const names = (cs: TechCardDef[]) => cs.map(c => c.name).join(' and ');
+    gameState.techPoints -= node.price;
+    this.onTPChanged?.(gameState.techPoints);
+    if (node.recall) {
+      const back = node.cards.filter(c => !hand.includes(c.id));
+      hand.push(...back.map(c => c.id));
+      ns.remark(this.tick, `You spent ${node.price} TP to take up ${node.tech.name} again.`, [`${names(back)} back in hand`]);
+      const line = `${node.tech.name}: ${names(back)} ${back.length > 1 ? 'are' : 'is'} back in your hand.`;
+      this.onCivEvent?.(line);
+      return line;
+    }
+    (gameState.techUnlocked ??= []).push(id);
+    hand.push(...node.cards.filter(c => !hand.includes(c.id)).map(c => c.id));
+    // An inspired technology pays no discovery TP: the god paid for it.
+    if (!node.known) { const paid = (gameState.techRewarded ??= []); if (!paid.includes(id)) paid.push(id); }
+    const castId = ns.remark(this.tick, `You spent ${node.price} TP to unlock ${node.tech.name}.`, [`granted ${names(node.cards)}`]);
+    const who = node.known ? null : ns.inspire(id, this.tick, castId || undefined);
+    const line = `${node.tech.name} unlocked: ${who ? `${who.name} ${node.tech.deed}. ` : ''}${names(node.cards)} ${node.cards.length > 1 ? 'are' : 'is'} in your hand.`;
+    this.onCivEvent?.(line);
+    this.onPlayerWorldChanged?.();
+    return line;
+  }
+
+  /**
+   * Every tech card, as the hand shows it: held (in the TP hand) or not, its
+   * TP price if it has one (only A New World is still paid at play; a held
+   * card burns free), and why it cannot be played now.
+   */
   techCardViews(): Array<{ card: TechCardDef; unlocked: boolean; price: number; block: string | null; acts: string[]; age: number; inEffect: boolean; played: boolean }> {
     const ps = this.getPlayerStar();
-    const known = this.homeKnowledge();
     const wear = (gameState.techWear ??= {});
     return TECH_CARDS.map(card => {
-      const unlocked = !!ps && techCardUnlocked(card, known, ps.civLevel);
-      const price = techPrice(card, wear, this.tick);
+      const held = !!ps && this.techHeld(card, ps.civLevel);
+      const price = card.special === 'new_world' ? techPrice(card, wear, this.tick) : 0;
       const age = card.needs.era ?? TECH_DEFS[card.needs.tech!]?.era ?? 1;
-      return { card, unlocked, price, block: unlocked ? this.techCardBlock(card, price) : null, acts: unlocked ? this.techCardTargets(card).map(n => n.name) : [], age,
+      return { card, unlocked: held, price, block: held ? this.techCardBlock(card, price) : null, acts: held ? this.techCardTargets(card).map(n => n.name) : [], age,
         inEffect: this.techCardInEffect(card), played: !!wear[card.id] };
     });
   }
@@ -2095,7 +2198,7 @@ export class BigBangEngine {
   private techCardBlock(card: TechCardDef, price: number): string | null {
     const ps = this.getPlayerStar();
     if (!ps || ps.biologyPhase !== 'intelligent') return 'Your people have not yet woken.';
-    if (gameState.techPoints < price) return `It takes ${price} TP; you have ${gameState.techPoints}.`;
+    if (price > 0 && gameState.techPoints < price) return `It takes ${price} TP; you have ${gameState.techPoints}.`;
     if (card.who !== 'world' && !this.techCardTargets(card).length) return 'No nation knows how.';
     switch (card.special) {
       case 'new_world': return this.relocationBlock() ?? (this.relocationTargets().length ? null : 'No world you know is free to take.');
@@ -2124,18 +2227,18 @@ export class BigBangEngine {
     const ps = this.getPlayerStar();
     if (!card || !ps || card.special === 'new_world') return null;
     const wear = (gameState.techWear ??= {});
-    const price = techPrice(card, wear, this.tick);
-    if (!techCardUnlocked(card, this.homeKnowledge(), ps.civLevel) || this.techCardBlock(card, price)) return null;
+    // A held card burns free (its TP were spent on the unlock); it leaves the hand.
+    if (!this.techHeld(card, ps.civLevel) || this.techCardBlock(card, 0)) return null;
     if (card.special === 'terraform' && !this.getTerraformInfo()?.options.some(o => o.targetType === choice)) return null;
 
     const rng = this.rng.fork(`tech_${card.id}_${this.tick}`);
     const ns = runtimeState.playerNations?.isFounded ? runtimeState.playerNations : null;
     const targets = this.techCardTargets(card);
-    gameState.techPoints -= price;
+    gameState.techHand = (gameState.techHand ?? []).filter(c => c !== card.id);
     noteTechUse(wear, card.id, this.tick);
     this.onTPChanged?.(gameState.techPoints);
     const title = card.name.charAt(0) + card.name.slice(1).toLowerCase();
-    const castId = ns ? ns.remark(this.tick, `You spent ${price} TP on ${title}.`, [card.does]) : 0;
+    const castId = ns ? ns.remark(this.tick, `You burned ${title}.`, [card.does]) : 0;
     const cause = castId || undefined;
     const now = ns?.now ?? 0;
     for (const n of targets) {

@@ -30,6 +30,7 @@ const { formationFaceType } = await import('../src/simulation/Formation');
 const { MAX_PER_CIV, MAX_TOTAL } = await import('../src/simulation/Colonies');
 let formingSamples = 0;   // how often the formation rule actually had a forming world to check
 const { assignDominantSpecies } = await import('../src/simulation/SpeciesDistribution');
+const { TECH_CARD_BY_ID } = await import('../src/simulation/TechCards');
 
 type Engine = InstanceType<typeof BigBangEngine>;
 type Star = ReturnType<Engine['getPlayerStar']> & {};
@@ -458,6 +459,18 @@ rule({
 });
 
 rule({
+  // Owner's model (Oct 22): a card is in the TP hand only because its technology was unlocked; nothing twice.
+  name: 'TP hand holds only cards of unlocked technologies, once each',
+  check: () => {
+    const hand = gameState.techHand ?? [], un = gameState.techUnlocked ?? [];
+    if (new Set(hand).size !== hand.length) return `hand repeats a card: ${hand.join(',')}`;
+    if (new Set(un).size !== un.length) return `a technology unlocked twice: ${un.join(',')}`;
+    const stray = hand.filter(id => !un.includes(TECH_CARD_BY_ID[id]?.needs.tech ?? ''));
+    return stray.length ? `in hand without an unlock: ${stray.join(',')}` : null;
+  },
+});
+
+rule({
   // A timed tech-card effect never outlives a full age of the slowest pace by much (no stuck shields).
   name: 'tech card effects are bounded in time',
   check: ({ engine }) => {
@@ -537,6 +550,8 @@ function resetGameState(name: string): void {
   gameState.tpEraHigh = 0;
   gameState.techCardsKnown = [];
   gameState.techEffects = {};
+  gameState.techUnlocked = [];
+  gameState.techHand = [];
   runtimeState.playerPlanetGrid = null;
   runtimeState.playerNations = null;
 }

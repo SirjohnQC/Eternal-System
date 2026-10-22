@@ -126,3 +126,48 @@ are the nations that know the card's technology.
   checks it took effect where it should and nowhere else, its price was laid,
   TP were spent, and wear raised the next price; invariant rules for the TP
   economy.
+
+## Owner's model, Oct 22
+
+*Playtest, verbatim: "you gain point to unlock the technologic tree and when you
+unlock them it gives you a card to burn in." This replaces "cards appear when a
+nation learns their technology; playing one costs TP" above. The 30 cards'
+effects and prices are unchanged (`playTechCard`).*
+
+**The loop.** TP are earned as before (+3 per new age, +1 per technology a
+nation finds on its own). They are **spent in the tree**: unlocking a
+technology grants its card(s) into the **TP hand**. A card in hand is
+**burned** (played) for no TP and leaves the hand. The TP deck pile opens the
+tree; the hand sits under it ("YOUR TP HAND").
+
+| Decision | Choice | Why |
+|---|---|---|
+| What an unlock does to the world | The god **inspires**: the live nation that could study it now and is drawn to it most (`Technology.appeal`: its pressures and temper) learns it at once (`Nations.inspire`, deterministic, no dice). If a nation already knows it, nobody learns anything | Vision §2/§17: the player disturbs, the nations respond. The idea lands where the need is, so it stays a *response*; knowledge then spreads unevenly by trade, contact and war as before, and a card acting on "knowers" lifts that nation first |
+| Do nations still learn on their own | **Yes, unchanged** | "Disturb, don't control": the god accelerates, he is not the only source. A technology the nations found themselves costs **half** (rounded up): they did the work, the god only names it. Watching pays |
+| Prerequisites | A node can be bought only when a live nation could study it now (`available`: every requirement known *by that nation*, and its age's frontier gate passed), or a nation already knows it | The tree reads left to right; the god cannot skip a people past what it understands. The block says what is missing ("First a nation must know Iron Working") |
+| Price by age | The node's card cost: authored cards 2–4 Ancient, 4–5 Medieval, 5 Industrial, 6–7 Atomic, 4–7 Space Age, 5–12 Interstellar, 8–9 Post-Human; small cards `1 + ceil(age/2)` = 2..5. Whole tree 242 TP (17 Ancient .. 46 Interstellar) | Income is ~70 TP a game, so a player unlocks roughly a third of the tree (more with half-price known nodes) and must choose |
+| Technologies without an authored card | **Every node grants a card.** The 20 techs without one get a **small card** (`minorCardOf`), read from the tech's own effect: its strongest benefit pressed hard by its knowers for a generation (food → harvest, materials → veins, study → inspire, room → fertility, cleaner → cleanse, cohesion/fairness → zeal), with the price its effect carries (pollution → smoke, inequality → greed, lost cohesion → unrest) or else the unrest of new ways. ◆ marks an authored card, ◇ a small one. Small cards leave no landmark and are not announced | "Only card nodes buyable" was tried first and looked at: at the Industrial age nothing new was buyable, because Steam Power (no card) gates Factories, Railways and Mechanised Farms; the player could only re-buy known Ancient nodes, which is the old "buy cards" model he rejected. Every node buyable is what "unlock the technologic tree" means. Small cards are still benefit + price (§13), lawful from the tech, never a flat bonus |
+| A burned card | **Leaves the hand.** The node stays unlocked (lit gold); the card comes back by unlocking the node again (**RECALL**), at the card's price marked up by wear (+25% per recent burn, fading over ~two ages), with no new inspiration | One currency, one place to spend it, and the existing wear rule keeps a favourite card from being spammed. A cooldown would make every card free forever |
+| A New World | Not a technology: stays a standing card in the hand from the Space Age, **paid in TP when played** (relocation) | It is a whole-people act, not knowledge |
+| Discovery TP for an inspired technology | **None** (marked paid before the nation learns it) | Otherwise every unlock refunds 1 TP |
+
+**Announcements.** The toast now says a technology is *ready to unlock*
+(once per authored card, saved in `techCardsKnown`), not that a card opened.
+
+**State (all optional, older saves load with none):** `gameState.techUnlocked`
+(technology ids) and `gameState.techHand` (card ids), beside `techWear`,
+`techRewarded`, `techCardsKnown`, `techEffects`. `BigBangEngine.init` resets all
+of them for a new game (they leaked between games before).
+
+**Engine:** `techNodeViews()` (every technology: known, unlocked, cards, in
+hand, price now, block, ready, recall), `unlockTech(id)`, `playTechCard(id)`
+(held cards only; free; removes the card), `techCardViews()` (`unlocked` now
+means *in hand*). Creative mode uses the same paths.
+
+**Guards:** `tools/techCardsCheck.ts` §1b (unlock spends the price, half when
+known; needs prerequisites; inspires the neediest able nation; pays no
+discovery TP; grants the card; burning is free and removes it; recall at a worn
+price inspires no one; twin worlds agree; a save keeps hand and unlocks; an
+older save without them loads) and §2 (every card, authored and small, unlocked
+into the hand and burned in a Post-Biological world). `tools/invariantCheck.ts`:
+the hand holds only cards of unlocked technologies, once each.

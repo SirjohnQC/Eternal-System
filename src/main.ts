@@ -1063,7 +1063,7 @@ function wireEngineEvents(eng: BigBangEngine): void {
     // +5 DP every tech level advance
     awardDP(5, `tech level ${total} reached`);
   };
-  // Tech cards (#40): TP from discoveries and plays; a card opens when its technology is learned.
+  // Tech cards (#40; owner's model Oct 22): TP from discoveries and ages, spent on unlocks; an unlock grants the card.
   eng.onTPChanged = (total) => setResourceChip('tech-display', 'tech-display-val', total);
   // Cards that open together (a leap, a burst of discoveries) come as one toast.
   let opened: string[] = [];
@@ -1074,8 +1074,8 @@ function wireEngineEvents(eng: BigBangEngine): void {
     openedTimer = setTimeout(() => {
       const names = opened; opened = []; openedTimer = null;
       const list = names.length > 4 ? `${names.slice(0, 4).join(', ')} and ${names.length - 4} more` : names.join(', ');
-      showToast('tech', `${names.length > 1 ? 'New tech cards' : 'A new tech card'}: ${list}. Click TP on the star map to see your cards.`, 9000);
-      addFeedEntry(`◆ ${names.length > 1 ? 'New tech cards' : 'New tech card'}: ${names.join(', ')}`, 'discovery');
+      showToast('tech', `Ready to unlock with TP: ${list}. Open the TECHNOLOGY deck to unlock ${names.length > 1 ? 'them' : 'it'} for the card.`, 9000);
+      addFeedEntry(`◆ Ready to unlock: ${names.join(', ')}`, 'discovery');
     }, 400);
   };
 
