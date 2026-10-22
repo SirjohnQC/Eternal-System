@@ -5049,6 +5049,80 @@ body:not(.events-collapsed) .bottom-bar{padding-right:calc(var(--events) + 10px)
 @media (prefers-reduced-motion:reduce){
   .left-panel,.right-panel{transition:none}
 }
+/* ── Sprite window kit (public/assets/pixel/ui, SpriteCook; tools/sliceWindowKit.py):
+   owner's ask, Oct 22, "a more gaming-like window style". The big windows wear
+   a gilded gunmetal frame (window.png, 9-slice 40, its well filled), their title
+   sits on a plate that straddles the top edge (plate_s.png), section heads are
+   small plates, inner panels are studded insets (panel.png) and buttons are
+   gold-rimmed (button.png). --ws is the frame's pixel scale (2 on desktop, 1 on
+   narrow screens); the title plate shares it, so the pixels match. The :root
+   prefix outranks each window's own injected stylesheet. ── */
+:root{--ws:2}
+@media (max-width:760px),(max-height:620px){:root{--ws:1}}
+:root #tech-screen .ts-frame,:root #species-screen .sp-frame,:root #your-people .yp-frame,:root #nations-ov .nv-frame,
+:root #ledger .lg-frame,:root #chronicle .ch-frame,:root #settings-modal,:root #tech-modal .tm-box{
+  position:relative;box-sizing:border-box;
+  border:calc(20px * var(--ws)) solid transparent;outline:0;
+  border-image:url(/assets/pixel/ui/window.png) 40 fill / calc(40px * var(--ws)) / 0 stretch;
+  background:none;image-rendering:pixelated;
+  box-shadow:0 14px 40px rgba(0,0,0,.75);
+  padding-top:calc(12px * var(--ws))}
+:root #tech-screen .ts-frame > *,:root #species-screen .sp-frame > *,:root #your-people .yp-frame > *,:root #nations-ov .nv-frame > *,
+:root #ledger .lg-frame > *,:root #chronicle .ch-frame > *,:root #settings-modal > *,:root #tech-modal .tm-box > *{image-rendering:auto}
+/* Window title on its plate, centred on the top edge */
+:root #tech-screen .ts-title,:root #species-screen .sp-title,:root #your-people .yp-top,:root #nations-ov .nv-top,
+:root #ledger .lg-title,:root #chronicle .ch-title,:root #settings-modal .settings-title,:root #tech-modal .tm-title{
+  position:absolute;left:50%;top:calc(-31px * var(--ws));transform:translateX(-50%);z-index:4;
+  box-sizing:border-box;height:calc(29px * var(--ws));width:max-content;max-width:calc(100% - 40px * var(--ws));
+  border-style:solid;border-width:calc(7px * var(--ws)) calc(22px * var(--ws));
+  border-image:url(/assets/pixel/ui/plate_s.png) 7 22 fill / calc(7px * var(--ws)) calc(22px * var(--ws)) / 0 stretch;
+  image-rendering:pixelated;background:none;margin:0;
+  padding:0 calc(6px * var(--ws));display:flex;align-items:center;justify-content:center;
+  line-height:1;font-size:calc(7.5px * var(--ws) + 2px);letter-spacing:calc(1.5px * var(--ws));white-space:nowrap;overflow:hidden;
+  text-shadow:0 1px 0 #000,0 0 10px rgba(0,0,0,.8);flex:none}
+:root #settings-modal .settings-title{color:var(--gold);position:static;transform:none;align-self:center;margin:0 0 4px;font-size:12px;letter-spacing:3px;overflow:visible}
+:root #settings-modal{max-height:calc(100vh - 16px);overflow-y:auto}
+:root #settings-modal .settings-crt-body{gap:10px}
+:root #settings-modal .settings-crt{padding:4px 10px 8px}
+:root #settings-modal{padding:4px 2px}
+:root #settings-modal .settings-header{flex-direction:column;align-items:flex-start}
+:root #tech-screen .ts-body > *{flex-shrink:0}
+/* The bars the titles sat in: no rules, no gradients; what else they hold stays */
+:root #tech-screen .ts-top,:root #species-screen .sp-top,:root #ledger .lg-top,:root #chronicle .ch-top{
+  border-bottom:0;background:none;min-height:calc(10px * var(--ws));padding-top:calc(4px * var(--ws));align-items:center}
+:root #tech-modal .tm-box{padding:calc(14px * var(--ws)) calc(14px * var(--ws)) calc(4px * var(--ws))}
+/* Section heads: small plates */
+:root #tech-screen .ts-sec,:root #ledger .lg-section,:root #chronicle .ch-sect,:root #your-people .yp-h,:root #settings-modal .settings-label,:root #tech-modal .tm-group{
+  box-sizing:border-box;width:max-content;max-width:100%;height:29px;
+  border-style:solid;border-width:7px 22px;border-image:url(/assets/pixel/ui/plate_s.png) 7 22 fill / 7px 22px / 0 stretch;
+  image-rendering:pixelated;background:none;box-shadow:none;
+  display:flex;align-items:center;padding:0 4px;line-height:1;opacity:1;
+  font-family:var(--font-pixel);font-size:10px;letter-spacing:2.5px;color:var(--gold);text-shadow:0 1px 0 #000}
+:root #tech-screen .ts-sec{margin:6px auto 2px}
+:root #your-people .yp-h{color:var(--gold,#c8a96e)}
+/* Studded inset panels */
+:root #tech-screen .ts-info,:root #your-people .yp-who,:root #nations-ov .nv-list,:root #nations-ov .nv-panel,:root #ledger .lg-tile{
+  border:6px solid transparent;border-image:url(/assets/pixel/ui/panel.png) 12 fill / 12px / 0 stretch;
+  background:none;image-rendering:pixelated}
+:root #tech-screen .ts-info > *,:root #your-people .yp-who > *,:root #nations-ov .nv-list > *,:root #nations-ov .nv-panel > *,:root #ledger .lg-tile > *{image-rendering:auto}
+:root #your-people .yp-who canvas,:root #nations-ov .nv-panel canvas{image-rendering:pixelated}
+:root #settings-modal .settings-crt{border:0;box-shadow:none;background:none}
+:root #settings-modal .settings-header{border-bottom:0}
+/* Gold-rimmed buttons */
+:root #tech-screen .ts-btn,:root #species-screen .sp-btn,:root #your-people .yp-btn,:root #nations-ov .nv-btn,
+:root #tech-modal .fm-btn,:root #settings-modal .settings-action-btn,:root #ledger .lg-close,:root #chronicle .ch-close{
+  box-sizing:border-box;min-height:38px;border-style:solid;border-width:10px 12px;
+  border-image:url(/assets/pixel/ui/button.png) 10 12 fill / 10px 12px / 0 stretch;
+  background:none;box-shadow:none;image-rendering:pixelated;
+  padding:0 8px;line-height:18px;color:#f3e6c4;text-shadow:0 1px 0 #000;cursor:pointer}
+:root #tech-screen .ts-btn:hover,:root #species-screen .sp-btn:hover,:root #your-people .yp-btn:hover,:root #nations-ov .nv-btn:hover,
+:root #tech-modal .fm-btn:hover:not(:disabled),:root #settings-modal .settings-action-btn:hover,:root #ledger .lg-close:hover,:root #chronicle .ch-close:hover{
+  filter:brightness(1.3) drop-shadow(0 0 6px rgba(255,214,140,.45));color:#fff4dd}
+:root #tech-modal .fm-btn:disabled{filter:grayscale(.8) brightness(.65)}
+:root #tech-modal .tm-go:not(:disabled){color:var(--cyan)}
+:root #ledger .lg-close,:root #chronicle .ch-close{min-height:34px;padding:0 4px}
+/* The window borders replace the old rules above the footers */
+:root #tech-screen .ts-foot,:root #nations-ov .nv-foot{border-top:0}
 </style>
 
 
