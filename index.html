@@ -4446,6 +4446,9 @@ body:has(#planet-overlay[style*="flex"]) .faith-deck{z-index:210;left:var(--rail
   text-shadow:0 0 12px rgba(200,169,110,0.45);margin-bottom:7px;pointer-events:none;
   display:flex;align-items:center;gap:10px;
 }
+/* The FAITH label folds and unfolds the deck: it takes clicks (the rule above
+   turned them off for every label, so it never did). */
+.faith-deck > .faith-deck-label:not(.td-label){pointer-events:auto;cursor:pointer}
 .faith-deck-label::before,
 .faith-deck-label::after{
   content:'';width:42px;height:1px;
