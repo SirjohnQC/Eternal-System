@@ -121,6 +121,58 @@ for (const era of [1, 3, 5]) {
     `${padded.length} padded`);
   check(`hilly era ${era}: deterministic`, JSON.stringify(p) === JSON.stringify(planSettlements(hilly(era))));
 }
+// Roads that make sense (hilly fixture): every town joined, roads off the
+// water except short bridges, climbs bounded except in tunnels, iso legs.
+for (const era of [2, 4]) {
+  const inp = hilly(era), p = planSettlements(inp), n = p.towns.length;
+  const root = Array.from({ length: n }, (_, i) => i);
+  const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+  for (const [a, b] of p.links) root[find(a)] = find(b);
+  check(`hilly era ${era}: every town reachable by road`, new Set(root.map((_, i) => find(i))).size === 1, `${p.links.length} links, ${n} towns`);
+  let wet = 0, river = 0, samples = 0, worst = 0, run = 0, longest = 0;
+  const roads = p.roads.filter(r => !r.street && !r.tunnel);
+  for (const r of roads) {
+    const len = Math.hypot(r.bx - r.ax, r.by - r.ay), m = Math.max(2, Math.ceil(len * 2));
+    let prev = liftAt(r.ax, r.ay);
+    for (let i = 0; i <= m; i++) {
+      const x = r.ax + (r.bx - r.ax) * i / m, y = r.ay + (r.by - r.ay) * i / m;
+      samples++;
+      if (!isLand(x, y)) wet++;
+      if (waterAt(x)) { river++; run += len / m; longest = Math.max(longest, run); } else run = 0;
+      const l = liftAt(x, y);
+      worst = Math.max(worst, Math.abs(l - prev));
+      prev = l;
+    }
+  }
+  check(`hilly era ${era}: roads keep off the sea and lakes`, wet === 0, `${wet}/${samples} samples`);
+  check(`hilly era ${era}: rivers are crossed by short bridges`, river > 0 && longest < 6, `${river} bridge samples, longest ${longest.toFixed(1)} px`);
+  check(`hilly era ${era}: no road climbs more than a terrace step at once`, worst <= MAX_PLOT_STEP, `worst step ${worst} px`);
+  const tunnels = p.roads.filter(r => r.tunnel).length;
+  check(`hilly era ${era}: the cliff is crossed only where it must be (tunnels)`, tunnels >= 1 && tunnels <= p.links.length, `${tunnels} tunnel legs`);
+  let iso = 0, all = 0;
+  for (const r of p.roads.filter(r => !r.street)) {
+    const dX = r.bx - r.ax, dY = (r.by - r.ay) / SQUASH, len = Math.hypot(dX, dY);
+    all += len;
+    if (Math.abs(Math.abs(dX) - Math.abs(dY)) < 0.05 * len + 0.01) iso += len;
+  }
+  check(`hilly era ${era}: roads run on the iso diagonals`, iso / Math.max(1e-9, all) > 0.9, `${Math.round(100 * iso / Math.max(1e-9, all))}%`);
+  // Streets and lanes: every lane ends on a street of its town; no street over the sea.
+  const streets = p.roads.filter(r => r.street);
+  let streetWet = 0;
+  for (const r of streets) for (let t = 0; t <= 1; t += 0.1) if (!isLand(r.ax + (r.bx - r.ax) * t, r.ay + (r.by - r.ay) * t)) streetWet++;
+  check(`hilly era ${era}: streets and lanes stay on land`, streetWet === 0, `${streets.length} street segments`);
+  const lanes = streets.filter(r => r.half < 0.4);
+  check(`hilly era ${era}: houses have lanes to the streets`, lanes.length >= p.buildings.length * 0.3, `${lanes.length} lane legs for ${p.buildings.length} buildings`);
+}
+// A road network costs: a straight road over a ridge is replaced by one round it.
+{
+  const ridge = (x: number, y: number) => (Math.abs(x - 200) < 8 && Math.abs(y - 120) < 30 ? 15 : 0);
+  const two = [{ x: 170, y: 120 }, { x: 230, y: 120 }];
+  const p = planSettlements({ ...input(3, two), liftAt: ridge });
+  let over = 0;
+  for (const r of p.roads.filter(r => !r.street)) for (let t = 0; t <= 1; t += 0.05) if (ridge(r.ax + (r.bx - r.ax) * t, r.ay + (r.by - r.ay) * t) > 0 && !r.tunnel) over++;
+  check('a road goes round a ridge it could not climb', p.links.length === 1 && over === 0, `${over} samples on the ridge`);
+}
 {
   // A foundation hangs below a levelled building, the foot unmoved.
   const b = { x: 0, y: 0, w: 3, d: 3, h: 3, kind: 'house' as const, seed: 3, town: 0 };
