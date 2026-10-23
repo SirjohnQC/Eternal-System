@@ -1,0 +1,68 @@
+{
+ "name": "future",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 1,
+   "w": 73,
+   "h": 23,
+   "tag": "airfield",
+   "label": "glass airport terminal"
+  },
+  {
+   "i": 1,
+   "x": 75,
+   "y": 7,
+   "w": 77,
+   "h": 17,
+   "tag": "hangar",
+   "label": "white hangar"
+  },
+  {
+   "i": 2,
+   "x": 154,
+   "y": 3,
+   "w": 64,
+   "h": 21,
+   "tag": "spaceport",
+   "label": "launch pad with rocket"
+  },
+  {
+   "i": 3,
+   "x": 220,
+   "y": 9,
+   "w": 62,
+   "h": 15,
+   "tag": "power",
+   "label": "fusion dome"
+  },
+  {
+   "i": 4,
+   "x": 284,
+   "y": 0,
+   "w": 67,
+   "h": 24,
+   "tag": "harbour",
+   "label": "container port"
+  },
+  {
+   "i": 5,
+   "x": 353,
+   "y": 7,
+   "w": 67,
+   "h": 17,
+   "tag": "market",
+   "label": "glass arcade"
+  },
+  {
+   "i": 6,
+   "x": 422,
+   "y": 7,
+   "w": 66,
+   "h": 17,
+   "tag": "factory",
+   "label": "automated factory"
+  }
+ ]
+}

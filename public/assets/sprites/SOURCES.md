@@ -68,3 +68,14 @@ Animal test sheet (not wired): `5ddb03aa-d442-428e-8700-5ecbb2e5cc67`.
 | skirt-water | `9fc536ff-9416-44ff-b683-a4cf455453b6` | sea columns: surface foam, light rays, bubbles, sandy floor (trimmed to the surface) |
 
 One texel per world px, the texture's height fitted to the wall. Rocky and ocean worlds keep the colours (water blended a third toward the world's sea); other worlds map the texture's light and dark onto their own strata and sea.
+
+## Trades, services and flying machines (2026-10-22)
+
+`gemini-nano-banana-2.1`, pixel mode, 12 credits each (48 in all), style references: the `medieval` sheet plus the landmark rows (`69c5cf7e…`, `741e8d71…`, `df2acaa9…`). Sliced with `tools/sliceSheet.py` (aircraft by its column gaps); tags are the `BuildingKind` the game picks by (`SpriteOverride.civicOverride`, `aircraftSprite`).
+
+| Sheet | SpriteCook asset ID | Frames (tag) |
+|---|---|---|
+| civic | `b4f4fc5a-e573-4b6c-8f51-4865752d28ed` | market stalls, round granary, columned temple, 2 workshops (smithy, stone shop), 2 harbour piers with boats, schoolhouse, warehouse (ancient–medieval) |
+| industry | `310faa9a-1df0-4699-be22-892dd9cf06e3` | brick factory with stacks, railway station, 2 brick schools, coal power station + cooling tower, harbour quay with crane and steamship, 2 grain silos (`granary`), grass airfield hangar + tower (industrial–atomic) |
+| future | `5ee7abbb-0ee8-4cfb-b722-7bca70a560e5` | airport terminal (`airfield`), `hangar`, launch pad with rocket (`spaceport`), fusion dome (`power`), container port (`harbour`), glass arcade (`market`), automated factory (space age on) |
+| aircraft | `4d122765-2912-4cc1-aa39-a472dc98c116` | side views facing right: `biplane`, `airship`, `prop`, `jet`, `heli`, `shuttle`, `drone`, `hover` |

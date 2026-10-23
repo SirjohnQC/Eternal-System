@@ -1,0 +1,77 @@
+{
+ "name": "aircraft",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 4,
+   "w": 20,
+   "h": 14,
+   "tag": "biplane",
+   "label": "red biplane"
+  },
+  {
+   "i": 1,
+   "x": 22,
+   "y": 2,
+   "w": 27,
+   "h": 16,
+   "tag": "airship",
+   "label": "zeppelin"
+  },
+  {
+   "i": 2,
+   "x": 51,
+   "y": 0,
+   "w": 24,
+   "h": 18,
+   "tag": "prop",
+   "label": "twin-prop airliner"
+  },
+  {
+   "i": 3,
+   "x": 77,
+   "y": 2,
+   "w": 25,
+   "h": 16,
+   "tag": "jet",
+   "label": "jet airliner"
+  },
+  {
+   "i": 4,
+   "x": 104,
+   "y": 5,
+   "w": 21,
+   "h": 13,
+   "tag": "heli",
+   "label": "helicopter"
+  },
+  {
+   "i": 5,
+   "x": 127,
+   "y": 0,
+   "w": 28,
+   "h": 18,
+   "tag": "shuttle",
+   "label": "space shuttle"
+  },
+  {
+   "i": 6,
+   "x": 157,
+   "y": 6,
+   "w": 16,
+   "h": 12,
+   "tag": "drone",
+   "label": "delivery drone"
+  },
+  {
+   "i": 7,
+   "x": 175,
+   "y": 3,
+   "w": 24,
+   "h": 15,
+   "tag": "hover",
+   "label": "hover transport"
+  }
+ ]
+}

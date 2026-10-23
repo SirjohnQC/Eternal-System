@@ -21,7 +21,40 @@ export function eraOf(civLevel: number): Era {
 export type BuildingKind =
   | 'hut' | 'house' | 'gable' | 'adobe' | 'row' | 'block' | 'tower' | 'dome' | 'spire'
   | 'ziggurat' | 'keep' | 'church' | 'mill'
-  | 'hive' | 'pod' | 'burrow' | 'grown' | 'carved';
+  | 'hive' | 'pod' | 'burrow' | 'grown' | 'carved'
+  // A town's trades and services (CIVIC_KINDS), by era:
+  | 'market' | 'granary' | 'temple' | 'workshop' | 'warehouse' | 'school'
+  | 'harbour' | 'factory' | 'station' | 'power' | 'airfield' | 'spaceport';
+
+/**
+ * The trades and services a town builds, the eras they stand in (inclusive)
+ * and how many towns get one: `capital` only the capital, `big` towns of
+ * size > 0.55 too, `any` every town. `tech`: built by every civilisation
+ * whatever its architecture (a hive people's power plant is still a power
+ * plant); the others only by box builders (a species' own shape family
+ * keeps its houses, temples and markets in its own forms).
+ */
+export const CIVIC_KINDS: Array<{ kind: BuildingKind; from: Era; to: Era; where: 'capital' | 'big' | 'any'; tech: boolean; w: number; h: number }> = [
+  { kind: 'market', from: 1, to: 6, where: 'any', tech: false, w: 2.6, h: 1.2 },
+  { kind: 'granary', from: 1, to: 4, where: 'any', tech: false, w: 2.2, h: 1.8 },
+  { kind: 'temple', from: 1, to: 3, where: 'big', tech: false, w: 2.6, h: 1.8 },
+  { kind: 'workshop', from: 2, to: 3, where: 'any', tech: false, w: 2.6, h: 1.6 },
+  { kind: 'warehouse', from: 2, to: 4, where: 'big', tech: false, w: 2.6, h: 1.6 },
+  { kind: 'school', from: 2, to: 4, where: 'big', tech: false, w: 2.6, h: 2 },
+  { kind: 'harbour', from: 1, to: 6, where: 'any', tech: true, w: 3, h: 1.4 },
+  { kind: 'factory', from: 3, to: 6, where: 'big', tech: true, w: 3, h: 2.4 },
+  { kind: 'station', from: 3, to: 4, where: 'big', tech: true, w: 3.4, h: 2 },
+  { kind: 'power', from: 4, to: 6, where: 'capital', tech: true, w: 3.4, h: 2.4 },
+];
+
+/**
+ * Flying begins: an airfield in the capital from the industrial era (3),
+ * in big towns too from the atomic era (4); a spaceport in the capital from
+ * the space age (5), in big towns too after (6).
+ */
+export function airfieldEra(kind: 'airfield' | 'spaceport', capital: boolean): Era {
+  return kind === 'airfield' ? (capital ? 3 : 4) : (capital ? 5 : 6);
+}
 
 export interface Building {
   /** Foot (front-centre of the footprint), face coordinates. */
@@ -33,6 +66,23 @@ export interface Building {
   town: number;
   /** Raised on stilts (the civilisation's architecture). */
   stilts?: boolean;
+  /**
+   * Ground the building stands on, when the plan knows the terrain
+   * (`PlanInput.liftAt`): `lift` is the levelled pad's height (the ground at
+   * its door: cut into higher ground behind), `pad` how far the ground falls
+   * away below it in front (world px), walled up as a foundation.
+   */
+  lift?: number;
+  pad?: number;
+}
+
+/** A levelled building plot painted into the ground bake (terraforming). */
+export interface Pad {
+  x0: number; y0: number; x1: number; y1: number;
+  /** A levelled plot (default), an airfield's runway, or a spaceport's launch apron. */
+  kind?: 'runway' | 'apron';
+  /** Its town's era (a grass strip, then asphalt, then lit concrete). */
+  era?: Era;
 }
 
 /**
@@ -56,6 +106,8 @@ export interface RoadSeg {
   half: number;
   /** A town street (true) or a road between towns. */
   street: boolean;
+  /** Through a cliff no road could climb: only its two mouths show. */
+  tunnel?: boolean;
 }
 
 export interface Town {
@@ -90,9 +142,13 @@ export interface SettlementPlan {
   buildings: Building[];
   fields: Field[];
   roads: RoadSeg[];
+  /** Levelled plots under buildings on uneven ground. */
+  pads: Pad[];
+  /** Towns joined by a road between them (indices into `towns`). */
+  links: Array<[number, number]>;
   /** Spatial buckets for `groundAt` / `keepClear`. */
   bucket: number;
-  cells: Map<number, { f: number[]; r: number[] }>;
+  cells: Map<number, { f: number[]; r: number[]; p: number[] }>;
 }
 
 export interface PlanInput {
@@ -112,6 +168,49 @@ export interface PlanInput {
   aggression: number;
   /** How this civilisation builds (Architecture.ts); absent: by era only. */
   arch?: ArchGenome;
+  /**
+   * Height (px) the drawn ground is lifted at a face point: the terrain's
+   * terraces. Absent: flat ground. Buildings stand only where their footprint
+   * spans at most one terrace step, and level a pad where it spans one.
+   */
+  liftAt?(x: number, y: number): number;
+  /** A river or stream at a face point (roads bridge it, nothing is built on it). */
+  waterAt?(x: number, y: number): boolean;
+}
+
+/**
+ * The most a building plot may fall across its footprint (world px): one
+ * terrace step (the tiers rise 3–5 px). More is a cliff: nothing is built.
+ */
+export const MAX_PLOT_STEP = 5;
+
+/**
+ * The ground under a footprint `w` wide and `d` deep (world px) whose front
+ * centre is (x, y): its levelled height and the foundation it needs, or null
+ * where nothing should be built (water, a river, a cliff). The sampled width
+ * covers the drawn sprite, which is wider than the plan's box.
+ */
+export function plotGround(inp: Pick<PlanInput, 'isLand' | 'liftAt' | 'waterAt'>, x: number, y: number, w: number, d: number): { lift: number; pad: number } | null {
+  const hw = w * 0.8, hd = d * SQUASH;
+  let lo = Infinity, hi = -Infinity, frontLo = Infinity;
+  const foot = inp.liftAt?.(x, y) ?? 0;
+  for (const fy of [0, 0.5, 1]) for (const fx of [-1, -0.5, 0, 0.5, 1]) {
+    const px = x + fx * hw, py = y - fy * hd;
+    if (!inp.isLand(px, py) || inp.waterAt?.(px, py)) return null;
+    const l = inp.liftAt?.(px, py) ?? 0;
+    // Lifted ground shows where it lands on the screen only if the face
+    // there is not sea (the sea is drawn over it): a lone high cell behind
+    // the water is not ground anyone can see.
+    if (l > 0 && !inp.isLand(px, py - l)) return null;
+    if (l < lo) lo = l;
+    if (l > hi) hi = l;
+    if (fy === 0 && l < frontLo) frontLo = l;
+  }
+  if (hi - lo > MAX_PLOT_STEP) return null;
+  // The door opens onto the ground at the foot: the building stands at that
+  // level, cut into any higher ground behind it, and walls up the front
+  // where the ground beside the door falls away.
+  return { lift: foot, pad: Math.max(0, foot - frontLo) };
 }
 
 import type { ArchGenome } from './Architecture';
@@ -129,10 +228,34 @@ function rng(seed: number) {
 }
 
 export function emptyPlan(): SettlementPlan {
-  return { era: 0, towns: [], buildings: [], fields: [], roads: [], bucket: 8, cells: new Map() };
+  return { era: 0, towns: [], buildings: [], fields: [], roads: [], pads: [], links: [], bucket: 8, cells: new Map() };
 }
 
-export function planSettlements(inp: PlanInput): SettlementPlan {
+/**
+ * The terrain queries, remembered on a quarter-pixel lattice for the length
+ * of one plan: plots, streets and the road lattice ask about the same
+ * points again and again, and each answer is a map projection.
+ */
+function memoTerrain(inp: PlanInput): PlanInput {
+  const at = <T>(fn: (x: number, y: number) => T) => {
+    const m = new Map<number, T>();
+    return (x: number, y: number): T => {
+      const k = Math.round(x * 4) * 65536 + Math.round(y * 4);
+      let v = m.get(k);
+      if (v === undefined) { v = fn(Math.round(x * 4) / 4, Math.round(y * 4) / 4); m.set(k, v); }
+      return v;
+    };
+  };
+  return {
+    ...inp,
+    isLand: at((x, y) => inp.isLand(x, y)),
+    liftAt: inp.liftAt ? at((x, y) => inp.liftAt!(x, y)) : undefined,
+    waterAt: inp.waterAt ? at((x, y) => inp.waterAt!(x, y)) : undefined,
+  };
+}
+
+export function planSettlements(input: PlanInput): SettlementPlan {
+  const inp = memoTerrain(input);
   // The plan's era is the most advanced town's (roads between towns follow it).
   const era = Math.max(eraOf(inp.civLevel), ...inp.sites.map(s => s.era ?? 0)) as Era;
   const eraOfSite = (s: Site): Era => s.era ?? eraOf(inp.civLevel);
@@ -140,7 +263,6 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
   // tall whatever the body size), growing only on very large renders.
   const sc = 1.8 * Math.max(1, inp.rx / REF_RX);
   const lineHalf = 0.5 * Math.max(1, inp.rx / REF_RX);
-  const R = rng(inp.seed ^ 0x51ab7);
   const plan = emptyPlan();
   plan.era = era;
   plan.bucket = Math.max(4, Math.round(8 * sc));
@@ -167,10 +289,19 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     const era = t.era, site = inp.sites[ti];
     const tin: PlanInput = { ...inp, arch: t.arch ?? inp.arch, aggression: site.aggression ?? inp.aggression };
     const streetHalf = lineHalf * (era >= 4 ? 1.3 : 1);
-    const main: RoadSeg = { ax: t.x - t.r * 1.05, ay: t.y, bx: t.x + t.r * 1.05, by: t.y, half: streetHalf, street: true };
-    if (era >= 1 || t.capital) plan.roads.push(main);
+    // Streets run out from the centre as far as the ground lets them: they
+    // stop at water and at a cliff (more than a terrace step from the centre).
+    const streetsHere: RoadSeg[] = [];
+    const street = (dx: number, dy: number, back: number, fwd: number) => {
+      const a = streetReach(inp, t.x, t.y, -dx, -dy, back), b = streetReach(inp, t.x, t.y, dx, dy, fwd);
+      if (a + b < 1) return;
+      const seg: RoadSeg = { ax: t.x - dx * a, ay: t.y - dy * a, bx: t.x + dx * b, by: t.y + dy * b, half: streetHalf, street: true };
+      plan.roads.push(seg);
+      streetsHere.push(seg);
+    };
+    if (era >= 1 || t.capital) street(1, 0, t.r * 1.05, t.r * 1.05);
     const cross = (t.size > 0.5 || era >= 2) && era >= 1;
-    if (cross) plan.roads.push({ ax: t.x, ay: t.y - t.r * SQUASH, bx: t.x, by: t.y + t.r * SQUASH * 1.05, half: streetHalf, street: true });
+    if (cross) street(0, SQUASH, t.r, t.r * 1.05);
 
     // The landmark (temple, keep, church, mill, tower) fronts the main street
     // on its far side, just past the crossing, in the capital and big towns.
@@ -179,7 +310,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       lm = makeBuilding(era, tin, R, sc, 0, 0, ti, true);
       lm.x = t.x + (cross ? streetHalf + lm.w / 2 + 0.6 : 0);
       lm.y = t.y - streetHalf - 0.4;
-      if (inp.isLand(lm.x, lm.y)) plan.buildings.push(lm); else lm = null;
+      if (!settle(lm, lm.w * 0.6)) lm = null;
     }
     // Lots by the civilisation's layout: a jittered grid along the
     // streets, concentric rings, a dense cluster, a line along the main
@@ -211,6 +342,61 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
     }
     const streets = layout === 'grid' || layout === 'line';
     const placed: Array<[number, number]> = [];
+    /**
+     * Stand a building on its plot if the ground allows: never on water or
+     * across a cliff; on a terrace step the plot is levelled (a pad, and a
+     * foundation in front). Returns whether it was built.
+     */
+    function settle(b: Building, nudge = 0): boolean {
+      // A plot that does not fit is shifted a little before it is given up.
+      let g = plotGround(inp, b.x, b.y, b.w, b.d);
+      for (const [ox, oy] of nudge ? [[1, 0], [-1, 0], [0, -1], [0, 1]] : []) {
+        if (g) break;
+        const nx = b.x + ox * nudge, ny = b.y + oy * nudge * SQUASH;
+        g = plotGround(inp, nx, ny, b.w, b.d);
+        if (g) { b.x = nx; b.y = ny; }
+      }
+      if (!g) return false;
+      if (inp.liftAt) { b.lift = g.lift; b.pad = g.pad; }
+      if (g.pad > 0) {
+        const hw = b.w * 0.8 + 0.4 * sc;
+        plan.pads.push({ x0: b.x - hw, x1: b.x + hw, y0: b.y - b.d * SQUASH - 0.3 * sc, y1: b.y + 0.6 * sc });
+      }
+      plan.buildings.push(b);
+      return true;
+    }
+    /**
+     * A runway (or a launch apron) on dead-flat ground in a ring outside the
+     * town, clear of other towns and plots, with its terminal (or the pad's
+     * rocket) behind it, joined to the town by a lane.
+     */
+    function placeField(kind: 'airfield' | 'spaceport', C: () => number): void {
+      const L0 = sc * (kind === 'spaceport' ? 4 : era >= 5 ? 8 : era >= 4 ? 7 : 6), D = sc * (kind === 'spaceport' ? 3.4 : 1.4);
+      const a0 = C() * Math.PI * 2;
+      // Full length first, then a shorter strip: flat ground is scarce on terraced worlds.
+      for (const L of [L0, L0 * 0.75]) for (const rr of [1.3, 1.6, 2, 2.5, 3.1]) for (let k = 0; k < 16; k++) {
+        const ang = a0 + k / 16 * Math.PI * 2;
+        const cx = t.x + Math.cos(ang) * (t.r * rr + L * 0.3), cy = t.y + Math.sin(ang) * (t.r * rr + L * 0.3) * SQUASH;
+        const g = plotGround(inp, cx, cy, L / 1.6, D);
+        if (!g || g.pad > 0) continue;
+        const pad: Pad = { x0: cx - L / 2, x1: cx + L / 2, y0: cy - D * SQUASH, y1: cy, kind: kind === 'airfield' ? 'runway' : 'apron', era };
+        const clash = plan.towns.some((o, oi) => oi !== ti && Math.hypot((cx - o.x) / (o.r + L), (cy - o.y) / ((o.r + L) * SQUASH)) < 1)
+          || plan.pads.some(o => o.x0 < pad.x1 + sc && o.x1 > pad.x0 - sc && o.y0 < pad.y1 + sc && o.y1 > pad.y0 - sc)
+          || plan.buildings.some(b => b.x > pad.x0 - b.w && b.x < pad.x1 + b.w && b.y > pad.y0 - sc && b.y < pad.y1 + b.d * SQUASH + sc);
+        if (clash) continue;
+        const spec = kind === 'airfield' ? { w: 3.2, h: 1.8 } : { w: 3.4, h: 3 };
+        const b: Building = { x: kind === 'airfield' ? pad.x0 + sc * spec.w * 0.6 : cx, y: kind === 'airfield' ? pad.y0 - 0.2 : cy - D * SQUASH * 0.35,
+          w: sc * spec.w, d: sc * spec.w * 0.7, h: sc * spec.h, kind, seed: (C() * 0x7fffffff) | 0, town: ti };
+        const bg = plotGround(inp, b.x, b.y, b.w, b.d);
+        if (!bg) continue;
+        if (inp.liftAt) { b.lift = bg.lift; b.pad = bg.pad; }
+        plan.pads.push(pad);
+        plan.buildings.push(b);
+        const lane = isoLegs(inp, [[cx, cy + 0.3], [t.x, t.y]]);
+        if (groundRuns(inp, lane)) for (let i = 0; i + 1 < lane.length; i++) plan.roads.push({ ax: lane[i][0], ay: lane[i][1], bx: lane[i + 1][0], by: lane[i + 1][1], half: lineHalf * 0.8, street: true });
+        return;
+      }
+    }
     for (const [x, y] of cand) {
       const e = Math.hypot((x - t.x) / t.r, (y - t.y) / (t.r * SQUASH));
       if (e > (layout === 'scatter' ? 1.3 : layout === 'line' ? 1.6 : 1)) continue;
@@ -224,8 +410,69 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       if (!inp.isLand(x, y)) continue;
       if (lm && Math.abs(x - lm.x) < (lm.w + lot) / 2 && y < lm.y + 0.2 && y > lm.y - lm.d * SQUASH - lot * SQUASH) continue;
       if (!streets && placed.some(([px, py]) => Math.abs(px - x) < lot * 0.7 && Math.abs(py - y) < lot * SQUASH * 0.7)) continue;
-      placed.push([x, y]);
-      plan.buildings.push(makeBuilding(era, tin, R, sc, x, y, ti, false));
+      const nb = makeBuilding(era, tin, R, sc, x, y, ti, false);
+      if (settle(nb, lot * 0.4)) placed.push([nb.x, nb.y]);
+    }
+    // Trades and services: some lots become a market, a granary, a temple,
+    // a workshop… (CIVIC_KINDS), each where it belongs: the market and the
+    // temple at the centre, the granary towards the fields, the harbour on
+    // the shore, works and power at the edge.
+    {
+      const C = rng(Math.imul(Math.round(t.x * 4) + 31, 2654435761) ^ Math.imul(Math.round(t.y * 4) + 17, 40503) ^ inp.seed ^ 0xc1c1);
+      const family = !!tin.arch && tin.arch.shape !== 'box';
+      const ours = plan.buildings.filter(b => b.town === ti && b !== lm);
+      const taken = new Set<Building>();
+      const coastal = (b: Building) => {
+        for (let a = 0; a < 12; a++) {
+          const ang = a / 12 * Math.PI * 2, rr = 2.6 * sc;
+          const x = b.x + Math.cos(ang) * rr, y = b.y + Math.sin(ang) * rr * SQUASH;
+          if (!inp.isLand(x, y) && !inp.waterAt?.(x, y)) return true;
+        }
+        return false;
+      };
+      for (const c of CIVIC_KINDS) {
+        if (era < c.from || era > c.to || (family && !c.tech) || (inp.aquatic && !tin.arch && !c.tech)) continue;
+        if (c.where === 'capital' ? !t.capital : c.where === 'big' ? !(t.capital || t.size > 0.55) : false) continue;
+        if (c.kind === 'temple' && (lm?.kind === 'church' || lm?.kind === 'ziggurat')) continue;
+        // The best lot for it: by distance from the centre, near or far.
+        const near = c.kind === 'market' || c.kind === 'temple' || c.kind === 'school';
+        const pool = ours.filter(b => !taken.has(b) && (c.kind !== 'harbour' || coastal(b)));
+        if (!pool.length) continue;
+        const dc = (b: Building) => Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) + C() * lot * 0.5;
+        pool.sort((a, b) => near ? dc(a) - dc(b) : dc(b) - dc(a));
+        for (const b of pool.slice(0, 3)) {
+          const nb: Building = { ...b, kind: c.kind, w: sc * c.w * (tin.arch?.scale ?? 1), d: sc * c.w * 0.8, h: sc * c.h };
+          const g = plotGround(inp, nb.x, nb.y, nb.w, nb.d);
+          if (!g) continue;
+          if (inp.liftAt) { nb.lift = g.lift; nb.pad = g.pad; }
+          Object.assign(b, nb);
+          taken.add(b);
+          break;
+        }
+      }
+      // An airfield, then a spaceport, on flat open ground outside the town.
+      for (const kind of ['airfield', 'spaceport'] as const) {
+        if (era < airfieldEra(kind, t.capital) || (!t.capital && t.size <= 0.55)) continue;
+        placeField(kind, C);
+      }
+    }
+    // Lanes: every house reaches a street, along the iso axes, where the
+    // ground between allows (no water, no cliff).
+    if (era >= 1 && streetsHere.length) {
+      const laneHalf = lineHalf * 0.6;
+      for (const b of plan.buildings) {
+        if (b.town !== ti) continue;
+        const fx = b.x, fy = b.y + 0.4 * sc;
+        let best: [number, number] | null = null, bd = Infinity;
+        for (const sg of streetsHere) {
+          const [d, tt] = segDist(sg, fx, fy);
+          if (d < bd) { bd = d; best = [sg.ax + (sg.bx - sg.ax) * tt, sg.ay + (sg.by - sg.ay) * tt]; }
+        }
+        if (!best || bd < streetHalf + 0.3 || bd > lot * 2.5) continue;
+        const legs = isoLegs(inp, [[fx, fy], best]);
+        if (legs.length < 2 || !groundRuns(inp, legs)) continue;
+        for (let i = 0; i + 1 < legs.length; i++) plan.roads.push({ ax: legs[i][0], ay: legs[i][1], bx: legs[i + 1][0], by: legs[i + 1][1], half: laneHalf, street: true });
+      }
     }
   });
   // Back to front.
@@ -255,6 +502,7 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
       const fh = sc * SQUASH * (era === 0 ? 1.4 + R() : 2.2 + R() * 3) * (era >= 3 ? 1.3 : 1);
       const f = isoField(cx, cy, fw * 0.7, fh / SQUASH * 0.7, era === 0 ? 4 : pickCrop(R), R() < 0.5);
       if (overlaps(f) || inTown(cx, cy, 0.4 * sc)) continue;
+      if (plan.pads.some(o => o.kind && f.x0 < o.x1 + sc && f.x1 > o.x0 - sc && f.y0 < o.y1 + sc && f.y1 > o.y0 - sc)) continue;
       let ok = true;
       for (const [px, py] of fieldCorners(f)) {
         if (inp.fertileAt(px, py) < 0.15) { ok = false; break; }
@@ -266,29 +514,77 @@ export function planSettlements(inp: PlanInput): SettlementPlan {
   }
 
   // ── Roads between towns ──
+  // A network that follows the land: candidate links to each town's nearest
+  // neighbours, each routed over a terrain-cost lattice (routeRoad); the
+  // cheapest tree joining them (Kruskal), plus a few shortcuts where the
+  // tree makes a long detour.
   if (era >= 1 && plan.towns.length > 1) {
     const half = lineHalf * (era >= 4 ? 1.4 : 1.1);
-    const n = plan.towns.length, linked = [0], edges: Array<[number, number]> = [];
-    const free = new Set(Array.from({ length: n - 1 }, (_, i) => i + 1));
-    // Prim's tree over towns, by distance, only along land.
-    while (free.size) {
-      let best: [number, number, number] | null = null;
-      for (const a of linked) for (const b of free) {
-        const d = Math.hypot(plan.towns[a].x - plan.towns[b].x, (plan.towns[a].y - plan.towns[b].y) / SQUASH);
-        if (!best || d < best[2]) best = [a, b, d];
-      }
-      if (!best) break;
-      free.delete(best[1]);
-      linked.push(best[1]);
-      edges.push([best[0], best[1]]);
+    const T = plan.towns, n = T.length;
+    const dist = (a: number, b: number) => Math.hypot(T[a].x - T[b].x, (T[a].y - T[b].y) / SQUASH);
+    const routes = new Map<number, Route | null>();
+    const routeOf = (a: number, b: number): Route | null => {
+      const k = Math.min(a, b) * 64 + Math.max(a, b);
+      if (!routes.has(k)) routes.set(k, routeRoad(inp, T[Math.min(a, b)], T[Math.max(a, b)], sc));
+      return routes.get(k) ?? null;
+    };
+    const cand: Array<[number, number]> = [];
+    for (let a = 0; a < n; a++) {
+      const near = Array.from({ length: n }, (_, b) => b).filter(b => b !== a).sort((p, q) => dist(a, p) - dist(a, q) || p - q).slice(0, 3);
+      for (const b of near) if (!cand.some(([p, q]) => (p === a && q === b) || (p === b && q === a))) cand.push([Math.min(a, b), Math.max(a, b)]);
     }
-    for (const [a, b] of edges) {
-      const ta = plan.towns[a], tb = plan.towns[b];
-      const routed = routeOverLand(inp, ta.x, ta.y, tb.x, tb.y, sc, R);
-      if (!routed) continue;
-      const path = isoLegs(inp, routed);
-      for (let i = 0; i + 1 < path.length; i++) {
-        plan.roads.push({ ax: path[i][0], ay: path[i][1], bx: path[i + 1][0], by: path[i + 1][1], half, street: false });
+    const root = Array.from({ length: n }, (_, i) => i);
+    const find = (i: number): number => (root[i] === i ? i : (root[i] = find(root[i])));
+    const tree: Array<[number, number]> = [];
+    const kruskal = (edges: Array<[number, number]>) => {
+      const ok = edges.map(e => ({ e, r: routeOf(e[0], e[1]) })).filter(x => x.r) as Array<{ e: [number, number]; r: Route }>;
+      ok.sort((p, q) => p.r.cost - q.r.cost || p.e[0] - q.e[0] || p.e[1] - q.e[1]);
+      for (const { e } of ok) {
+        const ra = find(e[0]), rb = find(e[1]);
+        if (ra === rb) continue;
+        root[ra] = rb;
+        tree.push(e);
+      }
+    };
+    kruskal(cand);
+    // Towns the nearest-neighbour links left apart: try every pair across
+    // the split, nearest first (towns on separate islands stay apart).
+    for (let guard = 0; guard < n; guard++) {
+      const groups = new Set(Array.from({ length: n }, (_, i) => find(i)));
+      if (groups.size <= 1) break;
+      const across: Array<[number, number]> = [];
+      for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) if (find(a) !== find(b) && !routes.has(a * 64 + b)) across.push([a, b]);
+      if (!across.length) break;
+      across.sort((p, q) => dist(p[0], p[1]) - dist(q[0], q[1]));
+      const before = tree.length;
+      kruskal(across.slice(0, 6));
+      if (tree.length === before && across.length <= 6) break;
+    }
+    // Shortcuts: a candidate link far cheaper than the way round the tree.
+    const viaTree = (a: number, b: number): number => {
+      const best = new Map<number, number>([[a, 0]]), q = [a];
+      while (q.length) {
+        const c = q.shift()!;
+        for (const [p, r] of tree) {
+          const o = p === c ? r : r === c ? p : -1;
+          if (o < 0 || best.has(o)) continue;
+          best.set(o, best.get(c)! + (routeOf(p, r)?.cost ?? Infinity));
+          q.push(o);
+        }
+      }
+      return best.get(b) ?? Infinity;
+    };
+    const extra = cand.filter(([a, b]) => !tree.some(([p, r]) => p === a && r === b))
+      .map(e => ({ e, r: routeOf(e[0], e[1]) }))
+      .filter(x => x.r && x.r.cost < 0.6 * viaTree(x.e[0], x.e[1]))
+      .sort((p, q) => p.r!.cost - q.r!.cost)
+      .slice(0, Math.max(1, Math.floor(n / 4)));
+    for (const e of [...tree, ...extra.map(x => x.e)]) {
+      const r = routeOf(e[0], e[1]);
+      if (!r) continue;
+      plan.links.push(e);
+      for (let i = 0; i + 1 < r.pts.length; i++) {
+        plan.roads.push({ ax: r.pts[i][0], ay: r.pts[i][1], bx: r.pts[i + 1][0], by: r.pts[i + 1][1], half, street: false, tunnel: r.tunnel[i] || undefined });
       }
     }
   }
@@ -406,95 +702,178 @@ export function isoLegs(inp: PlanInput, path: Array<[number, number]>): Array<[n
   return out;
 }
 
+/** A routed road: its corner points, and which legs run in a tunnel. */
+interface Route { pts: Array<[number, number]>; tunnel: boolean[]; cost: number }
+
+/** Costs of the road lattice, in lattice steps. */
+const ROAD_COST = {
+  /** Each step over a river (a bridge): roads cross rivers, they do not follow them. */
+  bridge: 5,
+  /** Per px of climb (a terrace step of 3–5 px: a ramp or a short switchback). */
+  climb: 0.6,
+  /** Per px of height: roads keep to the valleys. */
+  height: 0.02,
+  /** A change of direction. */
+  turn: 0.5,
+  /** A step through a cliff no road can climb: a tunnel, only when unavoidable. */
+  tunnel: 30,
+};
+
 /**
- * A road from a to b: straight when the whole line is on land, else around
- * the water by a coarse breadth-first search over a lattice. Null when the
- * towns are on different islands. The result is a few gently jittered
- * segments, not a ruler line.
+ * A road between two towns over the land, by A* on a lattice laid along the
+ * isometric axes (so every leg runs on a diagonal, #97). Each step costs
+ * more for a bridge, a climb or high ground, and a turn; the sea, lakes,
+ * glaciers and lava cannot be crossed; a cliff higher than a terrace step
+ * only by a tunnel. Null when no land joins the towns.
  */
-function routeOverLand(inp: PlanInput, ax: number, ay: number, bx: number, by: number, sc: number, R: () => number): Array<[number, number]> | null {
-  const len = Math.hypot(bx - ax, (by - ay) / SQUASH);
-  const lineOk = (x0: number, y0: number, x1: number, y1: number) => {
-    const n = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0)));
-    for (let i = 0; i <= n; i++) if (!inp.isLand(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n)) return false;
-    return true;
+function routeRoad(inp: PlanInput, a: { x: number; y: number }, b: { x: number; y: number }, sc: number): Route | null {
+  const s = Math.max(2, 2.2 * sc), sq = s * SQUASH;
+  const ux = (x: number, y: number) => ((x - a.x) / s + (y - a.y) / sq) / 2;
+  const vx = (x: number, y: number) => ((y - a.y) / sq - (x - a.x) / s) / 2;
+  const gi = Math.round(ux(b.x, b.y)), gj = Math.round(vx(b.x, b.y));
+  const m = Math.ceil(Math.max(Math.abs(gi), Math.abs(gj)) * 0.35) + 4;
+  const i0 = Math.min(0, gi) - m, j0 = Math.min(0, gj) - m;
+  const W = Math.max(0, gi) + m - i0 + 1, H = Math.max(0, gj) + m - j0 + 1;
+  if (W * H > 120000) return null;
+  const posX = (i: number, j: number) => a.x + (i - j) * s, posY = (i: number, j: number) => a.y + (i + j) * sq;
+  const N = W * H;
+  // Per node: 0 unknown, 1 land, 2 blocked; lift and river cached.
+  const kind = new Uint8Array(N), lift = new Float32Array(N), wet = new Uint8Array(N);
+  const node = (i: number, j: number) => (j - j0) * W + (i - i0);
+  const start = node(0, 0), goal = node(gi, gj);
+  const probe = (n: number) => {
+    if (kind[n]) return kind[n];
+    const i = (n % W) + i0, j = Math.floor(n / W) + j0, x = posX(i, j), y = posY(i, j);
+    kind[n] = n === start || n === goal || inp.isLand(x, y) ? 1 : 2;
+    lift[n] = inp.liftAt?.(x, y) ?? 0;
+    wet[n] = inp.waterAt?.(x, y) ? 1 : 0;
+    return kind[n];
   };
-  if (lineOk(ax, ay, bx, by)) {
-    // A bend or two, so the road reads as laid on the land.
-    const pts: Array<[number, number]> = [[ax, ay]];
-    const bends = len > 30 * sc ? 2 : 1;
-    for (let i = 1; i <= bends; i++) {
-      const t = i / (bends + 1), nx = -(by - ay) / SQUASH, ny = (bx - ax) * SQUASH, nl = Math.hypot(nx, ny) || 1;
-      const off = (R() - 0.5) * len * 0.12;
-      const px = ax + (bx - ax) * t + nx / nl * off, py = ay + (by - ay) * t + ny / nl * off;
-      const prev = pts[pts.length - 1];
-      if (lineOk(prev[0], prev[1], px, py)) pts.push([px, py]);
+  const DI = [1, -1, 0, 0], DJ = [0, 0, 1, -1];
+  // A* over the nodes; each remembers the direction it was reached by, for
+  // the turn cost (a node's best arrival, not every arrival: cheap and close).
+  const g = new Float32Array(N).fill(Infinity), from = new Int32Array(N).fill(-1), arrive = new Uint8Array(N).fill(4);
+  const heap: number[] = [], hf: number[] = [];
+  const push = (st: number, f: number) => {
+    heap.push(st); hf.push(f);
+    for (let c = heap.length - 1; c > 0;) {
+      const p = (c - 1) >> 1;
+      if (hf[p] <= hf[c]) break;
+      [heap[p], heap[c]] = [heap[c], heap[p]]; [hf[p], hf[c]] = [hf[c], hf[p]]; c = p;
     }
-    const last = pts[pts.length - 1];
-    if (!lineOk(last[0], last[1], bx, by)) return [[ax, ay], [bx, by]];
-    pts.push([bx, by]);
-    return pts;
-  }
-  // Lattice search around water.
-  const step = Math.max(2, 2.5 * sc);
-  const minX = Math.min(ax, bx) - len * 0.6, maxX = Math.max(ax, bx) + len * 0.6;
-  const minY = Math.min(ay, by) - len * 0.4, maxY = Math.max(ay, by) + len * 0.4;
-  const W = Math.ceil((maxX - minX) / step) + 1, H = Math.ceil((maxY - minY) / step) + 1;
-  if (W * H > 40000) return null;
-  const at = (i: number) => [minX + (i % W) * step, minY + Math.floor(i / W) * step] as [number, number];
-  const idx = (x: number, y: number) => Math.round((y - minY) / step) * W + Math.round((x - minX) / step);
-  const start = idx(ax, ay), goal = idx(bx, by);
-  const prev = new Int32Array(W * H).fill(-1);
-  prev[start] = start;
-  const q = [start];
-  for (let h = 0; h < q.length; h++) {
-    const c = q[h];
-    if (c === goal) break;
-    const cx = c % W, cy = Math.floor(c / W);
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
-      const nx = cx + dx, ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-      const n = ny * W + nx;
-      if (prev[n] !== -1) continue;
-      const p = at(n);
-      if (n !== goal && !inp.isLand(p[0], p[1])) continue;
-      prev[n] = c;
-      q.push(n);
+  };
+  const pop = (): number => {
+    const top = heap[0], lastS = heap.pop()!, lastF = hf.pop()!;
+    if (heap.length) {
+      heap[0] = lastS; hf[0] = lastF;
+      for (let c = 0; ;) {
+        const l = 2 * c + 1, r = l + 1;
+        let m2 = c;
+        if (l < heap.length && hf[l] < hf[m2]) m2 = l;
+        if (r < heap.length && hf[r] < hf[m2]) m2 = r;
+        if (m2 === c) break;
+        [heap[m2], heap[c]] = [heap[c], heap[m2]]; [hf[m2], hf[c]] = [hf[c], hf[m2]]; c = m2;
+      }
+    }
+    return top;
+  };
+  const h = (n: number) => Math.abs((n % W) + i0 - gi) + Math.abs(Math.floor(n / W) + j0 - gj);
+  probe(start); probe(goal);
+  g[start] = 0;
+  push(start, h(start));
+  const closed = new Uint8Array(N);
+  let end = -1;
+  while (heap.length) {
+    const n = pop();
+    if (closed[n]) continue;
+    closed[n] = 1;
+    if (n === goal) { end = n; break; }
+    const dir = arrive[n], gc = g[n], i = (n % W) + i0, j = Math.floor(n / W) + j0;
+    for (let d = 0; d < 4; d++) {
+      const ni = i + DI[d], nj = j + DJ[d];
+      if (ni < i0 || nj < j0 || ni >= i0 + W || nj >= j0 + H) continue;
+      const q = node(ni, nj);
+      if (closed[q] || probe(q) === 2) continue;
+      // The midpoint must be land too (a narrow inlet between two nodes).
+      const mx = (posX(i, j) + posX(ni, nj)) / 2, my = (posY(i, j) + posY(ni, nj)) / 2;
+      if (!inp.isLand(mx, my)) continue;
+      const jump = Math.abs(lift[q] - lift[n]);
+      let c = 1 + Math.abs(lift[q] - lift[n]) * ROAD_COST.climb + lift[q] * ROAD_COST.height;
+      if (jump > MAX_PLOT_STEP) c += ROAD_COST.tunnel;
+      if (wet[q]) c += ROAD_COST.bridge;
+      if (dir !== 4 && dir !== d) c += ROAD_COST.turn;
+      const ng = gc + c;
+      if (ng < g[q]) { g[q] = ng; from[q] = n; arrive[q] = d; push(q, ng + h(q)); }
     }
   }
-  if (prev[goal] === -1) return null;
-  const cells: number[] = [];
-  for (let c = goal; c !== start; c = prev[c]) cells.push(c);
-  cells.push(start);
-  cells.reverse();
-  // Thin the lattice path to its corners, then keep only what stays on land.
-  const pts: Array<[number, number]> = [[ax, ay]];
-  let anchor: [number, number] = [ax, ay];
-  for (let i = 1; i < cells.length; i++) {
-    const p = i === cells.length - 1 ? [bx, by] as [number, number] : at(cells[i]);
-    const nxt = i + 1 < cells.length ? (i + 1 === cells.length - 1 ? [bx, by] as [number, number] : at(cells[i + 1])) : null;
-    if (nxt && lineOk(anchor[0], anchor[1], nxt[0], nxt[1])) continue;
-    pts.push(p);
-    anchor = p;
+  if (end < 0) return null;
+  const chain: number[] = [];
+  for (let st = end; st >= 0; st = from[st]) chain.push(st);
+  chain.reverse();
+  // Corners: where the direction or the tunnel state changes.
+  const pts: Array<[number, number]> = [[a.x, a.y]], tunnel: boolean[] = [];
+  let curDir = -1, curTun = false;
+  for (let k = 1; k < chain.length; k++) {
+    const p = chain[k - 1], q = chain[k], d = arrive[q];
+    const pi = (p % W) + i0, pj = Math.floor(p / W) + j0;
+    const tun = Math.abs(lift[q] - lift[p]) > MAX_PLOT_STEP;
+    if (k > 1 && (d !== curDir || tun !== curTun)) { pts.push([posX(pi, pj), posY(pi, pj)]); tunnel.push(curTun); }
+    curDir = d; curTun = tun;
   }
-  return pts;
+  // The last node is the lattice point nearest the town: finish at the town itself.
+  const last = chain[chain.length - 1];
+  const lx = posX((last % W) + i0, Math.floor(last / W) + j0), ly = posY((last % W) + i0, Math.floor(last / W) + j0);
+  pts.push([lx, ly]); tunnel.push(curTun);
+  if (Math.hypot(lx - b.x, ly - b.y) > 0.3) { pts.push([b.x, b.y]); tunnel.push(false); }
+  return { pts, tunnel, cost: g[end] };
+}
+
+/**
+ * How far (≤ max) a town street can run from the centre along (dx, dy)
+ * (a unit step in face px) before water or a cliff stops it.
+ */
+function streetReach(inp: PlanInput, x: number, y: number, dx: number, dy: number, max: number): number {
+  const l0 = inp.liftAt?.(x, y) ?? 0;
+  for (let t = 0.5; t <= max; t += 0.5) {
+    const qx = x + dx * t, qy = y + dy * t;
+    if (!inp.isLand(qx, qy) || Math.abs((inp.liftAt?.(qx, qy) ?? 0) - l0) > MAX_PLOT_STEP) return Math.max(0, t - 0.5);
+  }
+  return max;
+}
+
+/** A path stays on dry land, steps no more than a terrace at a time, and crosses no river. */
+function groundRuns(inp: PlanInput, path: Array<[number, number]>): boolean {
+  for (let k = 0; k + 1 < path.length; k++) {
+    const [x0, y0] = path[k], [x1, y1] = path[k + 1];
+    const n = Math.max(2, Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 2));
+    let prev = inp.liftAt?.(x0, y0) ?? 0;
+    for (let i = 0; i <= n; i++) {
+      const x = x0 + (x1 - x0) * i / n, y = y0 + (y1 - y0) * i / n;
+      if (!inp.isLand(x, y) || inp.waterAt?.(x, y)) return false;
+      const l = inp.liftAt?.(x, y) ?? 0;
+      if (Math.abs(l - prev) > MAX_PLOT_STEP) return false;
+      prev = l;
+    }
+  }
+  return true;
 }
 
 /** Bucket the fields and roads for per-pixel lookup. */
 function index(plan: SettlementPlan): void {
   const B = plan.bucket, cells = plan.cells;
   const key = (i: number, j: number) => (i + 4096) * 8192 + (j + 4096);
-  const add = (x0: number, y0: number, x1: number, y1: number, fn: (c: { f: number[]; r: number[] }) => void) => {
+  const add = (x0: number, y0: number, x1: number, y1: number, fn: (c: { f: number[]; r: number[]; p: number[] }) => void) => {
     for (let j = Math.floor(y0 / B); j <= Math.floor(y1 / B); j++) {
       for (let i = Math.floor(x0 / B); i <= Math.floor(x1 / B); i++) {
         const k = key(i, j);
         let c = cells.get(k);
-        if (!c) { c = { f: [], r: [] }; cells.set(k, c); }
+        if (!c) { c = { f: [], r: [], p: [] }; cells.set(k, c); }
         fn(c);
       }
     }
   };
   plan.fields.forEach((f, n) => add(f.x0, f.y0, f.x1, f.y1, c => c.f.push(n)));
+  plan.pads.forEach((p, n) => add(p.x0, p.y0, p.x1, p.y1, c => c.p.push(n)));
   plan.roads.forEach((r, n) => add(Math.min(r.ax, r.bx) - r.half - 1, Math.min(r.ay, r.by) - r.half - 1,
     Math.max(r.ax, r.bx) + r.half + 1, Math.max(r.ay, r.by) + r.half + 1, c => c.r.push(n)));
 }
@@ -536,12 +915,27 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   for (const n of c.r) {
     const rd = plan.roads[n];
     const [d, t] = segDist(rd, x, y);
-    if (d <= rd.half && d < best) { best = d; bestR = rd; bestT = t; }
+    if (d > rd.half || d >= best) continue;
+    if (rd.tunnel) {
+      // Under the hill: only the two mouths show, dark arches at the ends.
+      const len = Math.hypot(rd.bx - rd.ax, rd.by - rd.ay), along = Math.min(t, 1 - t) * len;
+      if (along < rd.half * 2.2) {
+        const m = along < rd.half * 1.1 ? 0.22 : 0.45;
+        return (((r * m) | 0) << 16) | (((g * m) | 0) << 8) | ((b * m) | 0);
+      }
+      continue;
+    }
+    best = d; bestR = rd; bestT = t;
   }
   if (bestR) {
     const era = plan.era;
     let cr: number, cg: number, cb: number;
-    if (water) { cr = 120; cg = 92; cb = 64; }                         // a plank bridge
+    if (water) {
+      // A bridge: planks, then stone arches, then concrete; railings at its edges.
+      if (era <= 2) { cr = 120; cg = 92; cb = 64; } else if (era === 3) { cr = 156; cg = 146; cb = 128; } else { cr = 176; cg = 178; cb = 180; }
+      if (k >= 2 && best > bestR.half * 0.7) { cr *= 0.6; cg *= 0.6; cb *= 0.6; }
+      return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
+    }
     else if (era <= 2) { cr = 184; cg = 150; cb = 102; }                // dirt / packed earth
     else if (era === 3) { cr = 150; cg = 146; cb = 138; }               // cobbles
     else { cr = 74; cg = 76; cb = 82; }                                  // asphalt
@@ -558,6 +952,20 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
     return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
   }
   if (water) return -1;
+  // A levelled plot under a building on uneven ground: packed earth, then
+  // dressed stone, then paving, with a kerb as the camera closes in.
+  for (const n of c.p) {
+    const p = plan.pads[n];
+    if (x < p.x0 || x > p.x1 || y < p.y0 || y > p.y1) continue;
+    if (p.kind) return airGround(p, x, y, k, r, g, b);
+    const era = plan.era;
+    let [cr, cg, cb] = era <= 1 ? [150, 118, 82] : era <= 3 ? [168, 160, 146] : [150, 152, 156];
+    cr = cr * 0.75 + r * 0.25; cg = cg * 0.75 + g * 0.25; cb = cb * 0.75 + b * 0.25;
+    const e = Math.min(x - p.x0, p.x1 - x, (y - p.y0) / SQUASH, (p.y1 - y) / SQUASH);
+    if (k >= 3 && e < 0.3) { cr *= 0.8; cg *= 0.8; cb *= 0.8; }
+    else if (era >= 2 && k >= 4 && ((Math.floor(x * 1.5) + Math.floor(y * 3)) & 1)) { cr *= 0.94; cg *= 0.94; cb *= 0.94; }
+    return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
+  }
   for (const n of c.f) {
     const f = plan.fields[n];
     if (x < f.x0 || x > f.x1 || y < f.y0 || y > f.y1) continue;
@@ -583,6 +991,35 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   return -1;
 }
 
+/**
+ * A runway or a launch apron: a mown grass strip in the industrial era,
+ * asphalt with a dashed centre line and threshold bars in the atomic era,
+ * lit concrete after; an apron is concrete slabs with a blast ring.
+ */
+function airGround(p: Pad, x: number, y: number, k: number, r: number, g: number, b: number): number {
+  const era = p.era ?? 4;
+  const len = p.x1 - p.x0, u = (x - p.x0) / len, v = (y - p.y0) / Math.max(0.01, p.y1 - p.y0);
+  let cr: number, cg: number, cb: number;
+  if (p.kind === 'apron') {
+    [cr, cg, cb] = [184, 184, 180];
+    if (k >= 2 && ((Math.floor(x / 1.5) + Math.floor(y / 0.8)) & 1)) { cr -= 10; cg -= 10; cb -= 10; }
+    const du = (u - 0.5) * len, dv = (v - 0.5) * (p.y1 - p.y0) / SQUASH;
+    const rr = Math.hypot(du, dv);
+    if (rr < len * 0.22 && rr > len * 0.22 - Math.max(0.5, 1 / k)) { cr = 212; cg = 180; cb = 70; }
+    if (rr < len * 0.14) { cr *= 0.72; cg *= 0.7; cb *= 0.68; }               // scorched
+  } else if (era <= 3) {
+    [cr, cg, cb] = [r * 0.85 + 30, g * 0.85 + 36, b * 0.85 + 14];
+    if (k >= 2 && Math.floor(x / 1.2) & 1) { cr *= 0.92; cg *= 0.95; cb *= 0.92; }   // mown stripes
+  } else {
+    [cr, cg, cb] = era === 4 ? [72, 74, 78] : [118, 122, 128];
+    const mid = Math.abs(v - 0.5) < 0.12;
+    if (mid && u > 0.08 && u < 0.92 && Math.floor(u * len / 1.4) % 2 === 0) { cr = 232; cg = 232; cb = 220; }
+    if ((u < 0.05 || u > 0.95) && Math.floor(v * 6) % 2 === 0) { cr = 232; cg = 232; cb = 220; }
+    if (era >= 5 && k >= 2 && (v < 0.1 || v > 0.9) && Math.floor(u * len) % 3 === 0) { cr = 120; cg = 220; cb = 255; }
+  }
+  return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
+}
+
 /** Trees and rocks stay off towns, fields and roads. */
 export function keepClear(plan: SettlementPlan, x: number, y: number): boolean {
   for (const t of plan.towns) {
@@ -598,6 +1035,10 @@ export function keepClear(plan: SettlementPlan, x: number, y: number): boolean {
   for (const n of c.r) {
     const rd = plan.roads[n];
     if (segDist(rd, x, y)[0] < rd.half + 1.2) return true;
+  }
+  for (const n of c.p) {
+    const p = plan.pads[n];
+    if (x > p.x0 - 1 && x < p.x1 + 1 && y > p.y0 - 1 && y < p.y1 + 1) return true;
   }
   return false;
 }

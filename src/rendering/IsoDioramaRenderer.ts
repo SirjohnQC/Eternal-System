@@ -32,7 +32,7 @@
 
 import type { PlanetGrid, BiomeType } from '../simulation/PlanetGrid';
 import { formationHeat } from '../simulation/Formation';
-import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf } from '../simulation/PlanetGrid';
+import { BIOME_COLORS, isWater, classifyBiome, SEA_LEVEL, GRID_SIZE, tintRiver, inRiverChannel, riverStrength, riverIsFall, faceOf, riverAt } from '../simulation/PlanetGrid';
 import type { PlanetBiosphere, SpeciesGenome } from '../simulation/SpeciesGenome';
 import { inhabitsWater, waterSubmersion } from '../simulation/SpeciesGenome';
 import type { Planet, StarBody } from '../simulation/BigBangEngine';
@@ -40,7 +40,8 @@ import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATU
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan, type Site } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { peopleOf } from '../simulation/People';
-import { spriteOverridesActive } from './SpriteOverride';
+import { spriteOverridesActive, aircraftSprite } from './SpriteOverride';
+import { portsOf, flightsAt, type AircraftKind, type Flight, type Port } from './AirTraffic';
 import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { MeteorStrike, type StrikeView } from './MeteorStrike';
@@ -432,6 +433,8 @@ interface Ember   { x: number; y: number; vy: number; life: number; maxLife: num
 
 /** Seconds one building takes to go up, and the spread of a town's start times. */
 const BUILD_SECONDS = 24;
+/** An outgoing building comes down over its last few seconds. */
+const DEMOLISH_SECONDS = 6;
 const BUILD_SPREAD = 30;
 
 /** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
@@ -2803,10 +2806,27 @@ export class IsoDioramaRenderer {
       return 24;
     };
     const byCell = new Map<string, { x: number; y: number; score: number; row: number; col: number }>();
+    // Towns grow where building is easy: flat ground (one terrace, not a
+    // stair of them) and fresh water near (a river within a cell or two).
+    const nearRiver = (row: number, col: number) => {
+      for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
+        const c = grid[row + dr]?.[(col + dc + GRID_SIZE) % GRID_SIZE];
+        if (c && c.river > 0) return true;
+      }
+      return false;
+    };
     for (const sp of spots) {
       const inland = Math.min(1, coast(sp.x, sp.y) / 6);
+      const l0 = this.liftAtFace(sp.x, sp.y, geom);
+      // Raised ground whose top lands over the sea is drawn under it (the
+      // bake's "water wins"): no town there.
+      if (l0 > 0 && !land.has(key(sp.x, sp.y - l0))) continue;
+      let spread = 0;
+      for (const [ox, oy] of [[-8, 0], [8, 0], [0, -4], [0, 4], [-6, -3], [6, 3]]) spread = Math.max(spread, Math.abs(this.liftAtFace(sp.x + ox, sp.y + oy, geom) - l0));
+      const flat = 1 - 0.6 * Math.min(1, spread / 10);
+      const water = this.planetType !== 'lava' && nearRiver(sp.row, sp.col) ? 0.15 : 0;
       // A small hash breaks ties so the order never depends on scan order.
-      const score = sp.fertility * (0.2 + 0.8 * inland) + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
+      const score = (sp.fertility * (0.2 + 0.8 * inland) + water) * flat + ((sp.row * 73 + sp.col * 151) % 97) * 1e-5;
       const k2 = `${sp.row},${sp.col}`;
       const prev = byCell.get(k2);
       if (!prev || score > prev.score) byCell.set(k2, { x: sp.x, y: sp.y, score, row: sp.row, col: sp.col });
@@ -2860,7 +2880,9 @@ export class IsoDioramaRenderer {
       const gp = this.discToGrid(dx, dy);
       const cell = gp ? grid[gp.row]?.[gp.col] : null;
       if (!cell) return false;
-      const e = this.elevationAt(grid, dx, dy) ?? cell.elevation;
+      // Land in both the identity bake (nearest cell) and the zoomed ones
+      // (interpolated): either one drawing water there is water.
+      const e = Math.min(this.elevationAt(grid, dx, dy) ?? cell.elevation, cell.elevation);
       if (e - this.rimFalloff(r) < SEA_LEVEL + 0.004) return false;
       return cell.biome !== 'snow' && cell.biome !== 'volcanic' && cell.biome !== 'lake';
     };
@@ -2873,11 +2895,21 @@ export class IsoDioramaRenderer {
       if (cell.biome === 'desert') return era >= 3 ? 0.3 : 0;
       return Math.max(0.2, cell.fertility);
     };
+    // Rivers as drawn (none on lava worlds): roads bridge them, nothing is built on them.
+    const rivers = this.planetType !== 'lava';
+    const waterAt = (x: number, y: number) => {
+      if (!rivers) return false;
+      const f = this.discToGridF((x - cx) / rx, (y - cy) / ry);
+      if (!f) return false;
+      const rs = riverAt(grid, f.row, f.col);
+      return rs.half > 0 && rs.dist <= rs.half + 0.08;
+    };
     this.townPlan = planSettlements({
       sites, civLevel, seed: this.planetSeed, rx, isLand, fertileAt, aquatic,
       aggression: intelligent?.dna.aggression ?? 3, arch,
+      liftAt: (x, y) => this.liftAtFace(x, y, geom), waterAt,
     });
-    this.townLift = this.townPlan.buildings.map(b => this.liftAtFace(b.x, b.y, geom));
+    this.townLift = this.townPlan.buildings.map(b => b.lift ?? this.liftAtFace(b.x, b.y, geom));
     // Construction: buildings new to this planet's plan go up over time,
     // staggered so a town grows outward from its first houses.
     const fresh = this.townPlanet !== this.planet;
@@ -2900,7 +2932,7 @@ export class IsoDioramaRenderer {
         const t = oldPlan.towns[b.town], st = oldStyles[b.town];
         if (!st) return;
         const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
-        this.retired.push({ b, lift: oldLift[i] ?? 0, st, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
+        this.retired.push({ b, lift: oldLift[i] ?? 0, st, until: this.elapsed + d * BUILD_SPREAD + DEMOLISH_SECONDS, sprites: new Map() });
       });
     }
     // One style per town: its own era, its nation's architecture.
@@ -2975,21 +3007,14 @@ export class IsoDioramaRenderer {
       const wy = r.b.y - r.lift;
       list.push({ wy, draw: (g, v) => {
         if (r.until <= this.elapsed) return;
-        const S = Math.max(1, Math.round(v.K));
-        let spr = r.sprites.get(S);
-        if (!spr) {
-          const f = paintBuilding(r.b, S, r.st);
-          const cv = document.createElement('canvas');
-          cv.width = f.width; cv.height = f.height;
-          const cg = cv.getContext('2d');
-          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
-          spr = { cv, fx: f.footX, fy: f.footY };
-          r.sprites.set(S, spr);
-        }
+        const spr = this.retiredSprite(r, Math.max(1, Math.round(v.K)));
         const [X, Y] = at(v, r.b.x, wy);
         g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
       } });
     }
+    // Flying machines from the airfields and spaceports, over everything.
+    const ports = portsOf(this.townPlan, (b, i) => this.townLift[i] ?? b.lift ?? 0);
+    if (ports.length) list.push({ wy: Number.MAX_SAFE_INTEGER, draw: (g, v) => this.drawAir(g, v, ports) });
     // Land animals join the same back-to-front pass, so a tree in front of
     // one hides it (they were drawn over every tree).
     if (this.habitable) {
@@ -3366,6 +3391,118 @@ export class IsoDioramaRenderer {
     });
   }
 
+  /**
+   * The air traffic (AirTraffic.flightsAt) at this moment: each machine at
+   * its height over its ground, a soft shadow under it, a shuttle's flame
+   * and smoke trail. A few draws per port per frame.
+   */
+  private drawAir(g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView, ports: Port[]): void {
+    const geom = this.placeGeom;
+    const S = Math.max(1, Math.round(v.K));
+    const at = (x: number, y: number) => [(x - v.fx) * v.K + v.W / 2, (y - v.fy) * v.K + v.H / 2 + v.bob] as const;
+    const a0 = g.globalAlpha;
+    for (const f of flightsAt(ports, this.elapsed, geom)) {
+      const [X, Y] = at(f.x, f.y - f.ground - f.alt);
+      if (X < -40 || X > v.W + 40 || Y < -40 || Y > v.H + 40) continue;
+      const spr = this.aircraftCanvas(f.kind, S, f.left);
+      if (f.alt > 0.5 && f.kind !== 'shuttle') {
+        // The shadow on the ground below, fainter the higher it flies.
+        const [SX, SY] = at(f.x, f.y - f.ground);
+        g.globalAlpha = a0 * f.alpha * Math.max(0.12, 0.35 - f.alt * 0.012);
+        g.fillStyle = '#10140c';
+        g.fillRect(Math.round(SX - spr.width * 0.35), Math.round(SY), Math.max(1, Math.round(spr.width * 0.7)), Math.max(1, S));
+      }
+      if (f.kind === 'shuttle' && f.alt > 0) this.drawExhaust(g, at, f, S);
+      g.globalAlpha = a0 * f.alpha;
+      g.drawImage(spr, Math.round(X - spr.width / 2), Math.round(Y - spr.height + (f.alt > 0 ? spr.height / 2 : 0)));
+    }
+    g.globalAlpha = a0;
+  }
+
+  /** A launching shuttle's flame and the smoke column it leaves standing. */
+  private drawExhaust(g: CanvasRenderingContext2D, at: (x: number, y: number) => readonly [number, number], f: Flight, S: number): void {
+    const [X, Y] = at(f.x, f.y - f.ground - f.alt);
+    const [, Y0] = at(f.x, f.y - f.ground);
+    const a0 = g.globalAlpha;
+    for (let y = Y + S; y < Y0; y += 2 * S) {
+      const k = (y - Y) / Math.max(1, Y0 - Y);
+      const wob = Math.round(Math.sin(y * 0.3 + this.elapsed * 3) * S * (0.5 + k * 2));
+      g.globalAlpha = a0 * (0.55 - 0.35 * k);
+      g.fillStyle = k < 0.08 ? '#ffd27a' : '#d8d4cc';
+      const w = Math.max(1, Math.round(S * (1 + k * 3)));
+      g.fillRect(Math.round(X - w / 2) + wob, Math.round(y), w, 2 * S);
+    }
+    g.globalAlpha = a0;
+    g.fillStyle = '#ff9a3c';
+    g.fillRect(Math.round(X - S / 2), Math.round(Y), Math.max(1, S), Math.max(2, 2 * S));
+  }
+
+  private airSprites = new Map<string, HTMLCanvasElement>();
+
+  /**
+   * A machine's sprite at scale S, facing left or right (cached). The sheet
+   * draws them in side view facing right; a shuttle stands nose up. Without
+   * the sheet a few pixels stand in: a body, wings and a tail.
+   */
+  private aircraftCanvas(kind: AircraftKind, S: number, left: boolean): HTMLCanvasElement {
+    const key = `${kind}|${S}|${left ? 1 : 0}`;
+    const hit = this.airSprites.get(key);
+    if (hit) return hit;
+    const W_WORLD: Record<AircraftKind, number> = { biplane: 4, airship: 7, prop: 5, jet: 5.5, heli: 4, shuttle: 4.5, drone: 2.6, hover: 5 };
+    const tw = Math.max(4, Math.round(W_WORLD[kind] * S));
+    const spr = aircraftSprite(kind, tw);
+    const cv = document.createElement('canvas');
+    const cg = cv.getContext('2d');
+    if (spr && cg) {
+      const src = document.createElement('canvas');
+      src.width = spr.width; src.height = spr.height;
+      const sg = src.getContext('2d');
+      if (sg) { const img = sg.createImageData(spr.width, spr.height); img.data.set(spr.data); sg.putImageData(img, 0, 0); }
+      if (kind === 'shuttle') {
+        cv.width = spr.height; cv.height = spr.width;
+        cg.translate(0, spr.width); cg.rotate(-Math.PI / 2); cg.drawImage(src, 0, 0);
+      } else {
+        cv.width = spr.width; cv.height = spr.height;
+        if (left) { cg.translate(spr.width, 0); cg.scale(-1, 1); }
+        cg.drawImage(src, 0, 0);
+      }
+    } else if (cg) {
+      // Procedural stand-in: fuselage, wing, tail fin.
+      const w = tw, h = Math.max(3, Math.round(tw * 0.5));
+      cv.width = w; cv.height = h;
+      const body = kind === 'airship' ? '#c8ccd4' : kind === 'biplane' ? '#b8402e' : '#e8eaee';
+      cg.fillStyle = body;
+      cg.fillRect(0, Math.floor(h / 2), w, Math.max(1, Math.round(h / 3)));
+      cg.fillStyle = '#5a5e66';
+      cg.fillRect(Math.floor(w * 0.35), Math.floor(h / 2) - 1, Math.max(1, Math.round(w * 0.25)), Math.max(1, Math.round(h / 4)) + 2);
+      cg.fillRect(left ? w - Math.max(1, Math.round(w * 0.15)) : 0, 0, Math.max(1, Math.round(w * 0.15)), Math.floor(h / 2));
+    }
+    this.airSprites.set(key, cv);
+    return cv;
+  }
+
+  /**
+   * An outgoing building at camera scale S: standing, then taken down over
+   * its last DEMOLISH_SECONDS (the construction steps run backwards: walls
+   * down inside scaffolding, the plot cleared). Cached per scale and step.
+   */
+  private retiredSprite(r: IsoDioramaRenderer['retired'][number], S: number): { cv: HTMLCanvasElement; fx: number; fy: number } {
+    const left = (r.until - this.elapsed) / DEMOLISH_SECONDS;
+    const step = left >= 1 ? 12 : Math.max(0, Math.min(11, Math.floor(left * 12)));
+    const key = S * 16 + step;
+    let spr = r.sprites.get(key);
+    if (!spr) {
+      const f = step === 12 ? paintBuilding(r.b, S, r.st) : paintConstruction(r.b, S, r.st, (step + 0.5) / 12);
+      const cv = document.createElement('canvas');
+      cv.width = f.width; cv.height = f.height;
+      const cg = cv.getContext('2d');
+      if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+      spr = { cv, fx: f.footX, fy: f.footY };
+      r.sprites.set(key, spr);
+    }
+    return spr;
+  }
+
   /** Building `i` under construction, `p` of the way (12 cached steps). */
   private constructionSprite(i: number, S: number, p: number): { cv: HTMLCanvasElement; fx: number; fy: number } | null {
     const step = Math.min(11, Math.floor(p * 12));
@@ -3440,16 +3577,7 @@ export class IsoDioramaRenderer {
       // Outgoing buildings still standing (back to front), under the new ones.
       for (const r of this.retired) {
         if (r.until <= this.elapsed) continue;
-        let spr = r.sprites.get(S);
-        if (!spr) {
-          const f = paintBuilding(r.b, S, r.st);
-          const cv = document.createElement('canvas');
-          cv.width = f.width; cv.height = f.height;
-          const cg = cv.getContext('2d');
-          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
-          spr = { cv, fx: f.footX, fy: f.footY };
-          r.sprites.set(S, spr);
-        }
+        const spr = this.retiredSprite(r, S);
         const sx = this.wsx(r.b.x), sy = this.wsy(r.b.y - r.lift) + bob;
         pg.drawImage(spr.cv, Math.round(sx - spr.fx), Math.round(sy - spr.fy));
       }
