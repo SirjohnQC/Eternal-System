@@ -21,7 +21,40 @@ export function eraOf(civLevel: number): Era {
 export type BuildingKind =
   | 'hut' | 'house' | 'gable' | 'adobe' | 'row' | 'block' | 'tower' | 'dome' | 'spire'
   | 'ziggurat' | 'keep' | 'church' | 'mill'
-  | 'hive' | 'pod' | 'burrow' | 'grown' | 'carved';
+  | 'hive' | 'pod' | 'burrow' | 'grown' | 'carved'
+  // A town's trades and services (CIVIC_KINDS), by era:
+  | 'market' | 'granary' | 'temple' | 'workshop' | 'warehouse' | 'school'
+  | 'harbour' | 'factory' | 'station' | 'power' | 'airfield' | 'spaceport';
+
+/**
+ * The trades and services a town builds, the eras they stand in (inclusive)
+ * and how many towns get one: `capital` only the capital, `big` towns of
+ * size > 0.55 too, `any` every town. `tech`: built by every civilisation
+ * whatever its architecture (a hive people's power plant is still a power
+ * plant); the others only by box builders (a species' own shape family
+ * keeps its houses, temples and markets in its own forms).
+ */
+export const CIVIC_KINDS: Array<{ kind: BuildingKind; from: Era; to: Era; where: 'capital' | 'big' | 'any'; tech: boolean; w: number; h: number }> = [
+  { kind: 'market', from: 1, to: 6, where: 'any', tech: false, w: 2.6, h: 1.2 },
+  { kind: 'granary', from: 1, to: 4, where: 'any', tech: false, w: 2.2, h: 1.8 },
+  { kind: 'temple', from: 1, to: 3, where: 'big', tech: false, w: 2.6, h: 1.8 },
+  { kind: 'workshop', from: 2, to: 3, where: 'any', tech: false, w: 2.6, h: 1.6 },
+  { kind: 'warehouse', from: 2, to: 4, where: 'big', tech: false, w: 2.6, h: 1.6 },
+  { kind: 'school', from: 2, to: 4, where: 'big', tech: false, w: 2.6, h: 2 },
+  { kind: 'harbour', from: 1, to: 6, where: 'any', tech: true, w: 3, h: 1.4 },
+  { kind: 'factory', from: 3, to: 6, where: 'big', tech: true, w: 3, h: 2.4 },
+  { kind: 'station', from: 3, to: 4, where: 'big', tech: true, w: 3.4, h: 2 },
+  { kind: 'power', from: 4, to: 6, where: 'capital', tech: true, w: 3.4, h: 2.4 },
+];
+
+/**
+ * Flying begins: an airfield in the capital from the industrial era (3),
+ * in big towns too from the atomic era (4); a spaceport in the capital from
+ * the space age (5), in big towns too after (6).
+ */
+export function airfieldEra(kind: 'airfield' | 'spaceport', capital: boolean): Era {
+  return kind === 'airfield' ? (capital ? 3 : 4) : (capital ? 5 : 6);
+}
 
 export interface Building {
   /** Foot (front-centre of the footprint), face coordinates. */
@@ -46,6 +79,10 @@ export interface Building {
 /** A levelled building plot painted into the ground bake (terraforming). */
 export interface Pad {
   x0: number; y0: number; x1: number; y1: number;
+  /** A levelled plot (default), an airfield's runway, or a spaceport's launch apron. */
+  kind?: 'runway' | 'apron';
+  /** Its town's era (a grass strip, then asphalt, then lit concrete). */
+  era?: Era;
 }
 
 /**
@@ -328,6 +365,37 @@ export function planSettlements(input: PlanInput): SettlementPlan {
       plan.buildings.push(b);
       return true;
     }
+    /**
+     * A runway (or a launch apron) on dead-flat ground in a ring outside the
+     * town, clear of other towns and plots, with its terminal (or the pad's
+     * rocket) behind it, joined to the town by a lane.
+     */
+    function placeField(kind: 'airfield' | 'spaceport', C: () => number): void {
+      const L = sc * (kind === 'spaceport' ? 4 : era >= 5 ? 9 : era >= 4 ? 7.5 : 6), D = sc * (kind === 'spaceport' ? 3.4 : 1.4);
+      const a0 = C() * Math.PI * 2;
+      for (const rr of [1.5, 1.9, 2.4]) for (let k = 0; k < 12; k++) {
+        const ang = a0 + k / 12 * Math.PI * 2;
+        const cx = t.x + Math.cos(ang) * (t.r * rr + L * 0.3), cy = t.y + Math.sin(ang) * (t.r * rr + L * 0.3) * SQUASH;
+        const g = plotGround(inp, cx, cy, L / 1.6, D);
+        if (!g || g.pad > 0) continue;
+        const pad: Pad = { x0: cx - L / 2, x1: cx + L / 2, y0: cy - D * SQUASH, y1: cy, kind: kind === 'airfield' ? 'runway' : 'apron', era };
+        const clash = plan.towns.some((o, oi) => oi !== ti && Math.hypot((cx - o.x) / (o.r + L), (cy - o.y) / ((o.r + L) * SQUASH)) < 1)
+          || plan.pads.some(o => o.x0 < pad.x1 + sc && o.x1 > pad.x0 - sc && o.y0 < pad.y1 + sc && o.y1 > pad.y0 - sc)
+          || plan.buildings.some(b => b.x > pad.x0 - b.w && b.x < pad.x1 + b.w && b.y > pad.y0 - sc && b.y < pad.y1 + b.d * SQUASH + sc);
+        if (clash) continue;
+        const spec = kind === 'airfield' ? { w: 3.2, h: 1.8 } : { w: 3.4, h: 3 };
+        const b: Building = { x: kind === 'airfield' ? pad.x0 + sc * spec.w * 0.6 : cx, y: kind === 'airfield' ? pad.y0 - 0.2 : cy - D * SQUASH * 0.35,
+          w: sc * spec.w, d: sc * spec.w * 0.7, h: sc * spec.h, kind, seed: (C() * 0x7fffffff) | 0, town: ti };
+        const bg = plotGround(inp, b.x, b.y, b.w, b.d);
+        if (!bg || bg.pad > 0) continue;
+        if (inp.liftAt) { b.lift = bg.lift; b.pad = 0; }
+        plan.pads.push(pad);
+        plan.buildings.push(b);
+        const lane = isoLegs(inp, [[cx, cy + 0.3], [t.x, t.y]]);
+        if (groundRuns(inp, lane)) for (let i = 0; i + 1 < lane.length; i++) plan.roads.push({ ax: lane[i][0], ay: lane[i][1], bx: lane[i + 1][0], by: lane[i + 1][1], half: lineHalf * 0.8, street: true });
+        return;
+      }
+    }
     for (const [x, y] of cand) {
       const e = Math.hypot((x - t.x) / t.r, (y - t.y) / (t.r * SQUASH));
       if (e > (layout === 'scatter' ? 1.3 : layout === 'line' ? 1.6 : 1)) continue;
@@ -343,6 +411,49 @@ export function planSettlements(input: PlanInput): SettlementPlan {
       if (!streets && placed.some(([px, py]) => Math.abs(px - x) < lot * 0.7 && Math.abs(py - y) < lot * SQUASH * 0.7)) continue;
       const nb = makeBuilding(era, tin, R, sc, x, y, ti, false);
       if (settle(nb, lot * 0.4)) placed.push([nb.x, nb.y]);
+    }
+    // Trades and services: some lots become a market, a granary, a temple,
+    // a workshop… (CIVIC_KINDS), each where it belongs: the market and the
+    // temple at the centre, the granary towards the fields, the harbour on
+    // the shore, works and power at the edge.
+    {
+      const C = rng(Math.imul(Math.round(t.x * 4) + 31, 2654435761) ^ Math.imul(Math.round(t.y * 4) + 17, 40503) ^ inp.seed ^ 0xc1c1);
+      const family = !!tin.arch && tin.arch.shape !== 'box';
+      const ours = plan.buildings.filter(b => b.town === ti && b !== lm);
+      const taken = new Set<Building>();
+      const coastal = (b: Building) => {
+        for (let a = 0; a < 12; a++) {
+          const ang = a / 12 * Math.PI * 2, rr = 2.6 * sc;
+          const x = b.x + Math.cos(ang) * rr, y = b.y + Math.sin(ang) * rr * SQUASH;
+          if (!inp.isLand(x, y) && !inp.waterAt?.(x, y)) return true;
+        }
+        return false;
+      };
+      for (const c of CIVIC_KINDS) {
+        if (era < c.from || era > c.to || (family && !c.tech) || (inp.aquatic && !tin.arch && !c.tech)) continue;
+        if (c.where === 'capital' ? !t.capital : c.where === 'big' ? !(t.capital || t.size > 0.55) : false) continue;
+        if (c.kind === 'temple' && (lm?.kind === 'church' || lm?.kind === 'ziggurat')) continue;
+        // The best lot for it: by distance from the centre, near or far.
+        const near = c.kind === 'market' || c.kind === 'temple' || c.kind === 'school';
+        const pool = ours.filter(b => !taken.has(b) && (c.kind !== 'harbour' || coastal(b)));
+        if (!pool.length) continue;
+        const dc = (b: Building) => Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) + C() * lot * 0.5;
+        pool.sort((a, b) => near ? dc(a) - dc(b) : dc(b) - dc(a));
+        for (const b of pool.slice(0, 3)) {
+          const nb: Building = { ...b, kind: c.kind, w: sc * c.w * (tin.arch?.scale ?? 1), d: sc * c.w * 0.8, h: sc * c.h };
+          const g = plotGround(inp, nb.x, nb.y, nb.w, nb.d);
+          if (!g) continue;
+          if (inp.liftAt) { nb.lift = g.lift; nb.pad = g.pad; }
+          Object.assign(b, nb);
+          taken.add(b);
+          break;
+        }
+      }
+      // An airfield, then a spaceport, on flat open ground outside the town.
+      for (const kind of ['airfield', 'spaceport'] as const) {
+        if (era < airfieldEra(kind, t.capital) || (!t.capital && t.size <= 0.55)) continue;
+        placeField(kind, C);
+      }
     }
     // Lanes: every house reaches a street, along the iso axes, where the
     // ground between allows (no water, no cliff).
@@ -390,6 +501,7 @@ export function planSettlements(input: PlanInput): SettlementPlan {
       const fh = sc * SQUASH * (era === 0 ? 1.4 + R() : 2.2 + R() * 3) * (era >= 3 ? 1.3 : 1);
       const f = isoField(cx, cy, fw * 0.7, fh / SQUASH * 0.7, era === 0 ? 4 : pickCrop(R), R() < 0.5);
       if (overlaps(f) || inTown(cx, cy, 0.4 * sc)) continue;
+      if (plan.pads.some(o => o.kind && f.x0 < o.x1 + sc && f.x1 > o.x0 - sc && f.y0 < o.y1 + sc && f.y1 > o.y0 - sc)) continue;
       let ok = true;
       for (const [px, py] of fieldCorners(f)) {
         if (inp.fertileAt(px, py) < 0.15) { ok = false; break; }
@@ -844,6 +956,7 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   for (const n of c.p) {
     const p = plan.pads[n];
     if (x < p.x0 || x > p.x1 || y < p.y0 || y > p.y1) continue;
+    if (p.kind) return airGround(p, x, y, k, r, g, b);
     const era = plan.era;
     let [cr, cg, cb] = era <= 1 ? [150, 118, 82] : era <= 3 ? [168, 160, 146] : [150, 152, 156];
     cr = cr * 0.75 + r * 0.25; cg = cg * 0.75 + g * 0.25; cb = cb * 0.75 + b * 0.25;
@@ -877,6 +990,35 @@ export function groundAt(plan: SettlementPlan, x: number, y: number, k: number, 
   return -1;
 }
 
+/**
+ * A runway or a launch apron: a mown grass strip in the industrial era,
+ * asphalt with a dashed centre line and threshold bars in the atomic era,
+ * lit concrete after; an apron is concrete slabs with a blast ring.
+ */
+function airGround(p: Pad, x: number, y: number, k: number, r: number, g: number, b: number): number {
+  const era = p.era ?? 4;
+  const len = p.x1 - p.x0, u = (x - p.x0) / len, v = (y - p.y0) / Math.max(0.01, p.y1 - p.y0);
+  let cr: number, cg: number, cb: number;
+  if (p.kind === 'apron') {
+    [cr, cg, cb] = [184, 184, 180];
+    if (k >= 2 && ((Math.floor(x / 1.5) + Math.floor(y / 0.8)) & 1)) { cr -= 10; cg -= 10; cb -= 10; }
+    const du = (u - 0.5) * len, dv = (v - 0.5) * (p.y1 - p.y0) / SQUASH;
+    const rr = Math.hypot(du, dv);
+    if (rr < len * 0.22 && rr > len * 0.22 - Math.max(0.5, 1 / k)) { cr = 212; cg = 180; cb = 70; }
+    if (rr < len * 0.14) { cr *= 0.72; cg *= 0.7; cb *= 0.68; }               // scorched
+  } else if (era <= 3) {
+    [cr, cg, cb] = [r * 0.85 + 30, g * 0.85 + 36, b * 0.85 + 14];
+    if (k >= 2 && Math.floor(x / 1.2) & 1) { cr *= 0.92; cg *= 0.95; cb *= 0.92; }   // mown stripes
+  } else {
+    [cr, cg, cb] = era === 4 ? [72, 74, 78] : [118, 122, 128];
+    const mid = Math.abs(v - 0.5) < 0.12;
+    if (mid && u > 0.08 && u < 0.92 && Math.floor(u * len / 1.4) % 2 === 0) { cr = 232; cg = 232; cb = 220; }
+    if ((u < 0.05 || u > 0.95) && Math.floor(v * 6) % 2 === 0) { cr = 232; cg = 232; cb = 220; }
+    if (era >= 5 && k >= 2 && (v < 0.1 || v > 0.9) && Math.floor(u * len) % 3 === 0) { cr = 120; cg = 220; cb = 255; }
+  }
+  return ((cr | 0) << 16) | ((cg | 0) << 8) | (cb | 0);
+}
+
 /** Trees and rocks stay off towns, fields and roads. */
 export function keepClear(plan: SettlementPlan, x: number, y: number): boolean {
   for (const t of plan.towns) {
@@ -892,6 +1034,10 @@ export function keepClear(plan: SettlementPlan, x: number, y: number): boolean {
   for (const n of c.r) {
     const rd = plan.roads[n];
     if (segDist(rd, x, y)[0] < rd.half + 1.2) return true;
+  }
+  for (const n of c.p) {
+    const p = plan.pads[n];
+    if (x > p.x0 - 1 && x < p.x1 + 1 && y > p.y0 - 1 && y < p.y1 + 1) return true;
   }
   return false;
 }

@@ -1,0 +1,86 @@
+{
+ "name": "industry",
+ "frames": [
+  {
+   "i": 0,
+   "x": 0,
+   "y": 1,
+   "w": 48,
+   "h": 61,
+   "tag": "factory",
+   "label": "brick factory with smokestacks"
+  },
+  {
+   "i": 1,
+   "x": 50,
+   "y": 3,
+   "w": 64,
+   "h": 59,
+   "tag": "station",
+   "label": "railway station"
+  },
+  {
+   "i": 2,
+   "x": 116,
+   "y": 8,
+   "w": 53,
+   "h": 54,
+   "tag": "school",
+   "label": "brick school"
+  },
+  {
+   "i": 3,
+   "x": 171,
+   "y": 15,
+   "w": 57,
+   "h": 47,
+   "tag": "school",
+   "label": "brick school"
+  },
+  {
+   "i": 4,
+   "x": 230,
+   "y": 14,
+   "w": 62,
+   "h": 48,
+   "tag": "power",
+   "label": "coal power station with cooling tower"
+  },
+  {
+   "i": 5,
+   "x": 294,
+   "y": 1,
+   "w": 59,
+   "h": 61,
+   "tag": "harbour",
+   "label": "quay with crane and steamship"
+  },
+  {
+   "i": 6,
+   "x": 355,
+   "y": 1,
+   "w": 50,
+   "h": 61,
+   "tag": "granary",
+   "label": "grain silo"
+  },
+  {
+   "i": 7,
+   "x": 407,
+   "y": 0,
+   "w": 60,
+   "h": 62,
+   "tag": "granary",
+   "label": "grain elevator"
+  },
+  {
+   "i": 8,
+   "x": 469,
+   "y": 11,
+   "w": 61,
+   "h": 51,
+   "tag": "airfield",
+   "label": "grass airfield hangar and tower"
+  }
+ ]
+}

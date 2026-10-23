@@ -10,7 +10,7 @@
  *   node_modules/.bin/esbuild tools/settlementCheck.ts --bundle --platform=node \
  *     --format=esm --outfile="$TEMP/stc.mjs" --log-level=error && node "$TEMP/stc.mjs"
  */
-import { planSettlements, groundAt, keepClear, fieldUV, plotGround, SQUASH, MAX_PLOT_STEP, type PlanInput, type Field } from '../src/rendering/SettlementPlan';
+import { planSettlements, groundAt, keepClear, fieldUV, plotGround, airfieldEra, SQUASH, MAX_PLOT_STEP, CIVIC_KINDS, type PlanInput, type Field, type BuildingKind } from '../src/rendering/SettlementPlan';
 
 /** A diamond field's corners and centre (face coordinates). */
 const corners = (f: Field): Array<[number, number]> => {
@@ -94,7 +94,8 @@ for (const era of [0, 2, 4, 6]) {
 // Every building kind paints, at every scale.
 {
   let bad = 0;
-  const kinds = ['hut', 'house', 'gable', 'adobe', 'row', 'block', 'tower', 'dome', 'spire', 'ziggurat', 'keep', 'church', 'mill'] as const;
+  const kinds: BuildingKind[] = ['hut', 'house', 'gable', 'adobe', 'row', 'block', 'tower', 'dome', 'spire', 'ziggurat', 'keep', 'church', 'mill',
+    ...CIVIC_KINDS.map(c => c.kind), 'airfield', 'spaceport'];
   for (const kind of kinds) for (const S of [1, 2, 4, 8]) for (const era of [0, 2, 3, 5, 6] as const) {
     const f = paintBuilding({ x: 0, y: 0, w: 3.6, d: 3.2, h: 3, kind, seed: 7, town: 0 }, S, townStyle(era));
     let px = 0;
@@ -180,6 +181,37 @@ for (const era of [2, 4]) {
   const flat = paintBuilding(b, 3, townStyle(2)), raised = paintBuilding({ ...b, pad: 3, lift: 6 }, 3, townStyle(2));
   check('a pad adds a foundation under the foot', raised.height > flat.height && raised.footY === flat.footY
     && raised.data[((raised.footY + 4) * raised.width + raised.footX) * 4 + 3] > 0);
+}
+
+// Trades and services by era; flying from its era, on flat ground.
+{
+  const seen = new Map<BuildingKind, number[]>();
+  let wrongEra = 0, airBad = 0, fieldsOnRunway = 0;
+  for (const era of [0, 1, 2, 3, 4, 5, 6]) {
+    const p = planSettlements({ ...input(era), liftAt: (x: number) => (x > 280 ? 4 : 0) });
+    for (const b of p.buildings) {
+      const t = p.towns[b.town];
+      const c = CIVIC_KINDS.find(k => k.kind === b.kind);
+      if (c && (t.era < c.from || t.era > c.to)) wrongEra++;
+      if (b.kind === 'airfield' || b.kind === 'spaceport') {
+        if (t.era < airfieldEra(b.kind, t.capital) || (b.pad ?? 0) > 0) airBad++;
+        const want = b.kind === 'airfield' ? 'runway' : 'apron';
+        if (!p.pads.some(q => q.kind === want && Math.abs((q.x0 + q.x1) / 2 - b.x) < 30 && Math.abs(q.y0 - b.y) < 10)) airBad++;
+      }
+      if (c || b.kind === 'airfield' || b.kind === 'spaceport') seen.set(b.kind, [...(seen.get(b.kind) ?? []), era]);
+    }
+    for (const f of p.fields) for (const q of p.pads) if (q.kind && f.x0 < q.x1 && f.x1 > q.x0 && f.y0 < q.y1 && f.y1 > q.y0) fieldsOnRunway++;
+  }
+  check('trades and services stand only in their eras', wrongEra === 0, [...seen.keys()].join(' '));
+  check('every trade and service appears in some era', CIVIC_KINDS.every(c => c.kind === 'harbour' || seen.has(c.kind)), `${seen.size} kinds seen`);
+  check('airfields from the industrial era, spaceports from the space age, on flat ground with a runway', airBad === 0
+    && (seen.get('airfield') ?? [9])[0] === 3 && (seen.get('spaceport') ?? [9])[0] === 5, `airfield eras ${seen.get('airfield')}, spaceport ${seen.get('spaceport')}`);
+  check('no field is ploughed over a runway', fieldsOnRunway === 0);
+  // A harbour only on the shore: the lake fixture's shore.
+  const p = planSettlements({ ...input(3), sites: [{ x: 200, y: 108 }, ...sites] });
+  const harbours = p.buildings.filter(b => b.kind === 'harbour');
+  check('harbours stand on the shore', harbours.every(b => [...Array(12)].some((_, a) => !isLand(b.x + Math.cos(a / 12 * Math.PI * 2) * 2.6 * 1.8, b.y + Math.sin(a / 12 * Math.PI * 2) * 2.6 * 1.8 * SQUASH))),
+    `${harbours.length} harbours`);
 }
 
 // Construction fits the finished sprite, hand-made or forged (playtest:

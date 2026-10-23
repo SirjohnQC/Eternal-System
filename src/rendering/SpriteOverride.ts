@@ -239,6 +239,8 @@ export function buildingOverride(b: Building, S: number, era: number, tint?: Tin
   if (!sheets.size) return null;
   // Bigger than the old 1.35: a sprite town keeps fewer buildings, each clearer.
   const tw = Math.max(3, Math.round(b.w * S * 1.7));
+  const civic = civicOverride(b, era, Math.max(3, Math.round(b.w * S * 1.45)));
+  if (civic) return civic;
   // A species' own shape family: its sheet, the row for its age, its colour.
   // These are chunky monuments already wide in the plan: drawn nearer their
   // footprint (playtest Oct 20: at 1.7 they read as giant blobs).
@@ -266,6 +268,39 @@ export function buildingOverride(b: Building, S: number, era: number, tint?: Tin
   }
   if (era === 4 && b.kind !== 'tower' && b.kind !== 'spire' && b.kind !== 'dome') return composeBox(b, tw);
   return null;
+}
+
+/**
+ * A town's trades and services (SettlementPlan.CIVIC_KINDS) from the civic
+ * (ancient–medieval), industry (industrial–atomic) and future (space age on)
+ * sheets: the sheet by era, the frame by tag, picked by the building's seed.
+ */
+function civicOverride(b: Building, era: number, tw: number): OverrideSprite | null {
+  const by = (early: string | null, mid: string | null, late: string | null, tag: string, tag2 = tag): OverrideSprite | null => {
+    const sheet = era <= 2 ? early ?? mid : era <= 4 ? mid ?? early : late ?? mid;
+    if (!sheet) return null;
+    return pick(sheet, [sheet === 'future' ? tag2 : tag], b.seed, tw);
+  };
+  switch (b.kind) {
+    case 'market': return era <= 4 ? pick('civic', ['market'], b.seed, tw) : pick('future', ['market'], b.seed, tw);
+    case 'granary': return era <= 2 ? pick('civic', ['granary'], b.seed, tw) : pick('industry', ['granary'], b.seed, tw);
+    case 'temple': return pick('civic', ['temple'], b.seed, tw);
+    case 'workshop': return pick('civic', ['workshop'], b.seed, tw);
+    case 'warehouse': return pick('civic', ['warehouse'], b.seed, tw);
+    case 'school': return era <= 2 ? pick('civic', ['school'], b.seed, tw) : pick('industry', ['school'], b.seed, tw);
+    case 'harbour': return by('civic', 'industry', 'future', 'harbour');
+    case 'factory': return by(null, 'industry', 'future', 'factory');
+    case 'station': return pick('industry', ['station'], b.seed, tw);
+    case 'power': return by(null, 'industry', 'future', 'power');
+    case 'airfield': return era <= 4 ? pick('industry', ['airfield'], b.seed, tw) : pick('future', ['airfield', 'hangar'], b.seed, tw);
+    case 'spaceport': return pick('future', ['spaceport'], b.seed, tw);
+    default: return null;
+  }
+}
+
+/** A flying machine's side view (sheet `aircraft`, tag `kind`), about `tw` px wide; null without the sheet. */
+export function aircraftSprite(kind: string, tw: number): OverrideSprite | null {
+  return sheets.has('aircraft') ? pick('aircraft', [kind], 0, tw) : null;
 }
 
 // ── Modular box buildings: wall + roof + add-on (kit-* sheets) ──────────────

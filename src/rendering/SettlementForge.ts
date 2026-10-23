@@ -15,7 +15,7 @@
  * Pure: RGBA out, no DOM.
  */
 import { ramp, type Ramp, type RGB } from './CreatureForge';
-import { SQUASH, type Building, type Era } from './SettlementPlan';
+import { SQUASH, type Building, type BuildingKind, type Era } from './SettlementPlan';
 import type { ArchGenome } from './Architecture';
 import { buildingOverride, type Tint } from './SpriteOverride';
 
@@ -175,9 +175,22 @@ export function withFoundation(spr: BuildingSprite, padPx: number, S: number, st
   return { width: W, height: NH, data: out, footX: spr.footX, footY: spr.footY };
 }
 
+/**
+ * Without the hand-made sheets a trade or service is forged as the nearest
+ * box form: a works shed with its stack for factories and power, a tower
+ * for a silo or a launch gantry, and so on.
+ */
+const CIVIC_FORM: Partial<Record<BuildingKind, (era: Era) => BuildingKind>> = {
+  market: () => 'gable', granary: e => (e <= 2 ? 'hut' : 'tower'), temple: () => 'ziggurat', workshop: () => 'row',
+  warehouse: () => 'gable', school: () => 'house', harbour: () => 'block', factory: () => 'mill', station: () => 'row',
+  power: () => 'mill', airfield: () => 'block', spaceport: () => 'spire',
+};
+
 function paintBody(b: Building, S: number, st: TownStyle): BuildingSprite {
   const sheet = buildingOverride(b, S, st.era, st.tint);
   if (sheet) return sheet;
+  const form = CIVIC_FORM[b.kind];
+  if (form) return paintBody({ ...b, kind: form(st.era) }, S, st);
   const W = Math.max(1, Math.round(b.w * S));
   const D = Math.max(1, Math.round(b.d * S * SQUASH));
   const H = Math.max(1, Math.round(b.h * S));

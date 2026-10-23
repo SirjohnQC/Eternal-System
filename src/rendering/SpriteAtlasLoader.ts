@@ -5,7 +5,7 @@
  */
 import { registerSheet, type SheetFrame } from './SpriteOverride';
 
-const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons', 'islets', 'hangings', 'skirt-earth', 'skirt-water',
+const SHEETS = ['huts', 'medieval', 'trees', 'hive', 'dome', 'pod', 'spire', 'burrow', 'grown', 'carved', 'kit-walls', 'kit-roofs', 'kit-addons', 'islets', 'hangings', 'civic', 'industry', 'future', 'aircraft', 'skirt-earth', 'skirt-water',
   ...['humanoid', 'simian', 'reptilian', 'avian', 'insectoid', 'cephaloid', 'mycoid', 'crystalline'].map(f => `people-${f}`)];
 
 /** The player's choice (Settings > ART), remembered between sessions. */
