@@ -19,6 +19,7 @@ const corners = (f: Field): Array<[number, number]> => {
 };
 import { paintBuilding, paintConstruction, townStyle } from '../src/rendering/SettlementForge';
 import { registerSheet } from '../src/rendering/SpriteOverride';
+import { portsOf, flightsAt, fleetOf, DEPART_EVERY } from '../src/rendering/AirTraffic';
 
 let fails = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -194,7 +195,7 @@ for (const era of [2, 4]) {
       const c = CIVIC_KINDS.find(k => k.kind === b.kind);
       if (c && (t.era < c.from || t.era > c.to)) wrongEra++;
       if (b.kind === 'airfield' || b.kind === 'spaceport') {
-        if (t.era < airfieldEra(b.kind, t.capital) || (b.pad ?? 0) > 0) airBad++;
+        if (t.era < airfieldEra(b.kind, t.capital)) airBad++;
         const want = b.kind === 'airfield' ? 'runway' : 'apron';
         if (!p.pads.some(q => q.kind === want && Math.abs((q.x0 + q.x1) / 2 - b.x) < 30 && Math.abs(q.y0 - b.y) < 10)) airBad++;
       }
@@ -212,6 +213,34 @@ for (const era of [2, 4]) {
   const harbours = p.buildings.filter(b => b.kind === 'harbour');
   check('harbours stand on the shore', harbours.every(b => [...Array(12)].some((_, a) => !isLand(b.x + Math.cos(a / 12 * Math.PI * 2) * 2.6 * 1.8, b.y + Math.sin(a / 12 * Math.PI * 2) * 2.6 * 1.8 * SQUASH))),
     `${harbours.length} harbours`);
+}
+
+// Flying traffic: only from the plan's ports, the right machines for the
+// era, a bounded count, on the ground only on a runway or by the terminal.
+{
+  const disc = { cx: 200, cy: 120, rx: 150, ry: 70 };
+  let early = 0, wrongFleet = 0, offRunway = 0, most = 0, total = 0, deterministic = true;
+  for (const era of [2, 3, 4, 5, 6]) {
+    const p = planSettlements(input(era));
+    const ports = portsOf(p, b => b.lift ?? 0);
+    if (era < 3 && ports.length) early++;
+    for (let t = 0; t < 120; t += 0.7) {
+      const fl = flightsAt(ports, t, disc);
+      total += fl.length;
+      most = Math.max(most, fl.length / Math.max(1, ports.length));
+      for (const f of fl) {
+        const home = ports.find(q => fleetOf(q.kind, q.era).includes(f.kind));
+        if (!home) wrongFleet++;
+        if (f.alt === 0 && f.kind !== 'shuttle' && !ports.some(q => (f.x >= q.x0 - 0.5 && f.x <= q.x1 + 0.5 && Math.abs(f.y - q.y) < 1) || Math.hypot(f.x - q.bx, f.y - q.by) < 2)) offRunway++;
+      }
+      if (t < 5 && JSON.stringify(fl) !== JSON.stringify(flightsAt(ports, t, disc))) deterministic = false;
+    }
+  }
+  check('no airfield before the industrial era', early === 0);
+  check('the machines fit the era (no jets with biplanes)', wrongFleet === 0 && !fleetOf('airfield', 3).includes('jet') && !fleetOf('airfield', 6).includes('biplane'));
+  check('aircraft touch the ground only on a runway or at their terminal', offRunway === 0, `${offRunway} off`);
+  check('air traffic is bounded per port and present', total > 0 && most <= Math.ceil(16 * 1.7 * 1.7 / (DEPART_EVERY * 0.8)) + 1, `${total} flight-samples, at most ${most.toFixed(1)} per port`);
+  check('air traffic is a pure function of time', deterministic);
 }
 
 // Construction fits the finished sprite, hand-made or forged (playtest:

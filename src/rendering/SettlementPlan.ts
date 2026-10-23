@@ -371,10 +371,11 @@ export function planSettlements(input: PlanInput): SettlementPlan {
      * rocket) behind it, joined to the town by a lane.
      */
     function placeField(kind: 'airfield' | 'spaceport', C: () => number): void {
-      const L = sc * (kind === 'spaceport' ? 4 : era >= 5 ? 9 : era >= 4 ? 7.5 : 6), D = sc * (kind === 'spaceport' ? 3.4 : 1.4);
+      const L0 = sc * (kind === 'spaceport' ? 4 : era >= 5 ? 8 : era >= 4 ? 7 : 6), D = sc * (kind === 'spaceport' ? 3.4 : 1.4);
       const a0 = C() * Math.PI * 2;
-      for (const rr of [1.5, 1.9, 2.4]) for (let k = 0; k < 12; k++) {
-        const ang = a0 + k / 12 * Math.PI * 2;
+      // Full length first, then a shorter strip: flat ground is scarce on terraced worlds.
+      for (const L of [L0, L0 * 0.75]) for (const rr of [1.3, 1.6, 2, 2.5, 3.1]) for (let k = 0; k < 16; k++) {
+        const ang = a0 + k / 16 * Math.PI * 2;
         const cx = t.x + Math.cos(ang) * (t.r * rr + L * 0.3), cy = t.y + Math.sin(ang) * (t.r * rr + L * 0.3) * SQUASH;
         const g = plotGround(inp, cx, cy, L / 1.6, D);
         if (!g || g.pad > 0) continue;
@@ -387,8 +388,8 @@ export function planSettlements(input: PlanInput): SettlementPlan {
         const b: Building = { x: kind === 'airfield' ? pad.x0 + sc * spec.w * 0.6 : cx, y: kind === 'airfield' ? pad.y0 - 0.2 : cy - D * SQUASH * 0.35,
           w: sc * spec.w, d: sc * spec.w * 0.7, h: sc * spec.h, kind, seed: (C() * 0x7fffffff) | 0, town: ti };
         const bg = plotGround(inp, b.x, b.y, b.w, b.d);
-        if (!bg || bg.pad > 0) continue;
-        if (inp.liftAt) { b.lift = bg.lift; b.pad = 0; }
+        if (!bg) continue;
+        if (inp.liftAt) { b.lift = bg.lift; b.pad = bg.pad; }
         plan.pads.push(pad);
         plan.buildings.push(b);
         const lane = isoLegs(inp, [[cx, cy + 0.3], [t.x, t.y]]);

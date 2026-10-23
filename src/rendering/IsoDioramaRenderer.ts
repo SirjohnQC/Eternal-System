@@ -40,7 +40,8 @@ import { dioramaCreatureSprite, bakeSettlementSprite, bakeCreatureFrames, CREATU
 import { planSettlements, emptyPlan, groundAt as townGroundAt, keepClear, eraOf, SQUASH, type SettlementPlan, type Site } from './SettlementPlan';
 import { paintBuilding, paintConstruction, townStyle, type TownStyle } from './SettlementForge';
 import { peopleOf } from '../simulation/People';
-import { spriteOverridesActive } from './SpriteOverride';
+import { spriteOverridesActive, aircraftSprite } from './SpriteOverride';
+import { portsOf, flightsAt, type AircraftKind, type Flight, type Port } from './AirTraffic';
 import { archGenome, nationArch, type ArchGenome } from './Architecture';
 import { paintMoon, type MoonKindArt } from './MoonArt';
 import { MeteorStrike, type StrikeView } from './MeteorStrike';
@@ -3011,6 +3012,9 @@ export class IsoDioramaRenderer {
         g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
       } });
     }
+    // Flying machines from the airfields and spaceports, over everything.
+    const ports = portsOf(this.townPlan, (b, i) => this.townLift[i] ?? b.lift ?? 0);
+    if (ports.length) list.push({ wy: Number.MAX_SAFE_INTEGER, draw: (g, v) => this.drawAir(g, v, ports) });
     // Land animals join the same back-to-front pass, so a tree in front of
     // one hides it (they were drawn over every tree).
     if (this.habitable) {
@@ -3385,6 +3389,96 @@ export class IsoDioramaRenderer {
         paintFlag(g, flag, bx + S, by - pole, 10, 6, S, this.elapsed * 4 + phase, S);
       } });
     });
+  }
+
+  /**
+   * The air traffic (AirTraffic.flightsAt) at this moment: each machine at
+   * its height over its ground, a soft shadow under it, a shuttle's flame
+   * and smoke trail. A few draws per port per frame.
+   */
+  private drawAir(g: CanvasRenderingContext2D, v: import('./FloraLayer').FloraView, ports: Port[]): void {
+    const geom = this.placeGeom;
+    const S = Math.max(1, Math.round(v.K));
+    const at = (x: number, y: number) => [(x - v.fx) * v.K + v.W / 2, (y - v.fy) * v.K + v.H / 2 + v.bob] as const;
+    const a0 = g.globalAlpha;
+    for (const f of flightsAt(ports, this.elapsed, geom)) {
+      const [X, Y] = at(f.x, f.y - f.ground - f.alt);
+      if (X < -40 || X > v.W + 40 || Y < -40 || Y > v.H + 40) continue;
+      const spr = this.aircraftCanvas(f.kind, S, f.left);
+      if (f.alt > 0.5 && f.kind !== 'shuttle') {
+        // The shadow on the ground below, fainter the higher it flies.
+        const [SX, SY] = at(f.x, f.y - f.ground);
+        g.globalAlpha = a0 * f.alpha * Math.max(0.12, 0.35 - f.alt * 0.012);
+        g.fillStyle = '#10140c';
+        g.fillRect(Math.round(SX - spr.width * 0.35), Math.round(SY), Math.max(1, Math.round(spr.width * 0.7)), Math.max(1, S));
+      }
+      if (f.kind === 'shuttle' && f.alt > 0) this.drawExhaust(g, at, f, S);
+      g.globalAlpha = a0 * f.alpha;
+      g.drawImage(spr, Math.round(X - spr.width / 2), Math.round(Y - spr.height + (f.alt > 0 ? spr.height / 2 : 0)));
+    }
+    g.globalAlpha = a0;
+  }
+
+  /** A launching shuttle's flame and the smoke column it leaves standing. */
+  private drawExhaust(g: CanvasRenderingContext2D, at: (x: number, y: number) => readonly [number, number], f: Flight, S: number): void {
+    const [X, Y] = at(f.x, f.y - f.ground - f.alt);
+    const [, Y0] = at(f.x, f.y - f.ground);
+    const a0 = g.globalAlpha;
+    for (let y = Y + S; y < Y0; y += 2 * S) {
+      const k = (y - Y) / Math.max(1, Y0 - Y);
+      const wob = Math.round(Math.sin(y * 0.3 + this.elapsed * 3) * S * (0.5 + k * 2));
+      g.globalAlpha = a0 * (0.55 - 0.35 * k);
+      g.fillStyle = k < 0.08 ? '#ffd27a' : '#d8d4cc';
+      const w = Math.max(1, Math.round(S * (1 + k * 3)));
+      g.fillRect(Math.round(X - w / 2) + wob, Math.round(y), w, 2 * S);
+    }
+    g.globalAlpha = a0;
+    g.fillStyle = '#ff9a3c';
+    g.fillRect(Math.round(X - S / 2), Math.round(Y), Math.max(1, S), Math.max(2, 2 * S));
+  }
+
+  private airSprites = new Map<string, HTMLCanvasElement>();
+
+  /**
+   * A machine's sprite at scale S, facing left or right (cached). The sheet
+   * draws them in side view facing right; a shuttle stands nose up. Without
+   * the sheet a few pixels stand in: a body, wings and a tail.
+   */
+  private aircraftCanvas(kind: AircraftKind, S: number, left: boolean): HTMLCanvasElement {
+    const key = `${kind}|${S}|${left ? 1 : 0}`;
+    const hit = this.airSprites.get(key);
+    if (hit) return hit;
+    const W_WORLD: Record<AircraftKind, number> = { biplane: 4, airship: 7, prop: 5, jet: 5.5, heli: 4, shuttle: 4.5, drone: 2.6, hover: 5 };
+    const tw = Math.max(4, Math.round(W_WORLD[kind] * S));
+    const spr = aircraftSprite(kind, tw);
+    const cv = document.createElement('canvas');
+    const cg = cv.getContext('2d');
+    if (spr && cg) {
+      const src = document.createElement('canvas');
+      src.width = spr.width; src.height = spr.height;
+      const sg = src.getContext('2d');
+      if (sg) { const img = sg.createImageData(spr.width, spr.height); img.data.set(spr.data); sg.putImageData(img, 0, 0); }
+      if (kind === 'shuttle') {
+        cv.width = spr.height; cv.height = spr.width;
+        cg.translate(0, spr.width); cg.rotate(-Math.PI / 2); cg.drawImage(src, 0, 0);
+      } else {
+        cv.width = spr.width; cv.height = spr.height;
+        if (left) { cg.translate(spr.width, 0); cg.scale(-1, 1); }
+        cg.drawImage(src, 0, 0);
+      }
+    } else if (cg) {
+      // Procedural stand-in: fuselage, wing, tail fin.
+      const w = tw, h = Math.max(3, Math.round(tw * 0.5));
+      cv.width = w; cv.height = h;
+      const body = kind === 'airship' ? '#c8ccd4' : kind === 'biplane' ? '#b8402e' : '#e8eaee';
+      cg.fillStyle = body;
+      cg.fillRect(0, Math.floor(h / 2), w, Math.max(1, Math.round(h / 3)));
+      cg.fillStyle = '#5a5e66';
+      cg.fillRect(Math.floor(w * 0.35), Math.floor(h / 2) - 1, Math.max(1, Math.round(w * 0.25)), Math.max(1, Math.round(h / 4)) + 2);
+      cg.fillRect(left ? w - Math.max(1, Math.round(w * 0.15)) : 0, 0, Math.max(1, Math.round(w * 0.15)), Math.floor(h / 2));
+    }
+    this.airSprites.set(key, cv);
+    return cv;
   }
 
   /**
