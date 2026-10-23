@@ -17,7 +17,8 @@ const corners = (f: Field): Array<[number, number]> => {
   const pt = (u: number, v: number): [number, number] => [f.cx + (u - v) / Math.SQRT2, f.cy + (u + v) / Math.SQRT2 * SQUASH];
   return [pt(f.hu, 0), pt(-f.hu, 0), pt(0, f.hv), pt(0, -f.hv), [f.cx, f.cy]];
 };
-import { paintBuilding, townStyle } from '../src/rendering/SettlementForge';
+import { paintBuilding, paintConstruction, townStyle } from '../src/rendering/SettlementForge';
+import { registerSheet } from '../src/rendering/SpriteOverride';
 
 let fails = 0;
 const check = (name: string, ok: boolean, detail = '') => {
@@ -179,6 +180,43 @@ for (const era of [2, 4]) {
   const flat = paintBuilding(b, 3, townStyle(2)), raised = paintBuilding({ ...b, pad: 3, lift: 6 }, 3, townStyle(2));
   check('a pad adds a foundation under the foot', raised.height > flat.height && raised.footY === flat.footY
     && raised.data[((raised.footY + 4) * raised.width + raised.footX) * 4 + 3] > 0);
+}
+
+// Construction fits the finished sprite, hand-made or forged (playtest:
+// "building animation no longer make sense with the sprite").
+{
+  const run = (label: string) => {
+    let bad = 0;
+    for (const kind of ['house', 'church', 'tower'] as const) for (const era of [2, 3, 5] as const) for (const pad of [0, 3]) {
+      const b = { x: 0, y: 0, w: 3.6, d: 3, h: 3, kind, seed: 5, town: 0, pad };
+      const st = townStyle(era), done = paintBuilding(b, 3, st);
+      // The finished building's columns above the foot.
+      let x0 = done.width, x1 = -1;
+      for (let y = 0; y <= done.footY; y++) for (let x = 0; x < done.width; x++) if (done.data[(y * done.width + x) * 4 + 3]) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); }
+      let prevUp = -1;
+      for (let k = 0; k < 12; k++) {
+        const c = paintConstruction(b, 3, st, (k + 0.5) / 12);
+        if (c.footX !== done.footX || c.footY !== done.footY) bad++;
+        // Building pixels (exact colours of the finished sprite) only grow.
+        let up = 0;
+        for (let y = 0; y <= done.footY; y++) for (let x = 0; x < done.width; x++) {
+          const i = (y * done.width + x) * 4, j = (y * c.width + x) * 4;
+          if (done.data[i + 3] && c.data[j + 3] && c.data[j] === done.data[i] && c.data[j + 1] === done.data[i + 1]) up++;
+        }
+        if (up < prevUp - 2) bad++;
+        prevUp = up;
+        // Nothing of the site strays more than a crane's reach from the building.
+        for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) if (c.data[(y * c.width + x) * 4 + 3] && (x < x0 - 2 || x > x1 + 2 + 3 * 2 + 2)) { bad++; y = c.height; break; }
+      }
+    }
+    check(`construction fits the finished building (${label})`, bad === 0, `${bad} bad`);
+  };
+  run('forged');
+  // A hand-made sheet: a tall narrow chapel unlike the forged box.
+  const W = 14, H = 40, data = new Uint8ClampedArray(W * H * 4);
+  for (let i = 0; i < W * H; i++) { data[i * 4] = 150 + (i % 7); data[i * 4 + 1] = 120; data[i * 4 + 2] = 90; data[i * 4 + 3] = 255; }
+  registerSheet('medieval', { width: W, height: H, data, frames: [{ x: 0, y: 0, w: W, h: H, tag: 'chapel' }, { x: 0, y: 0, w: W, h: H, tag: 'tower' }] });
+  run('sprite');
 }
 
 console.log(fails ? `\n  ${fails} FAILED` : '\n  all ok');

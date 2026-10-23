@@ -432,6 +432,8 @@ interface Ember   { x: number; y: number; vy: number; life: number; maxLife: num
 
 /** Seconds one building takes to go up, and the spread of a town's start times. */
 const BUILD_SECONDS = 24;
+/** An outgoing building comes down over its last few seconds. */
+const DEMOLISH_SECONDS = 6;
 const BUILD_SPREAD = 30;
 
 /** Repaint rate of the sky layer (sun shimmer, glow); frames between reuse it. */
@@ -2929,7 +2931,7 @@ export class IsoDioramaRenderer {
         const t = oldPlan.towns[b.town], st = oldStyles[b.town];
         if (!st) return;
         const d = Math.hypot(b.x - t.x, (b.y - t.y) / SQUASH) / Math.max(1, t.r);
-        this.retired.push({ b, lift: oldLift[i] ?? 0, st, until: this.elapsed + d * BUILD_SPREAD + 2, sprites: new Map() });
+        this.retired.push({ b, lift: oldLift[i] ?? 0, st, until: this.elapsed + d * BUILD_SPREAD + DEMOLISH_SECONDS, sprites: new Map() });
       });
     }
     // One style per town: its own era, its nation's architecture.
@@ -3004,17 +3006,7 @@ export class IsoDioramaRenderer {
       const wy = r.b.y - r.lift;
       list.push({ wy, draw: (g, v) => {
         if (r.until <= this.elapsed) return;
-        const S = Math.max(1, Math.round(v.K));
-        let spr = r.sprites.get(S);
-        if (!spr) {
-          const f = paintBuilding(r.b, S, r.st);
-          const cv = document.createElement('canvas');
-          cv.width = f.width; cv.height = f.height;
-          const cg = cv.getContext('2d');
-          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
-          spr = { cv, fx: f.footX, fy: f.footY };
-          r.sprites.set(S, spr);
-        }
+        const spr = this.retiredSprite(r, Math.max(1, Math.round(v.K)));
         const [X, Y] = at(v, r.b.x, wy);
         g.drawImage(spr.cv, Math.round(X - spr.fx), Math.round(Y - spr.fy));
       } });
@@ -3395,6 +3387,28 @@ export class IsoDioramaRenderer {
     });
   }
 
+  /**
+   * An outgoing building at camera scale S: standing, then taken down over
+   * its last DEMOLISH_SECONDS (the construction steps run backwards: walls
+   * down inside scaffolding, the plot cleared). Cached per scale and step.
+   */
+  private retiredSprite(r: IsoDioramaRenderer['retired'][number], S: number): { cv: HTMLCanvasElement; fx: number; fy: number } {
+    const left = (r.until - this.elapsed) / DEMOLISH_SECONDS;
+    const step = left >= 1 ? 12 : Math.max(0, Math.min(11, Math.floor(left * 12)));
+    const key = S * 16 + step;
+    let spr = r.sprites.get(key);
+    if (!spr) {
+      const f = step === 12 ? paintBuilding(r.b, S, r.st) : paintConstruction(r.b, S, r.st, (step + 0.5) / 12);
+      const cv = document.createElement('canvas');
+      cv.width = f.width; cv.height = f.height;
+      const cg = cv.getContext('2d');
+      if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
+      spr = { cv, fx: f.footX, fy: f.footY };
+      r.sprites.set(key, spr);
+    }
+    return spr;
+  }
+
   /** Building `i` under construction, `p` of the way (12 cached steps). */
   private constructionSprite(i: number, S: number, p: number): { cv: HTMLCanvasElement; fx: number; fy: number } | null {
     const step = Math.min(11, Math.floor(p * 12));
@@ -3469,16 +3483,7 @@ export class IsoDioramaRenderer {
       // Outgoing buildings still standing (back to front), under the new ones.
       for (const r of this.retired) {
         if (r.until <= this.elapsed) continue;
-        let spr = r.sprites.get(S);
-        if (!spr) {
-          const f = paintBuilding(r.b, S, r.st);
-          const cv = document.createElement('canvas');
-          cv.width = f.width; cv.height = f.height;
-          const cg = cv.getContext('2d');
-          if (cg) { const img = cg.createImageData(f.width, f.height); img.data.set(f.data); cg.putImageData(img, 0, 0); }
-          spr = { cv, fx: f.footX, fy: f.footY };
-          r.sprites.set(S, spr);
-        }
+        const spr = this.retiredSprite(r, S);
         const sx = this.wsx(r.b.x), sy = this.wsy(r.b.y - r.lift) + bob;
         pg.drawImage(spr.cv, Math.round(sx - spr.fx), Math.round(sy - spr.fy));
       }

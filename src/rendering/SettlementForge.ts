@@ -146,7 +146,8 @@ export function withFoundation(spr: BuildingSprite, padPx: number, S: number, st
   const out = new Uint8ClampedArray(W * NH * 4);
   out.set(spr.data.subarray(0, W * H * 4));
   const era = st.era;
-  const base: RGB = era <= 1 ? [128, 106, 82] : era <= 3 ? [158, 150, 136] : [168, 170, 172];
+  // Earthy, darker than the buildings, so the wall reads as ground work.
+  const base: RGB = era <= 1 ? [112, 92, 70] : era <= 3 ? [126, 116, 102] : [138, 138, 136];
   const shade = (c: RGB, k: number): RGB => [Math.min(255, c[0] * k), Math.min(255, c[1] * k), Math.min(255, c[2] * k)];
   const put = (x: number, y: number, c: RGB) => {
     if (x < 0 || y < 0 || x >= W || y >= NH) return;
@@ -539,74 +540,110 @@ function paintBody(b: Building, S: number, st: TownStyle): BuildingSprite {
 }
 
 /**
- * A building under construction, `p` 0..1 of the way: a staked foundation,
- * a timber frame rising (a crane beside it from the industrial era), then
- * walls going up course by course inside scaffolding, roof last. Same canvas
- * and foot as the finished `paintBuilding`, so the site sits where the
- * building will stand.
+ * A building under construction, `p` 0..1 of the way, made from the finished
+ * sprite (hand-made or forged) so it fits whatever stands there at the end:
+ *
+ *   0.00–0.15  the plot staked out and cleared (the foundation, if any, laid);
+ *   0.15–0.35  a scaffold frame rising to the building's height;
+ *   0.35–0.95  the building itself wiped in bottom-up inside the scaffold,
+ *              its newest courses pale, dust kicked up at its foot;
+ *   0.95–1.00  the scaffold struck, the last dust settling.
+ *
+ * Industrial and later sites get a crane beside them. Same foot as the
+ * finished sprite (the canvas only widens to the right for the crane), so
+ * the site sits where the building will stand. 12 steps are cached by the
+ * renderer: nothing here runs per frame.
  */
 export function paintConstruction(b: Building, S: number, st: TownStyle, p: number): BuildingSprite {
   const done = paintBuilding(b, S, st);
-  const W = Math.max(1, Math.round(b.w * S));
-  const D = Math.max(1, Math.round(b.d * S * SQUASH));
-  const H = Math.max(1, Math.round(b.h * S));
-  const cw = done.width, ch = done.height;
-  const P = new Px(cw, ch);
-  const ox = 3, base = done.footY + 1;
-  const wood = st.trim, dirt: RGB = [122, 96, 66], dirtDark: RGB = [92, 70, 48];
-  const pole = (x: number, top: number, c: RGB) => { for (let y = top; y < base; y++) P.set(x, y, c); };
-
-  // Foundation: the cleared, levelled plot (always under everything).
-  for (let y = base - D; y < base; y++) for (let x = ox; x < ox + W; x++) {
-    const edge = y === base - D || x === ox || x === ox + W - 1;
-    P.set(x, y, edge ? dirtDark : dirt);
+  const W0 = done.width, H = done.height, base = done.footY;
+  // The building's extent above its foot.
+  let x0 = W0, x1 = -1, top = base;
+  for (let y = 0; y <= base; y++) for (let x = 0; x < W0; x++) {
+    if (!done.data[(y * W0 + x) * 4 + 3]) continue;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < top) top = y;
   }
-  if (p < 0.25) {
-    // Stakes at the corners, string between them.
-    const t = Math.max(1, Math.round(S * 0.5));
-    for (const x of [ox, ox + W - 1]) for (const y0 of [base - D, base - 1]) for (let y = y0 - t; y <= y0; y++) P.set(x, y, wood.lv[1]);
-  } else if (p < 0.6) {
-    // Timber frame rising.
-    const f = (p - 0.25) / 0.35, top = base - Math.max(1, Math.round(H * f));
-    const step = Math.max(2, Math.round(S * 1.1));
-    for (let x = ox; x < ox + W; x += step) pole(x, top, wood.lv[2]);
-    pole(ox + W - 1, top, wood.lv[3]);
-    for (let x = ox; x < ox + W; x++) P.set(x, top, wood.lv[3]);
-    // Back posts peeking above the front frame.
-    for (let x = ox; x < ox + W; x += step * 2) for (let y = top - D; y < top; y++) P.set(x, y, wood.lv[1]);
-    if (S >= 3) {
-      // A diagonal brace across the front.
-      const n = Math.min(W, base - top);
-      for (let i = 0; i < n; i++) P.set(ox + i, base - 1 - i, wood.lv[1]);
+  if (x1 < x0) return done;
+  const crane = st.era >= 3 && S >= 2;
+  const extra = crane ? 2 + S * 2 : 1;
+  const W = W0 + extra;
+  const out = new Uint8ClampedArray(W * H * 4);
+  const put = (x: number, y: number, c: RGB) => {
+    if (x < 0 || y < 0 || x >= W || y >= H) return;
+    const o = (y * W + x) * 4;
+    out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; out[o + 3] = 255;
+  };
+  const copyRow = (y: number, fresh: number) => {
+    for (let x = 0; x < W0; x++) {
+      const si = (y * W0 + x) * 4;
+      if (!done.data[si + 3]) continue;
+      // Fresh courses read pale (wet mortar, new timber) for a moment.
+      put(x, y, [done.data[si] + (255 - done.data[si]) * fresh, done.data[si + 1] + (255 - done.data[si + 1]) * fresh, done.data[si + 2] + (255 - done.data[si + 2]) * fresh]);
     }
+  };
+  // Below the foot: the foundation goes in first, whole.
+  for (let y = base + 1; y < H; y++) copyRow(y, 0);
+  const steel = st.era >= 4;
+  const pole: RGB = steel ? [150, 156, 164] : st.trim.lv[2], ledger: RGB = steel ? [190, 196, 204] : st.trim.lv[3];
+  const dirt: RGB = [122, 96, 66], dirtDark: RGB = [92, 70, 48];
+  const h = base - top + 1, span = x1 - x0 + 1;
+  const hsh = (k: number) => hash(b.seed, k, Math.floor(p * 12));
+
+  // The cleared plot: a band of turned earth along the base.
+  if (p < 0.95) {
+    const band = Math.max(1, Math.round(S * 0.5));
+    for (let y = base - band + 1; y <= base; y++) for (let x = x0; x <= x1; x++) put(x, y, y === base - band + 1 ? dirt : dirtDark);
+  }
+  if (p < 0.15) {
+    // Stakes at the corners, a string between them.
+    const t = Math.max(1, Math.round(S * 0.7));
+    for (const x of [x0, x1]) for (let y = base - t - 1; y <= base; y++) put(x, y, pole);
+    if (S >= 3) for (let x = x0; x <= x1; x += 2) put(x, base - t, ledger);
   } else {
-    // Walls rising inside scaffolding; the roof goes on last.
-    const f = (p - 0.6) / 0.4;
-    const built = f >= 0.92 ? ch : Math.max(1, Math.round(H * Math.min(1, f / 0.92)));
-    const cut = Math.max(0, base - built);
-    for (let y = cut; y < ch; y++) for (let x = 0; x < cw; x++) {
-      const o = (y * cw + x) * 4;
-      if (done.data[o + 3]) P.set(x, y, [done.data[o], done.data[o + 1], done.data[o + 2]]);
+    // How high the scaffold stands, and how much of the building is up.
+    const frameF = p < 0.35 ? (p - 0.15) / 0.2 : 1;
+    const wallF = p < 0.35 ? 0 : Math.min(1, (p - 0.35) / 0.6);
+    const cut = base - Math.round(h * wallF);
+    if (wallF > 0) for (let y = Math.max(top, cut); y <= base; y++) {
+      const age = (y - cut) / Math.max(1, S * 1.5);
+      copyRow(y, wallF < 1 && age < 1 ? 0.2 * (1 - age) : 0);
     }
-    if (f < 0.98) {
-      const top = base - H - 1;
-      pole(ox - 1, top, wood.lv[1]);
-      pole(ox + W, top, wood.lv[2]);
-      for (let y = base - Math.max(2, S); y > top; y -= Math.max(2, S)) {
-        P.set(ox - 1, y, wood.lv[3]); P.set(ox + W, y, wood.lv[3]);
-        if (y < cut) for (let x = ox; x < ox + W; x++) if (((x + y) & 3) === 0) P.set(x, y, wood.lv[2]);
+    if (p < 0.95) {
+      const sTop = base - Math.round((h + 1) * frameF);
+      const step = Math.max(3, S * 3);
+      const xs: number[] = [];
+      for (let x = x0 - 1; x < x1 + 1; x += step) xs.push(x);
+      xs.push(x1 + 1);
+      for (const x of xs) for (let y = sTop; y <= base; y++) {
+        // Poles stand in front of the walls only at the sides and every few px.
+        if (y >= cut && x > x0 && x < x1 && (x - x0) % (step * 2)) continue;
+        put(x, y, pole);
+      }
+      for (let y = base - Math.max(2, S * 2); y >= sTop; y -= Math.max(2, S * 2)) {
+        for (let x = x0 - 1; x <= x1 + 1; x++) if (y < cut || x === x0 - 1 || x === x1 + 1 || (x & 1)) put(x, y, ledger);
       }
     }
+    // Dust at the foot while the walls go up (fewer as it finishes).
+    const puffs = p < 0.95 ? Math.max(1, Math.round(span / Math.max(2, S))) : 1;
+    for (let k = 0; k < puffs; k++) {
+      if (hsh(k) > (p < 0.95 ? 0.7 : 0.3)) continue;
+      const x = x0 - S + Math.floor(hsh(k + 50) * (span + 2 * S)), y = base - Math.floor(hsh(k + 90) * Math.max(2, S * 1.5));
+      const c: RGB = [214, 196, 160];
+      put(x, y, c);
+      if (S >= 3) { put(x + 1, y, c); put(x, y - 1, [230, 216, 186]); }
+    }
   }
-  // A crane over industrial-era and later sites while the frame and walls go up.
-  if (st.era >= 3 && p >= 0.25 && p < 0.97 && S >= 2) {
+  // A crane over industrial-era and later sites while the walls go up.
+  if (crane && p >= 0.15 && p < 0.95) {
     const yellow: RGB = [232, 184, 46], dark: RGB = [150, 112, 24];
-    const mx = Math.min(cw - 1, ox + W + 1), mtop = Math.max(1, base - H - D - Math.max(3, S * 2));
-    for (let y = mtop; y < base; y++) P.set(mx, y, ((y - mtop) & 1) ? yellow : dark);
-    for (let x = Math.max(0, ox - 1); x <= mx; x++) P.set(x, mtop, yellow);
-    const hx = ox + Math.round(W * (0.3 + 0.4 * ((p * 7) % 1)));
-    for (let y = mtop + 1; y < mtop + Math.max(2, Math.round((base - mtop) * 0.45)); y++) P.set(hx, y, dark);
+    const mx = x1 + 1 + Math.max(2, S);
+    const mtop = Math.max(0, top - Math.max(3, S * 2));
+    for (let y = mtop; y <= base; y++) put(mx, y, ((y - mtop) & 1) ? yellow : dark);
+    for (let x = Math.max(0, x0 + Math.round(span * 0.2)); x <= Math.min(W - 1, mx + S); x++) put(x, mtop, yellow);
+    const hx = x0 + Math.round(span * (0.3 + 0.4 * ((p * 7) % 1)));
+    for (let y = mtop + 1; y < mtop + Math.max(2, Math.round((base - mtop) * 0.4)); y++) put(hx, y, dark);
   }
-  if (S >= 2) P.outline(st.wall.outline);
-  return { width: cw, height: ch, data: P.data, footX: done.footX, footY: done.footY };
+  return { width: W, height: H, data: out, footX: done.footX, footY: done.footY };
 }
